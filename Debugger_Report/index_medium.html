@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Analog Clock</title>
+  <style>
+    :root {
+      --black: #050505;
+      --black-soft: #111111;
+      --gold: #ffd700;
+      --gold-deep: #b8860b;
+      --diamond: #f7fbff;
+      --diamond-shadow: #9fb7c9;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 22px;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 50% 35%, #1b1b1b 0%, #090909 42%, #000 100%);
+      color: var(--gold);
+      font-family: Georgia, "Times New Roman", serif;
+    }
+
+    #title {
+      margin: 0;
+      color: var(--gold);
+      font-size: clamp(1.6rem, 4vw, 2.25rem);
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-align: center;
+      text-shadow: 0 0 14px rgba(255, 215, 0, 0.24);
+    }
+
+    .clock {
+      position: relative;
+      width: 200px;
+      height: 200px;
+      filter: drop-shadow(0 18px 28px rgba(0, 0, 0, 0.6));
+    }
+
+    .clock-face {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      padding: 10px;
+      border: 4px solid var(--gold);
+      border-radius: 50%;
+      background:
+        radial-gradient(circle at 32% 26%, #242424 0%, #101010 42%, #020202 78%, #000 100%);
+      box-shadow:
+        inset 0 0 0 2px rgba(184, 134, 11, 0.5),
+        inset 0 0 28px rgba(255, 215, 0, 0.08),
+        0 0 22px rgba(255, 215, 0, 0.13);
+      overflow: hidden;
+    }
+
+    .clock-face::before {
+      content: "";
+      position: absolute;
+      inset: 12px;
+      border: 1px solid rgba(255, 215, 0, 0.2);
+      border-radius: 50%;
+      pointer-events: none;
+    }
+
+    .face-label {
+      position: absolute;
+      top: 24%;
+      left: 50%;
+      z-index: 2;
+      transform: translateX(-50%);
+      color: var(--gold);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.18em;
+      text-transform: lowercase;
+      white-space: nowrap;
+      pointer-events: none;
+      text-shadow: 0 0 8px rgba(255, 215, 0, 0.3);
+    }
+
+    .hand {
+      position: absolute;
+      left: 50%;
+      bottom: 50%;
+      z-index: 4;
+      transform-origin: center bottom;
+      transition: transform 0.05s ease-out;
+      border-radius: 999px 999px 2px 2px;
+      background: linear-gradient(90deg, var(--gold-deep), var(--gold), #fff3a4, var(--gold));
+      box-shadow: 0 0 6px rgba(255, 215, 0, 0.32);
+    }
+
+    .hour-hand {
+      width: 6px;
+      height: 30%;
+      margin-left: -3px;
+    }
+
+    .minute-hand {
+      width: 4px;
+      height: 40%;
+      margin-left: -2px;
+    }
+
+    .second-hand {
+      width: 2px;
+      height: 45%;
+      margin-left: -1px;
+    }
+
+    .mark {
+      position: absolute;
+      z-index: 3;
+      width: 8px;
+      height: 8px;
+      border: 1px solid rgba(255, 215, 0, 0.75);
+      background: linear-gradient(135deg, #ffffff 0%, var(--diamond) 34%, #b8d0df 58%, #ffffff 78%, #8ea6b8 100%);
+      transform: rotate(45deg);
+      transform-origin: center;
+      box-shadow:
+        0 0 7px rgba(255, 255, 255, 0.72),
+        0 0 11px rgba(255, 215, 0, 0.35);
+    }
+
+    .mark.top { top: 8px; left: 50%; margin-left: -4px; }
+    .mark.right { right: 8px; top: 50%; margin-top: -4px; }
+    .mark.bottom { bottom: 8px; left: 50%; margin-left: -4px; }
+    .mark.left { left: 8px; top: 50%; margin-top: -4px; }
+
+    .center-diamond {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      z-index: 6;
+      width: 11px;
+      height: 11px;
+      margin: -5.5px 0 0 -5.5px;
+      border: 1px solid var(--gold);
+      background: linear-gradient(135deg, #ffffff, #c7deeb 42%, #ffffff 62%, #8da4b5);
+      transform: rotate(45deg);
+      box-shadow: 0 0 9px rgba(255, 255, 255, 0.72), 0 0 12px rgba(255, 215, 0, 0.4);
+      pointer-events: none;
+    }
+
+    #date {
+      min-height: 1.2em;
+      color: var(--gold);
+      font-size: 0.98rem;
+      letter-spacing: 0.06em;
+      text-align: center;
+      text-shadow: 0 0 10px rgba(255, 215, 0, 0.2);
+    }
+  </style>
+</head>
+
+<body>
+  <h1 id="title">Jack Kernel Demo</h1>
+
+  <div class="clock">
+    <div class="clock-face">
+      <div class="mark top" data-hour="12"></div>
+      <div class="mark right" data-hour="3"></div>
+      <div class="mark bottom" data-hour="6"></div>
+      <div class="mark left" data-hour="9"></div>
+
+      <div class="face-label">simple clock</div>
+
+      <div class="hand hour-hand" id="hourHand"></div>
+      <div class="hand minute-hand" id="minuteHand"></div>
+      <div class="hand second-hand" id="secondHand"></div>
+      <div class="center-diamond" aria-hidden="true"></div>
+    </div>
+  </div>
+
+  <div id="date"></div>
+
+  <script>
+    const secondHand = document.getElementById('secondHand');
+    const minuteHand = document.getElementById('minuteHand');
+    const hourHand = document.getElementById('hourHand');
+    const dateEl = document.getElementById('date');
+
+    const lastAngles = {
+      hour: null,
+      minute: null,
+      second: null
+    };
+
+    function applyRotation(key, hand, targetDeg) {
+      let target = targetDeg;
+      const previous = lastAngles[key];
+
+      if (previous !== null) {
+        target += Math.floor(previous / 360) * 360;
+        while (target < previous) {
+          target += 360;
+        }
+      }
+
+      lastAngles[key] = target;
+      hand.style.transform = 'rotate(' + target + 'deg)';
+    }
+
+    function updateClock() {
+      const now = new Date();
+
+      /* Extract components */
+      const s = now.getSeconds();          // 0-59
+      const m = now.getMinutes();          // 0-59
+      const h = now.getHours() % 12 || 12; // 12-hour format, 0 -> 12
+
+      /* Compute rotation angles (degrees) */
+      const secondDeg = (s / 60) * 360;
+      const minuteDeg = (m / 60) * 360 + (s / 60) * 6;   // +6° per sec
+      const hourDeg   = (h / 12) * 360 + (m / 60) * 30; // +30° per min
+
+      applyRotation('second', secondHand, secondDeg);
+      applyRotation('minute', minuteHand, minuteDeg);
+      applyRotation('hour', hourHand, hourDeg);
+
+      dateEl.textContent = now.toLocaleDateString(undefined, {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
+      });
+    }
+
+    function tick() {
+      updateClock();
+      setTimeout(tick, 1000 - (Date.now() % 1000));
+    }
+
+    tick();
+  </script>
+</body>
+</html>

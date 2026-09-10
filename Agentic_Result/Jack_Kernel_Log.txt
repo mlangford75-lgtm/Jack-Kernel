@@ -1,0 +1,216 @@
+Starting Jack Kernel...
+Backend        : LM Studio
+Backend URL    : http://127.0.0.1:1234/v1
+Backend model  : qwen3.8-27b-gsq-rco
+Agent base URL : http://127.0.0.1:8001/v1
+Listen address : 127.0.0.1:8001
+Virtual model  : jack-kernel
+Reasoning level  : Agentic
+Preserve thinking: ON
+Forensic archive : STAGE
+Kernel-side max_tokens limits: NONE
+Press Ctrl+C to stop the server and return to the launcher.
+
+2026-09-10 06:38:53,926 | INFO | jack-kernel | Starting Jack Kernel on 127.0.0.1:8001
+2026-09-10 06:38:53,926 | INFO | jack-kernel | Agent OpenAI base URL: http://127.0.0.1:8001/v1
+2026-09-10 06:38:53,927 | INFO | jack-kernel | Backend profile: LM Studio
+2026-09-10 06:38:53,927 | INFO | jack-kernel | Backend endpoint: http://127.0.0.1:1234/v1
+2026-09-10 06:38:53,927 | INFO | jack-kernel | Virtual model: jack-kernel
+2026-09-10 06:38:53,927 | INFO | jack-kernel | Qwen control shape: template_kwargs
+2026-09-10 06:38:53,927 | INFO | jack-kernel | Reasoning level: Agentic
+2026-09-10 06:38:53,927 | INFO | jack-kernel | Preserve thinking: ON
+2026-09-10 06:38:53,927 | INFO | jack-kernel | Forensic archive: STAGE
+2026-09-10 06:38:53,927 | INFO | jack-kernel | Live stage streaming: ON for OpenAI stream=true requests
+2026-09-10 06:38:53,927 | INFO | jack-kernel | Kernel-side max_tokens limits: NONE
+INFO:     Started server process [25228]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8001 (Press CTRL+C to quit)
+2026-09-10 06:43:35,539 | INFO | jack-kernel | Detected loaded LM Studio context length: 90112
+2026-09-10 06:43:35,539 | INFO | jack-kernel | Resolved currently loaded LM Studio model: qwen3.8-27b-gsq-rco
+INFO:     127.0.0.1:54477 - "GET /api/v1/models HTTP/1.1" 200 OK
+2026-09-10 06:43:51,106 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:54501 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 06:43:51,113 | INFO | jack-kernel | Blocked calling-agent system/developer context from backend model stages (chars=2726)
+2026-09-10 06:44:00,473 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-0111c6b9d4ca47f3a4e323fd8b1faf79 calls=RwFG5FmRSunYPBSdPIUr7lafh4Vg0nl9,CaLSMh2IyQhGME3HedEuPasui6cg3nxa,OsHvHlfG1zK2Ak7hgJIbOh1qJTgEnNoy,eAADaYMOZhuAjonQxnGMIvfekGTS9xgx
+INFO:     127.0.0.1:54511 - "GET /api/v1/models HTTP/1.1" 200 OK
+2026-09-10 06:44:00,571 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:54501 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 06:44:00,572 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-0111c6b9d4ca47f3a4e323fd8b1faf79 tool_results=4
+2026-09-10 06:44:20,315 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-adbf19c02c584e5e85999104138f4620 calls=pq44io1k2cXbGBY8VxpARg67yPXDbTEm,HidrF8DB5rClZOYf1zPMqLx8ZR40StVm
+2026-09-10 06:44:20,386 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:54501 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 06:44:20,387 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-adbf19c02c584e5e85999104138f4620 tool_results=2
+2026-09-10 06:46:59,422 | INFO | jack-kernel | Agentic forensic Stage-1 archive committed path=C:\Users\default.DESKTOP-M8143Q1\AppData\Roaming\JackKernel\forensic\agentic\20260910\20260910T104659Z_user-turn-0-62528dbd936d791a_stage1.json reasoning_chars=4988 tool_messages=8 record_sha256=58230cfae1db428b904f4ca270569d7b7b0f6bdb42ebbd504267087e6a3a4e7a
+2026-09-10 06:48:06,215 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:63051 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 06:48:06,215 | INFO | jack-kernel | Blocked calling-agent system/developer context from backend model stages (chars=2726)
+2026-09-10 06:48:06,216 | INFO | jack-kernel | Agentic completed-turn GC: retained user_turns=1 agentic_commits=1 active_user_sha256=64a6977e1ecf1342a5db2f81b1044ae9fcfa40c9c27a1ccb7bd23aeb23c88f23; pruned tool_messages=8 native_reasoning_chars=25934
+2026-09-10 06:54:03,321 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-81e68a3553bd4a08b242afc55921b827 calls=Ab4mWKPpOjtrA9e9UEsW0i8LQXSUNSSx
+INFO:     127.0.0.1:61663 - "GET /api/v1/models HTTP/1.1" 200 OK
+2026-09-10 06:54:03,533 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:63051 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 06:54:03,534 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-81e68a3553bd4a08b242afc55921b827 tool_results=1
+2026-09-10 06:55:28,619 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-d4d4bd7b25ca43ab96eb8a2dd6896218 calls=y4HEd5z8BQVYuDXzqvoBDe1i0sn49sjA
+2026-09-10 06:55:28,664 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:63051 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 06:55:28,665 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-d4d4bd7b25ca43ab96eb8a2dd6896218 tool_results=1
+2026-09-10 06:55:45,676 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-2255f1ed27004f4f96d7476da6b43b7e calls=QvRTlWweoxm19gxZD274NWDYypehg5HQ
+2026-09-10 06:55:46,085 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:63051 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 06:55:46,085 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-2255f1ed27004f4f96d7476da6b43b7e tool_results=1
+2026-09-10 06:56:06,374 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-8482174f658d45f29846b68091537208 calls=T05O8P3iiwgDcDQpsNBTxc19XWqNnOOB
+2026-09-10 06:56:06,485 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:63051 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 06:56:06,485 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-8482174f658d45f29846b68091537208 tool_results=1
+2026-09-10 06:59:50,589 | INFO | jack-kernel | Agentic forensic Stage-1 archive committed path=C:\Users\default.DESKTOP-M8143Q1\AppData\Roaming\JackKernel\forensic\agentic\20260910\20260910T105950Z_user-turn-2-f0ad80c299025783_stage1.json reasoning_chars=53985 tool_messages=8 record_sha256=be94eba8bb66ff2c12dc84e1f566faf9d98f93b2dc490e543b5a569563a272ee
+2026-09-10 07:10:14,664 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:51024 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:10:14,665 | INFO | jack-kernel | Blocked calling-agent system/developer context from backend model stages (chars=2726)
+2026-09-10 07:10:14,665 | INFO | jack-kernel | Agentic completed-turn GC: retained user_turns=2 agentic_commits=2 active_user_sha256=7b051567683e5a48c46c36cde470fa302ef8eaf670cc9b31a54b75fd1b389e66; pruned tool_messages=16 native_reasoning_chars=55634
+2026-09-10 07:10:30,348 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-ad1951d7866c468881d23b99d0eb53a4 calls=7BkLQKSEPK8A8vtwmxUydTtoH6Ii9WAn,B2NMwQGfbNsW0GzJMkIBZcvph6WvTXIs
+INFO:     127.0.0.1:51039 - "GET /api/v1/models HTTP/1.1" 200 OK
+2026-09-10 07:10:30,387 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:51024 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:10:30,388 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-ad1951d7866c468881d23b99d0eb53a4 tool_results=2
+2026-09-10 07:10:58,258 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-8db81b381a9748bb914e42d10699af3a calls=csTH7c5mBOcIeIEjiRlguJCZhhpuhG32,69WjOPurcYE2JOteHI5tpp803UIR5tYO
+2026-09-10 07:10:58,407 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:51024 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:10:58,407 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-8db81b381a9748bb914e42d10699af3a tool_results=2
+2026-09-10 07:12:43,690 | INFO | jack-kernel | Agentic forensic Stage-1 archive committed path=C:\Users\default.DESKTOP-M8143Q1\AppData\Roaming\JackKernel\forensic\agentic\20260910\20260910T111243Z_user-turn-4-84dbfff33fa2e61f_stage1.json reasoning_chars=4860 tool_messages=6 record_sha256=838aa098eea58b167b2e09b21d079ad1be6e7ad731b33f1bd8835dfd1fb44fe8
+2026-09-10 07:17:23,834 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:51944 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:17:23,835 | INFO | jack-kernel | Blocked calling-agent system/developer context from backend model stages (chars=2726)
+2026-09-10 07:17:23,835 | INFO | jack-kernel | Agentic completed-turn GC: retained user_turns=3 agentic_commits=3 active_user_sha256=8dd7745a52c62585571dc2a366fbe600eb405bb48dd05a9979a356a9d22e5e34; pruned tool_messages=22 native_reasoning_chars=69172
+2026-09-10 07:18:21,646 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-7a10bc4f0ba34a1eafab44287f397df4 calls=CJQxIuVdg4Y1uuDp7Wfc8ooOJfbaiovY,Kx0SLLpqOHtg9FknSTJ0QzIa0SNKHrtl,GU0CAUHlAtgpm9zl2e6ODwjq8mqf4j8U
+INFO:     127.0.0.1:54847 - "GET /api/v1/models HTTP/1.1" 200 OK
+2026-09-10 07:18:23,030 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:51944 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:18:23,031 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-7a10bc4f0ba34a1eafab44287f397df4 tool_results=3
+2026-09-10 07:18:35,779 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-75498924eb114a5ab4b3e937aaf5beaf calls=FYfYRip6KxPzhjTqmuNDt6g3KY4K4gKg
+2026-09-10 07:18:35,859 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:51944 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:18:35,860 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-75498924eb114a5ab4b3e937aaf5beaf tool_results=1
+2026-09-10 07:22:34,997 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-c3dd5f63ff604f0aaeaf1bef71c6ec61 calls=8Bv3orh2ER3XhcKmHG5w9X9NQVME9tNn
+2026-09-10 07:22:35,097 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:51944 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:22:35,097 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-c3dd5f63ff604f0aaeaf1bef71c6ec61 tool_results=1
+2026-09-10 07:22:54,371 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-7dc0e8cb808e4c3d9075cf4d21874c7f calls=EdjMANikOslCFtE7xrQr3Kn0eq9TlsNP
+2026-09-10 07:22:55,235 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:51944 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:22:55,236 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-7dc0e8cb808e4c3d9075cf4d21874c7f tool_results=1
+2026-09-10 07:23:06,311 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-c9df3117ea9d4681b3f656fe5bbc8204 calls=PO3w3TtqmyNAfjKmslrGmZ1po0dLrOkC
+2026-09-10 07:23:06,433 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:51944 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:23:06,434 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-c9df3117ea9d4681b3f656fe5bbc8204 tool_results=1
+2026-09-10 07:23:18,608 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-e13adc0992fe405d80933d7df7b9bb79 calls=i4Y1TkFH2pQLwgCK6Nu1kfpao1LSFzJy
+2026-09-10 07:23:19,086 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:51944 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:23:19,087 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-e13adc0992fe405d80933d7df7b9bb79 tool_results=1
+2026-09-10 07:24:21,774 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-20a8535c813d4123b7e1b6cc67e423af calls=aFWEPJbC0WCRCcyHyKSBI1ngX9PqQjPF
+2026-09-10 07:24:21,802 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:51944 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:24:21,802 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-20a8535c813d4123b7e1b6cc67e423af tool_results=1
+2026-09-10 07:24:32,615 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-065e8a06e84f42e098b9dc8309683db0 calls=TskY8IKdsU2nqJZ3nLZ3XWKQxvfiHhsC
+2026-09-10 07:24:40,669 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:58281 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:24:40,678 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-065e8a06e84f42e098b9dc8309683db0 tool_results=1
+2026-09-10 07:24:42,891 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-1e394f164b7340ac8ce3e11080a40e4d calls=LiighWaWdGqBRxFS1Xph1Nuj8g3fpBnq
+2026-09-10 07:24:42,907 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:58281 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:24:42,908 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-1e394f164b7340ac8ce3e11080a40e4d tool_results=1
+2026-09-10 07:27:28,175 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-dc00ed22a883454f88cdc0f5b82c82db calls=KtVB37JIACJTNNXtRY0Lc3dvnKZdYkfX,PpaNnLm1H9r4WBcpcjoNkZZVJqbd0vR9
+2026-09-10 07:27:28,475 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:58281 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:27:28,476 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-dc00ed22a883454f88cdc0f5b82c82db tool_results=2
+2026-09-10 07:28:00,269 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-426b170b455b490792c4fc5def458c8d calls=0shy3MOafN3XUHp9553J5aKSr51qtd9z
+2026-09-10 07:28:00,396 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:58281 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:28:00,397 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-426b170b455b490792c4fc5def458c8d tool_results=1
+2026-09-10 07:28:57,115 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-7ef5794a9cb642a8a96ba5edb1476e68 calls=cTMrJU8id0my1uYZjgGoZbRPNY9d0vkN
+2026-09-10 07:28:57,290 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:58281 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:28:57,291 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-7ef5794a9cb642a8a96ba5edb1476e68 tool_results=1
+2026-09-10 07:33:37,099 | INFO | jack-kernel | Agentic forensic Stage-1 archive committed path=C:\Users\default.DESKTOP-M8143Q1\AppData\Roaming\JackKernel\forensic\agentic\20260910\20260910T113337Z_user-turn-6-1780b3b0785b2830_stage1.json reasoning_chars=69103 tool_messages=27 record_sha256=136a6eda8c074b27ae277e54c8586b38503b0aa3a95ab6cd4c22ad29ed3e913b
+2026-09-10 07:39:38,019 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:63101 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:39:38,020 | INFO | jack-kernel | Blocked calling-agent system/developer context from backend model stages (chars=2726)
+2026-09-10 07:39:38,020 | INFO | jack-kernel | Agentic completed-turn GC: retained user_turns=4 agentic_commits=4 active_user_sha256=a35358b2120b17ef7aea146612c9fe56c676da65520c24dedaab2fadedd7b85d; pruned tool_messages=49 native_reasoning_chars=94304
+2026-09-10 07:40:23,100 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-0148b70a1ee84d7c9c917e52ee268ca2 calls=Dt4NXD4KFWnPn2iZoSGJ23uRbO6FC6HL,WOIEuuPWyBgcbNYVOgF8N7sximA8LMwH,LaGv59Yapax8wsp0VuMx3iKTzj7ti8by
+INFO:     127.0.0.1:63136 - "GET /api/v1/models HTTP/1.1" 200 OK
+2026-09-10 07:40:23,442 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:63101 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:40:23,443 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-0148b70a1ee84d7c9c917e52ee268ca2 tool_results=3
+2026-09-10 07:42:35,762 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-924a96891d2d41e0adad4b05281f57fa calls=X6zWbV9GLhcfHUtMI7T2aojq7IEZJNb1,5YeRl8DZJLzti5hkfUBmdPK3txmzhfiL
+2026-09-10 07:42:36,040 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:63101 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:42:36,041 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-924a96891d2d41e0adad4b05281f57fa tool_results=2
+2026-09-10 07:44:42,852 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-920e58d68de14045987db771e832df14 calls=JB1gNp6S9HnI9DUIQjKsROx78QO2BL1t
+2026-09-10 07:44:42,922 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:63101 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:44:42,923 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-920e58d68de14045987db771e832df14 tool_results=1
+2026-09-10 07:44:52,574 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-e03b8e259cf44b728ec55dd0137317ac calls=dRVuxgmAckPWVzXYQsQoXCqYcxmoS3E1
+2026-09-10 07:44:52,750 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:63101 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:44:52,751 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-e03b8e259cf44b728ec55dd0137317ac tool_results=1
+2026-09-10 07:46:14,526 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-d70e29ab084646d9bd41e2d8d5703e7d calls=Wr2KMobsCzolvtGWkusefFsNPm9zHsSZ
+2026-09-10 07:46:14,603 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:63101 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:46:14,604 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-d70e29ab084646d9bd41e2d8d5703e7d tool_results=1
+2026-09-10 07:46:26,252 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-e5eba3e246e3428ba4225c171938963c calls=IfwQh8v4pvKjzBGravU4qmk7byG4YViI
+2026-09-10 07:46:28,327 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:63101 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:46:28,328 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-e5eba3e246e3428ba4225c171938963c tool_results=1
+2026-09-10 07:47:31,256 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-939a8a5ece824439839c2490257e6722 calls=Qpeiu2QHjdyyUOO4unxanFLbShneT4k1
+2026-09-10 07:47:48,940 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:55371 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:47:48,940 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-939a8a5ece824439839c2490257e6722 tool_results=1
+2026-09-10 07:49:14,164 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-860e5bd259ec43429f4ae1cd0b67fb83 calls=sul48La96NetJZqP2BdiCXNQdlKc2Udx
+2026-09-10 07:49:14,233 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:55371 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:49:14,234 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-860e5bd259ec43429f4ae1cd0b67fb83 tool_results=1
+2026-09-10 07:49:26,019 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-86bb71f9944041cbae626b1bf158c2df calls=FfZe9IzqUme2cEZTMN4NVf6XONvc0jIm
+2026-09-10 07:49:26,039 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:55371 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:49:26,039 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-86bb71f9944041cbae626b1bf158c2df tool_results=1
+2026-09-10 07:49:31,376 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-e93b9985d31b4370984de89f17c90727 calls=KuEVsLWZRp5CqcSu1lTI2L0G1hSJQzIe
+2026-09-10 07:50:00,287 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:59550 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:50:00,288 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-e93b9985d31b4370984de89f17c90727 tool_results=1
+2026-09-10 07:50:41,357 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-ca0fc390f91145758697e29ecd4ca2b7 calls=uIY8pGRrqOojmJDigjJ6PlqTjnU4QS4k
+2026-09-10 07:50:41,502 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:59550 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:50:41,503 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-ca0fc390f91145758697e29ecd4ca2b7 tool_results=1
+2026-09-10 07:51:58,691 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-9a4d4758b4d64b868245d8e030d997d8 calls=s4ZlpRw6uLLLAgTCEwCqkBS9Va5HKF25
+2026-09-10 07:51:58,746 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:59550 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:51:58,747 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-9a4d4758b4d64b868245d8e030d997d8 tool_results=1
+2026-09-10 07:52:08,267 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-54d85efe6547467f8459b9ef767351af calls=3WVGSZrELb1ja4sUHyORP3pO8WUwUeIe
+2026-09-10 07:52:37,255 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:50358 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:52:37,255 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-54d85efe6547467f8459b9ef767351af tool_results=1
+2026-09-10 07:52:40,450 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-2e7d2caec8fc4b018b95f919e8c514db calls=s9wilgchl8UZe6RQUMnJGF6oNm2TmLC0
+2026-09-10 07:52:40,562 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:50358 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:52:40,563 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-2e7d2caec8fc4b018b95f919e8c514db tool_results=1
+2026-09-10 07:53:24,447 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-021229cf909d4d5bb347869b772b3dbb calls=DDcDlck9flZYiVZ7zzlKpMdYNGcVxXQ6
+2026-09-10 07:53:24,575 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:50358 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:53:24,576 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-021229cf909d4d5bb347869b772b3dbb tool_results=1
+2026-09-10 07:54:42,924 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-b1a7382bedc8401a9cd5b5352dc717e7 calls=M72jXHvY5jPwLXK98TZ8zFrsAPKjHK23
+2026-09-10 07:55:00,677 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:53722 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:55:00,678 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-b1a7382bedc8401a9cd5b5352dc717e7 tool_results=1
+2026-09-10 07:56:05,198 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-4984fd46799a46d88a5b6c49dccd60a8 calls=p5Q4ByiyvyDr6JsaSCupQEeiV1k1K66O
+2026-09-10 07:56:05,339 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:53722 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:56:05,339 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-4984fd46799a46d88a5b6c49dccd60a8 tool_results=1
+2026-09-10 07:57:29,212 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-5cbebd370e674baaaa0d0667e7a1cfe4 calls=LwqZqAY3PbfnvKvOJzJZHS8LjqajpwVO
+2026-09-10 07:57:29,234 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:53722 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:57:29,235 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-5cbebd370e674baaaa0d0667e7a1cfe4 tool_results=1
+2026-09-10 07:57:37,014 | INFO | jack-kernel | Agentic native pass 1 checkpointed for stage-local tool resume: resume_id=jack-resume-92982d6860074f7292cd1ea9a942e1ea calls=o0j3ZtYctpWIsg2irUCkNQnCeq6hmk1V
+2026-09-10 07:57:37,121 | INFO | jack-kernel | Ignored calling-agent cognition controls: max_completion_tokens
+INFO:     127.0.0.1:53722 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+2026-09-10 07:57:37,121 | INFO | jack-kernel | Resuming Agentic native pass 1 transaction in place: resume_id=jack-resume-92982d6860074f7292cd1ea9a942e1ea tool_results=1
+2026-09-10 08:03:25,100 | INFO | jack-kernel | Agentic forensic Stage-1 archive committed path=C:\Users\default.DESKTOP-M8143Q1\AppData\Roaming\JackKernel\forensic\agentic\20260910\20260910T120325Z_user-turn-8-4fd49d87ffd98b93_stage1.json reasoning_chars=84631 tool_messages=41 record_sha256=681ea78837b7845dc2d7092f76bc35167dc3a8f2c661efd83ad583242395af22

@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Analog Clock</title>
+  <style>
+    /* Center the clock on the page */
+    body { 
+      margin: 0; 
+      height: 100vh; 
+      display: flex; 
+      align-items: center; 
+      justify-content: center; 
+      background:#222;
+    }
+    .clock {
+      position: relative;
+      width: 200px;
+      height: 200px;
+    }
+    .clock-face {
+      width: 100%;
+      height: 100%;
+      border-radius: 50%;
+      background:#fff;
+      position: relative;
+      padding: 10px;               /* makes room for the centre knob */
+      box-sizing:border-box;
+    }
+    /* Clock hands – simple rectangles positioned absolutely */
+    .hand {
+      position: absolute;
+      bottom: 50%;                /* start from centre, push down */
+      transform-origin: center top;/* rotation point at top‑centre */
+      transition: transform 0.05s ease-out;
+    }
+    .hour-hand { width: 30%; height: 6px; background:#000; }
+    .minute-hand{ width: 40%; height: 4px; background:#333; }
+    .second-hand{ width: 45%; height: 2px; background:red; }
+
+    /* Small marks at 12, 3, 6, 9 */
+    .mark {
+      position: absolute;
+      width: 4px; height: 4px;
+      background:#000; border-radius:50%;
+    }
+    .mark.top { top:8px; left:50%; margin-left:-2px; }
+    .mark.right{ right:8px; top:50%; margin-top:-2px; }
+    .mark.bottom{ bottom:8px; left:50%; margin-left:-2px; }
+    .mark.left { left:8px; top:50%; margin-top:-2px; }
+  </style>
+</head>
+
+<body>
+  <div class="clock">
+    <div class="clock-face">
+
+      <!-- Simple hour‑marks -->
+      <div class="mark top" data-hour="12"></div>
+      <div class="mark right" data-hour="3"></div>
+      <div class="mark bottom" data-hour="6"></div>
+      <div class="mark left" data-hour="9"></div>
+
+      <!-- Hands -->
+      <div class="hand hour-hand" id="hourHand"></div>
+      <div class="hand minute-hand" id="minuteHand"></div>
+      <div class="hand second-hand" id="secondHand"></div>
+
+    </div> <!-- end clock-face -->
+  </div> <!-- end clock -->
+
+  <!-- Clock logic -->
+  <script>
+    function updateClock() {
+      const now = new Date();
+
+      /* Extract components */
+      const s = now.getSeconds();          // 0‑59
+      const m = now.getMinutes();          // 0‑59
+      const h = now.getHours() % 12 || 12; // 12‑hour format, 0 → 12
+
+      /* Compute rotation angles (degrees) */
+      const secondDeg = (s / 60) * 360;
+      const minuteDeg = (m / 60) * 360 + (s / 60) * 6;   // +6° per sec
+      const hourDeg   = (h / 12) * 360 + (m / 60) * 30; // +30° per min
+
+      /* Apply the rotations */
+      document.getElementById('secondHand')
+              .style.transform = 'rotate(' + secondDeg + 'deg)';
+
+      document.getElementById('minuteHand')
+              .style.transform = 'rotate(' + minuteDeg + 'deg)';
+
+      document.getElementById('hourHand')
+              .style.transform = 'rotate(' + hourDeg + 'deg)';
+    }
+
+    // Run once immediately, then every second
+    updateClock();
+    setInterval(updateClock, 1000);
+  </script>
+</body>
+</html>
