@@ -811,6 +811,11 @@ class DebuggingRunState:
 _DEBUGGING_RUNS: Dict[str, DebuggingRunState] = {}
 
 
+def _debugging_retire_run(run: DebuggingRunState) -> None:
+    if _DEBUGGING_RUNS.get(run.run_id) is run:
+        _DEBUGGING_RUNS.pop(run.run_id, None)
+
+
 def _debugging_initial_request(messages: Iterable[Dict[str, Any]]) -> str:
     target = active_response_target(messages)
     if not target:
@@ -3945,6 +3950,7 @@ class PendingDebuggingIntakeResume:
     tool_choice: Any
     user_visible_response: str
     created_at: float
+    in_flight: bool = False
 
 
 @dataclass
@@ -3959,6 +3965,7 @@ class PendingDebuggingUserResume:
     user_visible_question: str
     created_at: float
     debugging_run_id: Optional[str] = None
+    in_flight: bool = False
 
 
 @dataclass
@@ -4555,7 +4562,7 @@ class JackQwenKernel:
         stale = [
             resume_id
             for resume_id, state in self._pending_debugging_intake_resumes.items()
-            if state.created_at < cutoff
+            if state.created_at < cutoff and not state.in_flight
         ]
         for resume_id in stale:
             self._pending_debugging_intake_resumes.pop(resume_id, None)
@@ -4651,10 +4658,11 @@ class JackQwenKernel:
             if len(matched) != 1:
                 raise HTTPException(status_code=409, detail="Code Debugging intake reply could not be matched to exactly one pending intake.")
             state = matched[0]
-            self._pending_debugging_intake_resumes.pop(state.resume_id, None)
+            if state.in_flight:
+                raise HTTPException(status_code=409, detail="Code Debugging intake transaction is already being resumed.")
+            state.in_flight = True
 
         run = _debugging_get_run(state.run_id)
-        _debugging_append_intake_turn(run, "user", reply_text)
         user_message = {
             "role": "user",
             "content": reply_text,
@@ -4663,6 +4671,17 @@ class JackQwenKernel:
         }
         LOG.info("Resuming Code Debugging pre-pass intake: run=%s resume_id=%s", run.run_id, state.resume_id)
         return state, user_message
+
+    async def _retire_pending_debugging_intake_resume(self, state: PendingDebuggingIntakeResume) -> None:
+        async with self._pending_debugging_intake_resume_lock:
+            if self._pending_debugging_intake_resumes.get(state.resume_id) is state:
+                self._pending_debugging_intake_resumes.pop(state.resume_id, None)
+            state.in_flight = False
+
+    async def _rearm_pending_debugging_intake_resume(self, state: PendingDebuggingIntakeResume) -> None:
+        async with self._pending_debugging_intake_resume_lock:
+            if self._pending_debugging_intake_resumes.get(state.resume_id) is state:
+                state.in_flight = False
 
     async def _run_debugging_intake_nonstream(
         self,
@@ -4674,9 +4693,17 @@ class JackQwenKernel:
         tools: Optional[List[Dict[str, Any]]],
         tool_choice: Any,
         same_stage_resume: bool = False,
+        pending_resume: Optional[PendingDebuggingIntakeResume] = None,
     ) -> KernelResult:
+        resumed_user_text = ""
+        if same_stage_resume and history and isinstance(history[-1], dict) and history[-1].get("_jack_internal_debugging_intake_reply"):
+            resumed_user_text = _content_to_text(history[-1].get("content")).strip()
         if history and isinstance(history[-1], dict) and history[-1].get("_jack_debugging_intake_proceed"):
+            if resumed_user_text:
+                _debugging_append_intake_turn(run, "user", resumed_user_text)
             _debugging_freeze_intake(run)
+            if pending_resume is not None:
+                await self._retire_pending_debugging_intake_resume(pending_resume)
             return await self._run_code_debugging_nonstream(
                 run=run,
                 secondary_system=secondary_system,
@@ -4699,7 +4726,11 @@ class JackQwenKernel:
         if self._tool_interrupt(stage, usage):
             raise HTTPException(status_code=502, detail="Code Debugging pre-pass intake attempted a tool call even though intake tools are disabled.")
         if _debugging_intake_complete_from_result(stage):
+            if resumed_user_text:
+                _debugging_append_intake_turn(run, "user", resumed_user_text)
             _debugging_freeze_intake(run)
+            if pending_resume is not None:
+                await self._retire_pending_debugging_intake_resume(pending_resume)
             return await self._run_code_debugging_nonstream(
                 run=run,
                 secondary_system=secondary_system,
@@ -4708,7 +4739,9 @@ class JackQwenKernel:
                 tool_choice=tool_choice,
                 start_pass=1,
             )
-        return await self._register_debugging_intake_resume(
+        if resumed_user_text:
+            _debugging_append_intake_turn(run, "user", resumed_user_text)
+        successor = await self._register_debugging_intake_resume(
             run=run,
             history=history,
             secondary_system=secondary_system,
@@ -4717,6 +4750,9 @@ class JackQwenKernel:
             tool_choice=tool_choice,
             data=stage,
         )
+        if pending_resume is not None:
+            await self._retire_pending_debugging_intake_resume(pending_resume)
+        return successor
 
     async def _expire_pending_debugging_user_resumes_locked(self, now: Optional[float] = None) -> None:
         now = time.time() if now is None else now
@@ -4724,7 +4760,7 @@ class JackQwenKernel:
         stale = [
             resume_id
             for resume_id, state in self._pending_debugging_user_resumes.items()
-            if state.created_at < cutoff
+            if state.created_at < cutoff and not state.in_flight
         ]
         for resume_id in stale:
             self._pending_debugging_user_resumes.pop(resume_id, None)
@@ -4834,7 +4870,9 @@ class JackQwenKernel:
                     detail="Code Debugging user reply could not be matched to exactly one pending clarification.",
                 )
             state = matched[0]
-            self._pending_debugging_user_resumes.pop(state.resume_id, None)
+            if state.in_flight:
+                raise HTTPException(status_code=409, detail="Code Debugging clarification transaction is already being resumed.")
+            state.in_flight = True
 
         user_message = {
             "role": "user",
@@ -4844,6 +4882,58 @@ class JackQwenKernel:
         }
         LOG.info("Resuming %s after user clarification: resume_id=%s", STAGES[state.stage_key].name, state.resume_id)
         return state, user_message
+
+    async def _retire_pending_debugging_user_resume(self, state: PendingDebuggingUserResume) -> None:
+        async with self._pending_debugging_user_resume_lock:
+            if self._pending_debugging_user_resumes.get(state.resume_id) is state:
+                self._pending_debugging_user_resumes.pop(state.resume_id, None)
+            state.in_flight = False
+
+    async def _rearm_pending_debugging_user_resume(self, state: PendingDebuggingUserResume) -> None:
+        async with self._pending_debugging_user_resume_lock:
+            if self._pending_debugging_user_resumes.get(state.resume_id) is state:
+                state.in_flight = False
+
+    async def _rearm_pending_debugging_resumes_for_messages(self, messages: Any) -> None:
+        if not CODE_DEBUGGING_MODE or not isinstance(messages, list) or not messages:
+            return
+        last_user_index = None
+        for index in range(len(messages) - 1, -1, -1):
+            item = messages[index]
+            if isinstance(item, dict) and item.get("role") == "user":
+                last_user_index = index
+                break
+            if isinstance(item, dict) and item.get("role") == "tool":
+                return
+        if last_user_index is None:
+            return
+        prior_assistant_contents = {
+            _content_to_text(item.get("content")).strip()
+            for item in messages[:last_user_index]
+            if isinstance(item, dict) and item.get("role") == "assistant"
+        }
+        async with self._pending_debugging_intake_resume_lock:
+            candidates = [
+                state for state in self._pending_debugging_intake_resumes.values()
+                if state.in_flight and state.user_visible_response in prior_assistant_contents
+            ]
+            if not candidates:
+                candidates = [state for state in self._pending_debugging_intake_resumes.values() if state.in_flight]
+                if len(candidates) != 1:
+                    candidates = []
+            for state in candidates:
+                state.in_flight = False
+        async with self._pending_debugging_user_resume_lock:
+            candidates = [
+                state for state in self._pending_debugging_user_resumes.values()
+                if state.in_flight and state.user_visible_question in prior_assistant_contents
+            ]
+            if not candidates:
+                candidates = [state for state in self._pending_debugging_user_resumes.values() if state.in_flight]
+                if len(candidates) != 1:
+                    candidates = []
+            for state in candidates:
+                state.in_flight = False
 
     async def _resume_debugging_user_stage_nonstream(
         self, state: PendingDebuggingUserResume, user_message: Dict[str, Any]
@@ -4863,7 +4953,7 @@ class JackQwenKernel:
             same_stage_resume=True,
         )
         if self._tool_interrupt(stage, usage):
-            return await self._register_stage_tool_resume(
+            successor = await self._register_stage_tool_resume(
                 stage_key=state.stage_key,
                 history=history,
                 secondary_system=state.secondary_system,
@@ -4873,9 +4963,11 @@ class JackQwenKernel:
                 data=stage,
                 debugging_run_id=run.run_id,
             )
+            await self._retire_pending_debugging_user_resume(state)
+            return successor
         question = _debugging_user_question_from_result(stage)
         if question is not None:
-            return await self._register_debugging_user_resume(
+            successor = await self._register_debugging_user_resume(
                 stage_key=state.stage_key,
                 history=history,
                 secondary_system=state.secondary_system,
@@ -4886,10 +4978,13 @@ class JackQwenKernel:
                 question=question,
                 debugging_run_id=run.run_id,
             )
+            await self._retire_pending_debugging_user_resume(state)
+            return successor
         pass_number = _debugging_pass_from_stage_key(state.stage_key)
         if pass_number is None:
             raise HTTPException(status_code=500, detail="Invalid Code Debugging user-resume stage")
         _debugging_commit_pass_summary(run, pass_number, stage)
+        await self._retire_pending_debugging_user_resume(state)
         return await self._run_code_debugging_nonstream(
             run=run,
             secondary_system=state.secondary_system,
@@ -5339,6 +5434,7 @@ class JackQwenKernel:
         choice = (summary.get("choices") or [{}])[0] or {}
         msg = choice.get("message") or {}
         final_report = _debugging_commit_final_report(run, summary)
+        _debugging_retire_run(run)
         reasoning = msg.get("reasoning_content") or msg.get("reasoning") or msg.get("thinking")
         return KernelResult(
             content=final_report,
@@ -5665,19 +5761,28 @@ class JackQwenKernel:
                 run = _debugging_get_run(state.run_id)
                 history = list(state.history)
                 history.append(user_message)
-                prepared = await self._run_debugging_intake_nonstream(
-                    run=run,
-                    history=history,
-                    secondary_system=state.secondary_system,
-                    usage=dict(state.usage),
-                    tools=state.tools,
-                    tool_choice=state.tool_choice,
-                    same_stage_resume=True,
-                )
+                try:
+                    prepared = await self._run_debugging_intake_nonstream(
+                        run=run,
+                        history=history,
+                        secondary_system=state.secondary_system,
+                        usage=dict(state.usage),
+                        tools=state.tools,
+                        tool_choice=state.tool_choice,
+                        same_stage_resume=True,
+                        pending_resume=state,
+                    )
+                except Exception:
+                    await self._rearm_pending_debugging_intake_resume(state)
+                    raise
             elif debugging_user_pending is not None:
                 state, user_message = debugging_user_pending
                 response_usage_baseline = normalize_usage(dict(state.usage))
-                prepared = await self._resume_debugging_user_stage_nonstream(state, user_message)
+                try:
+                    prepared = await self._resume_debugging_user_stage_nonstream(state, user_message)
+                except Exception:
+                    await self._rearm_pending_debugging_user_resume(state)
+                    raise
             elif pending is not None:
                 state, tool_messages = pending
                 response_usage_baseline = normalize_usage(dict(state.usage))
@@ -6097,7 +6202,12 @@ class JackQwenKernel:
                         and history[-1].get("_jack_debugging_intake_proceed")
                     )
                     if intake_proceed:
+                        resumed_user_text = _content_to_text(history[-1].get("content")).strip()
+                        if resumed_user_text:
+                            _debugging_append_intake_turn(debugging_run, "user", resumed_user_text)
                         _debugging_freeze_intake(debugging_run)
+                        await self._retire_pending_debugging_intake_resume(pending_debugging_intake_state)
+                        pending_debugging_intake_state = None
                         yield event({"role": "assistant"})
                         yield event({"reasoning_content": "\n[DEBUGGING DIAGNOSTIC INTAKE FROZEN — STARTING FRESH PASS 1]\n"})
                     else:
@@ -6157,6 +6267,10 @@ class JackQwenKernel:
                             raise HTTPException(status_code=502, detail="Code Debugging pre-pass intake produced no result")
 
                         if not _debugging_intake_complete_from_result(intake_result):
+                            if pending_debugging_intake_state is not None and history and isinstance(history[-1], dict):
+                                resumed_user_text = _content_to_text(history[-1].get("content")).strip()
+                                if resumed_user_text:
+                                    _debugging_append_intake_turn(debugging_run, "user", resumed_user_text)
                             await self._register_debugging_intake_resume(
                                 run=debugging_run,
                                 history=history,
@@ -6166,6 +6280,9 @@ class JackQwenKernel:
                                 tool_choice=tool_choice,
                                 data=intake_result,
                             )
+                            if pending_debugging_intake_state is not None:
+                                await self._retire_pending_debugging_intake_resume(pending_debugging_intake_state)
+                                pending_debugging_intake_state = None
                             # Model content and reasoning were already streamed live. Add
                             # only the host-owned primary-directive reminder at EOS.
                             yield event({"content": f"\n\n{_DEBUGGING_INTAKE_PRIMARY_DIRECTIVE_REMINDER}"})
@@ -6174,7 +6291,14 @@ class JackQwenKernel:
                             yield b"data: [DONE]\n\n"
                             return
 
+                        if pending_debugging_intake_state is not None and history and isinstance(history[-1], dict):
+                            resumed_user_text = _content_to_text(history[-1].get("content")).strip()
+                            if resumed_user_text:
+                                _debugging_append_intake_turn(debugging_run, "user", resumed_user_text)
                         _debugging_freeze_intake(debugging_run)
+                        if pending_debugging_intake_state is not None:
+                            await self._retire_pending_debugging_intake_resume(pending_debugging_intake_state)
+                            pending_debugging_intake_state = None
                         yield event({"reasoning_content": "\n[DEBUGGING DIAGNOSTIC INTAKE FROZEN — STARTING FRESH PASS 1]\n"})
 
                     history = []
@@ -6236,6 +6360,9 @@ class JackQwenKernel:
                         )
                         if same_stage_resume and pending_state is not None:
                             await self._retire_pending_tool_resume(pending_state)
+                        if same_stage_resume and pending_debugging_user_state is not None:
+                            await self._retire_pending_debugging_user_resume(pending_debugging_user_state)
+                            pending_debugging_user_state = None
                         calls = (((stage_result.get("choices") or [{}])[0].get("message") or {}).get("tool_calls") or [])
                         if calls and not stage_result.get("_jack_tool_call_fragments_streamed"):
                             wire_calls = []
@@ -6265,6 +6392,9 @@ class JackQwenKernel:
                         )
                         if same_stage_resume and pending_state is not None:
                             await self._retire_pending_tool_resume(pending_state)
+                        if same_stage_resume and pending_debugging_user_state is not None:
+                            await self._retire_pending_debugging_user_resume(pending_debugging_user_state)
+                            pending_debugging_user_state = None
                         yield event({"content": paused.content or ""})
                         yield event({}, "stop")
                         yield usage_event(usage_delta(usage, response_usage_baseline))
@@ -6274,6 +6404,9 @@ class JackQwenKernel:
                     _debugging_commit_pass_summary(debugging_run, pass_number, stage_result)
                     if same_stage_resume and pending_state is not None:
                         await self._retire_pending_tool_resume(pending_state)
+                    if same_stage_resume and pending_debugging_user_state is not None:
+                        await self._retire_pending_debugging_user_resume(pending_debugging_user_state)
+                        pending_debugging_user_state = None
                     yield event({"reasoning_content": f"\n[DEBUGGING PASS {pass_number} SUMMARY COMMITTED — FRESH CONTEXT NEXT PASS]\n"})
                     history = []
                     resume_stage_key = None
@@ -6304,6 +6437,7 @@ class JackQwenKernel:
                 if summary_result is None:
                     raise HTTPException(status_code=502, detail="Code Debugging final report produced no result")
                 _debugging_commit_final_report(debugging_run, summary_result)
+                _debugging_retire_run(debugging_run)
                 choice = (summary_result.get("choices") or [{}])[0] or {}
                 yield event({}, str(choice.get("finish_reason") or "stop"))
                 yield usage_event(usage_delta(usage, response_usage_baseline))
@@ -6476,7 +6610,8 @@ async def jack_tool_evidence(tool_call_id: str, request: Request) -> Dict[str, A
     await enforce_kernel_auth(request)
     expected_sha256 = str(request.query_params.get("sha256") or "").strip() or None
     try:
-        evidence = recover_pi_tool_evidence(tool_call_id, expected_sha256)
+        loop = asyncio.get_running_loop()
+        evidence = await loop.run_in_executor(None, recover_pi_tool_evidence, tool_call_id, expected_sha256)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {
@@ -6585,6 +6720,7 @@ async def _safe_public_stream(body: Dict[str, Any]) -> AsyncIterator[bytes]:
     except Exception as exc:
         LOG.exception("Jack streamed request failed; closing SSE cleanly")
         await KERNEL._rearm_pending_tool_resume_for_messages(body.get("messages"))
+        await KERNEL._rearm_pending_debugging_resumes_for_messages(body.get("messages"))
         detail = str(exc.detail) if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
         response_id = f"chatcmpl-jack-error-{uuid.uuid4().hex}"
         created = int(time.time())
@@ -6611,6 +6747,7 @@ async def _safe_public_stream(body: Dict[str, Any]) -> AsyncIterator[bytes]:
         yield b"data: [DONE]\n\n"
     finally:
         await KERNEL._rearm_pending_tool_resume_for_messages(body.get("messages"))
+        await KERNEL._rearm_pending_debugging_resumes_for_messages(body.get("messages"))
 
 
 @APP.post("/v1/chat/completions")
