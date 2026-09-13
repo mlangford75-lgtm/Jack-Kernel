@@ -46,7 +46,7 @@ def test_custom_tool_round_trip_and_structured_tool_output():
 
 
 def test_stream_emits_live_reasoning_text_tool_call_and_required_completed_event():
-    class CFG:
+    class StubCFG:
         virtual_model = "jack-kernel"
 
     class Kernel:
@@ -61,7 +61,7 @@ def test_stream_emits_live_reasoning_text_tool_call_and_required_completed_event
             yield b"data: [DONE]\n\n"
 
     class JK:
-        CFG = CFG()
+        CFG = StubCFG()
         KERNEL = Kernel()
 
     async def collect():
