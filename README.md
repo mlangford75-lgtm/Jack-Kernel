@@ -18,7 +18,7 @@ The diagrams below show the accepted supervisory architecture and the direction 
 
 ![Jack Orchestration Flow](assets/orchestration/jack_orchestration_flow_diagram.png)
 
-For installation and first-run steps, see [`GETTING_STARTED.md`](GETTING_STARTED.md). For the exact orchestration protocol, see [`ORCHESTRATION_GATEWAY_V2_TECHNICAL_SPEC.md`](ORCHESTRATION_GATEWAY_V2_TECHNICAL_SPEC.md). For the live acceptance record, see [`ORCHESTRATION_GATEWAY_V2_ACCEPTANCE_REPORT.md`](ORCHESTRATION_GATEWAY_V2_ACCEPTANCE_REPORT.md).
+For installation and first-run steps, see [`GETTING_STARTED.md`](GETTING_STARTED.md). For the exact orchestration protocol, see [`ORCHESTRATION_GATEWAY_V2_TECHNICAL_SPEC.md`](Documentation/Orchestration/ORCHESTRATION_GATEWAY_V2_TECHNICAL_SPEC.md). For the live acceptance record, see [`ORCHESTRATION_GATEWAY_V2_ACCEPTANCE_REPORT.md`](Documentation/Orchestration/ORCHESTRATION_GATEWAY_V2_ACCEPTANCE_REPORT.md).
 
 Jack Kernel is a local-first host-authoritative inference mediation/control layer between an agent/client and an OpenAI-compatible model backend. Jack is **not the agent and not the LLM**. The agent chooses the task and application workflow. The model supplies probabilistic cognition. Jack controls the host-governed inference environment and authority boundaries around model cognition: stage topology, reasoning and sampling, tool exposure, context projection, answer/commit authority, retention, evidence handling, and host-side execution boundaries.
 
@@ -227,8 +227,8 @@ Release builds do not inject runtime identity, stage token counts, context-size 
 - `Pi/install-jack-kernel-extension.ps1` — Windows installer for the Pi context-sync extension.
 - `Pi/pi-control-bridge.ts` — accepted run-bound Primary-Pi control bridge for Orchestration Gateway v2.
 - `Pi/install-pi-control-bridge-v2.ps1` — installer/backup helper for the accepted Primary-Pi bridge.
-- `ORCHESTRATION_GATEWAY_V2_TECHNICAL_SPEC.md` — exact run-bound transport, replay, cancellation, and failure semantics.
-- `ORCHESTRATION_GATEWAY_V2_ACCEPTANCE_REPORT.md` — live acceptance record for the completed v2 boundary tests.
+- `Documentation/Orchestration/ORCHESTRATION_GATEWAY_V2_TECHNICAL_SPEC.md` — exact run-bound transport, replay, cancellation, and failure semantics.
+- `Documentation/Orchestration/ORCHESTRATION_GATEWAY_V2_ACCEPTANCE_REPORT.md` — live acceptance record for the completed v2 boundary tests.
 - `Debugging/User_Instructions.md` — user-facing quick start, pre-pass diagnostic intake guidance, example debugging requests, and what to expect from the five-pass audit workflow.
 - `Debugging/Instructions.md` — Code Debugging intake/pass instructions.
 - `Debugging/Debugging_Report.md` — immutable bundled report template/reference; runtime runs do not overwrite it.
@@ -241,7 +241,9 @@ Release builds do not inject runtime identity, stage token counts, context-size 
 - `README.md` — repository front door and release documentation.
 - `GETTING_STARTED.md` — concise installation, startup, Pi setup, and regression-check guide.
 - `00_Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx` — front-door copy of the full plain-English architecture and operating guide; this is intentionally the first document surfaced in the repository.
-- `Documentation/Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx` — canonical documentation copy of the same guide.
+- `Documentation/Jack_Kernel_Preview_Programmable_Cognition_Runtime_v0.1.1.docx` — concise programmable-cognition runtime preview aligned to the accepted Orchestration Gateway v2 reality.
+- `Documentation/Jack_Kernel_Long_Horizon_Cognition_Technical_Whitepaper_v0.1.1.docx` — long-horizon cognition and architectural technical whitepaper.
+- `Documentation/Jack_Kernel_Runtime_Specification_v0.1.1.docx` — normative Jack Kernel v0.1.1 runtime specification, including the accepted Gateway v2 integration boundary.
 
 ## License
 

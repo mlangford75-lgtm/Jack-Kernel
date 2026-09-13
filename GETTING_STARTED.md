@@ -134,4 +134,4 @@ py -3 tests\test_resilience.py
 py -3 tests\test_release_profiles.py
 ```
 
-For architecture and operating guidance, read `00_Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx` first. For exact transport semantics see `ORCHESTRATION_GATEWAY_V2_TECHNICAL_SPEC.md`. For live acceptance evidence see `ORCHESTRATION_GATEWAY_V2_ACCEPTANCE_REPORT.md`.
+For architecture and operating guidance, read `00_Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx` first. For exact transport semantics see `Documentation/Orchestration/ORCHESTRATION_GATEWAY_V2_TECHNICAL_SPEC.md`. For live acceptance evidence see `Documentation/Orchestration/ORCHESTRATION_GATEWAY_V2_ACCEPTANCE_REPORT.md`.
