@@ -4,19 +4,19 @@ cd /d "%~dp0"
 title Jack Kernel
 
 if exist ".venv\Scripts\python.exe" (
-    ".venv\Scripts\python.exe" "jack_kernel.py"
+    ".venv\Scripts\python.exe" "jack_responses_compat.py"
     goto :done
 )
 
 py -3 -c "import sys" >nul 2>nul
 if not errorlevel 1 (
-    py -3 "jack_kernel.py"
+    py -3 "jack_responses_compat.py"
     goto :done
 )
 
 python -c "import sys" >nul 2>nul
 if not errorlevel 1 (
-    python "jack_kernel.py"
+    python "jack_responses_compat.py"
     goto :done
 )
 
