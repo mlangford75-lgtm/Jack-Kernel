@@ -1,0 +1,83 @@
+name: Rebuild orchestration image
+
+on:
+  push:
+    branches:
+      - image-upload-staging
+    paths:
+      - .tmp-image-rle/READY
+
+permissions:
+  contents: write
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: image-upload-staging
+          fetch-depth: 0
+
+      - name: Rebuild exact image pixels and verify
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import base64, hashlib, lzma, struct, zlib
+
+          width = 2048
+          height = 1415
+          expected_raw_sha256 = 'ce4889d227efaa7d4058bdbfe7646aa0e380ac74153fbafaebdd839eff3266f1'
+
+          parts = sorted(Path('.tmp-image-rle').glob('part*.txt'))
+          if not parts:
+              raise SystemExit('No staged image parts found')
+
+          encoded = ''.join(p.read_text(encoding='ascii').strip() for p in parts)
+          packed = lzma.decompress(base64.b64decode(encoded))
+          if len(packed) % 8:
+              raise SystemExit('Invalid RLE payload length')
+
+          raw = bytearray()
+          for off in range(0, len(packed), 8):
+              count, r, g, b, a = struct.unpack('>I4B', packed[off:off+8])
+              raw.extend(bytes((r, g, b, a)) * count)
+
+          expected_len = width * height * 4
+          if len(raw) != expected_len:
+              raise SystemExit(f'Unexpected pixel length: {len(raw)} != {expected_len}')
+
+          raw_sha = hashlib.sha256(raw).hexdigest()
+          if raw_sha != expected_raw_sha256:
+              raise SystemExit(f'Pixel SHA-256 mismatch: {raw_sha} != {expected_raw_sha256}')
+
+          def chunk(kind, payload):
+              return struct.pack('>I', len(payload)) + kind + payload + struct.pack('>I', zlib.crc32(kind + payload) & 0xffffffff)
+
+          scan = bytearray()
+          stride = width * 4
+          for y in range(height):
+              scan.append(0)
+              scan.extend(raw[y*stride:(y+1)*stride])
+
+          ihdr = struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0)
+          png = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', ihdr) + chunk(b'IDAT', zlib.compress(bytes(scan), 9)) + chunk(b'IEND', b'')
+
+          target = Path('assets/orchestration/jack_orchestration_flow_diagram.png')
+          target.write_bytes(png)
+          print(f'Wrote {target}: {width}x{height}, RGBA pixel SHA-256={raw_sha}')
+          PY
+
+      - name: Commit rebuilt image
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add assets/orchestration/jack_orchestration_flow_diagram.png
+          if git diff --cached --quiet; then
+            echo "Target image already matches"
+            exit 0
+          fi
+          git commit -m "Update orchestration flow diagram"
+          git push origin HEAD:image-upload-staging
