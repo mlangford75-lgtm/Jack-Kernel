@@ -88,7 +88,7 @@ from typing import Any, AsyncIterator, Dict, Iterable, List, Optional, Tuple
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 PUBLIC_VERSION = "v.0.1.1"
 CONFIG_SCHEMA_VERSION = 1
@@ -6521,11 +6521,418 @@ BACKEND = OpenAICompatibleBackend(CFG)
 KERNEL = JackQwenKernel(BACKEND, CFG)
 
 
+# ---------------------------------------------------------------------------
+# Pi build-agent orchestration gateway
+# ---------------------------------------------------------------------------
+
+ORCHESTRATION_BASE_PATH = "/jack/orchestration"
+_PI_CONTROL_CONFIG_ENV = "JACK_PI_CONTROL_CONFIG"
+_PI_CONTROL_URL_ENV = "JACK_PI_CONTROL_URL"
+_PI_CONTROL_TOKEN_ENV = "JACK_PI_CONTROL_TOKEN"
+_ORCHESTRATION_REPLAY_ENV = "JACK_ORCHESTRATION_REPLAY_EVENTS"
+_ORCHESTRATION_REPLAY_DEFAULT = 512
+
+
+def _pi_control_config_path() -> Path:
+    override = os.getenv(_PI_CONTROL_CONFIG_ENV, "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".pi" / "agent" / "jack-kernel.json"
+
+
+def _load_pi_control_bridge() -> Dict[str, Any]:
+    """Resolve Pi's existing local control bridge without exposing its token.
+
+    Environment variables can override the local Pi configuration for testing.
+    Otherwise Jack reads the same ``jack-kernel.json`` already used by the Pi
+    control extension. Only ``controlPort`` and ``controlToken`` are consumed.
+    """
+    persisted: Dict[str, Any] = {}
+    config_path = _pi_control_config_path()
+    try:
+        parsed = json.loads(config_path.read_text(encoding="utf-8-sig"))
+        if isinstance(parsed, dict):
+            persisted = parsed
+    except (FileNotFoundError, OSError, ValueError):
+        persisted = {}
+
+    url = os.getenv(_PI_CONTROL_URL_ENV, "").strip().rstrip("/")
+    if not url:
+        raw_port = persisted.get("controlPort")
+        try:
+            control_port = int(raw_port)
+        except (TypeError, ValueError):
+            control_port = 0
+        if 0 < control_port <= 65535:
+            url = f"http://127.0.0.1:{control_port}"
+
+    token = os.getenv(_PI_CONTROL_TOKEN_ENV, "") or str(persisted.get("controlToken") or "")
+    return {
+        "url": url,
+        "token": token,
+        "configured": bool(url and token),
+        "config_path": str(config_path),
+    }
+
+
+def _require_pi_control_bridge() -> Tuple[str, str]:
+    bridge = _load_pi_control_bridge()
+    url = str(bridge.get("url") or "").rstrip("/")
+    token = str(bridge.get("token") or "")
+    if not url:
+        raise HTTPException(status_code=503, detail="Pi control bridge URL is not configured")
+    if not token:
+        raise HTTPException(status_code=503, detail="Pi control bridge token is not configured")
+    return url, token
+
+
+def _pi_control_headers(
+    token: str, *, content_type: Optional[str] = None, accept: Optional[str] = None
+) -> Dict[str, str]:
+    headers = {"Authorization": f"Bearer {token}"}
+    if content_type:
+        headers["Content-Type"] = content_type
+    if accept:
+        headers["Accept"] = accept
+    return headers
+
+
+def _orchestration_public_base_from_agent_url(agent_base_url: str) -> str:
+    root = str(agent_base_url or "").strip().rstrip("/")
+    if root.endswith("/v1"):
+        root = root[:-3]
+    return root.rstrip("/") + ORCHESTRATION_BASE_PATH
+
+
+def _orchestration_url_from_cli_config(cfg: Dict[str, Any]) -> str:
+    return _orchestration_public_base_from_agent_url(_effective_agent_base_url(cfg))
+
+
+def _build_agent_bridge_display() -> str:
+    bridge = _load_pi_control_bridge()
+    url = str(bridge.get("url") or "")
+    if not url:
+        return "NOT CONFIGURED"
+    return f"{url} [{'CONFIGURED' if bridge.get('configured') else 'TOKEN MISSING'}]"
+
+
+def _downstream_pi_response(response: httpx.Response) -> Response:
+    headers: Dict[str, str] = {}
+    content_type = response.headers.get("content-type")
+    if content_type:
+        headers["content-type"] = content_type
+    return Response(
+        content=response.content,
+        status_code=response.status_code,
+        headers=headers,
+    )
+
+
+async def _proxy_pi_control_request(
+    request: Request,
+    method: str,
+    downstream_path: str,
+    *,
+    forward_body: bool = False,
+) -> Response:
+    """Proxy one orchestration control request to Pi outside inference concurrency.
+
+    These requests intentionally do not enter Jack's model-inference semaphore.
+    Pi may call Jack's normal /v1/chat/completions endpoint while the control
+    request or SSE monitor remains active.
+    """
+    await enforce_kernel_auth(request)
+    base_url, token = _require_pi_control_bridge()
+    body = await request.body() if forward_body else b""
+    content_type = (
+        request.headers.get("content-type", "application/json")
+        if forward_body
+        else None
+    )
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.request(
+                method,
+                f"{base_url}{downstream_path}",
+                content=body if forward_body else None,
+                headers=_pi_control_headers(
+                    token,
+                    content_type=content_type,
+                    accept="application/json",
+                ),
+            )
+    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout) as exc:
+        raise HTTPException(status_code=502, detail="Pi control bridge is unavailable") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="Pi control bridge request failed") from exc
+    return _downstream_pi_response(response)
+
+
+def _utc_iso_now() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _orchestration_replay_limit() -> int:
+    raw = os.getenv(_ORCHESTRATION_REPLAY_ENV, "").strip()
+    try:
+        value = int(raw) if raw else _ORCHESTRATION_REPLAY_DEFAULT
+    except ValueError:
+        value = _ORCHESTRATION_REPLAY_DEFAULT
+    return max(32, min(value, 10000))
+
+
+class OrchestrationEventHub:
+    """Single Pi SSE ingestion path with run-bound Jack envelopes and replay.
+
+    Pi's control bridge remains the authority for task/run attribution. Jack does
+    not infer ownership from timing or from whichever task happens to be current.
+    Untagged source events remain untagged except for Pi task/status snapshots whose
+    own task ``id`` is authoritative.
+    """
+
+    def __init__(self, replay_limit: Optional[int] = None) -> None:
+        from collections import deque
+        self.replay_limit = int(replay_limit or _orchestration_replay_limit())
+        self._buffer = deque(maxlen=self.replay_limit)
+        self._seq = 0
+        self._subscribers: set = set()
+        self._lock = asyncio.Lock()
+        self._runner: Optional[asyncio.Task] = None
+        self._stopping = False
+        self._last_error: Optional[str] = None
+
+    async def close(self) -> None:
+        self._stopping = True
+        runner = self._runner
+        if runner and not runner.done():
+            runner.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await runner
+        async with self._lock:
+            subscribers = list(self._subscribers)
+            self._subscribers.clear()
+        for queue in subscribers:
+            with contextlib.suppress(asyncio.QueueFull):
+                queue.put_nowait(None)
+
+    async def probe(self) -> None:
+        """Preserve v1 failure semantics before an SSE client is accepted."""
+        base_url, token = _require_pi_control_bridge()
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(
+                    f"{base_url}/v1/status",
+                    headers=_pi_control_headers(token, accept="application/json"),
+                )
+            if response.status_code >= 500:
+                raise HTTPException(status_code=502, detail="Pi control bridge is unavailable")
+            if response.status_code >= 400:
+                raise HTTPException(status_code=response.status_code, detail=response.text)
+        except HTTPException:
+            raise
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout) as exc:
+            raise HTTPException(status_code=502, detail="Pi control bridge is unavailable") from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail="Pi control bridge request failed") from exc
+
+    async def ensure_running(self) -> None:
+        if self._runner is None or self._runner.done():
+            self._stopping = False
+            self._runner = asyncio.create_task(self._run(), name="jack-orchestration-sse")
+
+    async def subscribe(self, after_seq: Optional[int]) -> Tuple[asyncio.Queue, List[bytes]]:
+        queue: asyncio.Queue = asyncio.Queue(maxsize=1024)
+        async with self._lock:
+            replay: List[bytes] = []
+            if after_seq is not None:
+                oldest = self._buffer[0]["seq"] if self._buffer else self._seq + 1
+                latest = self._buffer[-1]["seq"] if self._buffer else self._seq
+                if after_seq < oldest - 1:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "error": "orchestration_replay_gap",
+                            "requested_after": after_seq,
+                            "oldest_available_seq": oldest,
+                            "latest_seq": latest,
+                        },
+                    )
+                replay = [self._encode_sse(event) for event in self._buffer if event["seq"] > after_seq]
+            self._subscribers.add(queue)
+        return queue, replay
+
+    async def unsubscribe(self, queue: asyncio.Queue) -> None:
+        async with self._lock:
+            self._subscribers.discard(queue)
+
+    @staticmethod
+    def _encode_sse(event: Dict[str, Any]) -> bytes:
+        encoded = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+        return (
+            f"id: {event['seq']}\n"
+            f"event: {event['type']}\n"
+            f"data: {encoded}\n\n"
+        ).encode("utf-8")
+
+    @staticmethod
+    def _source_task_id(event_type: str, source_event: Any) -> Optional[str]:
+        if isinstance(source_event, dict):
+            task_id = source_event.get("task_id")
+            if task_id:
+                return str(task_id)
+            if event_type == "task":
+                data = source_event.get("data")
+                if isinstance(data, dict) and data.get("id"):
+                    return str(data["id"])
+                if source_event.get("id"):
+                    return str(source_event["id"])
+            if event_type == "status" and source_event.get("id"):
+                return str(source_event["id"])
+        return None
+
+    @staticmethod
+    def _source_run_id(source_event: Any) -> Optional[str]:
+        if not isinstance(source_event, dict):
+            return None
+        run_id = source_event.get("run_id")
+        if run_id:
+            return str(run_id)
+        data = source_event.get("data")
+        if isinstance(data, dict) and data.get("runId"):
+            return str(data["runId"])
+        if source_event.get("runId"):
+            return str(source_event["runId"])
+        return None
+
+    @staticmethod
+    def _source_run_epoch(source_event: Any) -> Optional[int]:
+        if not isinstance(source_event, dict):
+            return None
+        value = source_event.get("run_epoch")
+        if value is None:
+            data = source_event.get("data")
+            if isinstance(data, dict):
+                value = data.get("runEpoch")
+        if value is None:
+            value = source_event.get("runEpoch")
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _source_attribution(source_event: Any) -> Optional[str]:
+        if isinstance(source_event, dict) and source_event.get("attribution"):
+            return str(source_event["attribution"])
+        return None
+
+    async def _publish(self, event_type: str, source_event: Any) -> None:
+        if isinstance(source_event, dict) and "data" in source_event and "type" in source_event:
+            payload = source_event.get("data")
+            source_at = source_event.get("at")
+            source_type = str(source_event.get("type") or event_type or "message")
+        else:
+            payload = source_event
+            source_at = source_event.get("at") if isinstance(source_event, dict) else None
+            source_type = str(event_type or "message")
+
+        async with self._lock:
+            self._seq += 1
+            envelope: Dict[str, Any] = {
+                "seq": self._seq,
+                "task_id": self._source_task_id(source_type, source_event),
+                "run_id": self._source_run_id(source_event),
+                "run_epoch": self._source_run_epoch(source_event),
+                "attribution": self._source_attribution(source_event),
+                "type": source_type,
+                "source": "pi",
+                "source_at": source_at,
+                "jack_received_at": _utc_iso_now(),
+                "data": payload,
+                "source_event": source_event,
+            }
+            self._buffer.append(envelope)
+            encoded = self._encode_sse(envelope)
+            subscribers = list(self._subscribers)
+
+        for queue in subscribers:
+            try:
+                queue.put_nowait(encoded)
+            except asyncio.QueueFull:
+                # A lagging observer has lost continuity. End that stream so the
+                # client must reconnect and recover by sequence number.
+                await self.unsubscribe(queue)
+                while not queue.empty():
+                    with contextlib.suppress(asyncio.QueueEmpty):
+                        queue.get_nowait()
+                queue.put_nowait(None)
+
+    async def _consume_stream(self, upstream: httpx.Response) -> None:
+        event_name = "message"
+        data_lines: List[str] = []
+        async for line in upstream.aiter_lines():
+            if self._stopping:
+                return
+            if line == "":
+                if data_lines:
+                    raw = "\n".join(data_lines)
+                    try:
+                        source_event: Any = json.loads(raw)
+                    except ValueError:
+                        source_event = {"raw": raw}
+                    await self._publish(event_name, source_event)
+                event_name = "message"
+                data_lines = []
+                continue
+            if line.startswith(":"):
+                continue
+            if line.startswith("event:"):
+                event_name = line[6:].strip() or "message"
+            elif line.startswith("data:"):
+                data_lines.append(line[5:].lstrip())
+        if data_lines:
+            raw = "\n".join(data_lines)
+            try:
+                source_event = json.loads(raw)
+            except ValueError:
+                source_event = {"raw": raw}
+            await self._publish(event_name, source_event)
+
+    async def _run(self) -> None:
+        while not self._stopping:
+            try:
+                base_url, token = _require_pi_control_bridge()
+                async with httpx.AsyncClient(timeout=None) as client:
+                    async with client.stream(
+                        "GET",
+                        f"{base_url}/v1/events",
+                        headers=_pi_control_headers(token, accept="text/event-stream"),
+                    ) as upstream:
+                        if upstream.status_code != 200:
+                            body = await upstream.aread()
+                            self._last_error = f"Pi SSE status {upstream.status_code}: {body[:200]!r}"
+                            await asyncio.sleep(1.0)
+                            continue
+                        self._last_error = None
+                        await self._consume_stream(upstream)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._last_error = str(exc)
+                if self._stopping:
+                    return
+                await asyncio.sleep(1.0)
+
+
+ORCHESTRATION_EVENTS = OrchestrationEventHub()
+
 @asynccontextmanager
 async def app_lifespan(_: FastAPI):
     try:
         yield
     finally:
+        await ORCHESTRATION_EVENTS.close()
         await BACKEND.close()
 
 
@@ -6575,6 +6982,9 @@ async def root() -> Dict[str, Any]:
         "backend_name": preset["short_label"],
         "virtual_model": CFG.virtual_model,
         "agent_base_url": CFG.agent_base_url,
+        "orchestration_base_url": _orchestration_public_base_from_agent_url(CFG.agent_base_url),
+        "orchestration_protocol_version": 2,
+        "orchestration_replay_events": ORCHESTRATION_EVENTS.replay_limit,
     }
 
 
@@ -6596,8 +7006,82 @@ async def health(request: Request) -> Dict[str, Any]:
         "context_length": BACKEND.context_length,
         "context_length_source": BACKEND.context_length_source,
         "agent_base_url": CFG.agent_base_url,
+        "orchestration_base_url": _orchestration_public_base_from_agent_url(CFG.agent_base_url),
+        "orchestration_protocol_version": 2,
+        "orchestration_replay_events": ORCHESTRATION_EVENTS.replay_limit,
+        "build_agent_bridge_configured": bool(_load_pi_control_bridge().get("configured")),
         "listen_address": f"{CFG.host}:{CFG.port}",
     }
+
+
+@APP.get(f"{ORCHESTRATION_BASE_PATH}/status")
+async def orchestration_status(request: Request) -> Response:
+    return await _proxy_pi_control_request(request, "GET", "/v1/status")
+
+
+@APP.post(f"{ORCHESTRATION_BASE_PATH}/tasks")
+async def orchestration_tasks(request: Request) -> Response:
+    return await _proxy_pi_control_request(
+        request, "POST", "/v1/tasks", forward_body=True
+    )
+
+
+@APP.post(f"{ORCHESTRATION_BASE_PATH}/tasks/cancel")
+async def orchestration_cancel(request: Request) -> Response:
+    return await _proxy_pi_control_request(request, "POST", "/v1/tasks/cancel")
+
+
+@APP.post(f"{ORCHESTRATION_BASE_PATH}/session/new")
+async def orchestration_new_session(request: Request) -> Response:
+    return await _proxy_pi_control_request(request, "POST", "/v1/session/new")
+
+
+@APP.get(f"{ORCHESTRATION_BASE_PATH}/events")
+async def orchestration_events(request: Request):
+    """Task-attributed, sequenced Pi SSE transport with bounded replay."""
+    await enforce_kernel_auth(request)
+    await ORCHESTRATION_EVENTS.probe()
+    await ORCHESTRATION_EVENTS.ensure_running()
+
+    after_raw = str(request.query_params.get("after") or "").strip()
+    if not after_raw:
+        after_raw = str(request.headers.get("last-event-id") or "").strip()
+    after_seq: Optional[int] = None
+    if after_raw:
+        try:
+            after_seq = int(after_raw)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="after/Last-Event-ID must be an integer") from exc
+        if after_seq < 0:
+            raise HTTPException(status_code=400, detail="after/Last-Event-ID must be non-negative")
+
+    queue, replay = await ORCHESTRATION_EVENTS.subscribe(after_seq)
+
+    async def relay() -> AsyncIterator[bytes]:
+        try:
+            for item in replay:
+                yield item
+            while True:
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    yield b": keepalive\n\n"
+                    continue
+                if item is None:
+                    return
+                yield item
+        finally:
+            await ORCHESTRATION_EVENTS.unsubscribe(queue)
+
+    return StreamingResponse(
+        relay(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @APP.get("/jack/tool-evidence/{tool_call_id}")
@@ -7389,6 +7873,10 @@ def _print_header(
     ctx = int(cfg.get("backend_context_length", 0) or 0)
     print(_status_value("Context length", ctx if ctx > 0 else "UNKNOWN"))
     print(_status_value("Agent base URL", _effective_agent_base_url(cfg)))
+    print(_status_value("Orchestration API", _orchestration_url_from_cli_config(cfg)))
+    print(_status_value("Orchestration protocol", "v2  [run-bound IDs + sequence + replay]"))
+    print(_status_value("Event replay buffer", f"{ORCHESTRATION_EVENTS.replay_limit} events"))
+    print(_status_value("Build agent bridge", _build_agent_bridge_display()))
     print(_status_value("Listen address", f"{cfg['host']}:{cfg['port']}"))
     print(_status_value("Virtual model", cfg['virtual_model']))
     print(_status_value("Preserve thinking", "ON" if cfg.get("preserve_thinking", True) else "OFF"))
@@ -7853,8 +8341,12 @@ def _start_server_from_cli(cfg: Dict[str, Any]) -> None:
     print(f"Backend        : {_backend_name(cfg)}")
     print(f"Backend URL    : {cfg.get('backend_base_url')}")
     print(f"Backend model  : {_backend_model_status(cfg)}")
-    print(f"Agent base URL : {_effective_agent_base_url(cfg)}")
-    print(f"Listen address : {cfg['host']}:{cfg['port']}")
+    print(f"Agent base URL     : {_effective_agent_base_url(cfg)}")
+    print(f"Orchestration API  : {_orchestration_url_from_cli_config(cfg)}")
+    print("Orchestration proto: v2 [run-bound IDs + sequence + replay]")
+    print(f"Event replay buffer: {ORCHESTRATION_EVENTS.replay_limit} events")
+    print(f"Build agent bridge : {_build_agent_bridge_display()}")
+    print(f"Listen address     : {cfg['host']}:{cfg['port']}")
     print(f"Virtual model  : {cfg['virtual_model']}")
     level_key = _REASONING_LEVEL_ALIASES.get(str(cfg.get("reasoning_level", "x-high")).lower(), str(cfg.get("reasoning_level", "x-high")).lower())
     print(f"Reasoning level  : {REASONING_PROFILES.get(level_key, REASONING_PROFILES['x-high'])['label']}")
@@ -7977,6 +8469,9 @@ def run_server() -> None:
     preset = BACKEND_PRESETS.get(CFG.backend_profile, BACKEND_PRESETS["custom"])
     LOG.info("Starting Jack Kernel on %s:%s", CFG.host, CFG.port)
     LOG.info("Agent OpenAI base URL: %s", CFG.agent_base_url)
+    LOG.info("Orchestration API: %s", _orchestration_public_base_from_agent_url(CFG.agent_base_url))
+    LOG.info("Orchestration protocol: v2 (run-bound IDs + sequence + replay; %s events)", ORCHESTRATION_EVENTS.replay_limit)
+    LOG.info("Build agent bridge: %s", _build_agent_bridge_display())
     LOG.info("Backend profile: %s", preset["short_label"])
     LOG.info("Backend endpoint: %s", CFG.backend_base_url)
     LOG.info("Virtual model: %s", CFG.virtual_model)

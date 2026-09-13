@@ -1,34 +1,81 @@
-# Pi context-window synchronization
+# Pi Integration for Jack Kernel v0.1.1
 
-Jack Kernel exposes the resolved backend context window through OpenAI-compatible model metadata and an LM-Studio-compatible `GET /api/v1/models` endpoint.
+This directory contains two separate Pi integrations:
 
-Pi custom models normally keep `contextWindow` in Pi-side model metadata. A stale static `models.json` entry can therefore continue to show an old value even when Jack advertises the correct backend context. The bundled `jack-kernel.ts` extension removes that static mismatch by registering the `jack-kernel` provider from Jack's live model metadata at Pi startup and refreshing it after assistant turns.
+1. `jack-kernel.ts` — Jack provider/context-window synchronization.
+2. `pi-control-bridge.ts` — accepted private Primary-Pi control bridge for Orchestration Gateway v2.
 
-## Install on Windows
+They serve different authority boundaries.
 
-From this `Pi` folder, run:
+## Provider/context synchronization
+
+Jack exposes the resolved backend context window through its model metadata. Pi custom models can retain stale static context metadata, so `jack-kernel.ts` registers/refreshes the `jack-kernel` provider from Jack's live metadata.
+
+Install:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\install-jack-kernel-extension.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\install-jack-kernel-extension.ps1"
 ```
 
-Then start Jack and restart Pi (or use `/reload`).
+Default Jack root:
 
-The extension defaults to Jack at `http://127.0.0.1:8001`. For another address or an authenticated Jack server, create `%USERPROFILE%\.pi\agent\jack-kernel.json`:
+`http://127.0.0.1:8001`
 
-```json
-{
-  "url": "http://127.0.0.1:8001",
-  "token": "$JACK_API_KEY"
-}
+The authority chain is:
+
+`loaded backend context -> Jack detection -> Jack model metadata -> Pi contextWindow`
+
+## Accepted Orchestration Gateway v2 control bridge
+
+`pi-control-bridge.ts` runs inside the **privileged Primary Pi worker**. It is private to Jack; Jack Orchestrator does not connect to it directly and does not receive its control token.
+
+Install with Primary Pi stopped:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\install-pi-control-bridge-v2.ps1"
 ```
 
-The token may be literal or an environment-variable reference beginning with `$`.
+Restart Primary Pi after installation.
 
-The bundled loader also strips a leading UTF-8 BOM (`U+FEFF`) before parsing this file, so PowerShell-created UTF-8 JSON does not fail at `JSON.parse`.
+Accepted bridge SHA-256:
 
-The resulting authority chain is:
+`D066FA2F9B8A3735A60F57F028087F314F484B28DBD10640FB3D64A4FA29C664`
 
-`LM Studio loaded context -> Jack -> /api/v1/models -> Pi provider contextWindow`
+### Run-bound identity
 
-A loaded LM Studio instance at 80,000 tokens therefore registers `jack-kernel` in Pi at 80,000 tokens rather than relying on a static Pi-side guess.
+For an accepted controlled task, the bridge:
+
+1. creates a task UUID and independent `runId`;
+2. inserts a private per-dispatch correlation marker;
+3. accepts/strips that marker only at the Pi `input` boundary for extension-injected input;
+4. binds the pending identity through `before_agent_start`;
+5. freezes `{taskId, runId, runEpoch}` at `agent_start`;
+6. snapshots that positive binding for message/tool callbacks;
+7. clears low-level attribution at `agent_end` so delayed events do not inherit stale ownership;
+8. reuses the same `runId` and advances `runEpoch` on automatic retry/continuation;
+9. closes the complete controlled run at `agent_settled`.
+
+Unowned events remain unowned rather than borrowing the current task identity.
+
+### Settlement ordering correction
+
+The final accepted bridge clears `controlRun` and `activeRun` **before** emitting the terminal task snapshot from `agent_settled`. This ensures the public settled task event reports:
+
+- the same task/run identity;
+- `settledAt` populated;
+- `runOpen:false`.
+
+This is a correctness repair discovered during live cancellation acceptance; it does not change the architecture or narrow valid behavior.
+
+### Cancellation
+
+Cancellation is best-effort and becomes visible immediately. Physical settlement is distinct. Until the cancelled control run reaches `agent_settled`, a new controlled task is rejected. A queued cancelled private marker is swallowed at the exact input boundary rather than beginning model cognition.
+
+## Authority boundary
+
+Jack Orchestrator is a separate cognition-only supervisory client. It should use only Jack's public surfaces:
+
+- cognition: `http://127.0.0.1:8001/v1`
+- supervision: `http://127.0.0.1:8001/jack/orchestration`
+
+The private bridge at `127.0.0.1:8013`, its `controlToken`, backend endpoints, and Primary Pi mutable state remain behind Jack.

@@ -4,15 +4,72 @@
 
 **Probabilistic cognition may propose, but deterministic software must dispose.**
 
-For installation and first-run steps, see [`GETTING_STARTED.md`](GETTING_STARTED.md). For the full architecture and operating guide, see `Documentation/Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx`.
+> **START HERE — Plain-English Master Guide:** [`00_Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx`](00_Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx)
+>
+> This is the first document to read. It explains the kernel, the shipped cognition programs, long-horizon state, Pi integration, and the now-accepted **Orchestration Gateway v2** supervisory architecture in plain English. A canonical copy also lives under `Documentation/`.
 
-Jack Kernel is a local-first programmable inference-control runtime that sits between an agent/client and an OpenAI-compatible model backend. Jack is **not the agent and not the LLM**. The agent chooses the task and application workflow. The model supplies probabilistic cognition. Jack controls the inference environment: stage topology, reasoning and sampling, tool exposure, context transport, answer/commit authority, retention, and host-side execution boundaries.
+**Current release reality:** Jack Kernel remains **v0.1.1**. The substantial orchestration upgrade is **Orchestration Gateway v2**, now live-accepted across run-bound identity, replay, cancellation/settlement, concurrent supervisor/worker inference through Jack, and deterministic Primary-Pi-unavailable failure behavior. The accepted Pi control bridge SHA-256 is `D066FA2F9B8A3735A60F57F028087F314F484B28DBD10640FB3D64A4FA29C664`.
+
+## Orchestration at a glance
+
+The diagrams below show the accepted supervisory architecture and the direction of cognition, supervision, worker events, and backend inference. The Jack Orchestrator is cognition-capable but execution-restricted; privileged host consequences remain with Primary Pi, and the supervisor-to-worker path crosses Jack Kernel.
+
+![Jack Kernel Orchestration Architecture Schematic](assets/orchestration/Jack_Kernel_Orchestration_Architecture_Schematic.png)
+
+![Jack Orchestration Flow](assets/orchestration/jack_orchestration_flow_diagram.png)
+
+For installation and first-run steps, see [`GETTING_STARTED.md`](GETTING_STARTED.md). For the exact orchestration protocol, see [`ORCHESTRATION_GATEWAY_V2_TECHNICAL_SPEC.md`](ORCHESTRATION_GATEWAY_V2_TECHNICAL_SPEC.md). For the live acceptance record, see [`ORCHESTRATION_GATEWAY_V2_ACCEPTANCE_REPORT.md`](ORCHESTRATION_GATEWAY_V2_ACCEPTANCE_REPORT.md).
+
+Jack Kernel is a local-first host-authoritative inference mediation/control layer between an agent/client and an OpenAI-compatible model backend. Jack is **not the agent and not the LLM**. The agent chooses the task and application workflow. The model supplies probabilistic cognition. Jack controls the host-governed inference environment and authority boundaries around model cognition: stage topology, reasoning and sampling, tool exposure, context projection, answer/commit authority, retention, evidence handling, and host-side execution boundaries.
 
 Deep Research, Agentic, and Code Debugging are **reference programs that demonstrate what can be expressed on the kernel**. They are not the product boundary. Jack can be used to build other staged reasoning, memory, evidence, validation, safety, approval, routing, training-data, and long-horizon workflow layers.
 
 ## A Note from the Creator — JML
 
 Jack Kernel is much more than the custom modes shipped with it. Deep Research, Agentic, and Code Debugging are examples of what becomes possible when a deterministic kernel sits between the agent and the LLM. The larger opportunity is to build your own inference layers: dynamic and adaptive reasoning and parameter control, orchestrated agentic workflows, custom staged reasoning, custom context and memory management, model routing, evidence and verification layers, approval gates, and other host-authoritative programs. Treat the bundled modes as starting points, not limits. Experiment, specialize them, replace them, and build new layers that fit your own models and workloads.
+
+## Supervisory orchestration — Orchestration Gateway v2
+
+Jack's host-authoritative boundary now extends beyond agent-to-model inference to a **supervisor-to-worker control path**. The accepted topology is:
+
+```text
+Jack Orchestrator (secondary cognition-only Pi)
+        │
+        ├── cognition ───────────────> Jack Kernel :8001/v1 ──> backend/model
+        │
+        └── supervision ─────────────> Jack Kernel :8001/jack/orchestration
+                                           │
+                                           ▼
+                                  private Pi bridge :8013
+                                           │
+                                           ▼
+                                  privileged Primary Pi
+```
+
+The Jack Orchestrator is not a privileged build agent. Its model-facing capability surface is intentionally limited to exactly five supervisory tools: `worker_status`, `watch_worker`, `submit_worker_task`, `cancel_worker_task`, and `new_worker_session`. It has no direct filesystem, shell, or process tools; no direct backend endpoint; no direct access to the private Pi bridge on `:8013`; and no Pi `controlToken`. Its consequential influence over the worker crosses Jack's supervisory boundary.
+
+Gateway v2 adds the transport semantics required to make that boundary observable and testable:
+
+- **Run-bound identity:** each controlled task receives a task UUID and a separate run UUID. Message/tool events are attributed only when Pi's control path has positive evidence that they belong to an open run epoch. Untagged events remain untagged; Jack does not infer ownership from timing.
+- **Run epochs:** retries/continuations keep one stable `run_id` while incrementing `run_epoch`. `agent_end` closes the low-level epoch; `agent_settled` closes the complete control run.
+- **Replayable SSE:** Jack adds process-local monotonic sequence numbers, preserves Pi source events, retains a bounded 512-event replay window by default, supports `Last-Event-ID` / `?after=<seq>`, and returns HTTP `409` with `orchestration_replay_gap` when a requested position has fallen outside the retained window.
+- **Cancellation semantics:** logical cancellation can become terminal while the physical run is still open. Jack prevents a new controlled task from overlapping that unsettled run. The terminal settlement snapshot now clears control-run authority before emission, so `settledAt` is paired with `runOpen:false`.
+- **Concurrent cognition:** with Jack's saved launcher setting `Maximum concurrent Kernel requests = 2`, live testing proved simultaneous backend inference for Jack Orchestrator and Primary Pi through the same Jack Kernel. This was physical LM Studio slot overlap, not merely application-level status overlap.
+- **Deterministic worker-unavailable failure:** with Primary Pi stopped while Jack remained alive, orchestration status, task submission, cancellation, and new-session operations all returned HTTP `502` with `{"detail":"Pi control bridge is unavailable"}`. No worker task was fabricated and no fallback path bypassed Jack.
+
+This Gateway governs the **supervisor-to-worker control path**. It does not claim that Jack presently intercepts every filesystem/shell/process consequence inside the privileged Primary Pi. That stronger chassis/tool-dispatch enforcement remains a separate boundary.
+
+### Accepted orchestration surface
+
+```text
+GET  /jack/orchestration/status
+GET  /jack/orchestration/events
+POST /jack/orchestration/tasks
+POST /jack/orchestration/tasks/cancel
+POST /jack/orchestration/session/new
+```
+
+The gateway is client-agnostic. Jack Orchestrator is the reference cognition-only supervisor architecture; other supervisors can use the same public Jack orchestration API provided they preserve the same authority boundary.
 
 ## Run on Windows
 
@@ -125,6 +182,8 @@ In Deep Research, Thesis and Antithesis have no tool authority; Synthesis receiv
 
 Caller system/developer messages are blocked before backend cognition. The caller-facing model name is virtual and does not control the actual backend model. Jack owns the active mode, stage prompts, reasoning/sampling controls, context preparation, tool-resume routing, retention, and authority boundaries.
 
+For supervisory orchestration, Jack also owns the public supervisor-to-worker gateway boundary. The supervisor may request worker status, observe events, submit/cancel work, or reset the worker session through Jack, while the downstream Pi bridge credential remains private to Jack.
+
 ## State, memory, and evidence
 
 Jack deliberately uses different memory lifetimes for different programs instead of treating all reasoning as permanent context. Context management is one of the kernel's core programmable surfaces: preserve high-value cognition while it is useful, commit durable state at the appropriate authority boundary, prune transient material that no longer deserves live-context cost, and rehydrate only the state needed for the next stage or pass.
@@ -157,7 +216,7 @@ The authority chain is:
 
 ## Runtime surface
 
-Jack exposes an OpenAI-compatible `/v1/chat/completions` endpoint for agents, plus a minimal root status endpoint and `/health`.
+Jack exposes an OpenAI-compatible `/v1/chat/completions` endpoint for agents, plus a minimal root status endpoint and `/health`. Orchestration Gateway v2 adds the public Jack-mediated supervisory surface under `/jack/orchestration/*`; the downstream Primary-Pi bridge remains private on loopback and authenticated separately.
 
 Release builds do not inject runtime identity, stage token counts, context-size telemetry, or similar diagnostic telemetry into model reasoning streams. Optional forensic archives remain out-of-band records for failure analysis and are not automatically rehydrated into model cognition.
 
@@ -166,6 +225,10 @@ Release builds do not inject runtime identity, stage token counts, context-size 
 - `jack_kernel.py` — Jack Kernel runtime and configuration interface.
 - `Pi/jack-kernel.ts` — optional Pi provider extension that registers `jack-kernel` from Jack's live context metadata instead of static Pi-side context guesses.
 - `Pi/install-jack-kernel-extension.ps1` — Windows installer for the Pi context-sync extension.
+- `Pi/pi-control-bridge.ts` — accepted run-bound Primary-Pi control bridge for Orchestration Gateway v2.
+- `Pi/install-pi-control-bridge-v2.ps1` — installer/backup helper for the accepted Primary-Pi bridge.
+- `ORCHESTRATION_GATEWAY_V2_TECHNICAL_SPEC.md` — exact run-bound transport, replay, cancellation, and failure semantics.
+- `ORCHESTRATION_GATEWAY_V2_ACCEPTANCE_REPORT.md` — live acceptance record for the completed v2 boundary tests.
 - `Debugging/User_Instructions.md` — user-facing quick start, pre-pass diagnostic intake guidance, example debugging requests, and what to expect from the five-pass audit workflow.
 - `Debugging/Instructions.md` — Code Debugging intake/pass instructions.
 - `Debugging/Debugging_Report.md` — immutable bundled report template/reference; runtime runs do not overwrite it.
@@ -177,7 +240,8 @@ Release builds do not inject runtime identity, stage token counts, context-size 
 - `COMMERCIAL_LICENSE.md` — separate commercial-licensing notice and contact.
 - `README.md` — repository front door and release documentation.
 - `GETTING_STARTED.md` — concise installation, startup, Pi setup, and regression-check guide.
-- `Documentation/Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx` — full plain-English architecture and operating guide.
+- `00_Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx` — front-door copy of the full plain-English architecture and operating guide; this is intentionally the first document surfaced in the repository.
+- `Documentation/Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx` — canonical documentation copy of the same guide.
 
 ## License
 
