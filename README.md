@@ -12,13 +12,15 @@
 
 ## Orchestration at a glance
 
-The diagrams below show the accepted supervisory architecture and the direction of cognition, supervision, worker events, and backend inference. The Jack Orchestrator is cognition-capable but execution-restricted; privileged host consequences remain with Primary Pi, and the supervisor-to-worker path crosses Jack Kernel.
+The diagrams below depict the accepted **all-local Jack Orchestrator architecture**: the Jack Orchestrator is a cognition-capable but execution-restricted local supervisor, privileged host consequences remain with Primary Pi, and both supervisor and worker cognition can run through Jack against the configured local backend. With multiple backend concurrency slots, the Jack Orchestrator and Primary Pi may infer concurrently through the same Jack Kernel.
 
 ![Jack Kernel Orchestration Architecture Schematic](assets/orchestration/Jack_Kernel_Orchestration_Architecture_Schematic.png)
 
 ![Jack Orchestration Flow](assets/orchestration/jack_orchestration_flow_diagram.png)
 
-For installation and first-run steps, see [`GETTING_STARTED.md`](GETTING_STARTED.md). For the exact orchestration protocol, see [`ORCHESTRATION_GATEWAY_V2_TECHNICAL_SPEC.md`](Documentation/Orchestration/ORCHESTRATION_GATEWAY_V2_TECHNICAL_SPEC.md). For the live acceptance record, see [`ORCHESTRATION_GATEWAY_V2_ACCEPTANCE_REPORT.md`](Documentation/Orchestration/ORCHESTRATION_GATEWAY_V2_ACCEPTANCE_REPORT.md). To adapt a Pi-like worker for Codex supervision through Jack, see [`ORCHESTRATE_WITH_CODEX.md`](Documentation/Orchestration/ORCHESTRATE_WITH_CODEX.md). To use Codex Desktop as a live orchestration agent for Primary Pi through Jack Kernel, see [`USING_CODEX_AS_JACK_ORCHESTRATION_AGENT.md`](Documentation/Orchestration/USING_CODEX_AS_JACK_ORCHESTRATION_AGENT.md).
+**This diagram does not depict the cloud-supervisor architecture.** When Codex Desktop—or any other agent connected to a cloud model—is used as the supervisor, that supervisor retains its native cloud-model cognition and uses Jack only for the supervisor-to-worker control path. Primary Pi remains the local privileged worker whose model inference runs through Jack to the configured local backend. Codex is therefore a reference example of a broader class of cloud-model supervisory agents, not a special architectural dependency.
+
+For installation and first-run steps, see [`GETTING_STARTED.md`](GETTING_STARTED.md). For the exact orchestration protocol, see [`ORCHESTRATION_GATEWAY_V2_TECHNICAL_SPEC.md`](Documentation/Orchestration/ORCHESTRATION_GATEWAY_V2_TECHNICAL_SPEC.md). For the live acceptance record, see [`ORCHESTRATION_GATEWAY_V2_ACCEPTANCE_REPORT.md`](Documentation/Orchestration/ORCHESTRATION_GATEWAY_V2_ACCEPTANCE_REPORT.md). To adapt a Pi-like worker for supervision by a cloud-model agent through Jack, see [`ORCHESTRATE_WITH_CODEX.md`](Documentation/Orchestration/ORCHESTRATE_WITH_CODEX.md). To use Codex Desktop as the current reference cloud-model orchestration agent for Primary Pi through Jack Kernel, see [`USING_CODEX_AS_JACK_ORCHESTRATION_AGENT.md`](Documentation/Orchestration/USING_CODEX_AS_JACK_ORCHESTRATION_AGENT.md).
 
 Jack Kernel is a local-first host-authoritative inference mediation/control layer between an agent/client and an OpenAI-compatible model backend. Jack is **not the agent and not the LLM**. The agent chooses the task and application workflow. The model supplies probabilistic cognition. Jack controls the host-governed inference environment and authority boundaries around model cognition: stage topology, reasoning and sampling, tool exposure, context projection, answer/commit authority, retention, evidence handling, and host-side execution boundaries.
 
@@ -30,7 +32,7 @@ Jack Kernel is much more than the custom modes shipped with it. Deep Research, A
 
 ## Supervisory orchestration — Orchestration Gateway v2
 
-Jack's host-authoritative boundary now extends beyond agent-to-model inference to a **supervisor-to-worker control path**. The accepted topology is:
+Jack's host-authoritative boundary now extends beyond agent-to-model inference to a **supervisor-to-worker control path**. The accepted all-local reference topology is:
 
 ```text
 Jack Orchestrator (secondary cognition-only Pi)
@@ -47,6 +49,32 @@ Jack Orchestrator (secondary cognition-only Pi)
 ```
 
 The Jack Orchestrator is not a privileged build agent. Its model-facing capability surface is intentionally limited to exactly five supervisory tools: `worker_status`, `watch_worker`, `submit_worker_task`, `cancel_worker_task`, and `new_worker_session`. It has no direct filesystem, shell, or process tools; no direct backend endpoint; no direct access to the private Pi bridge on `:8013`; and no Pi `controlToken`. Its consequential influence over the worker crosses Jack's supervisory boundary.
+
+A cloud-model supervisor uses the same deterministic worker-control boundary but keeps its own cognition outside Jack's local inference plane:
+
+```text
+Cloud-model supervisory agent
+(Codex Desktop is one example)
+        │
+        │ native cloud cognition remains with its cloud provider
+        │
+        └── supervision ─────────────> Jack Kernel :8001/jack/orchestration
+                                           │
+                                           ▼
+                                  private Pi bridge :8013
+                                           │
+                                           ▼
+                                  privileged Primary Pi
+                                           │
+                                           │ model inference
+                                           ▼
+                                  Jack Kernel :8001/v1
+                                           │
+                                           ▼
+                                  local backend / model
+```
+
+In this mode, Jack does **not** replace the cloud supervisor's model provider. The cloud agent decides what work should be done, Jack deterministically mediates worker control, and Primary Pi performs local worker cognition through Jack.
 
 Gateway v2 adds the transport semantics required to make that boundary observable and testable:
 
@@ -69,7 +97,7 @@ POST /jack/orchestration/tasks/cancel
 POST /jack/orchestration/session/new
 ```
 
-The gateway is client-agnostic. Jack Orchestrator is the reference cognition-only supervisor architecture; other supervisors can use the same public Jack orchestration API provided they preserve the same authority boundary.
+The gateway is client-agnostic. Jack Orchestrator is the reference all-local cognition-only supervisor architecture; cloud-model supervisors such as Codex can use the same public Jack orchestration API while retaining their native cloud cognition, provided they preserve the same worker-control authority boundary.
 
 ## Run on Windows
 
