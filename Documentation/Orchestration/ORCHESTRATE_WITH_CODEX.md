@@ -1,40 +1,56 @@
-# Orchestrate with Codex
+# Orchestrate with a Cloud-Model Agent
 
 ## Purpose
 
-This document explains how to adapt an existing local agent runtime—such as Pi Agent—so that Codex can supervise and operate it through Jack Kernel without bypassing Jack’s deterministic control boundary.
+This document explains how a cloud-model agent can supervise and operate a local worker—such as Primary Pi—through Jack Kernel without bypassing Jack’s deterministic control boundary.
 
-For the operator-facing procedure after the worker adapter is installed, see [`USING_CODEX_AS_JACK_ORCHESTRATION_AGENT.md`](USING_CODEX_AS_JACK_ORCHESTRATION_AGENT.md).
+Codex Desktop is the current reference example because it provides a convenient native cloud-model agent and local tool surface. **Codex is not the architectural requirement.** The same pattern can be used by any supervisory agent whose cognition remains on its own cloud model and that can call Jack Kernel’s public orchestration API.
+
+For the Codex-specific operator procedure, see [`USING_CODEX_AS_JACK_ORCHESTRATION_AGENT.md`](USING_CODEX_AS_JACK_ORCHESTRATION_AGENT.md).
 
 The important distinction is architectural:
 
-- **Codex is the supervising agent.**
-- **Pi, or another local agent, is the worker.**
-- **Jack Kernel is the mandatory mediation layer.**
+- **The cloud-model agent is the supervisor.** Its cognition remains on its native cloud model/provider.
+- **Pi, or another local agent, is the worker/build agent.**
+- **Jack Kernel is the mandatory supervisor-to-worker mediation layer.**
+- **The worker’s model inference runs through Jack Kernel to the configured local backend.**
 
-Codex should never need direct access to the worker’s private control port, credentials, session files, or internal runtime objects. The worker must expose a deterministic control surface that Jack can own, normalize, and relay.
-
-The resulting topology is:
+The required topology is:
 
 ```text
-Codex
-   │
-   ├── cognition / model API
-   │      └── Jack Kernel :8001/v1
-   │
-   └── orchestration / worker control
-          └── Jack Kernel :8001/jack/orchestration
-                 └── private worker bridge
-                        └── Pi Agent or another local agent
+User
+  |
+  v
+Cloud-model supervisory agent
+(native cloud cognition; Codex is one example)
+  |
+  | supervision / worker control only
+  v
+Jack Kernel :8001/jack/orchestration
+  |
+  v
+private worker bridge
+  |
+  v
+Primary Pi or another local worker
+  |
+  | model inference
+  v
+Jack Kernel :8001/v1
+  |
+  v
+local LLM server / configured backend
 ```
 
-For the reference Pi integration, the private worker bridge is local-only and is not a Codex endpoint.
+There is **no supervisor-cognition path through Jack `/v1` in this architecture**. Jack does not replace the cloud agent’s model provider. The cloud agent keeps its native cloud cognition and uses Jack only as the deterministic boundary for control of the local worker.
+
+This differs from the all-local Jack Orchestrator architecture, where both the local supervisor and the local worker may perform inference through Jack against the same local backend, including with multiple backend concurrency slots. That all-local design remains valid, but it is a different deployment mode.
 
 ---
 
-## 1. What must change in an existing agent
+## 1. What must change in an existing worker
 
-A worker such as Pi does not need to become “Codex-aware.” It needs a small deterministic control adapter that exposes the worker’s existing runtime capabilities in a form Jack can safely mediate.
+A worker such as Pi does not need to become aware of Codex, OpenAI, or any other cloud-model supervisor. It needs a small deterministic control adapter that exposes the worker’s existing runtime capabilities in a form Jack can safely mediate.
 
 The adapter should provide, at minimum:
 
@@ -49,7 +65,7 @@ The adapter should provide, at minimum:
 
 The worker remains responsible for its own model execution. The adapter only exposes control and observation.
 
-### Reference control surface
+### Reference private control surface
 
 A Pi-like bridge can expose:
 
@@ -63,42 +79,37 @@ POST /v1/session/new
 
 The bridge should bind only to localhost or another private interface trusted by Jack.
 
-Codex should not call these endpoints directly.
+The cloud supervisor must not call these private endpoints directly.
 
 ---
 
-## 2. Do not modify Codex to understand the worker
+## 2. What the cloud supervisor needs
 
-Codex does not need custom Pi-specific code.
+A cloud-model supervisor needs only:
 
-Codex only needs:
+- its normal native cloud-model cognition;
+- ordinary HTTP capability for Jack’s orchestration API;
+- SSE capability when live worker-event observation is required.
 
-- an OpenAI-compatible model endpoint for cognition; and
-- ordinary HTTP/SSE capability for orchestration through Jack.
+It does **not** need Jack Kernel configured as its model provider.
 
-For Jack Kernel, Codex can use a normal Responses API provider configuration:
+It does **not** need direct access to the worker bridge.
 
-```toml
-model = "jack-kernel"
-model_provider = "jack_kernel"
+It does **not** need the worker’s private control credential.
 
-[model_providers.jack_kernel]
-name = "Jack Kernel"
-base_url = "http://127.0.0.1:8001/v1"
-wire_api = "responses"
-requires_openai_auth = false
-supports_websockets = false
-```
-
-This means Codex talks to Jack as its model provider.
-
-The separate orchestration API remains under:
+The public orchestration surface is:
 
 ```text
-http://127.0.0.1:8001/jack/orchestration
+GET  /jack/orchestration/status
+GET  /jack/orchestration/events
+POST /jack/orchestration/tasks
+POST /jack/orchestration/tasks/cancel
+POST /jack/orchestration/session/new
 ```
 
-No Codex source modification is required for the reference architecture.
+The reference Codex integration uses Codex’s existing local shell/tool capability to call these routes while Codex continues using its native OpenAI model.
+
+Another cloud-model agent can use the same transport if it can make equivalent HTTP/SSE requests.
 
 ---
 
@@ -147,13 +158,11 @@ Only after the worker has actually settled should the bridge report:
 }
 ```
 
-This distinction matters because logical cancellation and physical settlement are not the same event.
+Logical cancellation and physical settlement are not the same event.
 
 ---
 
 ## 4. Separate task identity from run identity
-
-A submitted task and a concrete model execution are not the same object.
 
 Use separate identifiers:
 
@@ -163,23 +172,13 @@ run_id
 run_epoch
 ```
 
-### task_id
+`task_id` is the stable control request created when the supervisor submits work.
 
-The stable control request created when the supervisor submits work.
+`run_id` is the concrete worker/model execution bound when the agent actually begins running.
 
-### run_id
+`run_epoch` is a monotonically increasing execution generation inside the same controlled task when the worker legitimately re-enters inference.
 
-The concrete worker/model execution bound when the agent actually begins running.
-
-### run_epoch
-
-A monotonically increasing execution generation inside the same controlled task when the worker legitimately re-enters inference.
-
-A task must not be treated as run-bound merely because it is currently the active task.
-
-Bind ownership only when the worker produces a positive lifecycle event proving that a real run has started.
-
-For Pi, the useful binding point is `agent_start`.
+Do not bind ownership merely because a task is current. Bind ownership only when the worker produces positive lifecycle evidence that a real run has started. For Pi, the useful binding point is `agent_start`.
 
 ---
 
@@ -202,11 +201,7 @@ agent_settled
 task_state
 ```
 
-Each event should carry enough correlation information to determine whether it is:
-
-- bound to a concrete worker run,
-- a task-state event,
-- or unowned.
+Each event should carry enough correlation information to determine whether it is run-bound, task-state, or unowned.
 
 Example:
 
@@ -224,36 +219,23 @@ Example:
 
 Events occurring after the worker has ended a run must not automatically inherit stale task/run ownership.
 
-This prevents delayed callbacks from being falsely attributed to a completed task.
-
 ---
 
 ## 6. Expose live events over SSE
 
-Server-Sent Events are sufficient for this control path.
-
-Example:
+The private worker bridge can expose an SSE stream such as:
 
 ```text
 GET /v1/events
 ```
 
-The bridge can emit:
+Jack then owns the supervisor-facing replay layer at:
 
 ```text
-event: message
-data: {...}
-
-event: tool_start
-data: {...}
-
-event: task_state
-data: {...}
+GET /jack/orchestration/events
 ```
 
-Jack should maintain the external replay sequence.
-
-A useful Jack-side event envelope is:
+A Jack event envelope can include:
 
 ```json
 {
@@ -271,21 +253,11 @@ A useful Jack-side event envelope is:
 }
 ```
 
-The supervisor should consume Jack’s SSE stream, not the private worker stream.
+The supervisor consumes Jack’s SSE stream, never the private worker stream.
 
 ---
 
 ## 7. Session replacement requires an explicit readiness contract
-
-This is one of the most important changes required for Pi-like agents.
-
-A worker may destroy and rebuild its extension/runtime objects when a new session is created.
-
-If the bridge begins listening before the worker has rebound its runtime action methods, a supervisor can submit work into a control plane that exists at the HTTP level but is not operational internally.
-
-That is a real lifecycle race.
-
-### Required readiness state
 
 Expose:
 
@@ -295,43 +267,6 @@ sessionTransitioning
 sessionInstanceId
 ```
 
-Normal ready state:
-
-```json
-{
-  "status": "idle",
-  "sessionReady": true,
-  "sessionTransitioning": false,
-  "sessionInstanceId": "5ae06183-6e48-49a9-94c2-27e1e4def184"
-}
-```
-
-When session replacement starts:
-
-```json
-{
-  "status": "starting",
-  "sessionReady": false,
-  "sessionTransitioning": true,
-  "previousSessionInstanceId": "5ae06183-6e48-49a9-94c2-27e1e4def184"
-}
-```
-
-After the new runtime has been created and rebound:
-
-```json
-{
-  "status": "idle",
-  "sessionReady": true,
-  "sessionTransitioning": false,
-  "sessionInstanceId": "828c6ee0-5766-44d4-9b7f-df7ab1b540f4"
-}
-```
-
-The new `sessionInstanceId` must differ from the old one.
-
-### Admission rule
-
 A task must not be admitted unless:
 
 ```text
@@ -340,38 +275,17 @@ AND
 sessionTransitioning == false
 ```
 
-If a request reaches the old worker instance during transition, fail closed:
+When replacement begins, task admission closes immediately. The replacement instance must report a new `sessionInstanceId` before follow-up work is accepted.
 
-```http
-409 Conflict
-```
-
-Example:
-
-```json
-{
-  "error": "Pi session transition in progress",
-  "sessionReady": false,
-  "sessionTransitioning": true,
-  "sessionInstanceId": "…"
-}
-```
-
-Do not hide this race with a sleep.
-
-Do not automatically retry the task.
-
-Do not silently queue the task across runtime replacement.
-
-The supervisor should wait for a fresh ready worker instance.
+Do not use fixed sleeps as proof of readiness. Do not silently retry a task across a session replacement boundary.
 
 ---
 
 ## 8. Start long-lived worker resources at the correct lifecycle boundary
 
-For Pi specifically, the HTTP bridge must not start its listener from the extension factory while Pi is still loading the extension.
+For Pi specifically, the private HTTP bridge must not begin advertising operational readiness from the extension factory while Pi is still loading the extension.
 
-Instead:
+Correct lifecycle:
 
 ```text
 extension factory loads
@@ -385,28 +299,13 @@ bridge starts listening
 sessionReady = true
 ```
 
-On session shutdown:
-
-```text
-sessionReady = false
-sessionTransitioning = true
-        ↓
-close SSE clients
-        ↓
-close private HTTP listener
-        ↓
-old extension instance disappears
-```
-
-The replacement extension then creates a new `sessionInstanceId` and repeats the startup lifecycle.
-
-This is the correct boundary because the bridge should not advertise operational readiness before the worker’s action runtime actually exists.
+On shutdown the old instance must close admission, close event clients/listeners, and disappear before the replacement instance becomes ready.
 
 ---
 
-## 9. Jack must remain the only orchestration gateway visible to Codex
+## 9. Jack is the only worker-control gateway visible to the supervisor
 
-Jack exposes the worker through:
+Jack exposes:
 
 ```text
 GET  /jack/orchestration/status
@@ -416,40 +315,20 @@ POST /jack/orchestration/tasks/cancel
 POST /jack/orchestration/session/new
 ```
 
-Jack forwards these requests to the private worker bridge.
-
-Codex should never be given:
+The supervisor must never be given:
 
 - the worker bridge token;
 - the worker bridge private configuration;
-- the worker bridge port as an orchestration target;
-- permission to read the worker’s control credentials.
+- the worker bridge port as an allowed direct control target;
+- permission to bypass Jack for worker control.
 
-If the private bridge is unavailable, Jack should fail deterministically.
-
-Example:
-
-```http
-502 Bad Gateway
-```
-
-```json
-{
-  "detail": "Pi control bridge is unavailable"
-}
-```
-
-There should be no hidden direct fallback from Codex to the worker.
+If the private bridge is unavailable, Jack fails deterministically. There is no hidden direct fallback.
 
 ---
 
-## 10. Jack should own external event replay
+## 10. Jack owns external replay
 
-The private worker bridge only needs to produce authoritative source events.
-
-Jack can provide the supervisor-facing replay layer.
-
-Useful properties:
+Useful supervisor-facing replay properties include:
 
 - process-local monotonic `seq`;
 - bounded replay buffer;
@@ -462,8 +341,6 @@ For example:
 ```text
 409 orchestration_replay_gap
 ```
-
-This lets Codex reconnect without forcing the worker to implement the complete external replay protocol itself.
 
 ---
 
@@ -490,17 +367,13 @@ runOpen = false
 settledAt = ...
 ```
 
-Jack should not admit a new controlled task merely because logical cancellation was acknowledged.
-
-The prior worker run must be physically settled first.
+Jack must not admit overlapping controlled work while the prior worker run remains physically open.
 
 ---
 
-## 12. Tool events should remain observable
+## 12. Tool events remain observable
 
-If the worker can use tools, Codex should be able to observe the worker’s tool lifecycle through Jack.
-
-Useful events are:
+If the worker can use tools, the cloud supervisor should be able to observe the worker’s tool lifecycle through Jack:
 
 ```text
 tool_start
@@ -508,23 +381,17 @@ tool_update
 tool_end
 ```
 
-`tool_update` can be optional.
-
-A real tool call should preserve the same task/run/epoch correlation as the surrounding worker execution.
-
-The bridge should report the tool event; it should not reinterpret the tool result.
+A real tool call preserves the same task/run/epoch correlation as the surrounding worker execution.
 
 ---
 
-## 13. Worker context metadata should come from the runtime
+## 13. Worker model/context metadata comes from the worker path
 
-Do not invent context size or remaining-token data.
+Do not confuse supervisor cognition with worker cognition.
 
-If the worker runtime exposes authoritative model/context metadata, retrieve it from the runtime.
+The cloud supervisor keeps its own provider/model/context independently.
 
-For the Pi reference adapter, model/context metadata can be obtained through Jack’s normal model surface when available.
-
-A supervisor can use authoritative fields such as:
+Worker model/context metadata describes the model used by the local worker through Jack. When Jack exposes authoritative worker/backend metadata, the supervisor may inspect fields such as:
 
 ```text
 model
@@ -532,106 +399,13 @@ context_length
 max_context_length
 ```
 
-Unknown values should remain unknown.
+Unknown values remain unknown.
 
 ---
 
-## 14. Minimal Pi-style bridge implementation pattern
+## 14. Supervisor session-handoff sequence
 
-The following is illustrative pseudocode, not a drop-in implementation:
-
-```javascript
-export default async function install(pi) {
-  const sessionInstanceId = randomUUID();
-
-  let sessionReady = false;
-  let sessionTransitioning = false;
-  let serverListening = false;
-
-  function statusSnapshot() {
-    return {
-      ...currentTaskState(),
-      sessionReady,
-      sessionTransitioning,
-      sessionInstanceId,
-    };
-  }
-
-  async function ensureServerListening() {
-    if (serverListening) return;
-
-    await listen();
-    serverListening = true;
-  }
-
-  pi.on("session_start", async () => {
-    sessionTransitioning = false;
-
-    // Runtime actions are now bound.
-    await ensureServerListening();
-
-    sessionReady = true;
-  });
-
-  pi.on("session_shutdown", async () => {
-    sessionReady = false;
-    sessionTransitioning = true;
-
-    await closeClients();
-    await closeServer();
-
-    serverListening = false;
-  });
-
-  // POST /v1/tasks
-  async function submitTask(req, res) {
-    if (!sessionReady || sessionTransitioning) {
-      return conflict(res, "Pi session transition in progress");
-    }
-
-    if (priorRunStillOpen()) {
-      return conflict(res, "prior run not yet settled");
-    }
-
-    // Create task_id.
-    // Dispatch to Pi.
-    // Bind run_id only on positive agent_start.
-  }
-
-  // POST /v1/session/new
-  async function newSession(req, res) {
-    if (!sessionReady || sessionTransitioning) {
-      return conflict(res, "Pi session transition in progress");
-    }
-
-    if (!workerIsIdle()) {
-      return conflict(res, "Pi is not idle");
-    }
-
-    sessionReady = false;
-    sessionTransitioning = true;
-
-    triggerNewSession();
-
-    return accepted(res, {
-      status: "starting",
-      sessionReady: false,
-      sessionTransitioning: true,
-      previousSessionInstanceId: sessionInstanceId,
-    });
-  }
-}
-```
-
-The important point is not the language or framework.
-
-The important point is the control contract.
-
----
-
-## 15. How Codex should perform a new-session handoff
-
-Codex should follow this sequence:
+A cloud-model supervisor should perform worker session replacement as follows:
 
 ```text
 1. GET Jack orchestration status
@@ -639,7 +413,7 @@ Codex should follow this sequence:
 3. Require ready + not transitioning
 4. POST Jack /session/new
 5. Poll Jack status only
-6. Temporary Jack 502 is acceptable while worker bridge is being replaced
+6. Temporary Jack 502 is acceptable while the private worker bridge is replaced
 7. Wait for:
       sessionReady = true
       sessionTransitioning = false
@@ -647,18 +421,14 @@ Codex should follow this sequence:
 8. Only then submit the next task
 ```
 
-Codex must not use elapsed time as proof of readiness.
-
-A fixed `sleep(2)` is not a lifecycle guarantee.
+Elapsed time is not lifecycle proof.
 
 ---
 
-## 16. Codex task flow
-
-Once a worker instance is ready:
+## 15. Supervisor task flow
 
 ```text
-Codex
+Cloud-model supervisor
   ↓
 POST /jack/orchestration/tasks
   ↓
@@ -670,7 +440,7 @@ worker begins task
   ↓
 agent_start binds run identity
   ↓
-message/tool events stream back
+message/tool events stream back through Jack
   ↓
 agent_end
   ↓
@@ -679,46 +449,52 @@ agent_settled
 runOpen = false
 ```
 
-Codex should use Jack’s SSE stream to observe the execution.
+The supervisor can interpret those returned events/results with its own cloud model and decide the next instruction.
 
 ---
 
-## 17. Security boundary
+## 16. Security boundary
 
-The orchestration design should preserve these rules:
-
-### Codex may know
+The cloud supervisor may know:
 
 - Jack’s public local address;
 - Jack orchestration routes;
 - public task/run state;
 - public worker events;
-- readiness state;
-- worker model/context metadata exposed by Jack.
+- worker readiness state;
+- worker model/context metadata intentionally exposed by Jack.
 
-### Codex should not know
+The cloud supervisor should not know:
 
 - private worker control token;
 - private worker credential files;
 - private worker port as an allowed direct control route;
-- internal runtime references;
+- internal worker runtime references;
 - secrets required only for Jack-to-worker communication.
 
-This gives Codex practical worker control without making the worker directly exposed to the supervising model.
+The cloud supervisor may still possess its own independent tool capabilities. Jack’s orchestration contract governs the supervisor-to-worker control path; it does not claim to intercept every independent capability of the external cloud agent.
 
 ---
 
-## 18. What not to do
+## 17. What not to do
 
-Do not implement any of the following:
+Do not implement:
 
-### Direct Codex → Pi control
+### Cloud supervisor → private worker directly
 
 ```text
-Codex → :8013 → Pi
+cloud supervisor → :8013 → Pi
 ```
 
 This bypasses Jack.
+
+### Cloud supervisor cognition → Jack → local model
+
+```text
+cloud supervisor → Jack /v1 → local LLM
+```
+
+That is a different deployment mode and is not the cloud-supervisor architecture described here.
 
 ### Sleep-based readiness
 
@@ -728,19 +504,13 @@ sleep 2
 submit task
 ```
 
-This is timing speculation, not lifecycle proof.
-
-### HTTP-listening-before-runtime-ready
-
-Starting the control server while the extension is still loading can expose action methods before they have been initialized.
+Timing speculation is not lifecycle proof.
 
 ### Task ownership by assumption
 
-Do not assign a task ID to every event just because that task happens to be current.
+Current task is not the same thing as event provenance.
 
 ### Retry after ambiguous failure
-
-A failed dispatch may already have partially entered the worker.
 
 Blind retry can duplicate work.
 
@@ -748,106 +518,109 @@ Blind retry can duplicate work.
 
 `cancelled` does not imply `runOpen == false`.
 
-### Let the model invent control state
+### Let a model invent control state
 
 Task IDs, run IDs, event ownership, settlement, readiness, and evidence provenance must come from deterministic software.
 
 ---
 
-## 19. Validation checklist
+## 18. Validation checklist
 
-Before declaring a worker compatible with Codex through Jack, test all of the following.
+Before declaring a worker compatible with a cloud-model supervisor through Jack, verify:
 
 ### Startup
 
-- Bridge does not listen before worker runtime initialization is complete.
-- Status reports `sessionReady: true`.
-- Status reports `sessionTransitioning: false`.
-- Status reports a nonempty `sessionInstanceId`.
+- Bridge starts only after worker runtime initialization is complete.
+- `sessionReady: true`.
+- `sessionTransitioning: false`.
+- nonempty `sessionInstanceId`.
 
 ### Task execution
 
-- Task receives a stable `task_id`.
-- Real worker execution receives a non-null `run_id`.
-- `run_epoch` is established.
-- Live message events are visible.
-- Tool events are visible when tools are used.
-- Final task state is authoritative.
-- Physical settlement produces `runOpen: false`.
+- stable `task_id`;
+- real `run_id`;
+- `run_epoch` established;
+- live message events visible;
+- tool events visible when tools are used;
+- authoritative final task state;
+- physical settlement produces `runOpen: false`.
 
 ### Cancellation
 
-- Logical cancellation can be observed before physical settlement.
-- New work is blocked while the cancelled run is still open.
-- Final cancelled state has `runOpen: false`.
+- logical cancellation is observable before physical settlement;
+- new controlled work is blocked while the prior run remains open;
+- final cancelled state has `runOpen: false`.
 
 ### Session replacement
 
-- Old `sessionInstanceId` is recorded.
-- `/session/new` returns asynchronous transition state.
-- Task admission closes immediately.
-- Old bridge shuts down.
-- New bridge starts only after the worker runtime is rebound.
-- New `sessionInstanceId` differs from the old one.
-- Follow-up work is submitted only after ready state is confirmed.
+- old `sessionInstanceId` recorded;
+- `/session/new` begins asynchronous transition;
+- task admission closes immediately;
+- old bridge shuts down;
+- replacement bridge starts only after runtime rebind;
+- new `sessionInstanceId` differs from old;
+- follow-up work waits for ready state.
 
 ### Isolation
 
-- Codex never contacts the private worker bridge directly.
-- Codex never reads the worker control token.
-- Codex never reads private worker control configuration.
-- Jack returns deterministic failure when the private bridge is unavailable.
+- supervisor never contacts private worker bridge directly;
+- supervisor never reads worker control token;
+- Jack returns deterministic failure when private bridge is unavailable;
+- supervisor’s own cloud cognition remains independent of Jack’s local inference path.
 
 ### Replay
 
-- SSE sequence is monotonic.
+- SSE sequence is monotonic;
 - reconnect/replay works;
 - stale replay requests fail explicitly.
 
 ---
 
-## 20. Proven reference behavior
+## 19. Codex as the current reference cloud supervisor
 
-The Pi reference integration has demonstrated the following live flow:
+Codex Desktop is useful for validating this architecture because it combines native OpenAI cognition with a local shell/tool surface capable of calling Jack’s public orchestration API.
+
+In the intended Codex mode:
 
 ```text
-initial session:
-5ae06183-6e48-49a9-94c2-27e1e4def184
-
-POST /jack/orchestration/session/new
-→ 202 Accepted
-→ sessionReady: false
-→ sessionTransitioning: true
-
-replacement session:
-828c6ee0-5766-44d4-9b7f-df7ab1b540f4
-→ status: idle
-→ sessionReady: true
-→ sessionTransitioning: false
-
-follow-up task:
-task_id: 7afa70c5-e85e-4a3a-a5e5-290969071e7b
-run_id: 33416989-b433-48d9-9f4c-b485f9da839f
-run_epoch: 1
-message events: 10
-terminal status: completed
-runOpen: false
-final: PI_NEW_SESSION_THROUGH_JACK_OK
+User
+  ↓
+Native Codex / OpenAI model
+  ↓ supervision
+Jack /jack/orchestration
+  ↓
+Primary Pi
+  ↓ inference
+Jack /v1
+  ↓
+local LLM backend
 ```
 
-The follow-up task was not submitted until the replacement worker instance was explicitly ready.
+Codex is therefore a **reference proxy for the broader class of cloud-model supervisory agents**, not the architectural endpoint.
 
-This is the behavior an adapter for another Pi-like agent should reproduce.
+A different cloud-model agent may replace Codex without changing the worker-side contract, provided it preserves the same Jack mediation boundary.
 
 ---
 
-## 21. Generalizing beyond Pi
+## 20. Generalizing beyond Pi and beyond Codex
 
-Pi is only the reference worker.
+Pi is only the reference worker. Codex is only the current reference cloud supervisor.
 
-The same pattern applies to another local agent if it can expose equivalent deterministic lifecycle signals.
+The reusable architecture is:
 
-Map that agent’s native concepts onto:
+```text
+cloud-model supervisor
+        ↓
+Jack deterministic orchestration boundary
+        ↓
+local privileged worker
+        ↓
+Jack inference boundary
+        ↓
+local model/backend
+```
+
+Map another worker’s native lifecycle onto:
 
 ```text
 worker session
@@ -862,22 +635,20 @@ physical settlement
 session replacement
 ```
 
-The adapter should translate the worker’s native lifecycle into this control contract without fabricating information.
+Map another cloud supervisor onto Jack’s public orchestration API.
 
-Jack can then provide Codex with one stable orchestration protocol regardless of the underlying worker.
+Neither side should need to know the other’s private implementation details.
 
 ---
 
-## 22. Core rule
+## 21. Core rule
 
 The orchestration design follows the same rule as the rest of Jack Kernel:
 
 > **Probabilistic cognition may propose, but deterministic software must dispose.**
 
-Codex may decide what work should be done.
+The cloud supervisor may decide what work should be done.
 
 The worker model may reason about how to do it.
 
-But task admission, session readiness, run ownership, cancellation, settlement, replay, evidence, and authority must remain deterministic software state.
-
-That is what makes a Pi-like worker safe and reliable to orchestrate with Codex.
+But task admission, session readiness, run ownership, cancellation, settlement, replay, evidence, and authority remain deterministic software state.
