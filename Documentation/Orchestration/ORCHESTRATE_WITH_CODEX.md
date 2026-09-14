@@ -1,30 +1,37 @@
-# Orchestrate with a Cloud-Model Agent
+# Orchestrate with a Cloud- or Local-Model Agent
 
 ## Purpose
 
-This document explains how a cloud-model agent can supervise and operate a local worker—such as Primary Pi—through Jack Kernel without bypassing Jack’s deterministic control boundary.
+This document explains how an orchestration agent supervises and operates a local worker—such as Primary Pi—through Jack Kernel without bypassing Jack’s deterministic control boundary.
 
-Codex Desktop is the current reference example because it provides a convenient native cloud-model agent and local tool surface. **Codex is not the architectural requirement.** The same pattern can be used by any supervisory agent whose cognition remains on its own cloud model and that can call Jack Kernel’s public orchestration API.
+Codex Desktop is the current reference cloud-model example. Jack Orchestrator is the current reference local-model example. Neither is the architectural requirement. Any supervisory agent may qualify if it satisfies the Jack orchestration contract.
+
+For the normative interoperability requirements, read [`ORCHESTRATION_AGENT_CAPABILITY_CONTRACT.md`](ORCHESTRATION_AGENT_CAPABILITY_CONTRACT.md).
 
 For the Codex-specific operator procedure, see [`USING_CODEX_AS_JACK_ORCHESTRATION_AGENT.md`](USING_CODEX_AS_JACK_ORCHESTRATION_AGENT.md).
 
-The important distinction is architectural:
+The central rule is:
 
-- **The cloud-model agent is the supervisor.** Its cognition remains on its native cloud model/provider.
-- **Pi, or another local agent, is the worker/build agent.**
-- **Jack Kernel is the mandatory supervisor-to-worker mediation layer.**
-- **The worker’s model inference runs through Jack Kernel to the configured local backend.**
+> **MODEL SOURCE MAY VARY. CONTROL BOUNDARY DOES NOT.**
 
-The required topology is:
+Every supervisor-to-worker control action crosses Jack Kernel. When the orchestration agent uses a local model, its own model inference must also cross Jack Kernel. No locally modeled supervisor or worker may connect directly to the local model server.
+
+---
+
+## 1. Supported supervisory topologies
+
+### 1.1 Cloud-model supervisor
+
+A cloud-model supervisor keeps cognition on its native cloud provider and uses Jack for worker supervision/control.
 
 ```text
 User
   |
   v
-Cloud-model supervisory agent
+Cloud-model orchestration agent
 (native cloud cognition; Codex is one example)
   |
-  | supervision / worker control only
+  | supervision / worker control
   v
 Jack Kernel :8001/jack/orchestration
   |
@@ -42,15 +49,75 @@ Jack Kernel :8001/v1
 local LLM server / configured backend
 ```
 
-There is **no supervisor-cognition path through Jack `/v1` in this architecture**. Jack does not replace the cloud agent’s model provider. The cloud agent keeps its native cloud cognition and uses Jack only as the deterministic boundary for control of the local worker.
+There is no supervisor-cognition path through Jack `/v1` in this mode. Jack does not replace the cloud agent’s model provider.
 
-This differs from the all-local Jack Orchestrator architecture, where both the local supervisor and the local worker may perform inference through Jack against the same local backend, including with multiple backend concurrency slots. That all-local design remains valid, but it is a different deployment mode.
+### 1.2 Local-model supervisor
+
+A locally modeled orchestration agent uses Jack for both its own cognition and worker supervision.
+
+```text
+User
+  |
+  v
+Local-model orchestration agent
+  |
+  | cognition
+  v
+Jack Kernel :8001/v1
+  |
+  v
+local LLM server / configured backend
+
+Local-model orchestration agent
+  |
+  | supervision / worker control
+  v
+Jack Kernel :8001/jack/orchestration
+  |
+  v
+private worker bridge
+  |
+  v
+Primary Pi or another local worker
+  |
+  | model inference
+  v
+Jack Kernel :8001/v1
+  |
+  v
+local LLM server / configured backend
+```
+
+This is the reference Jack Orchestrator pattern. With multiple backend concurrency slots, the local supervisor and Primary Pi may infer concurrently through the same Jack Kernel. They still do not bypass Jack.
 
 ---
 
-## 1. What must change in an existing worker
+## 2. What the orchestration agent must be able to do
 
-A worker such as Pi does not need to become aware of Codex, OpenAI, or any other cloud-model supervisor. It needs a small deterministic control adapter that exposes the worker’s existing runtime capabilities in a form Jack can safely mediate.
+A compatible orchestration agent must be able to:
+
+1. understand the user’s objective and decide what to delegate;
+2. query worker status/readiness through Jack;
+3. submit worker tasks through Jack;
+4. consume Jack’s live worker-event SSE stream;
+5. track `seq`, `task_id`, `run_id`, `run_epoch`, and attribution;
+6. observe worker messages and tool activity;
+7. distinguish message generation from physical settlement;
+8. cancel controlled work through Jack;
+9. replace the worker session safely through Jack;
+10. reconnect/replay SSE using Jack sequence state;
+11. detect and report replay gaps;
+12. interpret worker results and issue follow-up instructions when needed;
+13. never bypass Jack to the private worker bridge;
+14. when locally modeled, send all supervisor inference through Jack rather than directly to the local model server.
+
+The full normative version of this list is in [`ORCHESTRATION_AGENT_CAPABILITY_CONTRACT.md`](ORCHESTRATION_AGENT_CAPABILITY_CONTRACT.md).
+
+---
+
+## 3. What must change in an existing worker
+
+A worker such as Pi does not need to become aware of Codex, OpenAI, or any other specific supervisor. It needs a small deterministic control adapter that exposes the worker’s existing runtime capabilities in a form Jack can safely mediate.
 
 The adapter should provide, at minimum:
 
@@ -79,25 +146,13 @@ POST /v1/session/new
 
 The bridge should bind only to localhost or another private interface trusted by Jack.
 
-The cloud supervisor must not call these private endpoints directly.
+The supervisor must not call these private endpoints directly.
 
 ---
 
-## 2. What the cloud supervisor needs
+## 4. Public Jack orchestration surface
 
-A cloud-model supervisor needs only:
-
-- its normal native cloud-model cognition;
-- ordinary HTTP capability for Jack’s orchestration API;
-- SSE capability when live worker-event observation is required.
-
-It does **not** need Jack Kernel configured as its model provider.
-
-It does **not** need direct access to the worker bridge.
-
-It does **not** need the worker’s private control credential.
-
-The public orchestration surface is:
+A supervisor uses:
 
 ```text
 GET  /jack/orchestration/status
@@ -107,13 +162,15 @@ POST /jack/orchestration/tasks/cancel
 POST /jack/orchestration/session/new
 ```
 
-The reference Codex integration uses Codex’s existing local shell/tool capability to call these routes while Codex continues using its native OpenAI model.
+A cloud supervisor uses these routes while keeping cognition on its native provider.
 
-Another cloud-model agent can use the same transport if it can make equivalent HTTP/SSE requests.
+A local supervisor uses these routes for control and also uses Jack’s `/v1` inference surface for its own cognition.
+
+The worker independently uses Jack `/v1` for its model inference.
 
 ---
 
-## 3. The worker bridge must be deterministic
+## 5. The worker bridge must be deterministic
 
 The worker bridge is infrastructure, not a reasoning agent.
 
@@ -131,14 +188,6 @@ The bridge should expose concrete state such as:
 }
 ```
 
-When idle:
-
-```json
-{
-  "status": "idle"
-}
-```
-
 When a run is logically cancelled but the underlying worker is still physically unwinding:
 
 ```json
@@ -148,7 +197,7 @@ When a run is logically cancelled but the underlying worker is still physically 
 }
 ```
 
-Only after the worker has actually settled should the bridge report:
+Only after the worker has actually settled should it report:
 
 ```json
 {
@@ -162,7 +211,7 @@ Logical cancellation and physical settlement are not the same event.
 
 ---
 
-## 4. Separate task identity from run identity
+## 6. Separate task identity from run identity
 
 Use separate identifiers:
 
@@ -182,7 +231,7 @@ Do not bind ownership merely because a task is current. Bind ownership only when
 
 ---
 
-## 5. Preserve event attribution
+## 7. Preserve event attribution
 
 The worker bridge should expose live events such as:
 
@@ -221,7 +270,7 @@ Events occurring after the worker has ended a run must not automatically inherit
 
 ---
 
-## 6. Expose live events over SSE
+## 8. Expose live events over SSE
 
 The private worker bridge can expose an SSE stream such as:
 
@@ -229,7 +278,7 @@ The private worker bridge can expose an SSE stream such as:
 GET /v1/events
 ```
 
-Jack then owns the supervisor-facing replay layer at:
+Jack owns the supervisor-facing replay layer at:
 
 ```text
 GET /jack/orchestration/events
@@ -257,7 +306,7 @@ The supervisor consumes Jack’s SSE stream, never the private worker stream.
 
 ---
 
-## 7. Session replacement requires an explicit readiness contract
+## 9. Session replacement requires an explicit readiness contract
 
 Expose:
 
@@ -281,7 +330,7 @@ Do not use fixed sleeps as proof of readiness. Do not silently retry a task acro
 
 ---
 
-## 8. Start long-lived worker resources at the correct lifecycle boundary
+## 10. Start long-lived worker resources at the correct lifecycle boundary
 
 For Pi specifically, the private HTTP bridge must not begin advertising operational readiness from the extension factory while Pi is still loading the extension.
 
@@ -303,17 +352,7 @@ On shutdown the old instance must close admission, close event clients/listeners
 
 ---
 
-## 9. Jack is the only worker-control gateway visible to the supervisor
-
-Jack exposes:
-
-```text
-GET  /jack/orchestration/status
-GET  /jack/orchestration/events
-POST /jack/orchestration/tasks
-POST /jack/orchestration/tasks/cancel
-POST /jack/orchestration/session/new
-```
+## 11. Jack is the only worker-control gateway visible to the supervisor
 
 The supervisor must never be given:
 
@@ -326,7 +365,7 @@ If the private bridge is unavailable, Jack fails deterministically. There is no 
 
 ---
 
-## 10. Jack owns external replay
+## 12. Jack owns external replay
 
 Useful supervisor-facing replay properties include:
 
@@ -342,9 +381,11 @@ For example:
 409 orchestration_replay_gap
 ```
 
+A replay gap must be reported explicitly. Missing history must not be silently treated as complete history.
+
 ---
 
-## 11. Cancellation must preserve physical truth
+## 13. Cancellation must preserve physical truth
 
 Cancellation is not equivalent to settlement.
 
@@ -371,9 +412,9 @@ Jack must not admit overlapping controlled work while the prior worker run remai
 
 ---
 
-## 12. Tool events remain observable
+## 14. Tool events remain observable
 
-If the worker can use tools, the cloud supervisor should be able to observe the worker’s tool lifecycle through Jack:
+If the worker can use tools, the supervisor should be able to observe the worker’s tool lifecycle through Jack:
 
 ```text
 tool_start
@@ -383,13 +424,11 @@ tool_end
 
 A real tool call preserves the same task/run/epoch correlation as the surrounding worker execution.
 
+The supervisor must not treat model-authored tool claims as host execution evidence.
+
 ---
 
-## 13. Worker model/context metadata comes from the worker path
-
-Do not confuse supervisor cognition with worker cognition.
-
-The cloud supervisor keeps its own provider/model/context independently.
+## 15. Worker model/context metadata comes from the worker path
 
 Worker model/context metadata describes the model used by the local worker through Jack. When Jack exposes authoritative worker/backend metadata, the supervisor may inspect fields such as:
 
@@ -401,11 +440,15 @@ max_context_length
 
 Unknown values remain unknown.
 
+For a cloud supervisor, this metadata describes the worker path, not the cloud supervisor’s own model/context.
+
+For a local supervisor, its own cognition also runs through Jack and therefore has a Jack-mediated local inference path.
+
 ---
 
-## 14. Supervisor session-handoff sequence
+## 16. Supervisor session-handoff sequence
 
-A cloud-model supervisor should perform worker session replacement as follows:
+Any supervisor should perform worker session replacement as follows:
 
 ```text
 1. GET Jack orchestration status
@@ -425,10 +468,10 @@ Elapsed time is not lifecycle proof.
 
 ---
 
-## 15. Supervisor task flow
+## 17. Supervisor task flow
 
 ```text
-Cloud-model supervisor
+Orchestration agent
   ↓
 POST /jack/orchestration/tasks
   ↓
@@ -449,13 +492,13 @@ agent_settled
 runOpen = false
 ```
 
-The supervisor can interpret those returned events/results with its own cloud model and decide the next instruction.
+The supervisor interprets returned events/results, decides whether the user’s objective has been satisfied, and issues follow-up worker instructions through Jack when needed.
 
 ---
 
-## 16. Security boundary
+## 18. Security boundary
 
-The cloud supervisor may know:
+The supervisor may know:
 
 - Jack’s public local address;
 - Jack orchestration routes;
@@ -464,7 +507,7 @@ The cloud supervisor may know:
 - worker readiness state;
 - worker model/context metadata intentionally exposed by Jack.
 
-The cloud supervisor should not know:
+The supervisor should not know:
 
 - private worker control token;
 - private worker credential files;
@@ -472,29 +515,45 @@ The cloud supervisor should not know:
 - internal worker runtime references;
 - secrets required only for Jack-to-worker communication.
 
-The cloud supervisor may still possess its own independent tool capabilities. Jack’s orchestration contract governs the supervisor-to-worker control path; it does not claim to intercept every independent capability of the external cloud agent.
+A cloud supervisor may possess independent tools of its own. Jack’s orchestration contract governs supervisor-to-worker control; it does not claim to intercept every independent action of an external cloud agent.
+
+A local supervisor must not use an independent direct connection to the local model server. Its local model cognition crosses Jack.
 
 ---
 
-## 17. What not to do
+## 19. What not to do
 
-Do not implement:
-
-### Cloud supervisor → private worker directly
+### Supervisor → private worker directly
 
 ```text
-cloud supervisor → :8013 → Pi
+Supervisor → :8013 → Pi
 ```
 
-This bypasses Jack.
+This bypasses Jack and is forbidden.
+
+### Local supervisor → local model directly
+
+```text
+Local supervisor → local LLM server
+```
+
+This bypasses Jack and is forbidden.
+
+### Worker → local model directly
+
+```text
+Worker → local LLM server
+```
+
+This bypasses Jack and is forbidden.
 
 ### Cloud supervisor cognition → Jack → local model
 
 ```text
-cloud supervisor → Jack /v1 → local LLM
+Cloud supervisor → Jack /v1 → local LLM
 ```
 
-That is a different deployment mode and is not the cloud-supervisor architecture described here.
+That is the local-supervisor deployment mode, not the cloud-supervisor architecture.
 
 ### Sleep-based readiness
 
@@ -524,67 +583,49 @@ Task IDs, run IDs, event ownership, settlement, readiness, and evidence provenan
 
 ---
 
-## 18. Validation checklist
+## 20. Validation checklist
 
-Before declaring a worker compatible with a cloud-model supervisor through Jack, verify:
+### Common requirements
 
-### Startup
-
-- Bridge starts only after worker runtime initialization is complete.
-- `sessionReady: true`.
-- `sessionTransitioning: false`.
-- nonempty `sessionInstanceId`.
-
-### Task execution
-
+- worker bridge starts only after runtime initialization;
+- `sessionReady: true` and `sessionTransitioning: false` before task admission;
 - stable `task_id`;
-- real `run_id`;
-- `run_epoch` established;
+- real `run_id` and `run_epoch`;
 - live message events visible;
 - tool events visible when tools are used;
 - authoritative final task state;
-- physical settlement produces `runOpen: false`.
-
-### Cancellation
-
-- logical cancellation is observable before physical settlement;
-- new controlled work is blocked while the prior run remains open;
-- final cancelled state has `runOpen: false`.
-
-### Session replacement
-
-- old `sessionInstanceId` recorded;
-- `/session/new` begins asynchronous transition;
-- task admission closes immediately;
-- old bridge shuts down;
-- replacement bridge starts only after runtime rebind;
-- new `sessionInstanceId` differs from old;
-- follow-up work waits for ready state.
-
-### Isolation
-
-- supervisor never contacts private worker bridge directly;
-- supervisor never reads worker control token;
-- Jack returns deterministic failure when private bridge is unavailable;
-- supervisor’s own cloud cognition remains independent of Jack’s local inference path.
-
-### Replay
-
+- physical settlement produces `runOpen: false`;
+- logical cancellation can precede settlement;
+- new work is blocked while the prior run is open;
+- session replacement produces a new `sessionInstanceId`;
+- supervisor never contacts the private worker bridge directly;
+- Jack returns deterministic failure when the private bridge is unavailable;
 - SSE sequence is monotonic;
 - reconnect/replay works;
 - stale replay requests fail explicitly.
 
+### Cloud-supervisor requirements
+
+- supervisor cognition remains on its native cloud provider;
+- Jack is used for worker supervision/control only;
+- Jack is not configured as the cloud supervisor’s model provider for this architecture.
+
+### Local-supervisor requirements
+
+- all supervisor model inference runs through Jack;
+- supervisor never connects directly to the local model server;
+- worker also reaches the local model only through Jack;
+- concurrent local supervisor/worker inference, when desired, uses Jack/backend concurrency rather than bypass connections.
+
 ---
 
-## 19. Codex as the current reference cloud supervisor
+## 21. Codex and Jack Orchestrator as reference implementations
 
-Codex Desktop is useful for validating this architecture because it combines native OpenAI cognition with a local shell/tool surface capable of calling Jack’s public orchestration API.
+### Codex
 
-In the intended Codex mode:
+Codex Desktop is the current reference cloud supervisor:
 
 ```text
-User
-  ↓
 Native Codex / OpenAI model
   ↓ supervision
 Jack /jack/orchestration
@@ -596,28 +637,50 @@ Jack /v1
 local LLM backend
 ```
 
-Codex is therefore a **reference proxy for the broader class of cloud-model supervisory agents**, not the architectural endpoint.
+Codex is a reference proxy for the broader class of cloud-model supervisory agents, not the architectural endpoint.
 
-A different cloud-model agent may replace Codex without changing the worker-side contract, provided it preserves the same Jack mediation boundary.
+### Jack Orchestrator
+
+Jack Orchestrator is the current reference local supervisor:
+
+```text
+Jack Orchestrator
+  ↓ cognition
+Jack /v1
+  ↓
+local LLM backend
+
+Jack Orchestrator
+  ↓ supervision
+Jack /jack/orchestration
+  ↓
+Primary Pi
+  ↓ inference
+Jack /v1
+  ↓
+local LLM backend
+```
+
+The same rule applies to any other locally modeled orchestration agent.
 
 ---
 
-## 20. Generalizing beyond Pi and beyond Codex
+## 22. Generalizing beyond Pi, Codex, and Jack Orchestrator
 
-Pi is only the reference worker. Codex is only the current reference cloud supervisor.
+Pi is only the reference worker. Codex is only the current reference cloud supervisor. Jack Orchestrator is only the current reference local supervisor.
 
-The reusable architecture is:
+The reusable contract is:
 
 ```text
-cloud-model supervisor
-        ↓
-Jack deterministic orchestration boundary
-        ↓
-local privileged worker
-        ↓
-Jack inference boundary
-        ↓
-local model/backend
+Cloud cognition:
+Cloud model <-> Supervisor
+Supervisor -> Jack -> Worker
+Worker     -> Jack -> Local model
+
+Local cognition:
+Supervisor -> Jack -> Local model
+Supervisor -> Jack -> Worker
+Worker     -> Jack -> Local model
 ```
 
 Map another worker’s native lifecycle onto:
@@ -635,20 +698,24 @@ physical settlement
 session replacement
 ```
 
-Map another cloud supervisor onto Jack’s public orchestration API.
+Map another supervisor onto Jack’s public orchestration API and, if its cognition is local, Jack’s model-facing inference API.
 
 Neither side should need to know the other’s private implementation details.
 
 ---
 
-## 21. Core rule
+## 23. Core rule
 
 The orchestration design follows the same rule as the rest of Jack Kernel:
 
 > **Probabilistic cognition may propose, but deterministic software must dispose.**
 
-The cloud supervisor may decide what work should be done.
+The supervisor may decide what work should be done.
 
 The worker model may reason about how to do it.
 
 But task admission, session readiness, run ownership, cancellation, settlement, replay, evidence, and authority remain deterministic software state.
+
+And the connection rule is absolute:
+
+> **No locally modeled participant may bypass Jack to reach the local model server, and no orchestration agent may bypass Jack to control the worker.**
