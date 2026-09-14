@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const bridgeTs = path.join(root, "Pi", "pi-control-bridge.ts");
 const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "jack-pi-v2-"));
 const port = 18000 + (process.pid % 1000);
@@ -55,6 +55,21 @@ const pi = {
 
 const { default: installBridge } = await import(pathToFileURL(bridgeMjs).href + `?v=${Date.now()}`);
 await installBridge(pi);
+
+// The bridge must not expose its HTTP listener while the extension factory is
+// still loading because Pi action methods are not bound yet.
+let reachableBeforeSessionStart = false;
+try {
+  await fetch(`http://127.0.0.1:${port}/v1/status`);
+  reachableBeforeSessionStart = true;
+} catch {}
+
+assert.equal(
+  reachableBeforeSessionStart,
+  false,
+  "bridge must not listen before session_start",
+);
+
 await emit("session_start", { reason: "startup" });
 
 const headers = { Authorization: `Bearer ${token}` };
@@ -103,6 +118,15 @@ function createSseCollector(response) {
 }
 
 await waitForServer();
+
+const initialStatusResponse = await fetch(`http://127.0.0.1:${port}/v1/status`, { headers });
+assert.equal(initialStatusResponse.status, 200);
+const initialStatus = await initialStatusResponse.json();
+assert.equal(initialStatus.sessionReady, true);
+assert.equal(initialStatus.sessionTransitioning, false);
+assert.ok(initialStatus.sessionInstanceId);
+const initialSessionInstanceId = initialStatus.sessionInstanceId;
+
 const sseResponse = await fetch(`http://127.0.0.1:${port}/v1/events`, { headers });
 assert.equal(sseResponse.status, 200);
 const collector = createSseCollector(sseResponse);
@@ -277,6 +301,41 @@ const queuedCancelResponse = await fetch(`http://127.0.0.1:${port}/v1/tasks/canc
 assert.equal(queuedCancelResponse.status, 202);
 const swallowed = await emit("input", { text: queuedCancelWire, source: "extension", streamingBehavior: "followUp" });
 assert.equal(swallowed.action, "handled");
+
+// Starting a new session must immediately close task admission on the old
+// control instance. A supervisor must wait for a fresh ready instance.
+const newSessionResponse = await fetch(`http://127.0.0.1:${port}/v1/session/new`, {
+  method: "POST",
+  headers,
+});
+assert.equal(newSessionResponse.status, 202);
+
+const newSessionStarting = await newSessionResponse.json();
+assert.equal(newSessionStarting.status, "starting");
+assert.equal(newSessionStarting.sessionReady, false);
+assert.equal(newSessionStarting.sessionTransitioning, true);
+assert.equal(newSessionStarting.previousSessionInstanceId, initialSessionInstanceId);
+
+const transitionStatusResponse = await fetch(`http://127.0.0.1:${port}/v1/status`, { headers });
+assert.equal(transitionStatusResponse.status, 200);
+
+const transitionStatus = await transitionStatusResponse.json();
+assert.equal(transitionStatus.sessionReady, false);
+assert.equal(transitionStatus.sessionTransitioning, true);
+assert.equal(transitionStatus.sessionInstanceId, initialSessionInstanceId);
+
+const transitionTask = await fetch(`http://127.0.0.1:${port}/v1/tasks`, {
+  method: "POST",
+  headers: { ...headers, "Content-Type": "application/json" },
+  body: JSON.stringify({ prompt: "must not enter the old session" }),
+});
+assert.equal(transitionTask.status, 409);
+
+const transitionTaskBody = await transitionTask.json();
+assert.equal(transitionTaskBody.error, "Pi session transition in progress");
+assert.equal(transitionTaskBody.sessionReady, false);
+assert.equal(transitionTaskBody.sessionTransitioning, true);
+assert.equal(transitionTaskBody.sessionInstanceId, initialSessionInstanceId);
 
 await collector.stop();
 await emit("session_shutdown", { reason: "quit" });

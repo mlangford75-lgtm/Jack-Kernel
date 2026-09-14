@@ -6,72 +6,198 @@ from typing import Any, AsyncIterator, Dict, Optional, Tuple
 
 PROVENANCE_VERSION = 1
 BLOCKED_MARKER = "[UNTRUSTED_MODEL_OUTPUT:JACK_TOOL_EVIDENCE_MARKER_BLOCKED]"
-_RESERVED_MARKERS: Tuple[str, ...] = (
-    "<jack_tool_evidence_receipt>",
-    "</jack_tool_evidence_receipt>",
-    "&lt;jack_tool_evidence_receipt&gt;",
-    "&lt;/jack_tool_evidence_receipt&gt;",
-    "<jack_tool_evidence_receipt",
-    "</jack_tool_evidence_receipt",
-    "&lt;jack_tool_evidence_receipt",
-    "&lt;/jack_tool_evidence_receipt",
-)
-_RESERVED_MARKERS_LOWER = tuple(marker.lower() for marker in _RESERVED_MARKERS)
+
+# Model-originated text may never claim Jack's host-owned evidence namespace.
+# Recognition is structural rather than literal so transport chunking and
+# whitespace inserted inside the reserved identifier cannot bypass it.
+_RESERVED_TAG_NAME = "jack_tool_evidence_receipt"
+_PARTIAL_RESERVED_PREFIX = "jack_tool_evidence"
 
 
 class ReservedEvidenceMarkerFilter:
-    """Stateful filter for model-emitted text crossing a streaming boundary."""
+    """Stateful structural filter for model-emitted reserved Jack evidence tags."""
 
     def __init__(self) -> None:
         self._carry = ""
 
     @staticmethod
-    def _suffix_prefix_length(text: str) -> int:
-        lower = text.lower()
-        best = 0
-        for marker in _RESERVED_MARKERS_LOWER:
-            limit = min(len(marker) - 1, len(lower))
-            for size in range(limit, best, -1):
-                if lower.endswith(marker[:size]):
-                    best = size
-                    break
-        return best
+    def _skip_whitespace(fragment: str, index: int) -> int:
+        while index < len(fragment) and fragment[index].isspace():
+            index += 1
+        return index
+
+    @classmethod
+    def _classify_candidate(
+        cls,
+        fragment: str,
+        *,
+        final: bool,
+    ) -> Tuple[str, int]:
+        """Classify a possible raw or HTML-escaped reserved tag.
+
+        Returns ``(status, consumed)`` where status is:
+
+        - ``safe``: release ``consumed`` characters and continue scanning.
+        - ``hold``: retain the candidate until a later stream delta resolves it.
+        - ``block``: replace ``consumed`` characters with ``BLOCKED_MARKER``.
+
+        Once the complete reserved name has been recognized, the candidate is
+        retained through its complete ``>`` or ``&gt;`` boundary. This prevents
+        a closing delimiter from leaking in a later stream delta.
+        """
+
+        if not fragment:
+            return "safe", 0
+
+        lower = fragment.lower()
+
+        if fragment.startswith("<"):
+            index = 1
+            safe_delimiter_length = 1
+
+        elif lower.startswith("&lt;"):
+            index = 4
+            safe_delimiter_length = 4
+
+        elif "&lt;".startswith(lower):
+            # A transport-fragmented escaped opener is ambiguous until more
+            # bytes arrive. At true end-of-stream it is ordinary text.
+            if not final:
+                return "hold", 0
+            return "safe", len(fragment)
+
+        else:
+            return "safe", 1
+
+        index = cls._skip_whitespace(fragment, index)
+
+        if index >= len(fragment):
+            return ("hold", 0) if not final else ("safe", len(fragment))
+
+        # Closing tags are protected by the same namespace rule.
+        if fragment[index] == "/":
+            index += 1
+            index = cls._skip_whitespace(fragment, index)
+
+            if index >= len(fragment):
+                return ("hold", 0) if not final else ("safe", len(fragment))
+
+        matched = 0
+
+        while matched < len(_RESERVED_TAG_NAME):
+            index = cls._skip_whitespace(fragment, index)
+
+            if index >= len(fragment):
+                if not final:
+                    return "hold", 0
+
+                # At true EOS, a sufficiently specific partial reserved
+                # namespace is itself blocked rather than leaking malformed
+                # Jack-looking evidence text.
+                if matched >= len(_PARTIAL_RESERVED_PREFIX):
+                    return "block", len(fragment)
+
+                return "safe", len(fragment)
+
+            if fragment[index].lower() != _RESERVED_TAG_NAME[matched]:
+                # The candidate has diverged from the reserved namespace.
+                # Release only the opener, then let the outer scanner handle
+                # the remaining text normally.
+                return "safe", safe_delimiter_length
+
+            matched += 1
+            index += 1
+
+        # The complete reserved name has now been recognized. Hold everything
+        # through the closing delimiter so a later '>' can never escape as a
+        # separate model-visible fragment.
+        scan = index
+        lower = fragment.lower()
+
+        while scan < len(fragment):
+            if fragment[scan] == ">":
+                return "block", scan + 1
+
+            if lower.startswith("&gt;", scan):
+                return "block", scan + 4
+
+            # The escaped closing delimiter itself may straddle transport
+            # chunks. Preserve the entire candidate until it resolves.
+            tail_lower = lower[scan:]
+            if "&gt;".startswith(tail_lower) and not final:
+                return "hold", 0
+
+            scan += 1
+
+        if final:
+            # The model completed the reserved namespace but never supplied a
+            # closing delimiter. Block the whole malformed candidate.
+            return "block", len(fragment)
+
+        return "hold", 0
 
     def feed(self, text: Any) -> str:
         data = self._carry + ("" if text is None else str(text))
         self._carry = ""
+
         if not data:
             return ""
 
-        lower = data.lower()
         out = []
         pos = 0
+
         while pos < len(data):
-            hits = []
-            for marker, marker_lower in zip(_RESERVED_MARKERS, _RESERVED_MARKERS_LOWER):
-                index = lower.find(marker_lower, pos)
-                if index >= 0:
-                    hits.append((index, -len(marker), marker))
-            if hits:
-                index, _neg_len, marker = min(hits)
-                out.append(data[pos:index])
+            raw_index = data.find("<", pos)
+            escaped_index = data.find("&", pos)
+
+            candidates = [
+                index
+                for index in (raw_index, escaped_index)
+                if index >= 0
+            ]
+
+            if not candidates:
+                out.append(data[pos:])
+                break
+
+            index = min(candidates)
+            out.append(data[pos:index])
+
+            status, consumed = self._classify_candidate(
+                data[index:],
+                final=False,
+            )
+
+            if status == "hold":
+                self._carry = data[index:]
+                break
+
+            if status == "block":
                 out.append(BLOCKED_MARKER)
-                pos = index + len(marker)
+                pos = index + consumed
                 continue
 
-            tail = data[pos:]
-            keep = self._suffix_prefix_length(tail)
-            if keep:
-                out.append(tail[:-keep])
-                self._carry = tail[-keep:]
-            else:
-                out.append(tail)
-            break
+            release = max(1, consumed)
+            out.append(data[index:index + release])
+            pos = index + release
+
         return "".join(out)
 
     def flush(self) -> str:
         tail = self._carry
         self._carry = ""
+
+        if not tail:
+            return ""
+
+        status, consumed = self._classify_candidate(
+            tail,
+            final=True,
+        )
+
+        if status == "block":
+            return BLOCKED_MARKER + tail[consumed:]
+
         return tail
 
 

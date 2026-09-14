@@ -127,6 +127,11 @@ export default async function (pi) {
   let activeCtx = null;
   let latestCtx = null;
   let shuttingDown = false;
+  const sessionInstanceId = randomUUID();
+  let sessionReady = false;
+  let sessionTransitioning = false;
+  let server = null;
+  let serverListening = false;
 
   // Correlation state is deliberately separate from controlledTask. A task UUID
   // does not become event authority merely because it is the current task.
@@ -149,6 +154,7 @@ export default async function (pi) {
 
   function controlPlaneBusy() {
     return Boolean(
+      sessionTransitioning ||
       taskIsActive(controlledTask) ||
       pendingDispatch ||
       awaitingAgentStart ||
@@ -230,15 +236,75 @@ export default async function (pi) {
     armedAgentStart = null;
   }
 
+
+  function statusSnapshot() {
+    const snapshot = controlledTask
+      ? taskSnapshot(controlledTask, controlRun, activeRun)
+      : { status: "idle" };
+
+    return {
+      ...snapshot,
+      sessionReady,
+      sessionTransitioning,
+      sessionInstanceId,
+    };
+  }
+
+  function ensureServerListening() {
+    if (serverListening) return Promise.resolve();
+
+    return new Promise((resolve, reject) => {
+      const onError = (error) => {
+        server.off("error", onError);
+        reject(error);
+      };
+
+      server.once("error", onError);
+
+      server.listen(port, HOST, () => {
+        server.off("error", onError);
+        serverListening = true;
+        console.log(`[pi-control] Listening on http://${HOST}:${port}`);
+
+        if (!token) {
+          console.error(`[pi-control] controlToken is missing in ${CONFIG_PATH}; all HTTP requests will be unauthorized.`);
+        }
+
+        resolve();
+      });
+    });
+  }
+
   pi.registerCommand("pi-control-new", {
     description: "Start a new Pi session for the local Jack orchestration bridge",
     handler: async (_args, ctx) => {
-      await ctx.newSession();
+      try {
+        const result = await ctx.newSession();
+
+        // A cancelled replacement leaves this extension instance authoritative.
+        // Reopen admission, but retain the same sessionInstanceId so a supervisor
+        // cannot mistake cancellation for successful session replacement.
+        if (result?.cancelled) {
+          sessionTransitioning = false;
+          sessionReady = true;
+        }
+      } catch (error) {
+        sessionTransitioning = false;
+        sessionReady = true;
+        throw error;
+      }
     },
   });
 
   pi.on("session_start", async (event, ctx) => {
     latestCtx = ctx;
+    sessionTransitioning = false;
+
+    // Pi binds extension action methods before this lifecycle boundary.
+    // Do not expose the HTTP control listener during extension loading.
+    await ensureServerListening();
+    sessionReady = true;
+
     broadcast("session", event, { attribution: "none" });
   });
 
@@ -419,10 +485,10 @@ export default async function (pi) {
     activeCtx = null;
   });
 
-  let server;
-
   pi.on("session_shutdown", async (event, ctx) => {
     latestCtx = ctx;
+    sessionReady = false;
+    sessionTransitioning = true;
     broadcast("session", event, { attribution: "none" });
     if (shuttingDown) return;
     shuttingDown = true;
@@ -430,8 +496,9 @@ export default async function (pi) {
       try { res.end(); } catch {}
     }
     sseClients.clear();
-    if (server) {
+    if (server && serverListening) {
       await new Promise((resolve) => server.close(() => resolve()));
+      serverListening = false;
     }
   });
 
@@ -447,7 +514,7 @@ export default async function (pi) {
       const pathname = requestUrl.pathname;
 
       if (req.method === "GET" && pathname === "/v1/status") {
-        json(res, 200, controlledTask ? taskSnapshot(controlledTask, controlRun, activeRun) : { status: "idle" });
+        json(res, 200, statusSnapshot());
         return;
       }
 
@@ -458,7 +525,7 @@ export default async function (pi) {
           "Connection": "keep-alive",
           "X-Accel-Buffering": "no",
         });
-        const snapshot = controlledTask ? taskSnapshot(controlledTask, controlRun, activeRun) : { status: "idle" };
+        const snapshot = statusSnapshot();
         res.write(`event: status\ndata: ${JSON.stringify(snapshot)}\n\n`);
         sseClients.add(res);
         const cleanup = () => sseClients.delete(res);
@@ -478,6 +545,15 @@ export default async function (pi) {
         const prompt = typeof body?.prompt === "string" ? body.prompt.trim() : "";
         if (!prompt) {
           json(res, 400, { error: "prompt must be a non-empty string" });
+          return;
+        }
+        if (!sessionReady || sessionTransitioning) {
+          json(res, 409, {
+            error: "Pi session transition in progress",
+            sessionReady,
+            sessionTransitioning,
+            sessionInstanceId,
+          });
           return;
         }
         if (controlPlaneBusy()) {
@@ -535,17 +611,39 @@ export default async function (pi) {
       }
 
       if (req.method === "POST" && pathname === "/v1/session/new") {
+        if (!sessionReady || sessionTransitioning) {
+          json(res, 409, {
+            error: "Pi session transition in progress",
+            sessionReady,
+            sessionTransitioning,
+            sessionInstanceId,
+          });
+          return;
+        }
         if (controlPlaneBusy() || (latestCtx?.isIdle && !latestCtx.isIdle())) {
           json(res, 409, { error: "Pi is not idle" });
           return;
         }
+
+        const previousSessionInstanceId = sessionInstanceId;
+        sessionReady = false;
+        sessionTransitioning = true;
+
         try {
           pi.sendUserMessage("/pi-control-new", { expandPromptTemplates: true });
         } catch (error) {
+          sessionTransitioning = false;
+          sessionReady = true;
           json(res, 500, { error: error instanceof Error ? error.message : String(error) });
           return;
         }
-        json(res, 202, { status: "starting" });
+
+        json(res, 202, {
+          status: "starting",
+          sessionReady: false,
+          sessionTransitioning: true,
+          previousSessionInstanceId,
+        });
         return;
       }
 
@@ -563,10 +661,4 @@ export default async function (pi) {
     console.error(`[pi-control] Server error on ${HOST}:${port}:`, error);
   });
 
-  server.listen(port, HOST, () => {
-    console.log(`[pi-control] Listening on http://${HOST}:${port}`);
-    if (!token) {
-      console.error(`[pi-control] controlToken is missing in ${CONFIG_PATH}; all HTTP requests will be unauthorized.`);
-    }
-  });
 }
