@@ -265,6 +265,10 @@ Do not treat model narration about a tool as proof that the tool executed.
 
 Use Jack/worker event state as the execution record.
 
+> **Silence is not settlement.** If `runOpen == true` and the last run-bound event is an unterminated tool operation, report that exact state. Do not call the task complete, stopped, or failed merely because the event stream is quiet.
+
+For example, if a `tool_start` for `read index.html` has been observed but no matching `tool_end` has arrived, the supervisor knows that the run remains open and that the tool operation has not reached an observed terminal event. It does **not** know whether the tool is slow, blocked, hung, or otherwise unable to complete unless Jack or the worker reports additional evidence.
+
 A tool failure does not automatically mean the entire user objective failed. Distinguish:
 
 - the worker's substantive work;
@@ -345,6 +349,8 @@ do not silently continue as if history were complete.
 Report that part of the event history is unavailable and use current authoritative status only for what it can actually establish.
 
 > **If you join an active task late or reconnect after interruption, use replay from the last known sequence position whenever possible. Do not reconstruct missed execution from a later status snapshot.**
+
+> **A local SSE-reader timeout is not a worker-state event.** If the reader times out or the connection closes locally, do not interpret that as worker completion, worker failure, or settlement. Reconnect using replay from the last processed `seq`, then reconcile the replayed events with current Jack status before reporting the task state.
 
 ---
 
@@ -543,6 +549,8 @@ During work:
 [ ] run_id/run_epoch tracked when bound
 [ ] message and tool events observed live
 [ ] no stale-snapshot guessing
+[ ] SSE-reader timeout never treated as a worker-state event
+[ ] quiet stream never treated as settlement
 ```
 
 After work:
@@ -589,7 +597,7 @@ replay restores missed history
 settlement establishes physical completion
 ```
 
-> **Never bypass Jack for worker control. Never bypass Jack for local-model inference. Never replace live event supervision with stale polling.**
+> **Never bypass Jack for worker control. Never bypass Jack for local-model inference. Never replace live event supervision with stale polling. Silence is not settlement.**
 
 Related specification:
 
