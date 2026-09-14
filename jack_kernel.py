@@ -1837,7 +1837,6 @@ def _tool_evidence_receipts_from_group(group: List[Dict[str, Any]]) -> List[Dict
             f'Result Truncated: {"YES" if truncated else "NO"}',
             'Result Excerpt:',
             html.escape(excerpt, quote=False),
-            'Raw Recovery: PI_SESSION_JSONL_BY_TOOL_CALL_ID',
             '</jack_tool_evidence_receipt>',
         ]
         receipts.append({
@@ -3604,6 +3603,20 @@ class OpenAICompatibleBackend:
                 continue
 
             item = dict(message)
+            if item.get("_jack_tool_evidence_receipt"):
+                evidence_lines = [
+                    line
+                    for line in _content_to_text(item.get("content")).splitlines()
+                    if line.strip().lower() not in {
+                        "<jack_tool_evidence_receipt>",
+                        "</jack_tool_evidence_receipt>",
+                    }
+                ]
+                item["content"] = (
+                    "[TOOL EVIDENCE FACTS]\n"
+                    + "\n".join(evidence_lines)
+                    + "\n[END TOOL EVIDENCE FACTS]"
+                )
             for key in tuple(item.keys()):
                 if isinstance(key, str) and key.startswith("_jack_"):
                     item.pop(key, None)
