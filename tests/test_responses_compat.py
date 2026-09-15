@@ -60,6 +60,12 @@ def test_stream_emits_live_reasoning_text_tool_call_and_required_completed_event
                 yield ("data: " + json.dumps(obj) + "\n\n").encode()
             yield b"data: [DONE]\n\n"
 
+        async def _rearm_pending_tool_resume_for_messages(self, _messages):
+            return None
+
+        async def _rearm_pending_debugging_resumes_for_messages(self, _messages):
+            return None
+
     class JK:
         CFG = StubCFG()
         KERNEL = Kernel()
