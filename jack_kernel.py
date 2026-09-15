@@ -1530,6 +1530,35 @@ def _sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _runtime_artifact_sha256() -> str:
+    """Hash the running source/artifact for trace identity without model-context injection."""
+    import hashlib
+    candidates: List[Path] = []
+    try:
+        candidates.append(Path(__file__).resolve())
+    except Exception:
+        pass
+    if getattr(sys, "frozen", False):
+        try:
+            candidates.insert(0, Path(sys.executable).resolve())
+        except Exception:
+            pass
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                h = hashlib.sha256()
+                with candidate.open("rb") as fh:
+                    for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                        h.update(chunk)
+                return h.hexdigest()
+        except Exception:
+            continue
+    return "UNAVAILABLE"
+
+
+RUNTIME_ARTIFACT_SHA256 = _runtime_artifact_sha256()
+
+
 TOOL_EVIDENCE_EXCERPT_CHARS = max(256, int(os.getenv("JACK_TOOL_EVIDENCE_EXCERPT_CHARS", "800") or 800))
 PI_SESSION_SCAN_MAX_FILES = max(1, int(os.getenv("JACK_PI_SESSION_SCAN_MAX_FILES", "256") or 256))
 
@@ -6990,6 +7019,7 @@ async def root() -> Dict[str, Any]:
     return {
         "name": "Jack Kernel",
         "version": PUBLIC_VERSION,
+        "runtime_artifact_sha256": RUNTIME_ARTIFACT_SHA256,
         "reasoning_level": ACTIVE_REASONING_PROFILE["label"],
         "backend_profile": CFG.backend_profile,
         "backend_name": preset["short_label"],
@@ -7010,6 +7040,7 @@ async def health(request: Request) -> Dict[str, Any]:
         "status": "ok",
         "name": "Jack Kernel",
         "version": PUBLIC_VERSION,
+        "runtime_artifact_sha256": RUNTIME_ARTIFACT_SHA256,
         "reasoning_level": ACTIVE_REASONING_PROFILE["label"],
         "backend_profile": CFG.backend_profile,
         "backend_name": preset["short_label"],
