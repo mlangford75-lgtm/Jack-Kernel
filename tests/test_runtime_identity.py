@@ -53,3 +53,27 @@ def test_health_exposes_runtime_artifact_sha256():
     payload = asyncio.run(mod.health(RequestStub()))
 
     assert payload["runtime_artifact_sha256"] == mod.RUNTIME_ARTIFACT_SHA256
+
+
+def test_root_exposes_forensic_archive_mode():
+    mod = load()
+
+    payload = asyncio.run(mod.root())
+
+    assert payload["forensic_archive_mode"] == mod.CFG.forensic_archive_mode
+
+
+def test_health_exposes_forensic_archive_mode():
+    mod = load()
+
+    async def fake_resolve_model():
+        return "test-model"
+
+    mod.BACKEND.resolve_model = fake_resolve_model
+
+    class RequestStub:
+        headers = {}
+
+    payload = asyncio.run(mod.health(RequestStub()))
+
+    assert payload["forensic_archive_mode"] == mod.CFG.forensic_archive_mode
