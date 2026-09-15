@@ -260,6 +260,9 @@ async def _stream(jk: Any, chat: Dict[str, Any], kinds: Dict[str, str]) -> Async
         failed = {"id": rid, "object": "response", "created_at": created, "completed_at": int(time.time()), "status": "failed",
                   "error": {"code": "jack_responses_stream_error", "message": str(exc)}, "model": jk.CFG.virtual_model, "output": []}
         yield _sse("response.failed", {"response": failed, "error": failed["error"]}); return
+    finally:
+        await jk.KERNEL._rearm_pending_tool_resume_for_messages(chat.get("messages"))
+        await jk.KERNEL._rearm_pending_debugging_resumes_for_messages(chat.get("messages"))
 
     output: List[Dict[str, Any]] = []; oi = 0
     if rs_open:
