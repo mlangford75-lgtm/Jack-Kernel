@@ -7061,7 +7061,7 @@ def _runtime_identity_details() -> Dict[str, Any]:
         }
 
     return {
-        "reasoning_profile": _reasoning_level,
+        "reasoning_profile": "deep-research" if _reasoning_level == "ultra" else _reasoning_level,
         "mode": mode,
         "flow": flow,
         "authoritative_stage": authoritative_stage,
