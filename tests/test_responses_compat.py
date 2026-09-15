@@ -5,6 +5,9 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+from fastapi import HTTPException
+
 MODULE = Path(__file__).resolve().parents[1] / "jack_responses_compat.py"
 spec = importlib.util.spec_from_file_location("jack_responses_compat_test", MODULE)
 compat = importlib.util.module_from_spec(spec)
@@ -29,6 +32,29 @@ def test_codex_request_mapping_preserves_client_tools_and_jack_authority_boundar
     assert chat["messages"][1] == {"role": "user", "content": "hello"}
     assert kinds == {"shell_command": "function", "apply_patch": "custom"}
     assert [tool["function"]["name"] for tool in chat["tools"]] == ["shell_command", "apply_patch"]
+
+
+def test_named_responses_tool_choice_is_lowered_without_losing_exact_selection():
+    chat, kinds = compat._chat_body({
+        "input": "use the selected tool",
+        "tools": [
+            {"type": "function", "name": "alpha", "parameters": {"type": "object"}},
+            {"type": "function", "name": "beta", "parameters": {"type": "object"}},
+        ],
+        "tool_choice": {"type": "function", "name": "beta"},
+        "stream": True,
+    })
+
+    assert kinds == {"alpha": "function", "beta": "function"}
+    assert chat["tool_choice"] == "required"
+    assert [tool["function"]["name"] for tool in chat["tools"]] == ["beta"]
+
+    with pytest.raises(HTTPException, match="does not match an available tool"):
+        compat._chat_body({
+            "input": "bad selection",
+            "tools": [{"type": "function", "name": "alpha", "parameters": {"type": "object"}}],
+            "tool_choice": {"type": "function", "name": "missing"},
+        })
 
 
 def test_custom_tool_round_trip_and_structured_tool_output():
