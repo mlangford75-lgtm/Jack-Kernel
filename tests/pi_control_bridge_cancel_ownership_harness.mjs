@@ -92,9 +92,10 @@ async function waitForServer() {
 await waitForServer();
 
 try {
-  // Scenario 1: an unrelated Pi run is active. A controlled task is queued as a
-  // follow-up and then cancelled before its private marker is consumed. The
-  // cancellation must not abort the unrelated active Pi context.
+  // Scenario 1: an unrelated Pi run is active. A controlled task is accepted as
+  // queued but remains bridge-owned and is never injected into Pi. Cancelling it
+  // must not abort the unrelated active Pi context, and the cancelled prompt must
+  // remain undispatched even after the unrelated run settles.
   idle = false;
   await emit("agent_start", {}, unrelatedContext);
 
@@ -106,7 +107,8 @@ try {
   assert.equal(queuedSubmit.status, 202);
   const queuedTask = await queuedSubmit.json();
   assert.equal(queuedTask.status, "queued");
-  assert.equal(sent.length, 1);
+  assert.equal(queuedTask.runOpen, false);
+  assert.equal(sent.length, 0, "bridge-owned queued task must not be injected into Pi while unrelated work is active");
 
   const queuedCancel = await fetch(`http://127.0.0.1:${port}/v1/tasks/cancel`, {
     method: "POST",
@@ -121,32 +123,30 @@ try {
     0,
     "queued controlled cancellation must not abort an unrelated active Pi context",
   );
-
-  const swallowed = await emit("input", {
-    text: sent[0].content,
-    source: "extension",
-    streamingBehavior: "followUp",
-  }, unrelatedContext);
-  assert.equal(swallowed?.action, "handled");
-  assert.equal(unrelatedAbortCount, 0);
+  assert.equal(sent.length, 0, "cancelled bridge-owned queued task must not be dispatched");
 
   await emit("agent_end", { messages: [] }, unrelatedContext);
   idle = true;
   await emit("agent_settled", {}, idleContext);
+  await new Promise((resolve) => setTimeout(resolve, 10));
 
-  // Scenario 2: a positively-bound controlled run is active. Cancelling it must
-  // abort that exact controlled context once and retain run-open semantics until
-  // the underlying Pi run physically settles.
+  assert.equal(unrelatedAbortCount, 0);
+  assert.equal(sent.length, 0, "cancelled queued task must remain undispatched after unrelated settlement");
+
+  // Scenario 2: a positively-bound controlled run is active. With Pi idle, the
+  // controlled task is dispatched immediately, positively bound at agent_start,
+  // and cancelling it must abort that exact controlled context once while
+  // retaining run-open semantics until physical settlement.
   const runningSubmit = await fetch(`http://127.0.0.1:${port}/v1/tasks`, {
     method: "POST",
     headers,
     body: JSON.stringify({ prompt: "cancel the bound controlled run" }),
   });
   assert.equal(runningSubmit.status, 202);
-  assert.equal(sent.length, 2);
+  assert.equal(sent.length, 1);
 
   const transformed = await emit("input", {
-    text: sent[1].content,
+    text: sent[0].content,
     source: "extension",
     streamingBehavior: "followUp",
   }, controlledContext);
