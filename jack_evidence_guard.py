@@ -6,6 +6,10 @@ from typing import Any, AsyncIterator, Dict, Optional, Tuple
 
 PROVENANCE_VERSION = 1
 BLOCKED_MARKER = "[UNTRUSTED_MODEL_OUTPUT:JACK_TOOL_EVIDENCE_MARKER_BLOCKED]"
+EVIDENCE_ORIGIN_CALLER_TOOL_RESULT = "caller_supplied_tool_result"
+EVIDENCE_ORIGIN_PI_SESSION_RECOVERY = "pi_session_recovery"
+EVIDENCE_ORIGIN_HOST_INTERNAL = "host_internal"
+EVIDENCE_ORIGIN_UNKNOWN = "unknown"
 
 # Model-originated text may never claim Jack's host-owned evidence namespace.
 # Recognition is structural rather than literal so transport chunking and
@@ -33,19 +37,7 @@ class ReservedEvidenceMarkerFilter:
         *,
         final: bool,
     ) -> Tuple[str, int]:
-        """Classify a possible raw or HTML-escaped reserved tag.
-
-        Returns ``(status, consumed)`` where status is:
-
-        - ``safe``: release ``consumed`` characters and continue scanning.
-        - ``hold``: retain the candidate until a later stream delta resolves it.
-        - ``block``: replace ``consumed`` characters with ``BLOCKED_MARKER``.
-
-        Once the complete reserved name has been recognized, the candidate is
-        retained through its complete ``>`` or ``&gt;`` boundary. This prevents
-        a closing delimiter from leaking in a later stream delta.
-        """
-
+        """Classify a possible raw or HTML-escaped reserved tag."""
         if not fragment:
             return "safe", 0
 
@@ -54,124 +46,78 @@ class ReservedEvidenceMarkerFilter:
         if fragment.startswith("<"):
             index = 1
             safe_delimiter_length = 1
-
         elif lower.startswith("&lt;"):
             index = 4
             safe_delimiter_length = 4
-
         elif "&lt;".startswith(lower):
-            # A transport-fragmented escaped opener is ambiguous until more
-            # bytes arrive. At true end-of-stream it is ordinary text.
             if not final:
                 return "hold", 0
             return "safe", len(fragment)
-
         else:
             return "safe", 1
 
         index = cls._skip_whitespace(fragment, index)
-
         if index >= len(fragment):
             return ("hold", 0) if not final else ("safe", len(fragment))
 
-        # Closing tags are protected by the same namespace rule.
         if fragment[index] == "/":
             index += 1
             index = cls._skip_whitespace(fragment, index)
-
             if index >= len(fragment):
                 return ("hold", 0) if not final else ("safe", len(fragment))
 
         matched = 0
-
         while matched < len(_RESERVED_TAG_NAME):
             index = cls._skip_whitespace(fragment, index)
-
             if index >= len(fragment):
                 if not final:
                     return "hold", 0
-
-                # At true EOS, a sufficiently specific partial reserved
-                # namespace is itself blocked rather than leaking malformed
-                # Jack-looking evidence text.
                 if matched >= len(_PARTIAL_RESERVED_PREFIX):
                     return "block", len(fragment)
-
                 return "safe", len(fragment)
-
             if fragment[index].lower() != _RESERVED_TAG_NAME[matched]:
-                # The candidate has diverged from the reserved namespace.
-                # Release only the opener, then let the outer scanner handle
-                # the remaining text normally.
                 return "safe", safe_delimiter_length
-
             matched += 1
             index += 1
 
-        # The complete reserved name has now been recognized. Hold everything
-        # through the closing delimiter so a later '>' can never escape as a
-        # separate model-visible fragment.
         scan = index
         lower = fragment.lower()
-
         while scan < len(fragment):
             if fragment[scan] == ">":
                 return "block", scan + 1
-
             if lower.startswith("&gt;", scan):
                 return "block", scan + 4
-
-            # The escaped closing delimiter itself may straddle transport
-            # chunks. Preserve the entire candidate until it resolves.
             tail_lower = lower[scan:]
             if "&gt;".startswith(tail_lower) and not final:
                 return "hold", 0
-
             scan += 1
 
         if final:
-            # The model completed the reserved namespace but never supplied a
-            # closing delimiter. Block the whole malformed candidate.
             return "block", len(fragment)
-
         return "hold", 0
 
     def feed(self, text: Any) -> str:
         data = self._carry + ("" if text is None else str(text))
         self._carry = ""
-
         if not data:
             return ""
 
         out = []
         pos = 0
-
         while pos < len(data):
             raw_index = data.find("<", pos)
             escaped_index = data.find("&", pos)
-
-            candidates = [
-                index
-                for index in (raw_index, escaped_index)
-                if index >= 0
-            ]
-
+            candidates = [index for index in (raw_index, escaped_index) if index >= 0]
             if not candidates:
                 out.append(data[pos:])
                 break
 
             index = min(candidates)
             out.append(data[pos:index])
-
-            status, consumed = self._classify_candidate(
-                data[index:],
-                final=False,
-            )
-
+            status, consumed = self._classify_candidate(data[index:], final=False)
             if status == "hold":
                 self._carry = data[index:]
                 break
-
             if status == "block":
                 out.append(BLOCKED_MARKER)
                 pos = index + consumed
@@ -186,18 +132,11 @@ class ReservedEvidenceMarkerFilter:
     def flush(self) -> str:
         tail = self._carry
         self._carry = ""
-
         if not tail:
             return ""
-
-        status, consumed = self._classify_candidate(
-            tail,
-            final=True,
-        )
-
+        status, consumed = self._classify_candidate(tail, final=True)
         if status == "block":
             return BLOCKED_MARKER + tail[consumed:]
-
         return tail
 
 
@@ -228,11 +167,7 @@ def _parse_sse_object(chunk: Any) -> Optional[Dict[str, Any]]:
 
 
 def _chat_chunk_template(obj: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        key: obj[key]
-        for key in ("id", "object", "created", "model")
-        if key in obj
-    }
+    return {key: obj[key] for key in ("id", "object", "created", "model") if key in obj}
 
 
 def _flush_event(
@@ -328,6 +263,45 @@ async def _guarded_stream(original_stream: Any, request_body: Dict[str, Any]) ->
             yield flushed
 
 
+def _normalized_evidence_origin(value: Any) -> str:
+    origin = str(value or "").strip().lower()
+    if origin in {
+        EVIDENCE_ORIGIN_CALLER_TOOL_RESULT,
+        EVIDENCE_ORIGIN_PI_SESSION_RECOVERY,
+        EVIDENCE_ORIGIN_HOST_INTERNAL,
+    }:
+        return origin
+    return EVIDENCE_ORIGIN_UNKNOWN
+
+
+def _receipt_group_origin(group: Any, call_id: str) -> str:
+    if not isinstance(group, list):
+        return EVIDENCE_ORIGIN_UNKNOWN
+    matched = []
+    for item in group:
+        if not isinstance(item, dict) or item.get("role") != "tool":
+            continue
+        if str(item.get("tool_call_id") or "").strip() != call_id:
+            continue
+        matched.append(_normalized_evidence_origin(item.get("_jack_evidence_origin")))
+    if not matched:
+        return EVIDENCE_ORIGIN_UNKNOWN
+    unique = set(matched)
+    return matched[0] if len(unique) == 1 else EVIDENCE_ORIGIN_UNKNOWN
+
+
+def _receipt_with_origin(content: Any, origin: str) -> str:
+    text = "" if content is None else str(content)
+    if "Evidence Origin:" in text:
+        return text
+    line = f"Evidence Origin: {origin}"
+    rows = text.splitlines()
+    if rows and rows[0].strip().lower() == "<jack_tool_evidence_receipt>":
+        rows.insert(1, line)
+        return "\n".join(rows)
+    return line + ("\n" + text if text else "")
+
+
 def _install_receipt_provenance(jk: Any) -> None:
     original = getattr(jk, "_tool_evidence_receipts_from_group", None)
     if original is None or getattr(original, "_jack_provenance_guard", False):
@@ -338,14 +312,39 @@ def _install_receipt_provenance(jk: Any) -> None:
         if isinstance(receipts, list):
             for receipt in receipts:
                 if isinstance(receipt, dict) and receipt.get("_jack_tool_evidence_receipt"):
+                    call_id = str(receipt.get("_jack_tool_call_id") or "").strip()
+                    origin = _receipt_group_origin(group, call_id)
+                    receipt["content"] = _receipt_with_origin(receipt.get("content"), origin)
                     receipt["_jack_evidence_source"] = "jack_kernel"
                     receipt["_jack_evidence_type"] = "tool_result_receipt"
                     receipt["_jack_evidence_host_generated"] = True
                     receipt["_jack_evidence_provenance_version"] = PROVENANCE_VERSION
+                    receipt["_jack_evidence_origin"] = origin
         return receipts
 
     guarded._jack_provenance_guard = True
     jk._tool_evidence_receipts_from_group = guarded
+
+
+def _install_tool_result_origin(jk: Any) -> None:
+    kernel = getattr(jk, "KERNEL", None)
+    original = getattr(kernel, "_consume_pending_tool_resume", None)
+    if original is None or getattr(original, "_jack_provenance_guard", False):
+        return
+
+    async def guarded(messages: Any):
+        result = await original(messages)
+        if not result:
+            return result
+        state, tool_messages = result
+        if isinstance(tool_messages, list):
+            for item in tool_messages:
+                if isinstance(item, dict) and item.get("role") == "tool":
+                    item["_jack_evidence_origin"] = EVIDENCE_ORIGIN_CALLER_TOOL_RESULT
+        return state, tool_messages
+
+    guarded._jack_provenance_guard = True
+    kernel._consume_pending_tool_resume = guarded
 
 
 def _install_recovery_provenance(jk: Any) -> None:
@@ -363,6 +362,7 @@ def _install_recovery_provenance(jk: Any) -> None:
             "evidence_type": "recovered_tool_result",
             "host_generated": True,
             "provenance_version": PROVENANCE_VERSION,
+            "evidence_origin": EVIDENCE_ORIGIN_PI_SESSION_RECOVERY,
         }
 
     guarded._jack_provenance_guard = True
@@ -371,7 +371,6 @@ def _install_recovery_provenance(jk: Any) -> None:
 
 def install(jk: Any) -> None:
     """Install Jack's model-output/evidence provenance boundary exactly once."""
-
     if getattr(jk, "_JACK_EVIDENCE_PROVENANCE_GUARD_INSTALLED", False):
         return
     jk._JACK_EVIDENCE_PROVENANCE_GUARD_INSTALLED = True
@@ -395,5 +394,6 @@ def install(jk: Any) -> None:
     kernel.run = guarded_run
     kernel.stream = guarded_stream
 
+    _install_tool_result_origin(jk)
     _install_receipt_provenance(jk)
     _install_recovery_provenance(jk)
