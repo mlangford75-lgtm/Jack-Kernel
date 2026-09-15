@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import time
 from pathlib import Path
+
+import jack_kernel as kernel
 
 MODULE = Path(__file__).resolve().parents[1] / "jack_responses_compat.py"
 spec = importlib.util.spec_from_file_location("jack_responses_compat_rearm_test", MODULE)
@@ -12,45 +15,67 @@ assert spec.loader is not None
 spec.loader.exec_module(compat)
 
 
-def test_responses_stream_failure_rearms_pending_resume_state():
-    class StubCFG:
-        virtual_model = "jack-kernel"
+def test_responses_stream_failure_rearms_real_pending_tool_resume_and_allows_retry(monkeypatch):
+    call_id = "call-responses-rearm"
+    messages = [{"role": "tool", "tool_call_id": call_id, "content": "result"}]
+    state = kernel.PendingToolResume(
+        resume_id="jack-resume-responses-rearm",
+        stage_key="thesis",
+        history=[{"role": "user", "content": "test"}],
+        secondary_system="",
+        usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        tools=None,
+        tool_choice=None,
+        expected_tool_call_ids=[call_id],
+        created_at=time.time(),
+        debugging_run_id=None,
+    )
+    state.in_flight = True
+    kernel.KERNEL._pending_tool_resumes[call_id] = state
 
-    class Kernel:
-        def __init__(self):
-            self.tool_rearms = []
-            self.debug_rearms = []
+    async def failing_stream(_body):
+        if False:
+            yield b""
+        raise RuntimeError("injected stream failure")
 
-        async def stream(self, _body):
-            if False:
-                yield b""
-            raise RuntimeError("injected stream failure")
-
-        async def _rearm_pending_tool_resume_for_messages(self, messages):
-            self.tool_rearms.append(messages)
-
-        async def _rearm_pending_debugging_resumes_for_messages(self, messages):
-            self.debug_rearms.append(messages)
-
-    kernel = Kernel()
+    monkeypatch.setattr(kernel.KERNEL, "stream", failing_stream)
 
     class JK:
-        CFG = StubCFG()
-        KERNEL = kernel
+        CFG = kernel.CFG
+        KERNEL = kernel.KERNEL
 
-    messages = [{"role": "tool", "tool_call_id": "call-1", "content": "result"}]
     chat = {"messages": messages, "stream": True}
 
-    async def collect():
+    async def exercise():
         events = []
-        async for chunk in compat._stream(JK, chat, {}):
-            data = next(line[6:] for line in chunk.decode().splitlines() if line.startswith("data: "))
-            events.append(json.loads(data))
-        return events
+        try:
+            async for chunk in compat._stream(JK, chat, {}):
+                data = next(
+                    line[6:]
+                    for line in chunk.decode().splitlines()
+                    if line.startswith("data: ")
+                )
+                events.append(json.loads(data))
 
-    events = asyncio.run(collect())
+            assert events[-1]["type"] == "response.failed"
+            assert events[-1]["error"]["code"] == "jack_responses_stream_error"
+            assert state.in_flight is False
 
-    assert events[-1]["type"] == "response.failed"
-    assert events[-1]["error"]["code"] == "jack_responses_stream_error"
-    assert kernel.tool_rearms == [messages]
-    assert kernel.debug_rearms == [messages]
+            resumed = await kernel.KERNEL._consume_pending_tool_resume(messages)
+            assert resumed is not None
+            resumed_state, resumed_messages = resumed
+            assert resumed_state is state
+            assert state.in_flight is True
+            assert resumed_messages == [
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": "result",
+                    "_jack_internal_tool_exchange": True,
+                }
+            ]
+        finally:
+            await kernel.KERNEL._retire_pending_tool_resume(state)
+
+    asyncio.run(exercise())
+    assert call_id not in kernel.KERNEL._pending_tool_resumes
