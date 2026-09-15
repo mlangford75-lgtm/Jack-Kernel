@@ -136,9 +136,11 @@ export default async function (pi) {
   // Correlation state is deliberately separate from controlledTask. A task UUID
   // does not become event authority merely because it is the current task.
   //
-  // pendingDispatch: POST /tasks accepted and a private marker was injected into
-  // Pi's extension-originated user input. The marker is removed in the `input`
-  // event before the prompt reaches templates, the session, or the model.
+  // pendingDispatch: POST /tasks accepted a controlled task. While unrelated Pi
+  // work is still physically open, the bridge owns that queued prompt and does
+  // not inject it into Pi. Once Pi is settled, the bridge sends the private wire
+  // prompt exactly once. `dispatched` distinguishes bridge-owned queue state from
+  // a wire prompt already handed to Pi but not yet consumed by the `input` event.
   //
   // awaitingAgentStart: the marked Pi input has been positively identified.
   // armedAgentStart: before_agent_start for that exact prompt flow has occurred.
@@ -236,6 +238,34 @@ export default async function (pi) {
     armedAgentStart = null;
   }
 
+  function dispatchPendingIfReady() {
+    const pending = pendingDispatch;
+    if (!pending || pending.dispatched) return { dispatched: false, error: null };
+
+    if (controlledTask?.id !== pending.taskId || controlledTask?.status !== "queued") {
+      pendingDispatch = null;
+      return { dispatched: false, error: null };
+    }
+
+    // activeCtx remains non-null from agent_start until agent_settled for both
+    // controlled and unrelated Pi work. Holding the wire prompt here keeps a
+    // queued controlled task revocable while unrelated work is still active.
+    if (activeCtx || controlRun || activeRun || awaitingAgentStart || armedAgentStart) {
+      return { dispatched: false, error: null };
+    }
+
+    pending.dispatched = true;
+    try {
+      pi.sendUserMessage(makeWirePrompt(pending.runId, pending.prompt), { deliverAs: "followUp" });
+      return { dispatched: true, error: null };
+    } catch (error) {
+      pendingDispatch = null;
+      const message = error instanceof Error ? error.message : String(error);
+      finishTask("failed", message);
+      return { dispatched: false, error: message };
+    }
+  }
+
   function statusSnapshot() {
     const snapshot = controlledTask
       ? taskSnapshot(controlledTask, controlRun, activeRun)
@@ -307,12 +337,12 @@ export default async function (pi) {
     broadcast("session", event, { attribution: "none" });
   });
 
-  // Pi 0.84.2 exposes input source="extension" for pi.sendUserMessage().
-  // The private marker makes this specific dispatch distinguishable from every
-  // other extension-originated message, even when the visible prompts are equal.
+  // Pi exposes input source="extension" for pi.sendUserMessage(). The private
+  // marker makes this specific dispatch distinguishable from every other
+  // extension-originated message, even when the visible prompts are equal.
   pi.on("input", async (event, ctx) => {
     latestCtx = ctx;
-    if (!pendingDispatch || event?.source !== "extension") return;
+    if (!pendingDispatch?.dispatched || event?.source !== "extension") return;
 
     const decoded = decodeWirePrompt(event?.text);
     if (!decoded || decoded.runId !== pendingDispatch.runId) return;
@@ -320,9 +350,9 @@ export default async function (pi) {
     const pending = pendingDispatch;
     pendingDispatch = null;
 
-    // A queued task can be cancelled before Pi consumes its follow-up message.
-    // In that case swallow only the exact privately-marked input. No model run
-    // starts and the cancellation remains truthful.
+    // If cancellation wins after wire dispatch but before Pi consumes the marked
+    // input, swallow exactly that input. Pre-dispatch cancellation never reaches
+    // this path because the bridge has not handed the prompt to Pi at all.
     if (controlledTask?.id !== pending.taskId || controlledTask?.status === "cancelled") {
       return { action: "handled" };
     }
@@ -489,7 +519,11 @@ export default async function (pi) {
       }
     }
 
+    // A bridge-owned controlled task queued behind unrelated Pi activity becomes
+    // eligible only after that activity physically settles. Clear the context
+    // first so the dispatch helper cannot mistake the old run for live authority.
     activeCtx = null;
+    dispatchPendingIfReady();
   });
 
   pi.on("session_shutdown", async (event, ctx) => {
@@ -586,14 +620,12 @@ export default async function (pi) {
           taskId,
           runId,
           prompt,
+          dispatched: false,
         };
         emitTask();
 
-        try {
-          pi.sendUserMessage(makeWirePrompt(runId, prompt), { deliverAs: "followUp" });
-        } catch (error) {
-          pendingDispatch = null;
-          finishTask("failed", error instanceof Error ? error.message : String(error));
+        const dispatch = dispatchPendingIfReady();
+        if (dispatch.error) {
           json(res, 500, taskSnapshot(controlledTask, controlRun, activeRun));
           return;
         }
@@ -624,6 +656,16 @@ export default async function (pi) {
           try {
             activeCtx?.abort?.();
           } catch {}
+        }
+
+        // If Jack still owns the queued prompt, cancellation is authoritative:
+        // remove it before it ever reaches Pi. If it was already dispatched, keep
+        // the correlation record so the input handler can still swallow it when
+        // Pi presents the marked extension input.
+        if (controlledTask?.status === "queued" &&
+            pendingDispatch?.taskId === controlledTask.id &&
+            !pendingDispatch.dispatched) {
+          pendingDispatch = null;
         }
 
         controlledTask.status = "cancelled";
@@ -683,5 +725,4 @@ export default async function (pi) {
   server.on("error", (error) => {
     console.error(`[pi-control] Server error on ${HOST}:${port}:`, error);
   });
-
 }
