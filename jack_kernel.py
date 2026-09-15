@@ -2427,11 +2427,12 @@ def _archive_agentic_stage1_forensic(
     frozen_stage1_answer: str,
     frozen_jack_xml: str,
 ) -> Optional[Path]:
-    """Atomically archive Stage-1 native reasoning/tool chronology after XML succeeds.
+    """Best-effort archive Stage-1 native reasoning/tool chronology after XML succeeds.
 
-    The archive is host-owned and is never automatically rehydrated into model context.
-    With archival enabled, disk commit must succeed before the completed Agentic turn
-    discards Stage-1 native cognition. Stage-2 XML reasoning is intentionally not stored.
+    The archive is optional host-owned observability and is never automatically rehydrated
+    into model context. Persistence failure must not invalidate the completed frozen Stage-1
+    answer or the zero-answer-authority Stage-2 Jack XML. Stage-2 XML reasoning is intentionally
+    not stored.
     """
     if CFG.forensic_archive_mode == "off":
         _discard_agentic_stage1_forensic_snapshot(history)
@@ -2439,10 +2440,11 @@ def _archive_agentic_stage1_forensic(
 
     snapshot = _find_agentic_stage1_forensic_snapshot(history)
     if snapshot is None:
-        raise HTTPException(
-            status_code=500,
-            detail="Agentic forensic archive was enabled but the Stage-1 checkpoint was unavailable.",
+        LOG.warning(
+            "Agentic forensic archive skipped: Stage-1 checkpoint unavailable; "
+            "frozen Stage-1 answer and Jack XML remain authoritative"
         )
+        return None
 
     record = _json_forensic_copy(snapshot)
     record["archived_at_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -2454,26 +2456,30 @@ def _archive_agentic_stage1_forensic(
     target = record.get("active_response_target") or {}
     target_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(target.get("id") or "unknown-target"))
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    root = _forensic_archive_root() / "agentic" / stamp[:8]
-    root.mkdir(parents=True, exist_ok=True)
-    final_path = root / f"{stamp}_{target_id}_stage1.json"
-    if final_path.exists():
-        final_path = root / f"{stamp}_{target_id}_{uuid.uuid4().hex[:8]}_stage1.json"
-    temp_path = final_path.with_name(final_path.name + f".{uuid.uuid4().hex}.tmp")
-    payload = json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True, default=str) + "\n"
+    temp_path: Optional[Path] = None
     try:
+        root = _forensic_archive_root() / "agentic" / stamp[:8]
+        root.mkdir(parents=True, exist_ok=True)
+        final_path = root / f"{stamp}_{target_id}_stage1.json"
+        if final_path.exists():
+            final_path = root / f"{stamp}_{target_id}_{uuid.uuid4().hex[:8]}_stage1.json"
+        temp_path = final_path.with_name(final_path.name + f".{uuid.uuid4().hex}.tmp")
+        payload = json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True, default=str) + "\n"
         with temp_path.open("w", encoding="utf-8", newline="\n") as handle:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp_path, final_path)
-    except Exception as exc:
-        with contextlib.suppress(Exception):
-            temp_path.unlink()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Agentic forensic Stage-1 archive failed before commit: {exc}",
-        ) from exc
+    except Exception:
+        if temp_path is not None:
+            with contextlib.suppress(Exception):
+                temp_path.unlink()
+        LOG.exception(
+            "Agentic forensic Stage-1 archive failed; "
+            "frozen Stage-1 answer and Jack XML remain authoritative"
+        )
+        _discard_agentic_stage1_forensic_snapshot(history)
+        return None
 
     _discard_agentic_stage1_forensic_snapshot(history)
     LOG.info(
