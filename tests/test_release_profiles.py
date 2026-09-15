@@ -76,6 +76,10 @@ def main():
     assert "charCodeAt(0) === 0xfeff" in pi_source
     assert 'const DEFAULT_JACK_URL = "http://127.0.0.1:8001";' in pi_source
 
+    kernel_source = SRC.read_text(encoding="utf-8")
+    assert "Jack Kernel 2.x" not in kernel_source
+    assert "Low is disabled in Jack Kernel v0.1.1" in kernel_source
+
     print("Jack Kernel release reasoning-profile and Pi BOM regression tests: PASS")
 
 

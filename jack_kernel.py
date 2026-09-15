@@ -396,7 +396,7 @@ _reasoning_level = _REASONING_LEVEL_ALIASES.get(CFG.reasoning_level, CFG.reasoni
 if _reasoning_level not in REASONING_PROFILES:
     raise RuntimeError("JACK_REASONING_LEVEL must be off, medium, x-high, deep-research, agentic, code-debugging, or code-debugging-deep; low is listed but disabled")
 if REASONING_PROFILES[_reasoning_level].get("disabled"):
-    raise RuntimeError("JACK_REASONING_LEVEL=low is disabled in Jack Kernel 2.x. Choose off, medium, x-high, deep-research, agentic, code-debugging, or code-debugging-deep.")
+    raise RuntimeError("JACK_REASONING_LEVEL=low is disabled in Jack Kernel v0.1.1. Choose off, medium, x-high, deep-research, agentic, code-debugging, or code-debugging-deep.")
 ACTIVE_REASONING_PROFILE = REASONING_PROFILES[_reasoning_level]
 AGENTIC_MODE = ACTIVE_REASONING_PROFILE["mode"] == "agentic"
 ULTRA_MODE = ACTIVE_REASONING_PROFILE["mode"] == "ultra"
@@ -1530,6 +1530,35 @@ def _sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _runtime_artifact_sha256() -> str:
+    """Hash the running source/artifact for trace identity without model-context injection."""
+    import hashlib
+    candidates: List[Path] = []
+    try:
+        candidates.append(Path(__file__).resolve())
+    except Exception:
+        pass
+    if getattr(sys, "frozen", False):
+        try:
+            candidates.insert(0, Path(sys.executable).resolve())
+        except Exception:
+            pass
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                h = hashlib.sha256()
+                with candidate.open("rb") as fh:
+                    for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                        h.update(chunk)
+                return h.hexdigest()
+        except Exception:
+            continue
+    return "UNAVAILABLE"
+
+
+RUNTIME_ARTIFACT_SHA256 = _runtime_artifact_sha256()
+
+
 TOOL_EVIDENCE_EXCERPT_CHARS = max(256, int(os.getenv("JACK_TOOL_EVIDENCE_EXCERPT_CHARS", "800") or 800))
 PI_SESSION_SCAN_MAX_FILES = max(1, int(os.getenv("JACK_PI_SESSION_SCAN_MAX_FILES", "256") or 256))
 
@@ -2398,11 +2427,12 @@ def _archive_agentic_stage1_forensic(
     frozen_stage1_answer: str,
     frozen_jack_xml: str,
 ) -> Optional[Path]:
-    """Atomically archive Stage-1 native reasoning/tool chronology after XML succeeds.
+    """Best-effort archive Stage-1 native reasoning/tool chronology after XML succeeds.
 
-    The archive is host-owned and is never automatically rehydrated into model context.
-    With archival enabled, disk commit must succeed before the completed Agentic turn
-    discards Stage-1 native cognition. Stage-2 XML reasoning is intentionally not stored.
+    The archive is optional host-owned observability and is never automatically rehydrated
+    into model context. Persistence failure must not invalidate the completed frozen Stage-1
+    answer or the zero-answer-authority Stage-2 Jack XML. Stage-2 XML reasoning is intentionally
+    not stored.
     """
     if CFG.forensic_archive_mode == "off":
         _discard_agentic_stage1_forensic_snapshot(history)
@@ -2410,10 +2440,11 @@ def _archive_agentic_stage1_forensic(
 
     snapshot = _find_agentic_stage1_forensic_snapshot(history)
     if snapshot is None:
-        raise HTTPException(
-            status_code=500,
-            detail="Agentic forensic archive was enabled but the Stage-1 checkpoint was unavailable.",
+        LOG.warning(
+            "Agentic forensic archive skipped: Stage-1 checkpoint unavailable; "
+            "frozen Stage-1 answer and Jack XML remain authoritative"
         )
+        return None
 
     record = _json_forensic_copy(snapshot)
     record["archived_at_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -2425,26 +2456,30 @@ def _archive_agentic_stage1_forensic(
     target = record.get("active_response_target") or {}
     target_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(target.get("id") or "unknown-target"))
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    root = _forensic_archive_root() / "agentic" / stamp[:8]
-    root.mkdir(parents=True, exist_ok=True)
-    final_path = root / f"{stamp}_{target_id}_stage1.json"
-    if final_path.exists():
-        final_path = root / f"{stamp}_{target_id}_{uuid.uuid4().hex[:8]}_stage1.json"
-    temp_path = final_path.with_name(final_path.name + f".{uuid.uuid4().hex}.tmp")
-    payload = json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True, default=str) + "\n"
+    temp_path: Optional[Path] = None
     try:
+        root = _forensic_archive_root() / "agentic" / stamp[:8]
+        root.mkdir(parents=True, exist_ok=True)
+        final_path = root / f"{stamp}_{target_id}_stage1.json"
+        if final_path.exists():
+            final_path = root / f"{stamp}_{target_id}_{uuid.uuid4().hex[:8]}_stage1.json"
+        temp_path = final_path.with_name(final_path.name + f".{uuid.uuid4().hex}.tmp")
+        payload = json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True, default=str) + "\n"
         with temp_path.open("w", encoding="utf-8", newline="\n") as handle:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp_path, final_path)
-    except Exception as exc:
-        with contextlib.suppress(Exception):
-            temp_path.unlink()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Agentic forensic Stage-1 archive failed before commit: {exc}",
-        ) from exc
+    except Exception:
+        if temp_path is not None:
+            with contextlib.suppress(Exception):
+                temp_path.unlink()
+        LOG.exception(
+            "Agentic forensic Stage-1 archive failed; "
+            "frozen Stage-1 answer and Jack XML remain authoritative"
+        )
+        _discard_agentic_stage1_forensic_snapshot(history)
+        return None
 
     _discard_agentic_stage1_forensic_snapshot(history)
     LOG.info(
@@ -6984,12 +7019,77 @@ def completion_envelope(result: KernelResult) -> Dict[str, Any]:
     }
 
 
+def _runtime_identity_details() -> Dict[str, Any]:
+    if ULTRA_MODE:
+        mode = "deep-research"
+        flow = ["extended_initial", "extended_reflection", "extended_synthesis"]
+        authoritative_stage = "extended_synthesis"
+        retention_policy = (
+            "preserve_all_through_synthesis_then_prune_stage1_stage2_reasoning_only_"
+            "keep_outputs_tools_results_stage3_reasoning"
+        )
+    elif AGENTIC_MODE:
+        mode = "agentic"
+        flow = ["extended_initial", "extended_reflection"]
+        authoritative_stage = "extended_initial"
+        retention_policy = (
+            "retain_completed_user_xml_frozen_a1_prune_historical_native_reasoning_"
+            "and_consumed_tool_protocol"
+        )
+    elif CODE_DEBUGGING_MODE:
+        mode = "code-debugging"
+        flow = (
+            ["debug_intake"]
+            + [_debugging_stage_key(i) for i in range(1, DEBUGGING_PASS_COUNT + 1)]
+            + ["debug_summary"]
+        )
+        authoritative_stage = "debug_summary"
+        retention_policy = (
+            "retain_user_pass0_and_committed_pass_summaries_fresh_context_per_pass"
+        )
+    else:
+        mode = "native"
+        flow = ["thesis"]
+        authoritative_stage = "thesis"
+        retention_policy = "caller_history_with_internal_tool_exchange_pruning"
+
+    stage_controls: Dict[str, Dict[str, Any]] = {}
+    for stage_key in flow:
+        profile = STAGES[stage_key]
+        stage_controls[stage_key] = {
+            "name": profile.name,
+            "thinking": bool(profile.thinking),
+            "reasoning_effort": profile.reasoning_effort,
+            "allow_tools": bool(profile.allow_tools),
+            "temperature": profile.temperature,
+            "force_preserve_thinking": bool(profile.force_preserve_thinking),
+            "max_tokens": profile.max_tokens,
+        }
+
+    return {
+        "reasoning_profile": "deep-research" if _reasoning_level == "ultra" else _reasoning_level,
+        "mode": mode,
+        "flow": flow,
+        "authoritative_stage": authoritative_stage,
+        "preserve_thinking": bool(CFG.preserve_thinking),
+        "stage_controls": stage_controls,
+        "context_policy": {
+            "context_length": BACKEND.context_length,
+            "context_length_source": BACKEND.context_length_source,
+        },
+        "retention_policy": retention_policy,
+    }
+
+
 @APP.get("/")
 async def root() -> Dict[str, Any]:
     preset = BACKEND_PRESETS.get(CFG.backend_profile, BACKEND_PRESETS["custom"])
     return {
         "name": "Jack Kernel",
         "version": PUBLIC_VERSION,
+        "runtime_artifact_sha256": RUNTIME_ARTIFACT_SHA256,
+        "forensic_archive_mode": CFG.forensic_archive_mode,
+        "runtime_identity": _runtime_identity_details(),
         "reasoning_level": ACTIVE_REASONING_PROFILE["label"],
         "backend_profile": CFG.backend_profile,
         "backend_name": preset["short_label"],
@@ -7010,6 +7110,9 @@ async def health(request: Request) -> Dict[str, Any]:
         "status": "ok",
         "name": "Jack Kernel",
         "version": PUBLIC_VERSION,
+        "runtime_artifact_sha256": RUNTIME_ARTIFACT_SHA256,
+        "forensic_archive_mode": CFG.forensic_archive_mode,
+        "runtime_identity": _runtime_identity_details(),
         "reasoning_level": ACTIVE_REASONING_PROFILE["label"],
         "backend_profile": CFG.backend_profile,
         "backend_name": preset["short_label"],
@@ -7963,7 +8066,7 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
     if not choice:
         return
     if choice in {"2", "low"}:
-        print(_ansi_rgb("Low is disabled in Jack Kernel 2.x and cannot be selected.", _JACK_MUTED))
+        print(_ansi_rgb("Low is disabled in Jack Kernel v0.1.1 and cannot be selected.", _JACK_MUTED))
         return
     mapping = {
         "1": "off", "off": "off", "flash": "off",

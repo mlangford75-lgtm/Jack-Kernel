@@ -35,6 +35,8 @@ Install with Primary Pi stopped:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\install-pi-control-bridge-v2.ps1"
 ```
 
+The installer is idempotent with respect to bridge configuration. If `~/.pi/agent/jack-kernel.json` is missing the orchestration fields, it provisions only the missing `controlPort` and `controlToken`; the default provisioned control port is `8013`. Existing provider settings, custom control ports, and existing control tokens are preserved.
+
 Restart Primary Pi after installation.
 
 Accepted bridge SHA-256:

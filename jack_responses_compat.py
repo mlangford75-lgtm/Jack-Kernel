@@ -153,8 +153,6 @@ def _choice(value: Any) -> Any:
         return value or "auto"
     if value == "required":
         raise HTTPException(status_code=400, detail="Responses tool_choice='required' is not supported by Jack Kernel")
-    if isinstance(value, dict) and value.get("type") == "function" and value.get("name"):
-        return {"type": "function", "function": {"name": str(value["name"])}}
     raise HTTPException(status_code=400, detail="unsupported Responses tool_choice")
 
 
@@ -164,8 +162,30 @@ def _chat_body(body: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, str]]:
     if body.get("model") is not None:
         chat["model"] = body["model"]  # virtual only; sanitize_agent_request removes authority.
     if tools:
-        chat["tools"] = tools
-        chat["tool_choice"] = _choice(body.get("tool_choice", "auto"))
+        requested_choice = body.get("tool_choice", "auto")
+        if (
+            isinstance(requested_choice, dict)
+            and requested_choice.get("type") in {"function", "custom"}
+            and requested_choice.get("name")
+        ):
+            requested_type = str(requested_choice["type"])
+            requested_name = str(requested_choice["name"])
+            if kinds.get(requested_name) != requested_type:
+                raise HTTPException(status_code=400, detail="Responses named tool_choice does not match an available tool")
+            selected = [
+                tool for tool in tools
+                if str((tool.get("function") or {}).get("name") or "") == requested_name
+            ]
+            if len(selected) != 1:
+                raise HTTPException(status_code=400, detail="Responses named tool_choice is ambiguous or unavailable")
+            # Some OpenAI-compatible local backends accept only the string
+            # tool_choice forms. Restricting the visible tool surface to the named
+            # tool and requiring a tool call preserves exact named-tool semantics.
+            chat["tools"] = selected
+            chat["tool_choice"] = "required"
+        else:
+            chat["tools"] = tools
+            chat["tool_choice"] = _choice(requested_choice)
     return chat, kinds
 
 
@@ -260,6 +280,9 @@ async def _stream(jk: Any, chat: Dict[str, Any], kinds: Dict[str, str]) -> Async
         failed = {"id": rid, "object": "response", "created_at": created, "completed_at": int(time.time()), "status": "failed",
                   "error": {"code": "jack_responses_stream_error", "message": str(exc)}, "model": jk.CFG.virtual_model, "output": []}
         yield _sse("response.failed", {"response": failed, "error": failed["error"]}); return
+    finally:
+        await jk.KERNEL._rearm_pending_tool_resume_for_messages(chat.get("messages"))
+        await jk.KERNEL._rearm_pending_debugging_resumes_for_messages(chat.get("messages"))
 
     output: List[Dict[str, Any]] = []; oi = 0
     if rs_open:
