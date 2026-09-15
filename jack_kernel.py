@@ -7013,6 +7013,68 @@ def completion_envelope(result: KernelResult) -> Dict[str, Any]:
     }
 
 
+def _runtime_identity_details() -> Dict[str, Any]:
+    if ULTRA_MODE:
+        mode = "deep-research"
+        flow = ["extended_initial", "extended_reflection", "extended_synthesis"]
+        authoritative_stage = "extended_synthesis"
+        retention_policy = (
+            "preserve_all_through_synthesis_then_prune_stage1_stage2_reasoning_only_"
+            "keep_outputs_tools_results_stage3_reasoning"
+        )
+    elif AGENTIC_MODE:
+        mode = "agentic"
+        flow = ["extended_initial", "extended_reflection"]
+        authoritative_stage = "extended_initial"
+        retention_policy = (
+            "retain_completed_user_xml_frozen_a1_prune_historical_native_reasoning_"
+            "and_consumed_tool_protocol"
+        )
+    elif CODE_DEBUGGING_MODE:
+        mode = "code-debugging"
+        flow = (
+            ["debug_intake"]
+            + [_debugging_stage_key(i) for i in range(1, DEBUGGING_PASS_COUNT + 1)]
+            + ["debug_summary"]
+        )
+        authoritative_stage = "debug_summary"
+        retention_policy = (
+            "retain_user_pass0_and_committed_pass_summaries_fresh_context_per_pass"
+        )
+    else:
+        mode = "native"
+        flow = ["thesis"]
+        authoritative_stage = "thesis"
+        retention_policy = "caller_history_with_internal_tool_exchange_pruning"
+
+    stage_controls: Dict[str, Dict[str, Any]] = {}
+    for stage_key in flow:
+        profile = STAGES[stage_key]
+        stage_controls[stage_key] = {
+            "name": profile.name,
+            "thinking": bool(profile.thinking),
+            "reasoning_effort": profile.reasoning_effort,
+            "allow_tools": bool(profile.allow_tools),
+            "temperature": profile.temperature,
+            "force_preserve_thinking": bool(profile.force_preserve_thinking),
+            "max_tokens": profile.max_tokens,
+        }
+
+    return {
+        "reasoning_profile": _reasoning_level,
+        "mode": mode,
+        "flow": flow,
+        "authoritative_stage": authoritative_stage,
+        "preserve_thinking": bool(CFG.preserve_thinking),
+        "stage_controls": stage_controls,
+        "context_policy": {
+            "context_length": BACKEND.context_length,
+            "context_length_source": BACKEND.context_length_source,
+        },
+        "retention_policy": retention_policy,
+    }
+
+
 @APP.get("/")
 async def root() -> Dict[str, Any]:
     preset = BACKEND_PRESETS.get(CFG.backend_profile, BACKEND_PRESETS["custom"])
@@ -7021,6 +7083,7 @@ async def root() -> Dict[str, Any]:
         "version": PUBLIC_VERSION,
         "runtime_artifact_sha256": RUNTIME_ARTIFACT_SHA256,
         "forensic_archive_mode": CFG.forensic_archive_mode,
+        "runtime_identity": _runtime_identity_details(),
         "reasoning_level": ACTIVE_REASONING_PROFILE["label"],
         "backend_profile": CFG.backend_profile,
         "backend_name": preset["short_label"],
@@ -7043,6 +7106,7 @@ async def health(request: Request) -> Dict[str, Any]:
         "version": PUBLIC_VERSION,
         "runtime_artifact_sha256": RUNTIME_ARTIFACT_SHA256,
         "forensic_archive_mode": CFG.forensic_archive_mode,
+        "runtime_identity": _runtime_identity_details(),
         "reasoning_level": ACTIVE_REASONING_PROFILE["label"],
         "backend_profile": CFG.backend_profile,
         "backend_name": preset["short_label"],
