@@ -396,7 +396,7 @@ _reasoning_level = _REASONING_LEVEL_ALIASES.get(CFG.reasoning_level, CFG.reasoni
 if _reasoning_level not in REASONING_PROFILES:
     raise RuntimeError("JACK_REASONING_LEVEL must be off, medium, x-high, deep-research, agentic, code-debugging, or code-debugging-deep; low is listed but disabled")
 if REASONING_PROFILES[_reasoning_level].get("disabled"):
-    raise RuntimeError("JACK_REASONING_LEVEL=low is disabled in Jack Kernel 2.x. Choose off, medium, x-high, deep-research, agentic, code-debugging, or code-debugging-deep.")
+    raise RuntimeError("JACK_REASONING_LEVEL=low is disabled in Jack Kernel v0.1.1. Choose off, medium, x-high, deep-research, agentic, code-debugging, or code-debugging-deep.")
 ACTIVE_REASONING_PROFILE = REASONING_PROFILES[_reasoning_level]
 AGENTIC_MODE = ACTIVE_REASONING_PROFILE["mode"] == "agentic"
 ULTRA_MODE = ACTIVE_REASONING_PROFILE["mode"] == "ultra"
@@ -7963,7 +7963,7 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
     if not choice:
         return
     if choice in {"2", "low"}:
-        print(_ansi_rgb("Low is disabled in Jack Kernel 2.x and cannot be selected.", _JACK_MUTED))
+        print(_ansi_rgb("Low is disabled in Jack Kernel v0.1.1 and cannot be selected.", _JACK_MUTED))
         return
     mapping = {
         "1": "off", "off": "off", "flash": "off",
