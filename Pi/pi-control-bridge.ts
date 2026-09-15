@@ -236,7 +236,6 @@ export default async function (pi) {
     armedAgentStart = null;
   }
 
-
   function statusSnapshot() {
     const snapshot = controlledTask
       ? taskSnapshot(controlledTask, controlRun, activeRun)
@@ -608,9 +607,25 @@ export default async function (pi) {
           json(res, 409, { error: "no active controlled task" });
           return;
         }
-        try {
-          activeCtx?.abort?.();
-        } catch {}
+
+        // Abort only when the current Pi context is positively bound to the
+        // controlled task/run being cancelled. A queued controlled task may
+        // coexist with an unrelated active Pi run; cancelling the queued task
+        // must not abort that unrelated work.
+        const controlledActiveContext = Boolean(
+          controlledTask?.status === "running" &&
+          activeRun &&
+          controlRun &&
+          activeRun.taskId === controlledTask.id &&
+          controlRun.taskId === controlledTask.id &&
+          activeRun.runId === controlRun.runId
+        );
+        if (controlledActiveContext) {
+          try {
+            activeCtx?.abort?.();
+          } catch {}
+        }
+
         controlledTask.status = "cancelled";
         controlledTask.endedAt = new Date().toISOString();
         emitTask();
