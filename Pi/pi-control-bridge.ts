@@ -408,7 +408,15 @@ export default async function (pi) {
     if (binding && controlledTask?.id === binding.taskId && event?.message?.role === "assistant") {
       controlledTask.final = event.message;
       const failure = assistantFailure(event.message);
-      if (failure) controlledTask.error = failure;
+      if (failure) {
+        controlledTask.error = failure;
+      } else if (["running", "settling"].includes(controlledTask.status)) {
+        // Pi can retry the same controlled operation after a transient assistant
+        // transport/generation failure. A later successful run-bound assistant
+        // completion supersedes that earlier assistant failure. Deterministic
+        // task-level failures are already terminal and therefore are not cleared.
+        controlledTask.error = undefined;
+      }
     }
     broadcast("message_end", event, { binding });
   });
