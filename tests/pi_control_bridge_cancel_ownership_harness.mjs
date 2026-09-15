@@ -167,6 +167,20 @@ try {
   assert.equal(controlledAbortCount, 1, "controlled running cancellation must abort its bound context exactly once");
   assert.equal(unrelatedAbortCount, 0);
 
+  // While the cancelled run is still physically open, admission must remain
+  // closed. This deterministic check avoids the live-test race where Pi may
+  // settle between the cancellation response and a subsequent HTTP request.
+  const overlapSubmit = await fetch(`http://127.0.0.1:${port}/v1/tasks`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ prompt: "must remain blocked before settlement" }),
+  });
+  assert.equal(
+    overlapSubmit.status,
+    409,
+    "new controlled work must be rejected while cancelled runOpen is still true",
+  );
+
   await emit("agent_end", { messages: [] }, controlledContext);
   idle = true;
   await emit("agent_settled", {}, idleContext);
