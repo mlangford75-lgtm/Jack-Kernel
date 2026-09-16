@@ -1559,6 +1559,44 @@ def _runtime_artifact_sha256() -> str:
 RUNTIME_ARTIFACT_SHA256 = _runtime_artifact_sha256()
 
 
+def _runtime_manifest_digest(components: Dict[str, str]) -> str:
+    """Return a deterministic manifest digest without making identity a startup gate."""
+    import hashlib
+    if not components or any(value == "UNAVAILABLE" for value in components.values()):
+        return "UNAVAILABLE"
+    canonical = json.dumps(
+        dict(sorted(components.items())),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+RUNTIME_MANIFEST_COMPONENTS: Dict[str, str] = {
+    "jack_kernel.py": RUNTIME_ARTIFACT_SHA256,
+}
+RUNTIME_MANIFEST_SHA256 = _runtime_manifest_digest(RUNTIME_MANIFEST_COMPONENTS)
+
+
+def _register_runtime_manifest_components(components: Dict[str, Any]) -> None:
+    """Add active runtime components to forensic identity without blocking useful work."""
+    import hashlib
+    global RUNTIME_MANIFEST_COMPONENTS, RUNTIME_MANIFEST_SHA256
+
+    updated = dict(RUNTIME_MANIFEST_COMPONENTS)
+    for raw_name, raw_path in components.items():
+        name = str(raw_name or "").strip()
+        if not name:
+            continue
+        try:
+            updated[name] = hashlib.sha256(Path(raw_path).resolve().read_bytes()).hexdigest()
+        except Exception:
+            updated[name] = "UNAVAILABLE"
+
+    RUNTIME_MANIFEST_COMPONENTS = dict(sorted(updated.items()))
+    RUNTIME_MANIFEST_SHA256 = _runtime_manifest_digest(RUNTIME_MANIFEST_COMPONENTS)
+
+
 TOOL_EVIDENCE_EXCERPT_CHARS = max(256, int(os.getenv("JACK_TOOL_EVIDENCE_EXCERPT_CHARS", "800") or 800))
 PI_SESSION_SCAN_MAX_FILES = max(1, int(os.getenv("JACK_PI_SESSION_SCAN_MAX_FILES", "256") or 256))
 
@@ -3801,8 +3839,9 @@ class OpenAICompatibleBackend:
             self._apply_tool_policy(payload, tools, tool_choice)
 
         url = f"{self.cfg.backend_base_url}/chat/completions"
+        current_payload = payload
         try:
-            response = await self._client.post(url, headers=self._headers(), json=payload)
+            response = await self._client.post(url, headers=self._headers(), json=current_payload)
         except Exception as exc:
             raise HTTPException(
                 status_code=502,
@@ -3811,19 +3850,20 @@ class OpenAICompatibleBackend:
 
         # min_p is a Qwen-recommended no-op at 0.0, but some OpenAI-compatible
         # implementations reject the field. Retry once without only that no-op.
-        if response.status_code == 400 and "min_p" in payload:
+        if response.status_code == 400 and "min_p" in current_payload:
             body_lower = response.text.lower()
             if "min_p" in body_lower or "unknown" in body_lower or "unsupported" in body_lower:
-                retry_payload = dict(payload)
+                retry_payload = dict(current_payload)
                 retry_payload.pop("min_p", None)
+                current_payload = retry_payload
                 response = await self._client.post(
-                    url, headers=self._headers(), json=retry_payload
+                    url, headers=self._headers(), json=current_payload
                 )
 
         if response.status_code >= 500:
             LOG.warning("Backend returned HTTP %d during %s; retrying once", response.status_code, profile.name)
             await asyncio.sleep(0.15)
-            response = await self._client.post(url, headers=self._headers(), json=payload)
+            response = await self._client.post(url, headers=self._headers(), json=current_payload)
 
         if response.status_code >= 400:
             raise HTTPException(
@@ -3899,7 +3939,8 @@ class OpenAICompatibleBackend:
             )
             return await self._client.send(req, stream=True)
 
-        response = await send_stream(payload)
+        current_payload = payload
+        response = await send_stream(current_payload)
 
         # Compatibility retry: min_p=0 is a recommended no-op but may be
         # rejected by some OpenAI-compatible builds. Some builds also reject
@@ -3907,7 +3948,7 @@ class OpenAICompatibleBackend:
         if response.status_code == 400:
             raw = (await response.aread()).decode("utf-8", errors="replace")
             await response.aclose()
-            retry_payload = dict(payload)
+            retry_payload = dict(current_payload)
             changed = False
             lower = raw.lower()
             if "min_p" in retry_payload and (
@@ -3921,7 +3962,8 @@ class OpenAICompatibleBackend:
                 retry_payload.pop("stream_options", None)
                 changed = True
             if changed:
-                response = await send_stream(retry_payload)
+                current_payload = retry_payload
+                response = await send_stream(current_payload)
             else:
                 raise HTTPException(
                     status_code=502,
@@ -3934,7 +3976,7 @@ class OpenAICompatibleBackend:
             await response.aclose()
             LOG.warning("Backend returned HTTP %d during streaming %s; retrying once", status, profile.name)
             await asyncio.sleep(0.15)
-            response = await send_stream(payload)
+            response = await send_stream(current_payload)
 
         if response.status_code >= 400:
             raw = (await response.aread()).decode("utf-8", errors="replace")
@@ -7088,6 +7130,8 @@ async def root() -> Dict[str, Any]:
         "name": "Jack Kernel",
         "version": PUBLIC_VERSION,
         "runtime_artifact_sha256": RUNTIME_ARTIFACT_SHA256,
+        "runtime_manifest_sha256": RUNTIME_MANIFEST_SHA256,
+        "runtime_manifest_components": dict(RUNTIME_MANIFEST_COMPONENTS),
         "forensic_archive_mode": CFG.forensic_archive_mode,
         "runtime_identity": _runtime_identity_details(),
         "reasoning_level": ACTIVE_REASONING_PROFILE["label"],
@@ -7111,6 +7155,8 @@ async def health(request: Request) -> Dict[str, Any]:
         "name": "Jack Kernel",
         "version": PUBLIC_VERSION,
         "runtime_artifact_sha256": RUNTIME_ARTIFACT_SHA256,
+        "runtime_manifest_sha256": RUNTIME_MANIFEST_SHA256,
+        "runtime_manifest_components": dict(RUNTIME_MANIFEST_COMPONENTS),
         "forensic_archive_mode": CFG.forensic_archive_mode,
         "runtime_identity": _runtime_identity_details(),
         "reasoning_level": ACTIVE_REASONING_PROFILE["label"],
