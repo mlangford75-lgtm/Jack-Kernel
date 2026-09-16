@@ -304,6 +304,27 @@ A Jack event envelope can include:
 
 The supervisor consumes Jack’s SSE stream, never the private worker stream.
 
+
+### 8.1 Status snapshots are not live-progress streams
+
+Jack's orchestration status surface and Jack's SSE event stream have different responsibilities.
+
+The status endpoint exposes authoritative compact control and lifecycle state, including readiness, task identity, run identity, `run_epoch`, cancellation state, `runOpen`, and physical settlement.
+
+The SSE event stream exposes the authoritative chronological record of worker activity and lifecycle transitions, including messages, tool activity, run binding, task-state changes, agent completion, and settlement.
+
+A supervisor MUST NOT use a compact status snapshot as the sole source of truth for whether an active worker is making progress.
+
+While `runOpen=true`, the supervisor must continue consuming Jack's SSE stream. If a status snapshot appears unchanged, stale, incomplete, or inconsistent with newer SSE events, the supervisor must inspect the live or replayed event stream before concluding that the worker is inactive, failed, stalled, or eligible for retry.
+
+Absence of visible progress in a status response is not evidence that the worker has stopped progressing.
+
+A supervisor MUST NOT cancel, replace, retry, or declare an active run failed merely because the compact status snapshot has not changed.
+
+When an SSE connection is interrupted, the supervisor must reconnect using Jack's sequence/replay contract and recover available events rather than assuming that no activity occurred during the interruption.
+
+Status remains authoritative for compact lifecycle/control facts. SSE remains authoritative for chronological worker activity. Neither surface should be substituted for the other.
+
 ---
 
 ## 9. Session replacement requires an explicit readiness contract
@@ -494,6 +515,26 @@ runOpen = false
 
 The supervisor interprets returned events/results, decides whether the user’s objective has been satisfied, and issues follow-up worker instructions through Jack when needed.
 
+
+### 17.1 Active-run supervision policy
+
+While a controlled worker run remains physically open, the supervisor observes and supervises that existing run rather than treating latency, silence, repetition, or apparent lack of progress as proof of failure.
+
+The supervisor MUST NOT cancel, interrupt, replace, or otherwise terminate an active worker run merely because it appears slow, repetitive, stalled, or unproductive.
+
+A supervisor-side timeout, SSE disconnect, quiet period, repeated model behavior, or suspected worker stall is not authoritative evidence that the worker has failed or settled. The supervisor MUST continue consuming Jack's event stream, reconnect with replay when necessary, and rely on Jack's deterministic lifecycle state.
+
+Cancellation or session replacement requires either:
+
+- an explicit user instruction; or
+- an authoritative deterministic condition exposed through Jack that makes continued execution impossible or invalid under the orchestration contract.
+
+While `runOpen=true`, the supervisor MUST NOT create competing overlapping controlled work. Corrective follow-up work is normally submitted only after the current controlled run reaches authoritative physical settlement with `runOpen=false`.
+
+The supervisor may evaluate streamed worker messages and tool events while the run is active, but those observations remain supervisory evidence. They do not themselves authorize cancellation, establish failure, or establish settlement.
+
+This rule preserves the distinction between probabilistic supervisory judgment and deterministic execution authority: the model may suspect that a run is stuck, but Jack's lifecycle state determines whether the run is actually open, cancelled, failed, or settled.
+
 ---
 
 ## 18. Security boundary
@@ -592,6 +633,7 @@ Task IDs, run IDs, event ownership, settlement, readiness, and evidence provenan
 - stable `task_id`;
 - real `run_id` and `run_epoch`;
 - live message events visible;
+- active-run progress is observed through Jack's SSE stream rather than inferred from the compact status snapshot alone;
 - tool events visible when tools are used;
 - authoritative final task state;
 - physical settlement produces `runOpen: false`;
