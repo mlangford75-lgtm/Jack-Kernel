@@ -109,7 +109,19 @@ function taskSnapshot(task, controlRun = null, activeRun = null) {
   };
   if (task.endedAt) snapshot.endedAt = task.endedAt;
   if (task.settledAt) snapshot.settledAt = task.settledAt;
-  if (task.error) snapshot.error = task.error;
+  if (task.error) {
+    const errorEpoch = Number(task.errorRunEpoch || 0);
+    const activeEpoch = Number(activeRun?.runEpoch || 0);
+    if (task.status === "running" &&
+        activeEpoch > 0 &&
+        errorEpoch > 0 &&
+        errorEpoch < activeEpoch) {
+      snapshot.priorError = task.error;
+      snapshot.priorErrorRunEpoch = errorEpoch;
+    } else {
+      snapshot.error = task.error;
+    }
+  }
   return snapshot;
 }
 
@@ -418,6 +430,10 @@ export default async function (pi) {
         runEpoch: nextEpoch,
       };
       controlledTask.runEpoch = nextEpoch;
+      if (controlledTask.status !== "cancelled") {
+        controlledTask.status = "running";
+      }
+      emitTask(activeRun);
       return;
     }
 
@@ -439,12 +455,14 @@ export default async function (pi) {
       const failure = assistantFailure(event.message);
       if (failure) {
         controlledTask.error = failure;
+        controlledTask.errorRunEpoch = binding.runEpoch;
       } else if (["running", "settling"].includes(controlledTask.status)) {
         // Pi can retry the same controlled operation after a transient assistant
         // transport/generation failure. A later successful run-bound assistant
         // completion supersedes that earlier assistant failure. Deterministic
         // task-level failures are already terminal and therefore are not cleared.
         controlledTask.error = undefined;
+        controlledTask.errorRunEpoch = undefined;
       }
     }
     broadcast("message_end", event, { binding });
@@ -511,8 +529,6 @@ export default async function (pi) {
       } else if (["running", "settling"].includes(controlledTask.status)) {
         if (controlledTask.error) {
           finishTask("failed", controlledTask.error);
-        } else if (controlledTask.toolErrors.length > 0) {
-          finishTask("failed", "one or more tool executions failed");
         } else {
           finishTask("completed");
         }

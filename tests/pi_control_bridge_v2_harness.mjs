@@ -228,10 +228,56 @@ idle = false;
 await emit("before_agent_start", { prompt: retryInput.text });
 await emit("agent_start", {});
 await emit("message_end", { message: { role: "user", content: retryPrompt } });
+await emit("message_end", {
+  message: {
+    role: "assistant",
+    content: "",
+    errorMessage: "Connection error",
+    stopReason: "error",
+  },
+});
 await emit("agent_end", { messages: [], willRetry: true });
-// Pi retry/continuation agent_start has no new controlled input marker.
+
+// Pi retry/continuation agent_start has no new controlled input marker. The new
+// epoch is live work, so status must return to running while retaining the
+// previous epoch's failure only as historical diagnostic state.
 await emit("agent_start", {});
-await emit("message_end", { message: { role: "assistant", content: "retry success" } });
+
+const retryEpoch2StatusResponse = await fetch(
+  `http://127.0.0.1:${port}/v1/status`,
+  { headers },
+);
+assert.equal(retryEpoch2StatusResponse.status, 200);
+
+const retryEpoch2Status = await retryEpoch2StatusResponse.json();
+assert.equal(retryEpoch2Status.status, "running");
+assert.equal(retryEpoch2Status.runEpoch, 2);
+assert.equal(retryEpoch2Status.runOpen, true);
+assert.equal(retryEpoch2Status.error, undefined);
+assert.equal(retryEpoch2Status.priorError, "Connection error");
+assert.equal(retryEpoch2Status.priorErrorRunEpoch, 1);
+
+await emit("message_end", {
+  message: {
+    role: "assistant",
+    content: "retry success",
+  },
+});
+
+const retryRecoveredStatusResponse = await fetch(
+  `http://127.0.0.1:${port}/v1/status`,
+  { headers },
+);
+assert.equal(retryRecoveredStatusResponse.status, 200);
+
+const retryRecoveredStatus = await retryRecoveredStatusResponse.json();
+assert.equal(retryRecoveredStatus.status, "running");
+assert.equal(retryRecoveredStatus.runEpoch, 2);
+assert.equal(retryRecoveredStatus.runOpen, true);
+assert.equal(retryRecoveredStatus.error, undefined);
+assert.equal(retryRecoveredStatus.priorError, undefined);
+assert.equal(retryRecoveredStatus.priorErrorRunEpoch, undefined);
+
 await emit("agent_end", { messages: [], willRetry: false });
 idle = true;
 await emit("agent_settled", {});
@@ -244,6 +290,93 @@ assert.equal(retryRunIds.size, 1);
 const retryMessageEnds = retryEvents.filter((e) => e.type === "message_end");
 assert.ok(retryMessageEnds.some((e) => e.data.run_epoch === 1));
 assert.ok(retryMessageEnds.some((e) => e.data.run_epoch === 2));
+
+// A deterministic tool failure remains visible as diagnostic evidence, but a
+// later successful assistant completion must be allowed to recover the task.
+const recoveredToolPrompt = "Recover from an intermediate tool failure.";
+
+const recoveredToolSubmit = await fetch(
+  `http://127.0.0.1:${port}/v1/tasks`,
+  {
+    method: "POST",
+    headers: { ...headers, "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt: recoveredToolPrompt }),
+  },
+);
+
+assert.equal(recoveredToolSubmit.status, 202);
+const recoveredToolQueued = await recoveredToolSubmit.json();
+
+const recoveredToolWire = sent.at(-1).content;
+
+const recoveredToolInput = await emit("input", {
+  text: recoveredToolWire,
+  source: "extension",
+  streamingBehavior: "followUp",
+});
+
+assert.equal(recoveredToolInput.text, recoveredToolPrompt);
+
+idle = false;
+await emit("before_agent_start", { prompt: recoveredToolInput.text });
+await emit("agent_start", {});
+await emit("message_end", {
+  message: {
+    role: "user",
+    content: recoveredToolPrompt,
+  },
+});
+
+await emit("tool_execution_end", {
+  toolName: "powershell",
+  isError: true,
+  result: {
+    message: "Failed to start PowerShell: spawn pwsh ENOENT",
+  },
+});
+
+await emit("message_end", {
+  message: {
+    role: "assistant",
+    content: "Recovered with another available tool.",
+  },
+});
+
+await emit("agent_end", {
+  messages: [],
+  willRetry: false,
+});
+
+idle = true;
+await emit("agent_settled", {});
+await new Promise((r) => setTimeout(r, 50));
+
+const recoveredToolStatusResponse = await fetch(
+  `http://127.0.0.1:${port}/v1/status`,
+  { headers },
+);
+
+assert.equal(recoveredToolStatusResponse.status, 200);
+
+const recoveredToolStatus = await recoveredToolStatusResponse.json();
+
+assert.equal(recoveredToolStatus.id, recoveredToolQueued.id);
+assert.equal(recoveredToolStatus.status, "completed");
+assert.equal(recoveredToolStatus.runOpen, false);
+assert.ok(recoveredToolStatus.settledAt);
+assert.equal(recoveredToolStatus.error, undefined);
+
+assert.equal(recoveredToolStatus.toolErrors.length, 1);
+assert.equal(
+  recoveredToolStatus.toolErrors[0].name,
+  "powershell",
+);
+assert.deepEqual(
+  recoveredToolStatus.toolErrors[0].result,
+  {
+    message: "Failed to start PowerShell: spawn pwsh ENOENT",
+  },
+);
 
 // A running cancellation is terminal immediately but cannot overlap a new
 // controlled task until the underlying Pi run actually settles.
