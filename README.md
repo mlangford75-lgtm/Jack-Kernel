@@ -231,8 +231,8 @@ Release builds do not inject runtime identity, stage token counts, context-size 
 - `README.md` — repository front door and release documentation.
 - `GETTING_STARTED.md` — concise installation, startup, Pi setup, and regression-check guide.
 - `00_Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx` — front-door copy of the full plain-English architecture and operating guide.
-- `Documentation/Jack_Kernel_Preview_Programmable_Cognition_Runtime_v0.1.1.docx` — concise programmable-cognition runtime preview.
-- `Documentation/Jack_Kernel_Long_Horizon_Cognition_Technical_Whitepaper_v0.1.1.docx` — long-horizon cognition and architectural technical whitepaper.
+- `Documentation/Overview/Jack_Kernel_Preview_Programmable_Cognition_Runtime_v0.1.1.docx` — concise public overview of the programmable-cognition runtime.
+- `Documentation/Research/Jack_Kernel_Long_Horizon_Cognition_Technical_Whitepaper_v0.1.1.docx` — research and architectural treatment of long-horizon cognition.
 - `Documentation/Jack_Kernel_Runtime_Specification_v0.1.1.docx` — normative Jack Kernel v0.1.1 runtime specification.
 
 ## License
