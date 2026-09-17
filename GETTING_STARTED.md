@@ -4,15 +4,25 @@ Jack Kernel is a host-authoritative inference mediation/control layer between an
 
 Default inference topology:
 
-`agent -> Jack Kernel :8001/v1 -> backend`
+```text
+agent -> Jack Kernel :8001/v1 -> backend
+```
 
-With the accepted Orchestration Gateway v2 enabled, Jack can also mediate a supervisory control plane:
+With Orchestration Gateway v2 enabled, Jack can also mediate a supervisory control plane:
 
-`Jack Orchestrator -> Jack :8001/jack/orchestration -> private Primary-Pi bridge :8013 -> Primary Pi`
+```text
+Supervisor -> Jack :8001/jack/orchestration -> private worker bridge -> worker
+```
 
-Jack Kernel remains **v0.1.1**. **Orchestration Gateway v2** is the accepted orchestration subsystem/protocol revision.
+Primary Pi remains the reference local worker. Jack Kernel remains **v0.1.1**; **Orchestration Gateway v2** is the orchestration subsystem/protocol revision.
 
 > **Read first:** `00_Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx`
+
+For the current orchestration protocol and compatibility contract, read `Documentation/Orchestration/ORCHESTRATION_GATEWAY_V2_TECHNICAL_SPEC.md`.
+
+For supervisor operating behavior, including Codex Desktop as a reference cloud supervisor, read `Documentation/Orchestration/ORCHESTRATOR_INSTRUCTIONS.md`.
+
+Historical acceptance evidence is preserved under `Documentation/Orchestration/Historical/` and is not the current runtime identity authority.
 
 ## 1. Requirements
 
@@ -34,17 +44,23 @@ py -3 -m pip install -r requirements.txt
 
 Default agent-facing endpoint:
 
-`http://127.0.0.1:8001/v1`
+```text
+http://127.0.0.1:8001/v1
+```
 
 Virtual model ID:
 
-`jack-kernel`
+```text
+jack-kernel
+```
 
 Health check:
 
-`http://127.0.0.1:8001/health`
+```text
+http://127.0.0.1:8001/health
+```
 
-Port 8000 is intentionally available for a custom OpenAI-compatible/vLLM backend. Do not globally replace backend port 8000 with Jack's listener port 8001.
+Port 8000 remains available for a custom OpenAI-compatible/vLLM backend. Do not globally replace backend port 8000 with Jack's listener port 8001.
 
 ## 3. Choose a cognition program
 
@@ -66,7 +82,7 @@ Restart Pi or reload its extensions. The provider extension obtains the effectiv
 
 ## 5. Optional Orchestration Gateway v2 worker bridge
 
-Stop Primary Pi, then install the accepted run-bound control bridge:
+Stop Primary Pi, then install the current validated run-bound control bridge:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\Pi\install-pi-control-bridge-v2.ps1"
@@ -74,15 +90,19 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\Pi\install-pi-control
 
 Restart Primary Pi afterward. The installer backs up the previously installed bridge and preserves Pi's Jack configuration.
 
-Accepted bridge SHA-256:
+Current validated bridge SHA-256:
 
-`D066FA2F9B8A3735A60F57F028087F314F484B28DBD10640FB3D64A4FA29C664`
+```text
+E758883F3C18CBEFBF5590C720DBEDF7AB8E85D3314B5EA77E277B1A8C3BD3E4
+```
 
-The bridge creates separate task/run identities, strips its private correlation marker before model-visible prompt processing, binds ownership only from positive run evidence, clears low-level ownership at `agent_end`, and physically closes the control run at `agent_settled`. Terminal task snapshots are emitted only after control-run authority has been cleared, so a settled event reports `runOpen:false`.
+The bridge creates separate task/run identities, strips its private correlation marker before model-visible prompt processing, binds ownership only from positive run evidence, clears low-level ownership at `agent_end`, and physically closes the control run at `agent_settled`.
+
+Retry/continuation epochs retain one stable `run_id` while incrementing `run_epoch`. Historical assistant failure from an older epoch can remain diagnostic without poisoning a live retry epoch. Structured tool failures remain visible as diagnostics but do not automatically force the overall task to fail if the worker recovers successfully.
 
 ## 6. Concurrent supervisor and worker inference
 
-Jack's inference semaphore is configurable. Full-topology live acceptance proved Jack Orchestrator and Primary Pi can perform backend inference simultaneously when the saved launcher configuration allows two concurrent requests.
+Jack's inference semaphore is configurable. Full-topology live acceptance proved that Jack Orchestrator and Primary Pi can perform backend inference simultaneously when the saved launcher configuration allows two concurrent requests.
 
 Use Jack's launcher:
 
@@ -109,29 +129,39 @@ Normal task body:
 {"prompt":"..."}
 ```
 
-The private Primary-Pi bridge remains at `127.0.0.1:8013` and is authenticated separately. Supervisory clients should not bypass Jack or read the bridge control token.
+The private Primary-Pi bridge remains separately authenticated. Supervisory clients must not bypass Jack or use the bridge control token.
 
-## 8. Accepted replay, cancellation, and failure behavior
+## 8. Replay, cancellation, recovery, and failure behavior
 
 - Public SSE events receive monotonic process-local `seq` values.
 - Default replay retention is 512 events.
 - Reconnect with `Last-Event-ID` or `?after=<seq>`.
 - A request older than the retained window returns HTTP `409` with `orchestration_replay_gap`.
-- Cancellation is immediately visible but physical run settlement is separate.
-- A new controlled task is not admitted while the cancelled control run is still unsettled.
-- After settlement the terminal task snapshot reports `runOpen:false` and `settledAt`.
-- If Primary Pi is unavailable while Jack remains alive, all Pi-dependent gateway operations return HTTP `502` with `{"detail":"Pi control bridge is unavailable"}`. There is no direct-Pi or backend-control fallback.
+- Cancellation and physical settlement are separate facts.
+- A new controlled task is not admitted while the prior control run remains physically open.
+- Terminal settlement reports `runOpen:false` with settlement metadata.
+- A retry/continuation keeps the controlled `run_id` and advances `run_epoch`.
+- Structured tool failures remain diagnostic and can be recovered from by later successful worker execution.
+- If Primary Pi is unavailable while Jack remains alive, Pi-dependent gateway operations fail deterministically. There is no direct-Pi or backend-control fallback.
 
 ## 9. Regression checks
+
+Representative regression checks include:
 
 ```powershell
 py -3 -m py_compile jack_kernel.py
 node tests\pi_control_bridge_v2_harness.mjs
-py -3 -m pytest -q tests\test_orchestration_gateway_v2.py
-py -3 tests\test_backend_retry.py
-py -3 tests\test_debugging_modes.py
-py -3 tests\test_resilience.py
-py -3 tests\test_release_profiles.py
+py -3 -m pytest -q tests\test_surgical_regressions.py
 ```
 
-For architecture and operating guidance, read `00_Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx` first. For exact transport semantics see `Documentation/Orchestration/ORCHESTRATION_GATEWAY_V2_TECHNICAL_SPEC.md`. For live acceptance evidence see `Documentation/Orchestration/ORCHESTRATION_GATEWAY_V2_ACCEPTANCE_REPORT.md`.
+Additional project regression tests remain under `tests/`.
+
+## 10. Documentation authority
+
+Active orchestration documentation is intentionally small:
+
+- `Documentation/Orchestration/ORCHESTRATION_GATEWAY_V2_TECHNICAL_SPEC.md` — canonical protocol, lifecycle, authority, and supervisor compatibility contract.
+- `Documentation/Orchestration/ORCHESTRATOR_INSTRUCTIONS.md` — canonical operating instructions for supervisory agents, including the Codex cloud-supervisor quickstart.
+- `Documentation/Orchestration/Historical/` — dated acceptance evidence and historical records; not current runtime identity authority.
+
+Current Primary-Pi bridge identity is also published in `Pi/README.md`.
