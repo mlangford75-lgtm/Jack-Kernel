@@ -10,6 +10,16 @@
 
 **Current release reality:** Jack Kernel remains **v0.1.1**. Orchestration Gateway v2 is the current supervisory transport. The current validated Primary-Pi control bridge SHA-256 is `E758883F3C18CBEFBF5590C720DBEDF7AB8E85D3314B5EA77E277B1A8C3BD3E4`.
 
+## Orchestration at a glance
+
+The diagrams below depict the accepted **all-local Jack Orchestrator architecture**: the Jack Orchestrator is a cognition-capable but execution-restricted local supervisor, privileged host consequences remain with Primary Pi, and both supervisor and worker cognition can run through Jack against the configured local backend. With multiple backend concurrency slots, the Jack Orchestrator and Primary Pi may infer concurrently through the same Jack Kernel.
+
+![Jack Kernel Orchestration Architecture Schematic](assets/orchestration/Jack_Kernel_Orchestration_Architecture_Schematic.png)
+
+![Jack Orchestration Flow](assets/orchestration/jack_orchestration_flow_diagram.png)
+
+**These diagrams depict the all-local reference architecture.** A cloud-model supervisor such as Codex Desktop retains its native cloud cognition and uses Jack only for the supervisor-to-worker control path. Primary Pi remains the local privileged worker whose model inference runs through Jack to the configured local backend. Codex is a reference example of a broader class of cloud-model supervisory agents, not an architectural dependency.
+
 For installation and first-run steps, see [`GETTING_STARTED.md`](GETTING_STARTED.md).
 
 Current orchestration documentation is intentionally limited to:
