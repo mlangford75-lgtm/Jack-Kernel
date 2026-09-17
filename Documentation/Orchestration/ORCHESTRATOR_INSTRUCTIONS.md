@@ -1,91 +1,43 @@
 # Orchestrator Instructions
 
-**Applies to:** Any supervisory agent operating through Jack Kernel Orchestration Gateway v2
+**Applies to:** any supervisory agent operating through Jack Kernel Orchestration Gateway v2  
+**Normative protocol:** [`ORCHESTRATION_GATEWAY_V2_TECHNICAL_SPEC.md`](ORCHESTRATION_GATEWAY_V2_TECHNICAL_SPEC.md)
 
-## Purpose
-
-This file is the operational instruction set for an orchestration agent.
-
-It is not a research paper and not a high-level capability description. It tells the orchestration agent exactly where it may connect, what it may do, how it must observe active work, and which boundaries it must never cross.
-
-The governing rule is:
+## 1. Governing rule
 
 > **Model source may vary. Jack remains the control boundary.**
 
 For worker supervision, every control action goes through Jack Kernel.
 
-When the orchestration agent uses a local model, its own inference also goes through Jack Kernel.
+If the orchestration agent uses a local model, its own inference also goes through Jack Kernel. A cloud-model supervisor keeps its native cloud cognition and uses Jack for worker control and observation.
 
----
+Never bypass Jack to control the worker. Never bypass Jack to reach the local model backend when the supervisor itself is locally modeled.
 
-## 1. Know your operating mode
+## 2. Know your operating mode
 
-There are two supported supervisor modes.
-
-### Cloud-model orchestration agent
-
-If your cognition comes from a cloud provider, keep using that native cloud model.
-
-Your worker-control path is:
+### Cloud-model supervisor
 
 ```text
-Cloud orchestration agent
-    |
-    | supervision / worker control
-    v
-Jack Kernel
-http://127.0.0.1:8001/jack/orchestration
-    |
-    v
-Primary Pi or another local worker
-    |
-    | model inference
-    v
-Jack Kernel /v1
-    |
-    v
-local model backend
+Cloud model <-> Supervisor
+Supervisor -> Jack /jack/orchestration -> Worker
+Worker     -> Jack /v1 -> Local Model
 ```
 
-Do **not** configure Jack as the cloud supervisor's own model provider in this mode.
+Keep the supervisor's cognition on its native cloud provider. Do not configure Jack as the cloud supervisor's model provider merely because the worker uses Jack.
 
-### Local-model orchestration agent
-
-If your own cognition uses the local model, your inference must use Jack:
+### Local-model supervisor
 
 ```text
-Local orchestration agent
-    |
-    | cognition
-    v
-Jack Kernel /v1
-    |
-    v
-local model backend
+Supervisor -> Jack /v1 -> Local Model
+Supervisor -> Jack /jack/orchestration -> Worker
+Worker     -> Jack /v1 -> Local Model
 ```
 
-Your worker-control path is still:
+Use Jack for both supervisor cognition and worker control. Do not connect directly to the configured local backend.
 
-```text
-Local orchestration agent
-    |
-    | supervision / worker control
-    v
-Jack Kernel /jack/orchestration
-    |
-    v
-Primary Pi or another local worker
-```
+## 3. Allowed public Jack routes
 
-The local orchestration agent and the worker may both infer through Jack concurrently when the configured backend and Jack concurrency permit it.
-
-Neither may bypass Jack and connect directly to the local model server.
-
----
-
-## 2. Public Jack endpoints you are allowed to use
-
-Use Jack's public orchestration surface only:
+For worker control:
 
 ```text
 GET  http://127.0.0.1:8001/jack/orchestration/status
@@ -95,45 +47,24 @@ POST http://127.0.0.1:8001/jack/orchestration/tasks/cancel
 POST http://127.0.0.1:8001/jack/orchestration/session/new
 ```
 
-For local supervisor cognition, use Jack's model-facing surface:
-
-```text
-http://127.0.0.1:8001/v1
-```
-
-Use the Jack virtual model/configuration exposed by the running Jack instance.
+For local supervisor cognition, use Jack's `/v1` model-facing surface.
 
 Do not independently discover or select the backend behind Jack.
 
----
+## 4. Forbidden direct paths
 
-## 3. Endpoints you must never use directly
+Do not:
 
-Do not connect directly to the private worker bridge.
+- call the private worker bridge directly;
+- use `127.0.0.1:8013` as a supervisor control endpoint;
+- request, read, cache, or use the Pi control token;
+- connect directly to LM Studio or another configured backend as a substitute for Jack;
+- fabricate task/run/settlement/readiness state;
+- silently create a fallback path around Jack.
 
-Reference Pi bridge port:
+If Jack cannot reach the worker bridge, report the failure through Jack's observed state. Do not bypass the failed boundary.
 
-```text
-http://127.0.0.1:8013
-```
-
-Do not call it.
-
-Do not request, read, cache, or use the Pi control token.
-
-Do not connect directly to LM Studio or any other configured backend, including common local backend ports such as:
-
-```text
-127.0.0.1:1234
-```
-
-Do not bypass Jack for worker control or local-model cognition.
-
-If Jack cannot reach the private worker bridge, stop and report the failure. There is no direct fallback.
-
----
-
-## 4. Before submitting any worker task
+## 5. Before submitting work
 
 Query:
 
@@ -156,83 +87,61 @@ status
 runOpen
 ```
 
-If a task is already active or a prior run remains physically open, do not submit overlapping controlled work.
+If another controlled run is physically open, do not submit overlapping controlled work.
 
-Do not use elapsed time, guesses, or a fixed sleep as proof that the worker is ready.
+Elapsed time, a fixed sleep, or an unchanged status snapshot is not proof that the worker is ready, stalled, failed, or settled.
 
----
-
-## 5. Active supervision requires the live event stream
-
-This is mandatory.
-
-> **During an active supervised task, consume Jack's `/jack/orchestration/events` SSE stream. Status polling may be used for readiness and terminal confirmation, but it must not replace live event observation.**
-
-Do not supervise a build by occasional status polling alone.
-
-The event stream is:
-
-```text
-GET http://127.0.0.1:8001/jack/orchestration/events
-```
-
-Use a real SSE reader capable of keeping the connection open and processing events as they arrive.
-
-Do not use a request pattern that expects the SSE endpoint to return one finite JSON response.
-
----
-
-## 6. Preferred task sequence
-
-Whenever practical, use this sequence:
+## 6. Preferred supervised-task sequence
 
 ```text
 1. GET /jack/orchestration/status
 2. Confirm ready and not transitioning
 3. Open /jack/orchestration/events
-4. Record the current/latest event sequence position
+4. Retain the latest processed seq
 5. POST /jack/orchestration/tasks
 6. Record task_id
 7. Consume live events
-8. Bind and track run_id and run_epoch when Jack exposes them
-9. Observe worker messages and tool events live
-10. Observe agent_end
-11. Continue until physical settlement
-12. Confirm terminal status and runOpen == false
-13. Only then treat the controlled task as physically complete
+8. Track run_id and run_epoch when Jack exposes them
+9. Observe worker messages and tool events
+10. Observe agent_end without treating it as settlement
+11. Continue through retries/continuations as needed
+12. Wait for terminal state with runOpen == false
+13. Require settlement metadata before treating the run as physically complete
 ```
 
-Do not declare a task complete merely because the worker produced visible output.
-
----
-
-## 7. Task submission
-
-Submit work through:
-
-```text
-POST /jack/orchestration/tasks
-```
-
-Current gateway wire contract:
+Task submission body:
 
 ```json
 {"prompt":"<non-empty task text>"}
 ```
 
-Do not call the worker directly.
+A `task_id` is not a `run_id`. Do not invent run identity.
 
-Record the returned `task_id`.
+## 7. Active supervision requires SSE
 
-A task ID is not a run ID.
+During an active supervised task, consume:
 
-Do not invent run identity.
+```text
+GET /jack/orchestration/events
+```
 
----
+Status polling is useful for compact lifecycle state and terminal confirmation. It does not replace the chronological event stream.
 
-## 8. Track task and run identity correctly
+While `runOpen == true`:
 
-When events arrive, preserve Jack-provided identity fields such as:
+- continue observing the existing run;
+- do not infer failure from silence, repetition, latency, or an unchanged compact status snapshot;
+- do not infer settlement from a local SSE-reader timeout;
+- reconnect with replay after interruption;
+- do not create competing overlapping controlled work.
+
+If an SSE connection drops, reconnect from the last processed `seq` using `Last-Event-ID` or `?after=<seq>`.
+
+If Jack returns `409 orchestration_replay_gap`, report that part of the event history is unavailable. Do not reconstruct missing execution from inference.
+
+## 8. Preserve Jack-provided identity
+
+Retain and interpret:
 
 ```text
 seq
@@ -243,17 +152,15 @@ attribution
 source
 ```
 
-Do not assume an event belongs to a task simply because that task is currently active.
-
 Only treat an event as run-bound when Jack reports positive run-bound attribution.
 
 If an event is unowned, leave it unowned.
 
----
+Do not assign an event to a task merely because that task appears current.
 
-## 9. Observe worker tools live
+## 9. Tool activity and evidence
 
-When the worker uses tools, observe the tool lifecycle through Jack when available:
+Observe worker tool lifecycle through Jack when available:
 
 ```text
 tool_start
@@ -261,28 +168,20 @@ tool_update
 tool_end
 ```
 
-Do not treat model narration about a tool as proof that the tool executed.
+Model narration about a tool is not proof that the tool executed.
 
-Use Jack/worker event state as the execution record.
+A structured tool failure is diagnostic evidence. It does not automatically mean the user's overall objective failed. Distinguish:
 
-> **Silence is not settlement.** If `runOpen == true` and the last run-bound event is an unterminated tool operation, report that exact state. Do not call the task complete, stopped, or failed merely because the event stream is quiet.
-
-For example, if a `tool_start` for `read index.html` has been observed but no matching `tool_end` has arrived, the supervisor knows that the run remains open and that the tool operation has not reached an observed terminal event. It does **not** know whether the tool is slow, blocked, hung, or otherwise unable to complete unless Jack or the worker reports additional evidence.
-
-A tool failure does not automatically mean the entire user objective failed. Distinguish:
-
-- the worker's substantive work;
 - the individual tool failure;
+- the worker's substantive work;
 - final task state;
 - physical settlement.
 
-If a screenshot or secondary verification tool fails after the worker already produced the requested artifact, do not tell the user the artifact does not exist unless the evidence actually shows that.
+Do not infer structured execution failure from free-form tool/model text when Jack does not report structured failure state.
 
----
+## 10. Completion and settlement
 
-## 10. Do not confuse message completion with task completion
-
-These are not equivalent:
+Do not conflate:
 
 ```text
 message_end
@@ -290,81 +189,38 @@ agent_end
 agent_settled
 ```
 
-Do not use `message_end` as proof of task completion.
+`message_end` is not task completion.
 
-Do not use `agent_end` as proof that all worker activity has physically stopped.
+`agent_end` is not proof that the complete control run has physically settled.
 
-The controlled task is physically settled only when authoritative state shows the run has closed, for example:
+For orchestration purposes, the strongest terminal condition is a terminal task state with:
 
 ```text
 runOpen == false
+settledAt present
 ```
 
-with terminal task state / settlement metadata.
+Before reporting a definitive current task state:
 
----
-
-## 11. Do not answer from stale snapshots
-
-Never tell the user that a task is still running, failed, or incomplete based solely on an old status response if active supervision is available.
-
-Before reporting current task state:
-
-1. process all live events already received;
-2. if disconnected, replay missed events;
+1. process live events already received;
+2. replay missed events if disconnected;
 3. query current status for terminal confirmation;
-4. reconcile event state and current status;
-5. then answer the user.
+4. reconcile event history with current status;
+5. then report the state.
 
-If your last observation is stale, say that the state is stale and refresh it before making a definitive claim.
+## 11. Cancellation
 
----
-
-## 12. SSE replay and reconnection
-
-Retain the last processed Jack `seq`.
-
-If the SSE connection drops or you attach after task submission, use Jack replay rather than guessing what occurred while disconnected.
-
-Supported replay mechanisms include:
-
-```text
-Last-Event-ID: <last processed seq>
-```
-
-or:
-
-```text
-GET /jack/orchestration/events?after=<last processed seq>
-```
-
-If Jack reports:
-
-```text
-409 orchestration_replay_gap
-```
-
-do not silently continue as if history were complete.
-
-Report that part of the event history is unavailable and use current authoritative status only for what it can actually establish.
-
-> **If you join an active task late or reconnect after interruption, use replay from the last known sequence position whenever possible. Do not reconstruct missed execution from a later status snapshot.**
-
-> **A local SSE-reader timeout is not a worker-state event.** If the reader times out or the connection closes locally, do not interpret that as worker completion, worker failure, or settlement. Reconnect using replay from the last processed `seq`, then reconcile the replayed events with current Jack status before reporting the task state.
-
----
-
-## 13. Cancellation
-
-Cancel through:
+Request cancellation only through:
 
 ```text
 POST /jack/orchestration/tasks/cancel
 ```
 
-Cancellation and physical settlement are different.
+The supervisor is allowed to decide that cancellation is appropriate based on the user's instruction, the task objective, observed worker behavior, or other supervisory judgment.
 
-A task can be logically cancelled while:
+However, requesting cancellation does **not** authorize the supervisor to invent the resulting state. Jack remains authoritative for whether cancellation was accepted, whether the worker remains physically open, and when settlement occurs.
+
+A task may be logically cancelled while:
 
 ```text
 runOpen == true
@@ -372,11 +228,9 @@ runOpen == true
 
 Do not submit overlapping controlled work until Jack reports that the prior run is physically closed.
 
----
+## 12. Session replacement
 
-## 14. Session replacement
-
-Request a new worker session only through:
+Request replacement only through:
 
 ```text
 POST /jack/orchestration/session/new
@@ -389,37 +243,31 @@ Required sequence:
 2. Record old sessionInstanceId
 3. Require ready + not transitioning
 4. POST /session/new through Jack
-5. Stop task admission
-6. Poll Jack status only during replacement
-7. Temporary Jack 502 may occur while the private bridge is replaced
-8. Wait for sessionReady == true
-9. Wait for sessionTransitioning == false
+5. Stop task admission during transition
+6. Poll Jack status only
+7. Tolerate temporary Jack 502 while the private bridge is replaced
+8. Require sessionReady == true
+9. Require sessionTransitioning == false
 10. Require new sessionInstanceId != old sessionInstanceId
 11. Only then submit follow-up work
 ```
 
-Do not use a fixed sleep as readiness proof.
+Do not use a fixed sleep as readiness proof and do not contact the private bridge to determine whether replacement succeeded.
 
-Do not contact the private bridge to determine whether replacement succeeded.
+## 13. What the supervisor may decide
 
----
+The supervisor may decide:
 
-## 15. What you are allowed to decide
-
-As the orchestration agent, you may decide:
-
-- what worker task to submit;
+- what work to delegate;
 - how to decompose the user's objective;
 - whether more worker work is needed;
 - whether a result should be checked or revised;
 - whether cancellation or session replacement is appropriate;
 - whether the overall user objective has been satisfied.
 
-Those are cognitive/supervisory decisions.
+These are cognitive/supervisory decisions.
 
----
-
-## 16. What you are not allowed to invent
+## 14. What the supervisor may not invent
 
 Do not invent or infer authoritative values for:
 
@@ -436,108 +284,49 @@ Do not invent or infer authoritative values for:
 - worker availability;
 - tool execution evidence.
 
-Those come from Jack and the worker control path.
+Those come from Jack and the worker-control path.
 
-Probabilistic cognition may interpret them, but it does not create them.
+> **Probabilistic cognition may interpret deterministic state. It does not create deterministic state.**
 
----
+## 15. Direct inference is not worker orchestration
 
-## 17. Direct inference is not worker orchestration
-
-A call to:
-
-```text
-POST /v1/chat/completions
-```
-
-or another Jack `/v1` inference route is a model-inference transaction.
-
-It does not automatically create a Primary Pi worker task.
-
-Therefore:
+A direct model request such as:
 
 ```text
 client -> Jack /v1 -> local model
 ```
 
-is different from:
+is not equivalent to:
 
 ```text
-supervisor -> Jack /jack/orchestration/tasks -> Primary Pi
-Primary Pi -> Jack /v1 -> local model
+supervisor -> Jack /jack/orchestration/tasks -> worker
+worker -> Jack /v1 -> local model
 ```
 
-If the user's intent is "ask the model," direct inference may be correct.
+If the user's intent is to have the privileged worker perform work, submit a worker task and supervise it through Jack's orchestration stream.
 
-If the user's intent is "have the build agent do this," submit a worker task through `/jack/orchestration/tasks` and supervise it through the live event stream.
+## 16. Failure behavior
 
-Do not claim that a direct `/v1` call appeared on the worker orchestration stream.
+If Jack reports a deterministic gateway or worker-availability failure:
 
----
-
-## 18. Cloud-supervisor specific rules
-
-When you are a cloud-model supervisor:
-
-- keep your native cloud cognition;
-- do not route your own cognition through Jack `/v1` merely because the worker uses Jack;
-- use Jack `/jack/orchestration/*` for worker control;
-- consume Jack SSE for active worker supervision;
-- never contact the private worker bridge;
-- never contact the local model backend directly as a substitute for worker orchestration.
-
-Codex is one example of a cloud-model supervisor. It is not a special architectural requirement.
-
----
-
-## 19. Local-supervisor specific rules
-
-When you are a local-model supervisor:
-
-- use Jack `/v1` for your own cognition;
-- use Jack `/jack/orchestration/*` for worker control;
-- consume Jack SSE for active worker supervision;
-- never connect directly to the local backend;
-- never contact the private worker bridge;
-- allow Jack/backend concurrency to provide simultaneous supervisor and worker inference when configured.
-
-Reference topology:
-
-```text
-Local Supervisor -> Jack /v1 -> local model
-Local Supervisor -> Jack /jack/orchestration -> Worker
-Worker           -> Jack /v1 -> local model
-```
-
----
-
-## 20. Failure behavior
-
-If Jack reports a deterministic gateway or availability failure:
-
-- stop;
 - report the actual failure;
 - do not bypass Jack;
-- do not silently redirect to the private bridge;
-- do not silently redirect the worker to the backend;
-- do not blindly retry an ambiguous task submission.
+- do not redirect to the private bridge;
+- do not redirect worker control to the model backend;
+- do not blindly retry ambiguous task submission.
 
-Blind retry can duplicate work.
+Blind retry can duplicate work. Resolve task state through Jack before submitting another controlled task.
 
-If you are uncertain whether a task was accepted, resolve state through Jack before attempting another submission.
-
----
-
-## 21. Minimum operating checklist
+## 17. Minimum operating checklist
 
 Before work:
 
 ```text
-[ ] Correct supervisor mode identified: cloud or local
+[ ] supervisor mode identified: cloud or local
 [ ] Jack reachable on 127.0.0.1:8001
-[ ] Worker sessionReady == true
-[ ] worker sessionTransitioning == false
-[ ] No prior controlled run physically open
+[ ] sessionReady == true
+[ ] sessionTransitioning == false
+[ ] no prior controlled run physically open
 ```
 
 During work:
@@ -547,10 +336,10 @@ During work:
 [ ] seq retained
 [ ] task_id retained
 [ ] run_id/run_epoch tracked when bound
-[ ] message and tool events observed live
+[ ] message/tool events observed
 [ ] no stale-snapshot guessing
-[ ] SSE-reader timeout never treated as a worker-state event
-[ ] quiet stream never treated as settlement
+[ ] SSE timeout not treated as worker state
+[ ] silence not treated as settlement
 ```
 
 After work:
@@ -558,49 +347,71 @@ After work:
 ```text
 [ ] terminal worker state observed
 [ ] runOpen == false
-[ ] relevant tool failures distinguished from substantive task result
+[ ] settledAt present where terminal settlement is expected
+[ ] tool failures distinguished from overall task result
 [ ] user-facing status reflects current authoritative state
 ```
 
-After reconnect:
+## 18. Codex Desktop quickstart
+
+Codex Desktop is a reference **cloud-model supervisor**, not an architectural dependency.
+
+Its own cognition remains on OpenAI. Its worker-control path is:
 
 ```text
-[ ] replay from last processed seq attempted
-[ ] replay gap handled explicitly if returned
-[ ] current status reconciled with replayed events
+Native Codex / OpenAI
+  -> Jack Kernel :8001/jack/orchestration
+  -> private Pi bridge
+  -> Primary Pi
+  -> Jack Kernel :8001/v1
+  -> local backend
 ```
 
----
+Codex must not use Jack `/v1` as its own model provider in this cloud-supervisor mode.
 
-## 22. Canonical summary
+Example status check from Codex's shell:
 
-```text
-CLOUD SUPERVISOR
-
-Cloud model <-> Orchestration Agent
-Orchestration Agent -> Jack /jack/orchestration -> Worker
-Worker -> Jack /v1 -> Local Model
-
-LOCAL SUPERVISOR
-
-Orchestration Agent -> Jack /v1 -> Local Model
-Orchestration Agent -> Jack /jack/orchestration -> Worker
-Worker -> Jack /v1 -> Local Model
+```powershell
+Invoke-RestMethod `
+    http://127.0.0.1:8001/jack/orchestration/status |
+    ConvertTo-Json -Depth 20
 ```
 
-During active worker supervision:
+Example task submission:
+
+```powershell
+$body = @{
+    prompt = "Return exactly: PI_THROUGH_JACK_OK"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+    -Method Post `
+    -Uri http://127.0.0.1:8001/jack/orchestration/tasks `
+    -ContentType "application/json" `
+    -Body $body
+```
+
+For active work, open and maintain the SSE stream rather than relying on status polling alone.
+
+Recommended standing instruction:
 
 ```text
-status establishes readiness
-SSE establishes live execution history
-replay restores missed history
-settlement establishes physical completion
+You are a native cloud-model supervisory agent operating a local worker through Jack Kernel.
+
+Keep your own native cloud cognition. All worker supervision and control must go through Jack Kernel at http://127.0.0.1:8001.
+
+Use only Jack's public orchestration routes for worker control. Never contact the private worker bridge, never use its control token, never infer task/run/settlement state from timing, and never bypass Jack.
+
+Check readiness before submission. During active work consume Jack's SSE event stream, retain seq/task_id/run_id/run_epoch/attribution, replay after interruption, and treat the controlled run as physically complete only when authoritative terminal state reports runOpen=false with settlement metadata.
+```
+
+## 19. Canonical summary
+
+```text
+status     -> readiness and compact lifecycle state
+SSE        -> chronological execution history
+replay     -> missed transport history recovery
+settlement -> physical completion
 ```
 
 > **Never bypass Jack for worker control. Never bypass Jack for local-model inference. Never replace live event supervision with stale polling. Silence is not settlement.**
-
-Related specification:
-
-- `ORCHESTRATION_AGENT_CAPABILITY_CONTRACT.md`
-
-The capability contract defines what an orchestration agent must support. This file defines how the orchestration agent must operate.
