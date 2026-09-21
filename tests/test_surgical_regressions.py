@@ -251,6 +251,35 @@ def test_required_and_named_tool_choice_authority_survives_sanitization():
         raise AssertionError("unavailable named tool_choice must fail instead of being weakened")
 
 
+def test_forced_tool_choice_without_tool_surface_fails_closed():
+    mod = load_kernel("off")
+
+    for forced in (
+        "required",
+        {"type": "function", "function": {"name": "alpha"}},
+    ):
+        try:
+            mod.sanitize_agent_request({
+                "messages": [{"role": "user", "content": "use a tool"}],
+                "tool_choice": forced,
+            })
+        except mod.HTTPException as exc:
+            assert exc.status_code == 400
+        else:
+            raise AssertionError("forced tool_choice without tools must fail closed")
+
+    try:
+        mod.sanitize_agent_request({
+            "messages": [{"role": "user", "content": "use a tool"}],
+            "tools": [],
+            "tool_choice": "required",
+        })
+    except mod.HTTPException as exc:
+        assert exc.status_code == 400
+    else:
+        raise AssertionError("required tool_choice with an empty tool surface must fail closed")
+
+
 def test_ollama_rejects_forced_tool_choice_instead_of_weakening_it():
     mod = load_kernel("off")
     ollama_cfg = replace(mod.CFG, backend_profile="ollama")
