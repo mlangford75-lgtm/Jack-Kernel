@@ -152,7 +152,7 @@ def _choice(value: Any) -> Any:
     if value in (None, "auto", "none"):
         return value or "auto"
     if value == "required":
-        raise HTTPException(status_code=400, detail="Responses tool_choice='required' is not supported by Jack Kernel")
+        return "required"
     raise HTTPException(status_code=400, detail="unsupported Responses tool_choice")
 
 
