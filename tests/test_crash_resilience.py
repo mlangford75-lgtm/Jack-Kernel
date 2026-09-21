@@ -277,6 +277,139 @@ async def unrelated_request_starts_its_own_debugging_run():
             )
 
 
+async def interleaved_a_b_a_resumes_original_transaction():
+    # One focused end-to-end routing regression in standard Code Debugging mode:
+    # A pauses -> unrelated B starts independently -> A resumes A.
+    m = load("code-debugging")
+
+    # Intake resume lifecycle.
+    with tempfile.TemporaryDirectory() as td:
+        m.DEBUGGING_REPORTS_ROOT = Path(td)
+        backend = FakeBackend([
+            response("What symptoms have you seen in project B?"),
+            response("Do you have any logs for project A?"),
+        ])
+        kernel = m.JackQwenKernel(backend, m.CFG)
+
+        run_a = m._debugging_create_run("Audit project A.")
+        await kernel._register_debugging_intake_resume(
+            run=run_a,
+            history=[{"role": "user", "content": "Audit project A."}],
+            secondary_system="",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            tools=TOOLS,
+            tool_choice="auto",
+            data=response("Any symptoms for project A?"),
+        )
+        state_a = next(iter(kernel._pending_debugging_intake_resumes.values()))
+        original_a_resume_id = state_a.resume_id
+
+        result_b = await kernel.run({
+            "messages": [{"role": "user", "content": "Audit unrelated project B."}],
+            "tools": TOOLS,
+            "tool_choice": "auto",
+        })
+        assert "project B" in (result_b.content or "")
+        assert kernel._pending_debugging_intake_resumes.get(original_a_resume_id) is state_a
+        assert state_a.in_flight is False
+
+        run_ids_after_b = set(m._DEBUGGING_RUNS)
+        assert run_a.run_id in run_ids_after_b
+        assert len(run_ids_after_b) == 2
+        run_b_id = next(run_id for run_id in run_ids_after_b if run_id != run_a.run_id)
+
+        result_a = await kernel.run({
+            "messages": [
+                {"role": "user", "content": "Audit project A."},
+                {"role": "assistant", "content": state_a.user_visible_response},
+                {"role": "user", "content": "No additional symptoms for A."},
+            ],
+            "tools": TOOLS,
+            "tool_choice": "auto",
+        })
+        assert "logs for project A" in (result_a.content or "")
+        assert original_a_resume_id not in kernel._pending_debugging_intake_resumes
+        assert run_a.run_id in m._DEBUGGING_RUNS
+        assert run_b_id in m._DEBUGGING_RUNS
+
+        a_successors = [
+            state for state in kernel._pending_debugging_intake_resumes.values()
+            if state.run_id == run_a.run_id
+        ]
+        b_pending = [
+            state for state in kernel._pending_debugging_intake_resumes.values()
+            if state.run_id == run_b_id
+        ]
+        assert len(a_successors) == 1
+        assert len(b_pending) == 1
+        assert a_successors[0].resume_id != original_a_resume_id
+        assert a_successors[0].in_flight is False
+        assert b_pending[0].in_flight is False
+
+    # In-pass clarification resume lifecycle.
+    m = load("code-debugging")
+    with tempfile.TemporaryDirectory() as td:
+        m.DEBUGGING_REPORTS_ROOT = Path(td)
+        backend = FakeBackend([
+            response("What symptoms have you seen in project B?"),
+            response("DEBUGGING_USER_QUESTION: Does E42 occur before any file write?"),
+        ])
+        kernel = m.JackQwenKernel(backend, m.CFG)
+
+        run_a = m._debugging_create_run("Audit project A clarification.")
+        m._debugging_freeze_intake(run_a)
+        await kernel._register_debugging_user_resume(
+            stage_key="debug_pass_1",
+            history=m._debugging_fresh_pass_history(run_a, 1),
+            secondary_system="",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            tools=TOOLS,
+            tool_choice="auto",
+            data=response(""),
+            question="What exact error appears in project A?",
+            debugging_run_id=run_a.run_id,
+        )
+        state_a = next(iter(kernel._pending_debugging_user_resumes.values()))
+        original_a_resume_id = state_a.resume_id
+
+        result_b = await kernel.run({
+            "messages": [{"role": "user", "content": "Audit unrelated project B."}],
+            "tools": TOOLS,
+            "tool_choice": "auto",
+        })
+        assert "project B" in (result_b.content or "")
+        assert kernel._pending_debugging_user_resumes.get(original_a_resume_id) is state_a
+        assert state_a.in_flight is False
+
+        run_ids_after_b = set(m._DEBUGGING_RUNS)
+        assert run_a.run_id in run_ids_after_b
+        assert len(run_ids_after_b) == 2
+        run_b_id = next(run_id for run_id in run_ids_after_b if run_id != run_a.run_id)
+
+        result_a = await kernel.run({
+            "messages": [
+                {"role": "user", "content": "Audit project A clarification."},
+                {"role": "assistant", "content": state_a.user_visible_question},
+                {"role": "user", "content": "The exact error is E42."},
+            ],
+            "tools": TOOLS,
+            "tool_choice": "auto",
+        })
+        assert "Does E42 occur" in (result_a.content or "")
+        assert original_a_resume_id not in kernel._pending_debugging_user_resumes
+        assert run_a.run_id in m._DEBUGGING_RUNS
+        assert run_b_id in m._DEBUGGING_RUNS
+
+        a_successors = [
+            state for state in kernel._pending_debugging_user_resumes.values()
+            if state.debugging_run_id == run_a.run_id
+        ]
+        assert len(a_successors) == 1
+        assert a_successors[0].resume_id != original_a_resume_id
+        assert a_successors[0].stage_key == "debug_pass_1"
+        assert a_successors[0].in_flight is False
+
+
 async def no_tool_intake_behavior_is_unchanged():
     m = load("code-debugging")
     with tempfile.TemporaryDirectory() as td:
@@ -422,6 +555,7 @@ async def main():
     await clarification_resume_survives_failure()
     await pending_debugging_resumes_require_positive_identity()
     await unrelated_request_starts_its_own_debugging_run()
+    await interleaved_a_b_a_resumes_original_transaction()
     await no_tool_intake_behavior_is_unchanged()
     await completed_runs_leave_live_memory()
     await evidence_scan_runs_off_event_loop()
