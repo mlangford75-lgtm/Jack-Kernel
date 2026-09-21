@@ -154,6 +154,44 @@ Rewrite the hand geometry.
     assert "hand geometry is wrong" in record3
     assert "Rewrite the hand geometry" not in record3
 
+
+    # Exact live-run shape: semantic identity is under Observed Behavior.
+    live_pass3_variant = r"""
+# Pass 3 — Code Debugging Handoff
+
+## Primary Finding
+**Finding ID:** PASS3-001
+
+## Review Category
+Functional correctness and runtime behavior
+
+## Severity
+MEDIUM
+
+## Status
+CONFIRMED
+
+## Exact Location
+File: app.py
+Function: mean(values)
+
+## Observed Behavior
+Calling mean([]) with an empty collection raises ZeroDivisionError: division by zero.
+
+## Expected Behavior
+mean([]) should return 0.0, not crash.
+
+## Repair Direction
+Add an empty-input guard.
+"""
+    record4 = standard._debugging_host_registry_record(3, live_pass3_variant)
+    assert "Finding ID: PASS3-001" in record4
+    assert "Severity: MEDIUM" in record4
+    assert "Status: CONFIRMED" in record4
+    assert "mean([])" in record4
+    assert "ZeroDivisionError" in record4
+    assert "Add an empty-input guard" not in record4
+
     print("Jack Kernel debugging mode, endpoint, brand, and registry tests: PASS")
 
 

@@ -219,7 +219,29 @@ async def completed_runs_leave_live_memory():
             start_pass=1,
         )
         assert "no material findings" in (result.content or "").lower()
-        assert run.run_id not in m._DEBUGGING_RUNS
+        assert run.run_id in m._DEBUGGING_RUNS
+        assert run.final_report_committed is True
+        assert run.final_report == (result.content or "")
+
+        followup_messages = [
+            {"role": "user", "content": "Audit a completed project."},
+            {"role": "assistant", "content": result.content or ""},
+            {"role": "user", "content": "Where is the report saved?"},
+        ]
+        matched = m._debugging_completed_run_for_history(followup_messages)
+        assert matched is run
+        projected = m._debugging_followup_history(run, followup_messages)
+        assert str(run.report_path) in projected[-1]["content"]
+        assert "Where is the report saved?" in projected[-1]["content"]
+
+        backend.queue.append(response("The completed report is still available for follow-up discussion."))
+        followup = await kernel.run({
+            "messages": followup_messages,
+            "tools": TOOLS,
+            "tool_choice": "auto",
+        })
+        assert "still available" in (followup.content or "")
+        assert set(m._DEBUGGING_RUNS) == {run.run_id}
 
 
 async def evidence_scan_runs_off_event_loop():
