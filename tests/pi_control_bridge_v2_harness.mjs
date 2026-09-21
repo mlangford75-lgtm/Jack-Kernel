@@ -6,6 +6,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const bridgeTs = path.join(root, "Pi", "pi-control-bridge.ts");
+const bridgeSource = fs.readFileSync(bridgeTs, "utf8");
+assert.match(
+  bridgeSource,
+  /const DEFAULT_CONTROL_PORT = 8013;/,
+  "Pi bridge fallback control port must remain aligned with the installer default of 8013",
+);
 const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "jack-pi-v2-"));
 const port = 18000 + (process.pid % 1000);
 const token = "v2-test-token";
