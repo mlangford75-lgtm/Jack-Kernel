@@ -8,7 +8,7 @@
 >
 > This is the first document to read. It explains the kernel, the shipped cognition programs, long-horizon state, Pi integration, and Orchestration Gateway v2 in plain English.
 
-**Current release reality:** Jack Kernel remains **v0.1.1**. Orchestration Gateway v2 is the current supervisory transport. The current validated Primary-Pi control bridge SHA-256 is `E758883F3C18CBEFBF5590C720DBEDF7AB8E85D3314B5EA77E277B1A8C3BD3E4`.
+**Current release reality:** Jack Kernel remains **v0.1.1**. Orchestration Gateway v2 is the current supervisory transport. The current validated Primary-Pi control bridge SHA-256 for the **Windows CRLF representation** is `E758883F3C18CBEFBF5590C720DBEDF7AB8E85D3314B5EA77E277B1A8C3BD3E4`. The canonical repository **LF representation** SHA-256 is `723338D4F67295AEC5B75886EFEF7843C1A44D01934BF9CBB7C2304B4603F92C`.
 
 ## Orchestration at a glance
 

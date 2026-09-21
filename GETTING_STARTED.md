@@ -90,10 +90,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\Pi\install-pi-control
 
 Restart Primary Pi afterward. The installer backs up the previously installed bridge and preserves Pi's Jack configuration.
 
-Current validated bridge SHA-256:
+Current validated bridge identities:
 
 ```text
-E758883F3C18CBEFBF5590C720DBEDF7AB8E85D3314B5EA77E277B1A8C3BD3E4
+Windows CRLF representation SHA-256: E758883F3C18CBEFBF5590C720DBEDF7AB8E85D3314B5EA77E277B1A8C3BD3E4
+Canonical repository LF SHA-256:    723338D4F67295AEC5B75886EFEF7843C1A44D01934BF9CBB7C2304B4603F92C
 ```
 
 The bridge creates separate task/run identities, strips its private correlation marker before model-visible prompt processing, binds ownership only from positive run evidence, clears low-level ownership at `agent_end`, and physically closes the control run at `agent_settled`.

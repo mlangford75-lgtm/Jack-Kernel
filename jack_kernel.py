@@ -13,7 +13,7 @@ The bundled modes are reference programs, not the product boundary.
 Deep Research is a three-stage Preserve-Thinking think-longer program intended especially
 for smaller, short-reasoning, flash-class, or drift-prone models. Thesis plans
 at X-High @ 0.85 with no tool surface. Antithesis asks only the strongest
-material adversarial questions at X-High @ 0.70 with tools off. Synthesis runs
+material adversarial questions at Medium @ 0.70 with tools off. Synthesis runs
 at X-High @ 0.70, receives caller tools when supplied, decides independently,
 and is the sole authoritative reasoning/execution/final-answer stage. Full
 active cognition is preserved through Synthesis; only Stage-1/Stage-2 native

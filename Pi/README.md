@@ -39,9 +39,13 @@ The installer is idempotent with respect to bridge configuration. If `~/.pi/agen
 
 Restart Primary Pi after installation.
 
-Accepted bridge SHA-256:
+Accepted Windows CRLF bridge SHA-256:
 
 `E758883F3C18CBEFBF5590C720DBEDF7AB8E85D3314B5EA77E277B1A8C3BD3E4`
+
+Canonical repository LF SHA-256:
+
+`723338D4F67295AEC5B75886EFEF7843C1A44D01934BF9CBB7C2304B4603F92C`
 
 ### Run-bound identity
 
