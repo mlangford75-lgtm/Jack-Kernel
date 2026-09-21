@@ -280,6 +280,40 @@ def test_forced_tool_choice_without_tool_surface_fails_closed():
         raise AssertionError("required tool_choice with an empty tool surface must fail closed")
 
 
+def test_lmstudio_lowers_named_tool_choice_to_single_required_surface():
+    mod = load_kernel("off")
+    lmstudio_cfg = replace(mod.CFG, backend_profile="lmstudio")
+    backend = mod.OpenAICompatibleBackend(lmstudio_cfg)
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "alpha",
+                "description": "alpha",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "beta",
+                "description": "beta",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+    ]
+
+    payload = {}
+    backend._apply_tool_policy(
+        payload,
+        tools,
+        {"type": "function", "function": {"name": "beta"}},
+    )
+
+    assert payload["tool_choice"] == "required"
+    assert [tool["function"]["name"] for tool in payload["tools"]] == ["beta"]
+
+
 def test_ollama_rejects_forced_tool_choice_instead_of_weakening_it():
     mod = load_kernel("off")
     ollama_cfg = replace(mod.CFG, backend_profile="ollama")
