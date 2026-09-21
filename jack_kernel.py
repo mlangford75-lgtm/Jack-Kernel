@@ -806,6 +806,7 @@ class DebuggingRunState:
     summaries: Dict[int, str]
     intake_frozen: bool = False
     final_report_committed: bool = False
+    final_report: str = ""
 
 
 _DEBUGGING_RUNS: Dict[str, DebuggingRunState] = {}
@@ -814,6 +815,79 @@ _DEBUGGING_RUNS: Dict[str, DebuggingRunState] = {}
 def _debugging_retire_run(run: DebuggingRunState) -> None:
     if _DEBUGGING_RUNS.get(run.run_id) is run:
         _DEBUGGING_RUNS.pop(run.run_id, None)
+
+
+def _debugging_user_requests_new_run(text: str) -> bool:
+    value = re.sub(r"\s+", " ", str(text or "").strip().lower())
+    if not value:
+        return False
+    patterns = (
+        r"\brun\s+(?:jack\s+)?code\s+debugging\b",
+        r"\bstart\s+(?:a\s+)?new\s+(?:jack\s+)?code\s+debugging\b",
+        r"\bbegin\s+(?:a\s+)?new\s+(?:jack\s+)?code\s+debugging\b",
+        r"\brun\s+(?:the\s+)?debugger\s+(?:again|against|on)\b",
+        r"\bstart\s+(?:the\s+)?debugger\s+(?:again|against|on)\b",
+    )
+    return any(re.search(pattern, value) is not None for pattern in patterns)
+
+
+def _debugging_completed_run_for_history(
+    messages: Iterable[Dict[str, Any]],
+) -> Optional[DebuggingRunState]:
+    """Positive-match a follow-up to an exact completed final report in history."""
+    items = [item for item in messages if isinstance(item, dict)]
+    target = active_response_target(items)
+    current_user = _content_to_text((target or {}).get("content")).strip()
+    if _debugging_user_requests_new_run(current_user):
+        return None
+
+    completed = [
+        run for run in _DEBUGGING_RUNS.values()
+        if run.final_report_committed and str(run.final_report or "").strip()
+    ]
+    for item in reversed(items):
+        if item.get("role") != "assistant":
+            continue
+        assistant_content = _content_to_text(item.get("content")).strip()
+        if not assistant_content:
+            continue
+        for run in reversed(completed):
+            if assistant_content == run.final_report.strip():
+                return run
+    return None
+
+
+def _debugging_followup_history(
+    run: DebuggingRunState, messages: Iterable[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Keep completed-work conversation and inject exact host-owned run metadata."""
+    history = [copy.deepcopy(item) for item in messages if isinstance(item, dict)]
+    last_user_index: Optional[int] = None
+    for index in range(len(history) - 1, -1, -1):
+        if history[index].get("role") == "user":
+            last_user_index = index
+            break
+    if last_user_index is None:
+        raise HTTPException(status_code=400, detail="Code Debugging follow-up requires an active user message.")
+
+    exact_user = _content_to_text(history[last_user_index].get("content")).strip()
+    if not exact_user:
+        raise HTTPException(status_code=400, detail="Code Debugging follow-up user message is empty.")
+
+    projected = dict(history[last_user_index])
+    projected["content"] = (
+        "[JACK RUNTIME CONTEXT — NOT USER CONTENT]\n"
+        "This is conversational follow-up to a completed Code Debugging run, not a new five-pass audit.\n"
+        f"Completed Run ID: {run.run_id}\n"
+        f"Saved Report Path: {run.report_path}\n"
+        "Use the preceding completed final debugging report and conversation history to answer the user's follow-up. "
+        "Do not restart Pass 1 unless the user explicitly requests a new debugging run.\n\n"
+        "[EXACT USER FOLLOW-UP]\n"
+        f"{exact_user}"
+    )
+    projected["_jack_internal_debugging_followup"] = True
+    history[last_user_index] = projected
+    return history
 
 
 def _debugging_initial_request(messages: Iterable[Dict[str, Any]]) -> str:
@@ -1078,11 +1152,20 @@ def _debugging_host_registry_record(pass_number: int, summary: str) -> str:
     )
     heading_finding_id = primary_heading.group(1) if primary_heading else ""
     established = _debugging_first_material_line(primary_heading.group(2), 900) if primary_heading else ""
+    if established and re.match(r"(?i)^Finding\s+ID\s*[:—-]", established):
+        established = ""
     if not established:
         established = _debugging_inline_field(
             text,
             ("Primary Finding", "Finding", "Primary Problem", "Finding Summary"),
             900,
+        )
+    if not established:
+        established = _debugging_section_or_inline(
+            text,
+            "Observed Behavior",
+            aliases=("Observed", "Problem", "Problem/Outcome"),
+            limit=900,
         )
 
     finding_id = _debugging_inline_field(text, ("Finding ID", "Finding Id", "ID"), 120)
@@ -1289,15 +1372,36 @@ def _debugging_pass_summary_from_result(pass_number: int, stage: Dict[str, Any])
     return summary
 
 
+def _debugging_atomic_replace_report(report_path: Path, text: str) -> None:
+    """Atomically replace a debugging report without exposing partial durable state."""
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = report_path.with_name(f"{report_path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temp_path.open("w", encoding="utf-8", newline="\n") as report_file:
+            report_file.write(text)
+            report_file.flush()
+            os.fsync(report_file.fileno())
+        os.replace(temp_path, report_path)
+    except Exception:
+        with contextlib.suppress(Exception):
+            temp_path.unlink()
+        raise
+
+
 def _debugging_commit_pass_summary(run: DebuggingRunState, pass_number: int, stage: Dict[str, Any]) -> str:
-    """Durably append one completed pass into this run's unique report file."""
+    """Atomically commit one completed pass without advancing memory before durability."""
     _debugging_validate_report_through(run, pass_number - 1)
     summary = _debugging_pass_summary_from_result(pass_number, stage)
+
+    candidate_run = replace(
+        run,
+        summaries={**run.summaries, pass_number: summary},
+    )
+    candidate_report = _debugging_render_report_through(candidate_run, pass_number)
+
+    _debugging_atomic_replace_report(run.report_path, candidate_report)
+
     run.summaries[pass_number] = summary
-    with run.report_path.open("a", encoding="utf-8", newline="\n") as report_file:
-        report_file.write(f"\n## Debugging Pass {pass_number}\n\n{summary.strip()}\n")
-        report_file.flush()
-        os.fsync(report_file.fileno())
     _debugging_validate_report_through(run, pass_number)
     return summary
 
@@ -1318,11 +1422,18 @@ def _debugging_commit_final_report(run: DebuggingRunState, stage: Dict[str, Any]
     final_report = str(msg.get("content") or "").strip()
     if not final_report:
         raise HTTPException(status_code=502, detail="Code Debugging final summary produced no report content.")
-    with run.report_path.open("a", encoding="utf-8", newline="\n") as report_file:
-        report_file.write(f"\n{_DEBUGGING_FINAL_REPORT_HEADING}\n\n{final_report}\n")
-        report_file.flush()
-        os.fsync(report_file.fileno())
+
+    durable_report = _debugging_report_text(run)
+    candidate_report = (
+        f"{durable_report.rstrip()}\n\n"
+        f"{_DEBUGGING_FINAL_REPORT_HEADING}\n\n"
+        f"{final_report}\n"
+    )
+
+    _debugging_atomic_replace_report(run.report_path, candidate_report)
+
     run.final_report_committed = True
+    run.final_report = final_report
     LOG.info("Code Debugging final report committed: run=%s report=%s", run.run_id, run.report_path)
     return final_report
 
@@ -5524,7 +5635,6 @@ class JackQwenKernel:
         choice = (summary.get("choices") or [{}])[0] or {}
         msg = choice.get("message") or {}
         final_report = _debugging_commit_final_report(run, summary)
-        _debugging_retire_run(run)
         reasoning = msg.get("reasoning_content") or msg.get("reasoning") or msg.get("thinking")
         return KernelResult(
             content=final_report,
@@ -5788,6 +5898,34 @@ class JackQwenKernel:
                 return self._agentic_degraded_result(history, usage, frozen_stage1_answer, detail)
 
         if CODE_DEBUGGING_MODE:
+            completed_run = _debugging_completed_run_for_history(history)
+            if completed_run is not None:
+                followup_history = _debugging_followup_history(completed_run, history)
+                followup = await self._run_stage(
+                    followup_history,
+                    secondary_system,
+                    "thesis",
+                    usage,
+                    tools=None,
+                    tool_choice=None,
+                    append=False,
+                )
+                if self._tool_interrupt(followup, usage):
+                    raise HTTPException(
+                        status_code=502,
+                        detail="Completed Code Debugging follow-up attempted a tool call even though follow-up chat is tools-off.",
+                    )
+                choice = (followup.get("choices") or [{}])[0] or {}
+                msg = choice.get("message") or {}
+                reasoning = msg.get("reasoning_content") or msg.get("reasoning") or msg.get("thinking")
+                return KernelResult(
+                    content=msg.get("content"),
+                    tool_calls=None,
+                    finish_reason=str(choice.get("finish_reason") or "stop"),
+                    usage=normalize_usage(dict(usage)),
+                    reasoning_content=str(reasoning) if reasoning else None,
+                )
+
             initial_request = _debugging_initial_request(history)
             run = _debugging_create_run(initial_request)
             intake_history = [{"role": "user", "content": initial_request}]
@@ -5949,6 +6087,7 @@ class JackQwenKernel:
             pending_debugging_intake_state: Optional[PendingDebuggingIntakeResume] = None
             pending_debugging_user_state: Optional[PendingDebuggingUserResume] = None
             debugging_run: Optional[DebuggingRunState] = None
+            debugging_followup_run: Optional[DebuggingRunState] = None
             pending_tool_messages: List[Dict[str, Any]] = []
             resume_stage_key: Optional[str] = None
             response_usage_baseline = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
@@ -6015,9 +6154,48 @@ class JackQwenKernel:
                 tool_choice = request_body.get("tool_choice")
                 usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
                 if CODE_DEBUGGING_MODE:
-                    initial_request = _debugging_initial_request(history)
-                    debugging_run = _debugging_create_run(initial_request)
-                    history = [{"role": "user", "content": initial_request}]
+                    debugging_followup_run = _debugging_completed_run_for_history(history)
+                    if debugging_followup_run is not None:
+                        history = _debugging_followup_history(debugging_followup_run, history)
+                    else:
+                        initial_request = _debugging_initial_request(history)
+                        debugging_run = _debugging_create_run(initial_request)
+                        history = [{"role": "user", "content": initial_request}]
+
+            if CODE_DEBUGGING_MODE and debugging_followup_run is not None:
+                yield event({"role": "assistant"})
+                followup_result: Optional[Dict[str, Any]] = None
+                async for packet in self._run_stage_streamed(
+                    history,
+                    secondary_system,
+                    "thesis",
+                    usage,
+                    tools=None,
+                    tool_choice=None,
+                    append=False,
+                ):
+                    kind = packet.get("kind")
+                    if kind == "reasoning":
+                        yield event({"reasoning_content": packet["text"]})
+                    elif kind == "content":
+                        yield event({"content": packet["text"]})
+                    elif kind == "keepalive":
+                        label = str(packet.get("event") or "backend.activity")
+                        yield f": jack-keepalive {label}\n\n".encode("utf-8")
+                    elif kind == "tool_calls":
+                        raise HTTPException(
+                            status_code=502,
+                            detail="Completed Code Debugging follow-up attempted a tool call even though follow-up chat is tools-off.",
+                        )
+                    elif kind == "result":
+                        followup_result = packet["data"]
+                if followup_result is None:
+                    raise HTTPException(status_code=502, detail="Completed Code Debugging follow-up produced no result")
+                choice = (followup_result.get("choices") or [{}])[0] or {}
+                yield event({}, str(choice.get("finish_reason") or "stop"))
+                yield usage_event(usage_delta(usage, response_usage_baseline))
+                yield b"data: [DONE]\n\n"
+                return
 
             if SELF_ADVERSARIAL_MODE:
                 yield event({"role": "assistant"})
@@ -6527,7 +6705,6 @@ class JackQwenKernel:
                 if summary_result is None:
                     raise HTTPException(status_code=502, detail="Code Debugging final report produced no result")
                 _debugging_commit_final_report(debugging_run, summary_result)
-                _debugging_retire_run(debugging_run)
                 choice = (summary_result.get("choices") or [{}])[0] or {}
                 yield event({}, str(choice.get("finish_reason") or "stop"))
                 yield usage_event(usage_delta(usage, response_usage_baseline))
