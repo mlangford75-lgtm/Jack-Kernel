@@ -5,7 +5,7 @@ import path from "path";
 import { randomUUID } from "crypto";
 
 const HOST = "127.0.0.1";
-const DEFAULT_CONTROL_PORT = 8011;
+const DEFAULT_CONTROL_PORT = 8013;
 const CONFIG_PATH = path.join(os.homedir(), ".pi", "agent", "jack-kernel.json");
 const CONTROL_MARKER_PREFIX = "\u2063JACK_CONTROL_RUN:";
 const CONTROL_MARKER_SUFFIX = "\u2063";
