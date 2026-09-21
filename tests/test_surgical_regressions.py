@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import copy
 import hashlib
 import importlib.util
@@ -252,8 +253,8 @@ def test_required_and_named_tool_choice_authority_survives_sanitization():
 
 def test_ollama_rejects_forced_tool_choice_instead_of_weakening_it():
     mod = load_kernel("off")
-    mod.CFG.backend_profile = "ollama"
-    backend = mod.OpenAICompatibleBackend(mod.CFG)
+    ollama_cfg = replace(mod.CFG, backend_profile="ollama")
+    backend = mod.OpenAICompatibleBackend(ollama_cfg)
     tools = [{
         "type": "function",
         "function": {
