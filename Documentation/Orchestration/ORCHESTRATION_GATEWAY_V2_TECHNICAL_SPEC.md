@@ -4,7 +4,9 @@
 **Kernel:** Jack Kernel v0.1.1  
 **Subsystem:** Orchestration Gateway v2  
 **Status:** current normative orchestration specification  
-**Current validated Primary-Pi bridge SHA-256 (Windows CRLF representation):** `E758883F3C18CBEFBF5590C720DBEDF7AB8E85D3314B5EA77E277B1A8C3BD3E4`\n\n**Canonical repository LF SHA-256:** `723338D4F67295AEC5B75886EFEF7843C1A44D01934BF9CBB7C2304B4603F92C`
+**Current validated Primary-Pi bridge SHA-256 (Windows CRLF representation):** `E758883F3C18CBEFBF5590C720DBEDF7AB8E85D3314B5EA77E277B1A8C3BD3E4`
+
+**Canonical repository LF SHA-256:** `723338D4F67295AEC5B75886EFEF7843C1A44D01934BF9CBB7C2304B4603F92C`
 
 ## 1. Purpose and authority
 
