@@ -3895,6 +3895,28 @@ class OpenAICompatibleBackend:
     ) -> None:
         if not tools:
             return
+        # LM Studio currently accepts string tool_choice values
+        # (auto/none/required) but rejects OpenAI named-tool objects. Preserve
+        # exact named authority by exposing only the selected tool and requiring
+        # a call; this is equivalent to the caller's named selection.
+        if self.cfg.backend_profile == "lmstudio" and isinstance(tool_choice, dict):
+            fn = tool_choice.get("function") if isinstance(tool_choice.get("function"), dict) else {}
+            name = fn.get("name")
+            selected_tools = [
+                tool for tool in tools
+                if isinstance(tool, dict)
+                and isinstance(tool.get("function"), dict)
+                and tool["function"].get("name") == name
+            ]
+            if not selected_tools:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"LM Studio named tool_choice function {name!r} is not available.",
+                )
+            payload["tools"] = selected_tools
+            payload["tool_choice"] = "required"
+            return
+
         # Ollama accepts a tool surface but does not implement OpenAI tool_choice.
         # Auto/none can be represented faithfully. Forced choice cannot: merely
         # exposing one tool does not make the model call it, so reject rather than
