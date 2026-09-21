@@ -4854,8 +4854,8 @@ class JackQwenKernel:
                 state for state in self._pending_debugging_intake_resumes.values()
                 if state.user_visible_response in prior_assistant_contents
             ]
-            if not matched and len(self._pending_debugging_intake_resumes) == 1:
-                matched = [next(iter(self._pending_debugging_intake_resumes.values()))]
+            if not matched:
+                return None
             if len(matched) != 1:
                 raise HTTPException(status_code=409, detail="Code Debugging intake reply could not be matched to exactly one pending intake.")
             state = matched[0]
@@ -5063,8 +5063,8 @@ class JackQwenKernel:
             for state in self._pending_debugging_user_resumes.values():
                 if state.user_visible_question in prior_assistant_contents:
                     matched.append(state)
-            if not matched and len(self._pending_debugging_user_resumes) == 1:
-                matched = [next(iter(self._pending_debugging_user_resumes.values()))]
+            if not matched:
+                return None
             if len(matched) != 1:
                 raise HTTPException(
                     status_code=409,
@@ -5118,10 +5118,6 @@ class JackQwenKernel:
                 state for state in self._pending_debugging_intake_resumes.values()
                 if state.in_flight and state.user_visible_response in prior_assistant_contents
             ]
-            if not candidates:
-                candidates = [state for state in self._pending_debugging_intake_resumes.values() if state.in_flight]
-                if len(candidates) != 1:
-                    candidates = []
             for state in candidates:
                 state.in_flight = False
         async with self._pending_debugging_user_resume_lock:
@@ -5129,10 +5125,6 @@ class JackQwenKernel:
                 state for state in self._pending_debugging_user_resumes.values()
                 if state.in_flight and state.user_visible_question in prior_assistant_contents
             ]
-            if not candidates:
-                candidates = [state for state in self._pending_debugging_user_resumes.values() if state.in_flight]
-                if len(candidates) != 1:
-                    candidates = []
             for state in candidates:
                 state.in_flight = False
 
