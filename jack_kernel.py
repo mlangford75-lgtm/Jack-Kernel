@@ -3363,9 +3363,9 @@ def sanitize_agent_request(request_body: Dict[str, Any]) -> Dict[str, Any]:
         "messages": messages,
         "stream": bool(request_body.get("stream", False)),
     }
+    normalized_choice = _normalize_agent_tool_choice(request_body.get("tool_choice"), tools)
     if tools is not None:
         sanitized["tools"] = tools
-        normalized_choice = _normalize_agent_tool_choice(request_body.get("tool_choice"), tools)
         if normalized_choice is not None:
             sanitized["tool_choice"] = normalized_choice
 
