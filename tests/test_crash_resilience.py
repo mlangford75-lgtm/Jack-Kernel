@@ -164,29 +164,117 @@ async def clarification_resume_survives_failure():
         assert state.resume_id not in kernel._pending_debugging_user_resumes
 
 
-async def permissive_single_pending_fallback_is_preserved():
-    m = load("code-debugging")
-    with tempfile.TemporaryDirectory() as td:
-        m.DEBUGGING_REPORTS_ROOT = Path(td)
-        kernel = m.JackQwenKernel(FakeBackend([]), m.CFG)
-        run = m._debugging_create_run("Audit the project.")
-        await kernel._register_debugging_intake_resume(
-            run=run,
-            history=[{"role": "user", "content": "Audit the project."}],
-            secondary_system="",
-            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-            tools=TOOLS,
-            tool_choice="auto",
-            data=response("Any symptoms?"),
-        )
-        state = next(iter(kernel._pending_debugging_intake_resumes.values()))
-        matched = await kernel._consume_pending_debugging_intake_resume([
-            {"role": "user", "content": "Audit the project."},
-            {"role": "user", "content": "No additional symptoms."},
-        ])
-        assert matched is not None
-        assert matched[0] is state
-        await kernel._rearm_pending_debugging_intake_resume(state)
+async def pending_debugging_resumes_require_positive_identity():
+    for mode in ("code-debugging", "code-debugging-deep"):
+        m = load(mode)
+        with tempfile.TemporaryDirectory() as td:
+            m.DEBUGGING_REPORTS_ROOT = Path(td)
+            kernel = m.JackQwenKernel(FakeBackend([]), m.CFG)
+
+            intake_run = m._debugging_create_run("Audit project A.")
+            await kernel._register_debugging_intake_resume(
+                run=intake_run,
+                history=[{"role": "user", "content": "Audit project A."}],
+                secondary_system="",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                tools=TOOLS,
+                tool_choice="auto",
+                data=response("Any symptoms for project A?"),
+            )
+            intake_state = next(iter(kernel._pending_debugging_intake_resumes.values()))
+
+            unrelated = [{"role": "user", "content": "Audit unrelated project B."}]
+            unmatched = await kernel._consume_pending_debugging_intake_resume(unrelated)
+            assert unmatched is None
+            assert kernel._pending_debugging_intake_resumes.get(intake_state.resume_id) is intake_state
+            assert intake_state.in_flight is False
+
+            intake_reply = [
+                {"role": "user", "content": "Audit project A."},
+                {"role": "assistant", "content": intake_state.user_visible_response},
+                {"role": "user", "content": "No additional symptoms."},
+            ]
+            matched = await kernel._consume_pending_debugging_intake_resume(intake_reply)
+            assert matched is not None
+            assert matched[0] is intake_state
+            assert intake_state.in_flight is True
+
+            await kernel._rearm_pending_debugging_resumes_for_messages(unrelated)
+            assert intake_state.in_flight is True
+            await kernel._rearm_pending_debugging_resumes_for_messages(intake_reply)
+            assert intake_state.in_flight is False
+
+            clarification_run = m._debugging_create_run("Audit project C.")
+            m._debugging_freeze_intake(clarification_run)
+            await kernel._register_debugging_user_resume(
+                stage_key="debug_pass_1",
+                history=m._debugging_fresh_pass_history(clarification_run, 1),
+                secondary_system="",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                tools=TOOLS,
+                tool_choice="auto",
+                data=response(""),
+                question="What exact error appears in project C?",
+                debugging_run_id=clarification_run.run_id,
+            )
+            clarification_state = next(iter(kernel._pending_debugging_user_resumes.values()))
+
+            unmatched = await kernel._consume_pending_debugging_user_resume(unrelated)
+            assert unmatched is None
+            assert kernel._pending_debugging_user_resumes.get(clarification_state.resume_id) is clarification_state
+            assert clarification_state.in_flight is False
+
+            clarification_reply = [
+                {"role": "user", "content": "Audit project C."},
+                {"role": "assistant", "content": clarification_state.user_visible_question},
+                {"role": "user", "content": "The exact error is E42."},
+            ]
+            matched = await kernel._consume_pending_debugging_user_resume(clarification_reply)
+            assert matched is not None
+            assert matched[0] is clarification_state
+            assert clarification_state.in_flight is True
+
+            await kernel._rearm_pending_debugging_resumes_for_messages(unrelated)
+            assert clarification_state.in_flight is True
+            await kernel._rearm_pending_debugging_resumes_for_messages(clarification_reply)
+            assert clarification_state.in_flight is False
+
+
+async def unrelated_request_starts_its_own_debugging_run():
+    for mode in ("code-debugging", "code-debugging-deep"):
+        m = load(mode)
+        with tempfile.TemporaryDirectory() as td:
+            m.DEBUGGING_REPORTS_ROOT = Path(td)
+            backend = FakeBackend([response("What symptoms have you seen in project B?")])
+            kernel = m.JackQwenKernel(backend, m.CFG)
+
+            run_a = m._debugging_create_run("Audit project A.")
+            await kernel._register_debugging_intake_resume(
+                run=run_a,
+                history=[{"role": "user", "content": "Audit project A."}],
+                secondary_system="",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                tools=TOOLS,
+                tool_choice="auto",
+                data=response("Any symptoms for project A?"),
+            )
+            state_a = next(iter(kernel._pending_debugging_intake_resumes.values()))
+
+            result = await kernel.run({
+                "messages": [{"role": "user", "content": "Audit unrelated project B."}],
+                "tools": TOOLS,
+                "tool_choice": "auto",
+            })
+
+            assert "project B" in (result.content or "")
+            assert kernel._pending_debugging_intake_resumes.get(state_a.resume_id) is state_a
+            assert state_a.in_flight is False
+            assert len(m._DEBUGGING_RUNS) == 2
+            assert len(kernel._pending_debugging_intake_resumes) == 2
+            assert any(
+                state.run_id != run_a.run_id
+                for state in kernel._pending_debugging_intake_resumes.values()
+            )
 
 
 async def no_tool_intake_behavior_is_unchanged():
@@ -332,7 +420,8 @@ async def stream_rearm_helper_restores_retryability():
 async def main():
     await intake_resume_survives_failure()
     await clarification_resume_survives_failure()
-    await permissive_single_pending_fallback_is_preserved()
+    await pending_debugging_resumes_require_positive_identity()
+    await unrelated_request_starts_its_own_debugging_run()
     await no_tool_intake_behavior_is_unchanged()
     await completed_runs_leave_live_memory()
     await evidence_scan_runs_off_event_loop()
