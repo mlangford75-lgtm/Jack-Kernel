@@ -427,8 +427,8 @@ assert.ok(cancelledTerminalEvent, "terminal cancelled SSE task snapshot missing"
 assert.equal(cancelledTerminalEvent.run_id, cancelled.runId, "terminal cancelled SSE task snapshot must retain run ID");
 assert.equal(cancelledTerminalEvent.data.runOpen, false, "terminal cancelled SSE task snapshot must close runOpen");
 
-// A queued cancellation is swallowed at the exact private input marker and does
-// not begin a controlled model run.
+// A dispatched-but-not-consumed cancellation is logically cancelled first and
+// becomes physically settled only when the exact private marked input is swallowed.
 const queuedCancelSubmit = await fetch(`http://127.0.0.1:${port}/v1/tasks`, {
   method: "POST",
   headers: { ...headers, "Content-Type": "application/json" },
@@ -438,8 +438,40 @@ assert.equal(queuedCancelSubmit.status, 202);
 const queuedCancelWire = sent.at(-1).content;
 const queuedCancelResponse = await fetch(`http://127.0.0.1:${port}/v1/tasks/cancel`, { method: "POST", headers });
 assert.equal(queuedCancelResponse.status, 202);
+const queuedCancelled = await queuedCancelResponse.json();
+assert.equal(queuedCancelled.status, "cancelled");
+assert.equal(queuedCancelled.runOpen, false);
+assert.equal(queuedCancelled.settledAt, undefined);
 const swallowed = await emit("input", { text: queuedCancelWire, source: "extension", streamingBehavior: "followUp" });
 assert.equal(swallowed.action, "handled");
+const swallowedStatusResponse = await fetch(`http://127.0.0.1:${port}/v1/status`, { headers });
+const swallowedStatus = await swallowedStatusResponse.json();
+assert.equal(swallowedStatus.status, "cancelled");
+assert.equal(swallowedStatus.runOpen, false);
+assert.ok(swallowedStatus.settledAt);
+assert.ok(swallowedStatus.runId);
+
+// If Pi is busy with unrelated work, Jack retains a queued prompt without
+// dispatching it. Cancelling in that state is physically settled immediately.
+idle = false;
+await emit("agent_start", {});
+const sentBeforeHeldCancel = sent.length;
+const heldCancelSubmit = await fetch(`http://127.0.0.1:${port}/v1/tasks`, {
+  method: "POST",
+  headers: { ...headers, "Content-Type": "application/json" },
+  body: JSON.stringify({ prompt: "cancel while held before dispatch" }),
+});
+assert.equal(heldCancelSubmit.status, 202);
+assert.equal(sent.length, sentBeforeHeldCancel, "held queued task must not be dispatched during unrelated Pi work");
+const heldCancelResponse = await fetch(`http://127.0.0.1:${port}/v1/tasks/cancel`, { method: "POST", headers });
+assert.equal(heldCancelResponse.status, 202);
+const heldCancelled = await heldCancelResponse.json();
+assert.equal(heldCancelled.status, "cancelled");
+assert.equal(heldCancelled.runOpen, false);
+assert.ok(heldCancelled.settledAt);
+await emit("agent_end", { messages: [] });
+idle = true;
+await emit("agent_settled", {});
 
 // Starting a new session must immediately close task admission on the old
 // control instance. A supervisor must wait for a fresh ready instance.

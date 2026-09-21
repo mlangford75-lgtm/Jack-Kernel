@@ -363,9 +363,16 @@ export default async function (pi) {
     pendingDispatch = null;
 
     // If cancellation wins after wire dispatch but before Pi consumes the marked
-    // input, swallow exactly that input. Pre-dispatch cancellation never reaches
-    // this path because the bridge has not handed the prompt to Pi at all.
-    if (controlledTask?.id !== pending.taskId || controlledTask?.status === "cancelled") {
+    // input, swallow exactly that input. The swallow is the physical-settlement
+    // boundary for this pre-start path because the marked prompt can no longer
+    // begin model cognition. Pre-dispatch cancellation never reaches this path.
+    if (controlledTask?.id !== pending.taskId) {
+      return { action: "handled" };
+    }
+    if (controlledTask.status === "cancelled") {
+      controlledTask.runId = controlledTask.runId ?? pending.runId;
+      controlledTask.settledAt = controlledTask.settledAt ?? new Date().toISOString();
+      emitTask();
       return { action: "handled" };
     }
 
@@ -678,14 +685,21 @@ export default async function (pi) {
         // remove it before it ever reaches Pi. If it was already dispatched, keep
         // the correlation record so the input handler can still swallow it when
         // Pi presents the marked extension input.
-        if (controlledTask?.status === "queued" &&
-            pendingDispatch?.taskId === controlledTask.id &&
-            !pendingDispatch.dispatched) {
+        const cancelledBeforeDispatch = Boolean(
+          controlledTask?.status === "queued" &&
+          pendingDispatch?.taskId === controlledTask.id &&
+          !pendingDispatch.dispatched
+        );
+        if (cancelledBeforeDispatch) {
           pendingDispatch = null;
         }
 
+        const cancelledAt = new Date().toISOString();
         controlledTask.status = "cancelled";
-        controlledTask.endedAt = new Date().toISOString();
+        controlledTask.endedAt = cancelledAt;
+        if (cancelledBeforeDispatch) {
+          controlledTask.settledAt = cancelledAt;
+        }
         emitTask();
         json(res, 202, taskSnapshot(controlledTask, controlRun, activeRun));
         return;
