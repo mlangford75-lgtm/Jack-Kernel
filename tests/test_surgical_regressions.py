@@ -154,6 +154,47 @@ class StreamClient:
         return None
 
 
+def test_agentic_frozen_a1_bytes_survive_freeze_and_completed_turn_gc():
+    mod = load_kernel("agentic")
+    frozen_a1 = "  leading A1 whitespace\nbody\ntrailing A1 whitespace  \n"
+    xml = "<Jack XML>\n<grounding>g</grounding>\n</Jack XML>"
+    committed = f"{xml}\n\n{frozen_a1}"
+
+    stage = {
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": frozen_a1,
+            },
+            "finish_reason": "stop",
+        }],
+    }
+    assert mod.JackQwenKernel._exact_frozen_answer_from_stage(stage, "Agentic Stage 1") == frozen_a1
+
+    active_history = []
+    assert mod.append_extended_candidate_response(
+        active_history,
+        {"role": "assistant", "content": frozen_a1},
+    ) == frozen_a1
+    assert active_history[-1]["content"] == frozen_a1
+
+    messages = [
+        {"role": "user", "content": "first request"},
+        {
+            "role": "assistant",
+            "content": committed,
+            "reasoning_content": "transient reasoning",
+        },
+        {"role": "user", "content": "follow-up"},
+    ]
+    compact = mod._compact_agentic_completed_capsules(messages)
+
+    assert compact is not None
+    assert compact[1]["content"] == committed
+    assert compact[1]["content"].endswith(frozen_a1)
+    assert "reasoning_content" not in compact[1]
+
+
 def test_nonstream_compatibility_removal_survives_following_5xx_retry():
     mod = load_kernel()
     backend = mod.OpenAICompatibleBackend(mod.CFG)
