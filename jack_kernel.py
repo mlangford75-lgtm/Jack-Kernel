@@ -8843,7 +8843,23 @@ def run_server() -> None:
     uvicorn.run(APP, host=CFG.host, port=CFG.port, log_level=CFG.log_level.lower())
 
 
+def _install_bundled_runtime_extensions() -> None:
+    """Install Jack's bundled authority/security extensions for every supported entrypoint."""
+    import jack_evidence_guard
+    import jack_responses_compat
+
+    jack_evidence_guard.install(sys.modules[__name__])
+    jack_responses_compat.register(sys.modules[__name__])
+    root = Path(__file__).resolve().parent
+    _register_runtime_manifest_components({
+        "jack_secure_entrypoint.py": root / "jack_secure_entrypoint.py",
+        "jack_evidence_guard.py": Path(jack_evidence_guard.__file__).resolve(),
+        "jack_responses_compat.py": Path(jack_responses_compat.__file__).resolve(),
+    })
+
+
 def main() -> None:
+    _install_bundled_runtime_extensions()
     if "--serve" in sys.argv:
         run_server()
     else:
