@@ -152,7 +152,7 @@ def _choice(value: Any) -> Any:
     if value in (None, "auto", "none"):
         return value or "auto"
     if value == "required":
-        raise HTTPException(status_code=400, detail="Responses tool_choice='required' is not supported by Jack Kernel")
+        return "required"
     raise HTTPException(status_code=400, detail="unsupported Responses tool_choice")
 
 
@@ -161,8 +161,13 @@ def _chat_body(body: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, str]]:
     chat: Dict[str, Any] = {"messages": _messages(body), "stream": bool(body.get("stream", False))}
     if body.get("model") is not None:
         chat["model"] = body["model"]  # virtual only; sanitize_agent_request removes authority.
+    requested_choice = body.get("tool_choice", "auto")
+    if not tools and requested_choice not in (None, "auto", "none"):
+        raise HTTPException(
+            status_code=400,
+            detail="Responses forced tool_choice requires at least one supported tool.",
+        )
     if tools:
-        requested_choice = body.get("tool_choice", "auto")
         if (
             isinstance(requested_choice, dict)
             and requested_choice.get("type") in {"function", "custom"}

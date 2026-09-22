@@ -57,6 +57,42 @@ def test_named_responses_tool_choice_is_lowered_without_losing_exact_selection()
         })
 
 
+def test_plain_required_responses_tool_choice_is_preserved():
+    chat, kinds = compat._chat_body({
+        "input": "use a tool",
+        "tools": [
+            {"type": "function", "name": "alpha", "parameters": {"type": "object"}},
+            {"type": "function", "name": "beta", "parameters": {"type": "object"}},
+        ],
+        "tool_choice": "required",
+    })
+
+    assert kinds == {"alpha": "function", "beta": "function"}
+    assert chat["tool_choice"] == "required"
+    assert [tool["function"]["name"] for tool in chat["tools"]] == ["alpha", "beta"]
+
+
+def test_responses_forced_choice_without_supported_tools_fails_closed():
+    with pytest.raises(HTTPException, match="requires at least one supported tool"):
+        compat._chat_body({
+            "input": "use a tool",
+            "tool_choice": "required",
+        })
+
+    with pytest.raises(HTTPException, match="requires at least one supported tool"):
+        compat._chat_body({
+            "input": "use a tool",
+            "tools": [{"type": "web_search"}],
+            "tool_choice": "required",
+        })
+
+    with pytest.raises(HTTPException, match="requires at least one supported tool"):
+        compat._chat_body({
+            "input": "use alpha",
+            "tool_choice": {"type": "function", "name": "alpha"},
+        })
+
+
 def test_custom_tool_round_trip_and_structured_tool_output():
     kinds = {"apply_patch": "custom"}
     item = compat._tool_item({"id": "p", "function": {"name": "apply_patch", "arguments": '{"input":"PATCH"}'}}, kinds)

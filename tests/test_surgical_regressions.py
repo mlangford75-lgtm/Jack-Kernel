@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import copy
 import hashlib
 import importlib.util
@@ -197,6 +198,155 @@ def test_stream_compatibility_removal_survives_following_5xx_retry():
     assert "stream_options" not in client.payloads[1]
     assert "min_p" not in client.payloads[2]
     assert "stream_options" not in client.payloads[2]
+
+
+def test_required_and_named_tool_choice_authority_survives_sanitization():
+    mod = load_kernel("off")
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "alpha",
+                "description": "alpha",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "beta",
+                "description": "beta",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+    ]
+
+    required = mod.sanitize_agent_request({
+        "messages": [{"role": "user", "content": "use a tool"}],
+        "tools": tools,
+        "tool_choice": "required",
+    })
+    assert required["tool_choice"] == "required"
+
+    named = mod.sanitize_agent_request({
+        "messages": [{"role": "user", "content": "use beta"}],
+        "tools": tools,
+        "tool_choice": {"type": "function", "function": {"name": "beta"}},
+    })
+    assert named["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "beta"},
+    }
+
+    try:
+        mod.sanitize_agent_request({
+            "messages": [{"role": "user", "content": "use missing"}],
+            "tools": tools,
+            "tool_choice": {"type": "function", "function": {"name": "missing"}},
+        })
+    except mod.HTTPException as exc:
+        assert exc.status_code == 400
+        assert "not available" in str(exc.detail)
+    else:
+        raise AssertionError("unavailable named tool_choice must fail instead of being weakened")
+
+
+def test_forced_tool_choice_without_tool_surface_fails_closed():
+    mod = load_kernel("off")
+
+    for forced in (
+        "required",
+        {"type": "function", "function": {"name": "alpha"}},
+    ):
+        try:
+            mod.sanitize_agent_request({
+                "messages": [{"role": "user", "content": "use a tool"}],
+                "tool_choice": forced,
+            })
+        except mod.HTTPException as exc:
+            assert exc.status_code == 400
+        else:
+            raise AssertionError("forced tool_choice without tools must fail closed")
+
+    try:
+        mod.sanitize_agent_request({
+            "messages": [{"role": "user", "content": "use a tool"}],
+            "tools": [],
+            "tool_choice": "required",
+        })
+    except mod.HTTPException as exc:
+        assert exc.status_code == 400
+    else:
+        raise AssertionError("required tool_choice with an empty tool surface must fail closed")
+
+
+def test_lmstudio_lowers_named_tool_choice_to_single_required_surface():
+    mod = load_kernel("off")
+    lmstudio_cfg = replace(mod.CFG, backend_profile="lmstudio")
+    backend = mod.OpenAICompatibleBackend(lmstudio_cfg)
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "alpha",
+                "description": "alpha",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "beta",
+                "description": "beta",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+    ]
+
+    payload = {}
+    backend._apply_tool_policy(
+        payload,
+        tools,
+        {"type": "function", "function": {"name": "beta"}},
+    )
+
+    assert payload["tool_choice"] == "required"
+    assert [tool["function"]["name"] for tool in payload["tools"]] == ["beta"]
+
+
+def test_ollama_rejects_forced_tool_choice_instead_of_weakening_it():
+    mod = load_kernel("off")
+    ollama_cfg = replace(mod.CFG, backend_profile="ollama")
+    backend = mod.OpenAICompatibleBackend(ollama_cfg)
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "alpha",
+            "description": "alpha",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }]
+
+    payload = {}
+    backend._apply_tool_policy(payload, tools, "auto")
+    assert payload["tools"] == tools
+    assert "tool_choice" not in payload
+
+    payload = {}
+    backend._apply_tool_policy(payload, tools, "none")
+    assert "tools" not in payload
+
+    for forced in (
+        "required",
+        {"type": "function", "function": {"name": "alpha"}},
+    ):
+        try:
+            backend._apply_tool_policy({}, tools, forced)
+        except mod.HTTPException as exc:
+            assert exc.status_code == 400
+            assert "does not support forced tool_choice" in str(exc.detail)
+        else:
+            raise AssertionError("Ollama forced tool_choice must fail closed")
 
 
 def test_runtime_manifest_is_additive_and_existing_artifact_identity_is_unchanged():

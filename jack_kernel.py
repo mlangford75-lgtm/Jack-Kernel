@@ -3300,12 +3300,19 @@ AGENT_COGNITION_CONTROL_FIELDS = frozenset({
 def _normalize_agent_tool_choice(
     value: Any, tools: Optional[List[Dict[str, Any]]]
 ) -> Any:
-    """Allow only the tool-choice forms that belong to the outer agent."""
+    """Preserve valid outer-agent tool authority without silently weakening it."""
     if value is None:
         return None
     if isinstance(value, str):
         lowered = value.strip().lower()
         if lowered in {"auto", "none"}:
+            return lowered
+        if lowered == "required":
+            if not tools:
+                raise HTTPException(
+                    status_code=400,
+                    detail="tool_choice='required' requires at least one available tool.",
+                )
             return lowered
         LOG.info("Ignoring unsupported calling-agent tool_choice=%r", value)
         return None
@@ -3323,9 +3330,11 @@ def _normalize_agent_tool_choice(
             for tool in (tools or [])
             if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
         }
-        if available and name not in available:
-            LOG.info("Ignoring tool_choice for unavailable function %s", name)
-            return None
+        if name not in available:
+            raise HTTPException(
+                status_code=400,
+                detail=f"tool_choice function {name!r} is not available in the supplied tool surface.",
+            )
         return {"type": "function", "function": {"name": name}}
     LOG.info("Ignoring unsupported calling-agent tool_choice type %s", type(value).__name__)
     return None
@@ -3354,9 +3363,9 @@ def sanitize_agent_request(request_body: Dict[str, Any]) -> Dict[str, Any]:
         "messages": messages,
         "stream": bool(request_body.get("stream", False)),
     }
+    normalized_choice = _normalize_agent_tool_choice(request_body.get("tool_choice"), tools)
     if tools is not None:
         sanitized["tools"] = tools
-        normalized_choice = _normalize_agent_tool_choice(request_body.get("tool_choice"), tools)
         if normalized_choice is not None:
             sanitized["tool_choice"] = normalized_choice
 
@@ -3886,25 +3895,44 @@ class OpenAICompatibleBackend:
     ) -> None:
         if not tools:
             return
-        # Ollama currently accepts tools but does not implement OpenAI tool_choice.
-        # Enforce the caller's bounded authority locally instead of forwarding an
-        # unsupported field.
+        # LM Studio currently accepts string tool_choice values
+        # (auto/none/required) but rejects OpenAI named-tool objects. Preserve
+        # exact named authority by exposing only the selected tool and requiring
+        # a call; this is equivalent to the caller's named selection.
+        if self.cfg.backend_profile == "lmstudio" and isinstance(tool_choice, dict):
+            fn = tool_choice.get("function") if isinstance(tool_choice.get("function"), dict) else {}
+            name = fn.get("name")
+            selected_tools = [
+                tool for tool in tools
+                if isinstance(tool, dict)
+                and isinstance(tool.get("function"), dict)
+                and tool["function"].get("name") == name
+            ]
+            if not selected_tools:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"LM Studio named tool_choice function {name!r} is not available.",
+                )
+            payload["tools"] = selected_tools
+            payload["tool_choice"] = "required"
+            return
+
+        # Ollama accepts a tool surface but does not implement OpenAI tool_choice.
+        # Auto/none can be represented faithfully. Forced choice cannot: merely
+        # exposing one tool does not make the model call it, so reject rather than
+        # silently weakening caller authority.
         if self.cfg.backend_profile == "ollama":
             if tool_choice == "none":
                 return
-            selected_tools = tools
-            if isinstance(tool_choice, dict):
-                fn = tool_choice.get("function") if isinstance(tool_choice.get("function"), dict) else {}
-                name = fn.get("name")
-                if name:
-                    selected_tools = [
-                        t for t in tools
-                        if isinstance(t, dict)
-                        and isinstance(t.get("function"), dict)
-                        and t["function"].get("name") == name
-                    ]
-            if selected_tools:
-                payload["tools"] = selected_tools
+            if tool_choice not in (None, "auto"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "The Ollama backend does not support forced tool_choice. "
+                        "Jack Kernel will not weaken 'required' or named-tool authority."
+                    ),
+                )
+            payload["tools"] = tools
             return
 
         payload["tools"] = tools
