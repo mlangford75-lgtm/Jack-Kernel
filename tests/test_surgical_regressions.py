@@ -349,6 +349,32 @@ def test_ollama_rejects_forced_tool_choice_instead_of_weakening_it():
             raise AssertionError("Ollama forced tool_choice must fail closed")
 
 
+def test_direct_kernel_entrypoint_installs_bundled_security_and_compatibility():
+    mod = load_kernel("off")
+
+    assert not getattr(mod, "_JACK_EVIDENCE_PROVENANCE_GUARD_INSTALLED", False)
+    assert not any(getattr(route, "path", None) == "/v1/responses" for route in mod.APP.routes)
+
+    mod._install_bundled_runtime_extensions()
+
+    assert getattr(mod, "_JACK_EVIDENCE_PROVENANCE_GUARD_INSTALLED", False)
+    assert any(getattr(route, "path", None) == "/v1/responses" for route in mod.APP.routes)
+    assert set(mod.RUNTIME_MANIFEST_COMPONENTS) == {
+        "jack_kernel.py",
+        "jack_secure_entrypoint.py",
+        "jack_evidence_guard.py",
+        "jack_responses_compat.py",
+    }
+    assert all(value != "UNAVAILABLE" for value in mod.RUNTIME_MANIFEST_COMPONENTS.values())
+
+    # Installation is intentionally idempotent because the supported
+    # jack_secure_entrypoint wrapper delegates to the same kernel setup.
+    routes_before = [getattr(route, "path", None) for route in mod.APP.routes]
+    mod._install_bundled_runtime_extensions()
+    routes_after = [getattr(route, "path", None) for route in mod.APP.routes]
+    assert routes_after == routes_before
+
+
 def test_runtime_manifest_is_additive_and_existing_artifact_identity_is_unchanged():
     mod = load_kernel()
     artifact_before = mod.RUNTIME_ARTIFACT_SHA256
