@@ -90,10 +90,12 @@ This gateway governs supervisor-to-worker control. It does not claim that Jack i
 
 ## Run on Windows
 
-1. Install Python 3.
-2. From this folder, install the runtime dependencies once:
+1. Install Python 3. The current validated development/release baseline is **Python 3.14.6**.
+2. From this folder, install the pinned runtime dependencies once:
 
    `py -3 -m pip install -r requirements.txt`
+
+   Repository validation additionally uses `requirements-test.txt` and the pinned **Node.js 24.16.0** baseline for the Pi bridge harnesses.
 
 3. Start Jack with:
 
