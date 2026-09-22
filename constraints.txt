@@ -1,0 +1,4 @@
+# Framework transitive versions from the validated Jack Kernel Windows baseline.
+# Keep these explicit because FastAPI behavior depends directly on both layers.
+starlette==1.3.1
+pydantic==2.13.4
