@@ -83,7 +83,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, AsyncIterator, Dict, Iterable, List, Optional, Tuple
 
 import httpx
@@ -804,9 +804,12 @@ class DebuggingRunState:
     initial_request: str
     intake_history: List[Dict[str, str]]
     summaries: Dict[int, str]
+    pending_summaries: Dict[int, str] = field(default_factory=dict)
+    request_fingerprint: str = ""
     intake_frozen: bool = False
     final_report_committed: bool = False
     final_report: str = ""
+    pending_final_report: str = ""
 
 
 _DEBUGGING_RUNS: Dict[str, DebuggingRunState] = {}
@@ -908,7 +911,77 @@ def _debugging_new_report_path() -> Path:
     return DEBUGGING_REPORTS_ROOT / f"Debugging_Report_{stamp}_{micros:06d}_{suffix}.md"
 
 
-def _debugging_create_run(initial_request: str) -> DebuggingRunState:
+def _debugging_request_fingerprint(request_body: Dict[str, Any]) -> str:
+    """Return deterministic identity for one debugging transaction."""
+    identity_body = {
+        key: value
+        for key, value in request_body.items()
+        if key != "stream"
+    }
+    canonical = json.dumps(
+        identity_body,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return _sha256_text(canonical)
+
+
+def _debugging_pending_durability_run_for_request(
+    request_body: Dict[str, Any],
+) -> Optional[DebuggingRunState]:
+    """Positive-match an exact failed request to retained non-authoritative cognition."""
+    fingerprint = _debugging_request_fingerprint(request_body)
+    candidates = [
+        run
+        for run in _DEBUGGING_RUNS.values()
+        if run.request_fingerprint == fingerprint
+        and bool(run.pending_summaries)
+        and not run.final_report_committed
+    ]
+
+    if len(candidates) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Multiple Code Debugging durability transactions match this exact request; "
+                "Jack will not guess which run owns the retry."
+            ),
+        )
+
+    return candidates[0] if candidates else None
+
+
+def _debugging_pending_final_report_run_for_request(
+    request_body: Dict[str, Any],
+) -> Optional[DebuggingRunState]:
+    """Positive-match an exact failed request to one pending final report."""
+    fingerprint = _debugging_request_fingerprint(request_body)
+    candidates = [
+        run
+        for run in _DEBUGGING_RUNS.values()
+        if run.request_fingerprint == fingerprint
+        and bool(run.pending_final_report)
+        and not run.final_report_committed
+    ]
+
+    if len(candidates) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Multiple Code Debugging pending final reports match this "
+                "exact request; Jack will not guess which run owns the retry."
+            ),
+        )
+
+    return candidates[0] if candidates else None
+
+
+def _debugging_create_run(
+    initial_request: str,
+    request_fingerprint: str = "",
+) -> DebuggingRunState:
     DEBUGGING_ROOT.mkdir(parents=True, exist_ok=True)
     DEBUGGING_REPORTS_ROOT.mkdir(parents=True, exist_ok=True)
     if not DEBUGGING_INSTRUCTIONS_PATH.is_file():
@@ -924,6 +997,7 @@ def _debugging_create_run(initial_request: str) -> DebuggingRunState:
         initial_request=initial_request.strip(),
         intake_history=[{"role": "user", "content": initial_request.strip()}],
         summaries={},
+        request_fingerprint=str(request_fingerprint or ""),
     )
     _DEBUGGING_RUNS[run_id] = run
     _debugging_write_open_intake_report(run)
@@ -1388,11 +1462,32 @@ def _debugging_atomic_replace_report(report_path: Path, text: str) -> None:
         raise
 
 
-def _debugging_commit_pass_summary(run: DebuggingRunState, pass_number: int, stage: Dict[str, Any]) -> str:
-    """Atomically commit one completed pass without advancing memory before durability."""
+def _debugging_retry_pending_pass_summary(run: DebuggingRunState, pass_number: int) -> str:
+    """Retry persistence of already-completed pass cognition without rerunning inference."""
     _debugging_validate_report_through(run, pass_number - 1)
-    summary = _debugging_pass_summary_from_result(pass_number, stage)
 
+    if pass_number in run.summaries:
+        committed = run.summaries[pass_number]
+        pending = run.pending_summaries.get(pass_number)
+        if pending is not None and pending != committed:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Code Debugging Pass {pass_number} has conflicting "
+                    "committed and pending cognition; Jack will not discard "
+                    "either version."
+                ),
+            )
+        run.pending_summaries.pop(pass_number, None)
+        return committed
+
+    if pass_number not in run.pending_summaries:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Code Debugging Pass {pass_number} has no pending completed summary to persist.",
+        )
+
+    summary = run.pending_summaries[pass_number]
     candidate_run = replace(
         run,
         summaries={**run.summaries, pass_number: summary},
@@ -1402,8 +1497,52 @@ def _debugging_commit_pass_summary(run: DebuggingRunState, pass_number: int, sta
     _debugging_atomic_replace_report(run.report_path, candidate_report)
 
     run.summaries[pass_number] = summary
+    run.pending_summaries.pop(pass_number, None)
     _debugging_validate_report_through(run, pass_number)
     return summary
+
+
+def _debugging_commit_pass_summary(run: DebuggingRunState, pass_number: int, stage: Dict[str, Any]) -> str:
+    """Capture completed cognition before attempting its authoritative durable commit."""
+    _debugging_validate_report_through(run, pass_number - 1)
+    summary = _debugging_pass_summary_from_result(pass_number, stage)
+
+    committed = run.summaries.get(pass_number)
+    if committed is not None:
+        pending = run.pending_summaries.get(pass_number)
+        if pending is not None and pending != committed:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Code Debugging Pass {pass_number} has conflicting "
+                    "committed and pending cognition; Jack will not discard "
+                    "either version."
+                ),
+            )
+        if committed != summary:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Code Debugging Pass {pass_number} is already committed with different content.",
+            )
+        run.pending_summaries.pop(pass_number, None)
+        return committed
+
+    pending = run.pending_summaries.get(pass_number)
+    if pending is not None and pending != summary:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Code Debugging Pass {pass_number} already has different completed cognition "
+                "pending durability."
+            ),
+        )
+
+    # Pending cognition is completed useful work, but it is not authoritative
+    # until the atomic durable report replacement succeeds.
+    if pending is None:
+        run.pending_summaries[pass_number] = summary
+
+    return _debugging_retry_pending_pass_summary(run, pass_number)
 
 
 def _debugging_full_report_text(run: DebuggingRunState) -> str:
@@ -1415,14 +1554,32 @@ def _debugging_final_summary_history(run: DebuggingRunState) -> List[Dict[str, A
     return [{"role": "user", "content": _debugging_full_report_text(run)}]
 
 
-def _debugging_commit_final_report(run: DebuggingRunState, stage: Dict[str, Any]) -> str:
+def _debugging_retry_pending_final_report(run: DebuggingRunState) -> str:
+    """Retry persistence of an already-completed final report without rerunning inference."""
     _debugging_validate_report_through(run, DEBUGGING_PASS_COUNT)
-    choice = (stage.get("choices") or [{}])[0] or {}
-    msg = choice.get("message") or {}
-    final_report = str(msg.get("content") or "").strip()
-    if not final_report:
-        raise HTTPException(status_code=502, detail="Code Debugging final summary produced no report content.")
 
+    if run.final_report_committed:
+        if (
+            run.pending_final_report
+            and run.pending_final_report != run.final_report
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Code Debugging has conflicting committed and pending "
+                    "final reports; Jack will not discard either version."
+                ),
+            )
+        run.pending_final_report = ""
+        return run.final_report
+
+    if not run.pending_final_report:
+        raise HTTPException(
+            status_code=409,
+            detail="Code Debugging has no completed final report pending durability.",
+        )
+
+    final_report = run.pending_final_report
     durable_report = _debugging_report_text(run)
     candidate_report = (
         f"{durable_report.rstrip()}\n\n"
@@ -1434,8 +1591,69 @@ def _debugging_commit_final_report(run: DebuggingRunState, stage: Dict[str, Any]
 
     run.final_report_committed = True
     run.final_report = final_report
-    LOG.info("Code Debugging final report committed: run=%s report=%s", run.run_id, run.report_path)
+    run.pending_final_report = ""
+
+    LOG.info(
+        "Code Debugging final report committed: run=%s report=%s",
+        run.run_id,
+        run.report_path,
+    )
     return final_report
+
+
+def _debugging_commit_final_report(run: DebuggingRunState, stage: Dict[str, Any]) -> str:
+    """Capture completed final-report cognition before attempting durable commit."""
+    _debugging_validate_report_through(run, DEBUGGING_PASS_COUNT)
+
+    choice = (stage.get("choices") or [{}])[0] or {}
+    msg = choice.get("message") or {}
+    final_report = str(msg.get("content") or "").strip()
+
+    if not final_report:
+        raise HTTPException(
+            status_code=502,
+            detail="Code Debugging final summary produced no report content.",
+        )
+
+    if run.final_report_committed:
+        if (
+            run.pending_final_report
+            and run.pending_final_report != run.final_report
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Code Debugging has conflicting committed and pending "
+                    "final reports; Jack will not discard either version."
+                ),
+            )
+        if run.final_report != final_report:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Code Debugging final report is already committed "
+                    "with different content."
+                ),
+            )
+        run.pending_final_report = ""
+        return run.final_report
+
+    if (
+        run.pending_final_report
+        and run.pending_final_report != final_report
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Code Debugging already has different completed final-report "
+                "cognition pending durability."
+            ),
+        )
+
+    if not run.pending_final_report:
+        run.pending_final_report = final_report
+
+    return _debugging_retry_pending_final_report(run)
 
 
 def _debugging_intake_system_prompt() -> str:
@@ -5166,6 +5384,31 @@ class JackQwenKernel:
         history = list(state.history)
         history.append(user_message)
         usage = dict(state.usage)
+
+        pass_number = _debugging_pass_from_stage_key(state.stage_key)
+        if pass_number is None:
+            raise HTTPException(
+                status_code=500,
+                detail="Invalid Code Debugging user-resume stage",
+            )
+
+        if pass_number in run.pending_summaries:
+            _debugging_retry_pending_pass_summary(run, pass_number)
+            await self._retire_pending_debugging_user_resume(state)
+            LOG.info(
+                "Code Debugging Pass %d clarification-completed cognition "
+                "durably committed without rerunning inference",
+                pass_number,
+            )
+            return await self._run_code_debugging_nonstream(
+                run=run,
+                secondary_system=state.secondary_system,
+                usage=usage,
+                tools=state.tools,
+                tool_choice=state.tool_choice,
+                start_pass=pass_number + 1,
+            )
+
         stage = await self._run_stage(
             history,
             state.secondary_system,
@@ -5204,9 +5447,6 @@ class JackQwenKernel:
             )
             await self._retire_pending_debugging_user_resume(state)
             return successor
-        pass_number = _debugging_pass_from_stage_key(state.stage_key)
-        if pass_number is None:
-            raise HTTPException(status_code=500, detail="Invalid Code Debugging user-resume stage")
         _debugging_commit_pass_summary(run, pass_number, stage)
         await self._retire_pending_debugging_user_resume(state)
         return await self._run_code_debugging_nonstream(
@@ -5597,6 +5837,14 @@ class JackQwenKernel:
         """Run fresh debugging passes with exact user authority plus host-derived prior-outcome registry state."""
         debug_tools, debug_tool_choice = _debugging_report_only_tool_surface(tools, tool_choice)
         for pass_number in range(start_pass, DEBUGGING_PASS_COUNT + 1):
+            if pass_number in run.pending_summaries:
+                _debugging_retry_pending_pass_summary(run, pass_number)
+                LOG.info(
+                    "Code Debugging Pass %d pending cognition durably committed without rerunning inference",
+                    pass_number,
+                )
+                continue
+
             stage_key = _debugging_stage_key(pass_number)
             pass_history = _debugging_fresh_pass_history(run, pass_number)
             stage = await self._run_stage(
@@ -5644,6 +5892,30 @@ class JackQwenKernel:
                     "Code Debugging Pass 5 committed; all pass cognition is discarded before the fresh final-report instance"
                 )
 
+        if run.final_report_committed:
+            return KernelResult(
+                content=run.final_report,
+                tool_calls=None,
+                finish_reason="stop",
+                usage=normalize_usage(dict(usage)),
+                reasoning_content=None,
+            )
+
+        if run.pending_final_report:
+            final_report = _debugging_retry_pending_final_report(run)
+            LOG.info(
+                "Code Debugging pending final report durably committed "
+                "without rerunning inference: run=%s",
+                run.run_id,
+            )
+            return KernelResult(
+                content=final_report,
+                tool_calls=None,
+                finish_reason="stop",
+                usage=normalize_usage(dict(usage)),
+                reasoning_content=None,
+            )
+
         summary = await self._run_stage(
             _debugging_final_summary_history(run),
             secondary_system,
@@ -5689,6 +5961,35 @@ class JackQwenKernel:
         stage_key = state.stage_key
         debugging_run = _debugging_get_run(state.debugging_run_id) if CODE_DEBUGGING_MODE else None
 
+        debugging_pass_number: Optional[int] = None
+        if CODE_DEBUGGING_MODE:
+            debugging_pass_number = _debugging_pass_from_stage_key(stage_key)
+            if debugging_pass_number is None:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Invalid Code Debugging tool-resume stage",
+                )
+
+            if debugging_pass_number in debugging_run.pending_summaries:
+                _debugging_retry_pending_pass_summary(
+                    debugging_run,
+                    debugging_pass_number,
+                )
+                await self._retire_pending_tool_resume(state)
+                LOG.info(
+                    "Code Debugging Pass %d tool-completed cognition "
+                    "durably committed without rerunning inference",
+                    debugging_pass_number,
+                )
+                return await self._run_code_debugging_nonstream(
+                    run=debugging_run,
+                    secondary_system=state.secondary_system,
+                    usage=usage,
+                    tools=state.tools,
+                    tool_choice=state.tool_choice,
+                    start_pass=debugging_pass_number + 1,
+                )
+
         stage = await self._run_stage(
             history,
             state.secondary_system,
@@ -5714,9 +6015,12 @@ class JackQwenKernel:
             return successor
 
         if CODE_DEBUGGING_MODE:
-            pass_number = _debugging_pass_from_stage_key(stage_key)
+            pass_number = debugging_pass_number
             if pass_number is None:
-                raise HTTPException(status_code=500, detail="Invalid Code Debugging tool-resume stage")
+                raise HTTPException(
+                    status_code=500,
+                    detail="Invalid Code Debugging tool-resume stage",
+                )
             question = _debugging_user_question_from_result(stage)
             if question is not None:
                 successor = await self._register_debugging_user_resume(
@@ -5921,6 +6225,69 @@ class JackQwenKernel:
                 return self._agentic_degraded_result(history, usage, frozen_stage1_answer, detail)
 
         if CODE_DEBUGGING_MODE:
+            pending_durability_run = _debugging_pending_durability_run_for_request(
+                request_body
+            )
+            pending_final_report_run = _debugging_pending_final_report_run_for_request(
+                request_body
+            )
+            if (
+                pending_durability_run is not None
+                and pending_final_report_run is not None
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Code Debugging durability recovery found both a "
+                        "pending pass and a pending final report for the "
+                        "same exact request; Jack will not guess ownership."
+                    ),
+                )
+
+            if pending_final_report_run is not None:
+                LOG.info(
+                    "Recovering Code Debugging pending final-report transaction: "
+                    "run=%s request_sha256=%s",
+                    pending_final_report_run.run_id,
+                    pending_final_report_run.request_fingerprint,
+                )
+                return await self._run_code_debugging_nonstream(
+                    run=pending_final_report_run,
+                    secondary_system=secondary_system,
+                    usage=usage,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    start_pass=DEBUGGING_PASS_COUNT + 1,
+                )
+
+            if pending_durability_run is not None:
+                pending_passes = sorted(pending_durability_run.pending_summaries)
+                if len(pending_passes) != 1:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "Code Debugging durability recovery found an invalid number "
+                            "of pending pass commits."
+                        ),
+                    )
+
+                pending_pass = pending_passes[0]
+                LOG.info(
+                    "Recovering Code Debugging durability transaction: "
+                    "run=%s pass=%d request_sha256=%s",
+                    pending_durability_run.run_id,
+                    pending_pass,
+                    pending_durability_run.request_fingerprint,
+                )
+                return await self._run_code_debugging_nonstream(
+                    run=pending_durability_run,
+                    secondary_system=secondary_system,
+                    usage=usage,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    start_pass=pending_pass,
+                )
+
             completed_run = _debugging_completed_run_for_history(history)
             if completed_run is not None:
                 followup_history = _debugging_followup_history(completed_run, history)
@@ -5950,7 +6317,10 @@ class JackQwenKernel:
                 )
 
             initial_request = _debugging_initial_request(history)
-            run = _debugging_create_run(initial_request)
+            run = _debugging_create_run(
+                initial_request,
+                request_fingerprint=_debugging_request_fingerprint(request_body),
+            )
             intake_history = [{"role": "user", "content": initial_request}]
             return await self._run_debugging_intake_nonstream(
                 run=run,
@@ -6010,6 +6380,7 @@ class JackQwenKernel:
                 state, user_message = debugging_intake_pending
                 response_usage_baseline = normalize_usage(dict(state.usage))
                 run = _debugging_get_run(state.run_id)
+                run.request_fingerprint = _debugging_request_fingerprint(request_body)
                 history = list(state.history)
                 history.append(user_message)
                 try:
@@ -6029,6 +6400,9 @@ class JackQwenKernel:
             elif debugging_user_pending is not None:
                 state, user_message = debugging_user_pending
                 response_usage_baseline = normalize_usage(dict(state.usage))
+                _debugging_get_run(
+                    state.debugging_run_id
+                ).request_fingerprint = _debugging_request_fingerprint(request_body)
                 try:
                     prepared = await self._resume_debugging_user_stage_nonstream(state, user_message)
                 except Exception:
@@ -6037,6 +6411,10 @@ class JackQwenKernel:
             elif pending is not None:
                 state, tool_messages = pending
                 response_usage_baseline = normalize_usage(dict(state.usage))
+                if CODE_DEBUGGING_MODE and state.debugging_run_id:
+                    _debugging_get_run(
+                        state.debugging_run_id
+                    ).request_fingerprint = _debugging_request_fingerprint(request_body)
                 try:
                     prepared = await self._resume_tool_stage_nonstream(state, tool_messages)
                 except Exception:
@@ -6111,6 +6489,8 @@ class JackQwenKernel:
             pending_debugging_user_state: Optional[PendingDebuggingUserResume] = None
             debugging_run: Optional[DebuggingRunState] = None
             debugging_followup_run: Optional[DebuggingRunState] = None
+            pending_debugging_durability_pass: Optional[int] = None
+            pending_debugging_final_report = False
             pending_tool_messages: List[Dict[str, Any]] = []
             resume_stage_key: Optional[str] = None
             response_usage_baseline = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
@@ -6118,6 +6498,9 @@ class JackQwenKernel:
                 state, user_message = debugging_intake_pending
                 pending_debugging_intake_state = state
                 debugging_run = _debugging_get_run(state.run_id)
+                debugging_run.request_fingerprint = _debugging_request_fingerprint(
+                    request_body
+                )
                 response_usage_baseline = normalize_usage(dict(state.usage))
                 secondary_system = state.secondary_system
                 history = list(state.history)
@@ -6129,6 +6512,9 @@ class JackQwenKernel:
                 state, user_message = debugging_user_pending
                 pending_debugging_user_state = state
                 debugging_run = _debugging_get_run(state.debugging_run_id)
+                debugging_run.request_fingerprint = _debugging_request_fingerprint(
+                    request_body
+                )
                 response_usage_baseline = normalize_usage(dict(state.usage))
                 resume_stage_key = state.stage_key
                 secondary_system = state.secondary_system
@@ -6161,6 +6547,9 @@ class JackQwenKernel:
                 usage = dict(state.usage)
                 if CODE_DEBUGGING_MODE:
                     debugging_run = _debugging_get_run(state.debugging_run_id)
+                    debugging_run.request_fingerprint = _debugging_request_fingerprint(
+                        request_body
+                    )
             else:
                 if messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "tool":
                     raise HTTPException(
@@ -6177,13 +6566,80 @@ class JackQwenKernel:
                 tool_choice = request_body.get("tool_choice")
                 usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
                 if CODE_DEBUGGING_MODE:
-                    debugging_followup_run = _debugging_completed_run_for_history(history)
-                    if debugging_followup_run is not None:
-                        history = _debugging_followup_history(debugging_followup_run, history)
+                    pending_durability_run = _debugging_pending_durability_run_for_request(
+                        request_body
+                    )
+                    pending_final_report_run = _debugging_pending_final_report_run_for_request(
+                        request_body
+                    )
+                    if (
+                        pending_durability_run is not None
+                        and pending_final_report_run is not None
+                    ):
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                "Code Debugging streamed durability recovery found both "
+                                "a pending pass and a pending final report for the same "
+                                "exact request; Jack will not guess ownership."
+                            ),
+                        )
+
+                    if pending_final_report_run is not None:
+                        debugging_run = pending_final_report_run
+                        pending_debugging_final_report = True
+                        history = []
+
+                        LOG.info(
+                            "Recovering streamed Code Debugging pending final-report transaction: "
+                            "run=%s request_sha256=%s",
+                            debugging_run.run_id,
+                            debugging_run.request_fingerprint,
+                        )
+                    elif pending_durability_run is not None:
+                        pending_passes = sorted(
+                            pending_durability_run.pending_summaries
+                        )
+                        if len(pending_passes) != 1:
+                            raise HTTPException(
+                                status_code=409,
+                                detail=(
+                                    "Code Debugging durability recovery found an invalid "
+                                    "number of pending pass commits."
+                                ),
+                            )
+
+                        debugging_run = pending_durability_run
+                        pending_debugging_durability_pass = pending_passes[0]
+                        history = []
+
+                        LOG.info(
+                            "Recovering streamed Code Debugging durability transaction: "
+                            "run=%s pass=%d request_sha256=%s",
+                            debugging_run.run_id,
+                            pending_debugging_durability_pass,
+                            debugging_run.request_fingerprint,
+                        )
                     else:
-                        initial_request = _debugging_initial_request(history)
-                        debugging_run = _debugging_create_run(initial_request)
-                        history = [{"role": "user", "content": initial_request}]
+                        debugging_followup_run = _debugging_completed_run_for_history(
+                            history
+                        )
+                        if debugging_followup_run is not None:
+                            history = _debugging_followup_history(
+                                debugging_followup_run,
+                                history,
+                            )
+                        else:
+                            initial_request = _debugging_initial_request(history)
+                            debugging_run = _debugging_create_run(
+                                initial_request,
+                                request_fingerprint=_debugging_request_fingerprint(
+                                    request_body
+                                ),
+                            )
+                            history = [
+                                {"role": "user", "content": initial_request}
+                            ]
 
             if CODE_DEBUGGING_MODE and debugging_followup_run is not None:
                 yield event({"role": "assistant"})
@@ -6598,7 +7054,11 @@ class JackQwenKernel:
                     pending_debugging_user_state = None
 
                 debug_tools, debug_tool_choice = _debugging_report_only_tool_surface(tools, tool_choice)
-                if pending_state is None and pending_debugging_user_state is None:
+                if pending_debugging_final_report:
+                    start_pass = DEBUGGING_PASS_COUNT + 1
+                elif pending_debugging_durability_pass is not None:
+                    start_pass = pending_debugging_durability_pass
+                elif pending_state is None and pending_debugging_user_state is None:
                     start_pass = 1
                 else:
                     resumed_pass = _debugging_pass_from_stage_key(resume_stage_key or "")
@@ -6610,6 +7070,43 @@ class JackQwenKernel:
                 for pass_number in range(start_pass, DEBUGGING_PASS_COUNT + 1):
                     stage_key = _debugging_stage_key(pass_number)
                     same_stage_resume = bool(resume_stage_key == stage_key)
+
+                    if pass_number in debugging_run.pending_summaries:
+                        _debugging_retry_pending_pass_summary(
+                            debugging_run,
+                            pass_number,
+                        )
+
+                        if same_stage_resume and pending_state is not None:
+                            await self._retire_pending_tool_resume(pending_state)
+                            pending_state = None
+
+                        if (
+                            same_stage_resume
+                            and pending_debugging_user_state is not None
+                        ):
+                            await self._retire_pending_debugging_user_resume(
+                                pending_debugging_user_state
+                            )
+                            pending_debugging_user_state = None
+
+                        LOG.info(
+                            "Code Debugging Pass %d streamed completed cognition "
+                            "durably committed without rerunning inference",
+                            pass_number,
+                        )
+                        yield event({
+                            "reasoning_content": (
+                                f"\n[DEBUGGING PASS {pass_number} SUMMARY COMMITTED "
+                                "FROM PENDING DURABILITY - FRESH CONTEXT NEXT PASS]\n"
+                            )
+                        })
+
+                        history = []
+                        resume_stage_key = None
+                        pending_debugging_durability_pass = None
+                        continue
+
                     pass_history = history if same_stage_resume else _debugging_fresh_pass_history(debugging_run, pass_number)
                     yield event({"reasoning_content": f"\n===== JACK CODE DEBUGGING PASS {pass_number} =====\n"})
                     stage_result: Optional[Dict[str, Any]] = None
@@ -6701,6 +7198,29 @@ class JackQwenKernel:
                     yield event({"reasoning_content": f"\n[DEBUGGING PASS {pass_number} SUMMARY COMMITTED — FRESH CONTEXT NEXT PASS]\n"})
                     history = []
                     resume_stage_key = None
+
+                if debugging_run.pending_final_report:
+                    final_report = _debugging_retry_pending_final_report(
+                        debugging_run
+                    )
+                    LOG.info(
+                        "Code Debugging streamed pending final report durably committed "
+                        "without rerunning inference: run=%s",
+                        debugging_run.run_id,
+                    )
+                    yield event({
+                        "reasoning_content": (
+                            "\n===== JACK CODE DEBUGGING FINAL REPORT "
+                            "[RECOVERED PENDING DURABILITY] =====\n"
+                        )
+                    })
+                    yield event({"content": final_report})
+                    yield event({}, "stop")
+                    yield usage_event(
+                        usage_delta(usage, response_usage_baseline)
+                    )
+                    yield b"data: [DONE]\n\n"
+                    return
 
                 yield event({"reasoning_content": "\n===== JACK CODE DEBUGGING FINAL REPORT =====\n"})
                 summary_result: Optional[Dict[str, Any]] = None
