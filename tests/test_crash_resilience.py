@@ -550,7 +550,992 @@ async def stream_rearm_helper_restores_retryability():
         assert state.in_flight is False
 
 
+async def pending_pass_durability_retry_does_not_regenerate_cognition():
+    m = load("code-debugging")
+
+    with tempfile.TemporaryDirectory() as td:
+        m.DEBUGGING_REPORTS_ROOT = Path(td)
+
+        run = m._debugging_create_run("Audit persistence retry.")
+        m._debugging_freeze_intake(run)
+
+        original_pass_1 = "Pass 1 original confirmed finding."
+
+        backend = FakeBackend([
+            response(original_pass_1),
+            response("Pass 2 completed with no additional material finding."),
+            response("Pass 3 completed with no additional material finding."),
+            response("Pass 4 completed with no additional material finding."),
+            response("Pass 5 completed with no additional material finding."),
+            response("Final repair specification."),
+        ])
+        kernel = m.JackQwenKernel(backend, m.CFG)
+
+        original_fsync = m.os.fsync
+        failed_once = False
+
+        def fail_first_fsync(fd):
+            nonlocal failed_once
+            if not failed_once:
+                failed_once = True
+                raise OSError("synthetic pass durability interruption")
+            return original_fsync(fd)
+
+        m.os.fsync = fail_first_fsync
+
+        try:
+            try:
+                await kernel._run_code_debugging_nonstream(
+                    run=run,
+                    secondary_system="",
+                    usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                    tools=TOOLS,
+                    tool_choice="auto",
+                    start_pass=1,
+                )
+            except OSError as exc:
+                assert "synthetic pass durability interruption" in str(exc)
+            else:
+                raise AssertionError("first durability failure should propagate")
+        finally:
+            m.os.fsync = original_fsync
+
+        # Pass 1 cognition completed, but durability did not.
+        assert 1 not in run.summaries
+        assert run.pending_summaries[1] == original_pass_1
+
+        # Only Pass 1 inference should have been consumed.
+        assert len(backend.queue) == 5
+
+        # Retry the same transaction boundary. Jack must persist the already
+        # completed Pass 1 summary instead of invoking Pass 1 again.
+        result = await kernel._run_code_debugging_nonstream(
+            run=run,
+            secondary_system="",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            tools=TOOLS,
+            tool_choice="auto",
+            start_pass=1,
+        )
+
+        assert run.summaries[1] == original_pass_1
+        assert 1 not in run.pending_summaries
+
+        # Exactly the remaining Passes 2-5 plus the final reporter are consumed.
+        assert backend.queue == []
+
+        assert run.final_report_committed is True
+        assert result.content == "Final repair specification."
+
+
+async def public_run_retry_recovers_pending_pass_without_starting_new_run():
+    m = load("code-debugging")
+
+    with tempfile.TemporaryDirectory() as td:
+        m.DEBUGGING_REPORTS_ROOT = Path(td)
+
+        original_pass_1 = "Pass 1 original public-run finding."
+
+        backend = FakeBackend([
+            response("DEBUGGING_INTAKE_COMPLETE: Intake complete."),
+            response(original_pass_1),
+            response("Pass 2 completed with no additional material finding."),
+            response("Pass 3 completed with no additional material finding."),
+            response("Pass 4 completed with no additional material finding."),
+            response("Pass 5 completed with no additional material finding."),
+            response("Final repair specification."),
+        ])
+        kernel = m.JackQwenKernel(backend, m.CFG)
+
+        request_body = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Audit persistence retry through public run.",
+                }
+            ],
+            "tools": TOOLS,
+            "tool_choice": "auto",
+        }
+
+        original_atomic_replace = m._debugging_atomic_replace_report
+        failed_once = False
+
+        def fail_pass_1_persistence(report_path, report_text):
+            nonlocal failed_once
+
+            if not failed_once and original_pass_1 in report_text:
+                failed_once = True
+                raise OSError("synthetic public-run durability interruption")
+
+            return original_atomic_replace(report_path, report_text)
+
+        m._debugging_atomic_replace_report = fail_pass_1_persistence
+
+        try:
+            try:
+                await kernel.run(request_body)
+            except OSError as exc:
+                assert "synthetic public-run durability interruption" in str(exc)
+            else:
+                raise AssertionError(
+                    "public run should propagate the first durability failure"
+                )
+        finally:
+            m._debugging_atomic_replace_report = original_atomic_replace
+
+        # One debugging transaction exists and its completed Pass 1 cognition
+        # survived without becoming committed authority.
+        assert len(m._DEBUGGING_RUNS) == 1
+
+        run = next(iter(m._DEBUGGING_RUNS.values()))
+
+        assert 1 not in run.summaries
+        assert run.pending_summaries[1] == original_pass_1
+
+        # Intake + Pass 1 were the only inference calls consumed.
+        assert len(backend.queue) == 5
+
+        # The caller retries the same public request after the transient
+        # persistence failure. Jack must recover the existing transaction,
+        # persist Pass 1, and continue at Pass 2. It must not create a new run,
+        # rerun intake, or regenerate Pass 1.
+        result = await kernel.run(request_body)
+
+        assert len(m._DEBUGGING_RUNS) == 1
+        assert next(iter(m._DEBUGGING_RUNS.values())) is run
+
+        assert run.summaries[1] == original_pass_1
+        assert 1 not in run.pending_summaries
+
+        assert run.final_report_committed is True
+        assert result.content == "Final repair specification."
+
+        # Exactly Passes 2-5 plus the final reporter were consumed.
+        assert backend.queue == []
+
+
+async def different_request_does_not_capture_pending_durability_transaction():
+    m = load("code-debugging")
+
+    with tempfile.TemporaryDirectory() as td:
+        m.DEBUGGING_REPORTS_ROOT = Path(td)
+
+        original_pass_1 = "Pass 1 request-A finding."
+
+        request_a = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Audit durability transaction A.",
+                }
+            ],
+            "tools": TOOLS,
+            "tool_choice": "auto",
+        }
+
+        request_b = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Audit unrelated durability transaction B.",
+                }
+            ],
+            "tools": TOOLS,
+            "tool_choice": "auto",
+        }
+
+        backend = FakeBackend([
+            response("DEBUGGING_INTAKE_COMPLETE: Intake A complete."),
+            response(original_pass_1),
+            response("What symptoms have you seen in request B?"),
+        ])
+        kernel = m.JackQwenKernel(backend, m.CFG)
+
+        original_atomic_replace = m._debugging_atomic_replace_report
+        failed_once = False
+
+        def fail_request_a_pass_1(report_path, report_text):
+            nonlocal failed_once
+
+            if not failed_once and original_pass_1 in report_text:
+                failed_once = True
+                raise OSError("synthetic request-A durability interruption")
+
+            return original_atomic_replace(report_path, report_text)
+
+        m._debugging_atomic_replace_report = fail_request_a_pass_1
+
+        try:
+            try:
+                await kernel.run(request_a)
+            except OSError as exc:
+                assert "synthetic request-A durability interruption" in str(exc)
+            else:
+                raise AssertionError(
+                    "request A should fail at the synthetic durability boundary"
+                )
+        finally:
+            m._debugging_atomic_replace_report = original_atomic_replace
+
+        assert len(m._DEBUGGING_RUNS) == 1
+
+        run_a = next(iter(m._DEBUGGING_RUNS.values()))
+        assert 1 not in run_a.summaries
+        assert run_a.pending_summaries[1] == original_pass_1
+
+        result_b = await kernel.run(request_b)
+
+        # Request B is not an exact owner match, so it must start independently.
+        assert len(m._DEBUGGING_RUNS) == 2
+
+        assert 1 not in run_a.summaries
+        assert run_a.pending_summaries[1] == original_pass_1
+        assert run_a.final_report_committed is False
+
+        run_b_candidates = [
+            run
+            for run in m._DEBUGGING_RUNS.values()
+            if run is not run_a
+        ]
+        assert len(run_b_candidates) == 1
+
+        run_b = run_b_candidates[0]
+
+        assert run_b.request_fingerprint == m._debugging_request_fingerprint(
+            m.sanitize_agent_request(request_b)
+        )
+        assert run_b.request_fingerprint != run_a.request_fingerprint
+
+        assert "request B" in (result_b.content or "")
+        assert backend.queue == []
+
+
+async def ambiguous_exact_durability_ownership_fails_closed():
+    m = load("code-debugging")
+
+    with tempfile.TemporaryDirectory() as td:
+        m.DEBUGGING_REPORTS_ROOT = Path(td)
+
+        request_body = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Audit ambiguous durability ownership.",
+                }
+            ],
+            "tools": TOOLS,
+            "tool_choice": "auto",
+        }
+
+        sanitized = m.sanitize_agent_request(request_body)
+        fingerprint = m._debugging_request_fingerprint(sanitized)
+
+        run_a = m._debugging_create_run(
+            "Audit ambiguous durability ownership.",
+            request_fingerprint=fingerprint,
+        )
+        m._debugging_freeze_intake(run_a)
+        run_a.pending_summaries[1] = "Candidate A completed cognition."
+
+        run_b = m._debugging_create_run(
+            "Audit ambiguous durability ownership.",
+            request_fingerprint=fingerprint,
+        )
+        m._debugging_freeze_intake(run_b)
+        run_b.pending_summaries[1] = "Candidate B completed cognition."
+
+        run_a_summaries_before = dict(run_a.summaries)
+        run_b_summaries_before = dict(run_b.summaries)
+        run_a_pending_before = dict(run_a.pending_summaries)
+        run_b_pending_before = dict(run_b.pending_summaries)
+
+        kernel = m.JackQwenKernel(FakeBackend([]), m.CFG)
+
+        try:
+            await kernel.run(request_body)
+        except m.HTTPException as exc:
+            assert exc.status_code == 409
+            assert "will not guess" in str(exc.detail)
+        else:
+            raise AssertionError(
+                "ambiguous exact durability ownership must fail closed"
+            )
+
+        # Neither candidate may be promoted, erased, mutated, or selected.
+        assert run_a.summaries == run_a_summaries_before
+        assert run_b.summaries == run_b_summaries_before
+        assert run_a.pending_summaries == run_a_pending_before
+        assert run_b.pending_summaries == run_b_pending_before
+
+        assert 1 not in run_a.summaries
+        assert 1 not in run_b.summaries
+        assert run_a.pending_summaries[1] == "Candidate A completed cognition."
+        assert run_b.pending_summaries[1] == "Candidate B completed cognition."
+
+
+async def clarification_durability_retry_does_not_regenerate_cognition():
+    m = load("code-debugging")
+
+    with tempfile.TemporaryDirectory() as td:
+        m.DEBUGGING_REPORTS_ROOT = Path(td)
+
+        run = m._debugging_create_run("Audit clarification durability.")
+        m._debugging_freeze_intake(run)
+
+        original_pass_1 = "Pass 1 clarification-confirmed finding."
+
+        backend = FakeBackend([
+            response(original_pass_1),
+            response("Pass 2 completed with no additional material finding."),
+            response("Pass 3 completed with no additional material finding."),
+            response("Pass 4 completed with no additional material finding."),
+            response("Pass 5 completed with no additional material finding."),
+            response("Final repair specification."),
+        ])
+        kernel = m.JackQwenKernel(backend, m.CFG)
+
+        await kernel._register_debugging_user_resume(
+            stage_key="debug_pass_1",
+            history=m._debugging_fresh_pass_history(run, 1),
+            secondary_system="",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            tools=TOOLS,
+            tool_choice="auto",
+            data=response(""),
+            question="What exact error appears?",
+            debugging_run_id=run.run_id,
+        )
+
+        state = next(iter(kernel._pending_debugging_user_resumes.values()))
+
+        request_body = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Audit clarification durability.",
+                },
+                {
+                    "role": "assistant",
+                    "content": state.user_visible_question,
+                },
+                {
+                    "role": "user",
+                    "content": "The exact error is E42.",
+                },
+            ],
+            "tools": TOOLS,
+            "tool_choice": "auto",
+        }
+
+        original_atomic_replace = m._debugging_atomic_replace_report
+        failed_once = False
+
+        def fail_pass_1_persistence(report_path, report_text):
+            nonlocal failed_once
+
+            if not failed_once and original_pass_1 in report_text:
+                failed_once = True
+                raise OSError("synthetic clarification durability interruption")
+
+            return original_atomic_replace(report_path, report_text)
+
+        m._debugging_atomic_replace_report = fail_pass_1_persistence
+
+        try:
+            try:
+                await kernel.run(request_body)
+            except OSError as exc:
+                assert "synthetic clarification durability interruption" in str(exc)
+            else:
+                raise AssertionError(
+                    "clarification completion should fail at durability boundary"
+                )
+        finally:
+            m._debugging_atomic_replace_report = original_atomic_replace
+
+        assert 1 not in run.summaries
+        assert run.pending_summaries[1] == original_pass_1
+
+        assert kernel._pending_debugging_user_resumes.get(state.resume_id) is state
+        assert state.in_flight is False
+
+        # Only the completed Pass 1 inference was consumed.
+        assert len(backend.queue) == 5
+
+        # Retrying the same clarification transaction must commit the already
+        # completed Pass 1 cognition, not invoke Pass 1 again.
+        result = await kernel.run(request_body)
+
+        assert run.summaries[1] == original_pass_1
+        assert 1 not in run.pending_summaries
+
+        assert state.resume_id not in kernel._pending_debugging_user_resumes
+
+        assert run.final_report_committed is True
+        assert result.content == "Final repair specification."
+
+        # Only Passes 2-5 and the final reporter should remain after recovery.
+        assert backend.queue == []
+
+
+async def tool_resume_durability_retry_does_not_regenerate_cognition():
+    m = load("code-debugging")
+
+    with tempfile.TemporaryDirectory() as td:
+        m.DEBUGGING_REPORTS_ROOT = Path(td)
+
+        run = m._debugging_create_run("Audit tool-resume durability.")
+        m._debugging_freeze_intake(run)
+
+        call_id = "call-debug-durability-1"
+        original_pass_1 = "Pass 1 tool-confirmed finding."
+
+        backend = FakeBackend([
+            response(original_pass_1),
+            response("Pass 2 completed with no additional material finding."),
+            response("Pass 3 completed with no additional material finding."),
+            response("Pass 4 completed with no additional material finding."),
+            response("Pass 5 completed with no additional material finding."),
+            response("Final repair specification."),
+        ])
+        kernel = m.JackQwenKernel(backend, m.CFG)
+
+        tool_call_stage = {
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": "bash",
+                            "arguments": '{"command":"echo diagnostic"}',
+                        },
+                    }],
+                },
+                "finish_reason": "tool_calls",
+            }],
+            "usage": {
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+                "total_tokens": 2,
+            },
+        }
+
+        await kernel._register_stage_tool_resume(
+            stage_key="debug_pass_1",
+            history=m._debugging_fresh_pass_history(run, 1),
+            secondary_system="",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            tools=TOOLS,
+            tool_choice="auto",
+            data=tool_call_stage,
+            debugging_run_id=run.run_id,
+        )
+
+        state = kernel._pending_tool_resumes[call_id]
+
+        request_body = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Audit tool-resume durability.",
+                },
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": "bash",
+                            "arguments": '{"command":"echo diagnostic"}',
+                        },
+                    }],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "name": "bash",
+                    "content": "diagnostic output",
+                },
+            ],
+            "tools": TOOLS,
+            "tool_choice": "auto",
+        }
+
+        original_atomic_replace = m._debugging_atomic_replace_report
+        failed_once = False
+
+        def fail_pass_1_persistence(report_path, report_text):
+            nonlocal failed_once
+
+            if not failed_once and original_pass_1 in report_text:
+                failed_once = True
+                raise OSError("synthetic tool-resume durability interruption")
+
+            return original_atomic_replace(report_path, report_text)
+
+        m._debugging_atomic_replace_report = fail_pass_1_persistence
+
+        try:
+            try:
+                await kernel.run(request_body)
+            except OSError as exc:
+                assert "synthetic tool-resume durability interruption" in str(exc)
+            else:
+                raise AssertionError(
+                    "tool-resume completion should fail at durability boundary"
+                )
+        finally:
+            m._debugging_atomic_replace_report = original_atomic_replace
+
+        # Post-tool Pass 1 cognition completed but is not yet authoritative.
+        assert 1 not in run.summaries
+        assert run.pending_summaries[1] == original_pass_1
+
+        # The tool checkpoint remains live and retryable.
+        assert kernel._pending_tool_resumes.get(call_id) is state
+        assert state.in_flight is False
+
+        # Only the completed post-tool Pass 1 inference was consumed.
+        assert len(backend.queue) == 5
+
+        # Retry the identical tool-result transaction. Jack must persist the
+        # already-completed Pass 1 cognition rather than invoke Pass 1 again.
+        result = await kernel.run(request_body)
+
+        assert run.summaries[1] == original_pass_1
+        assert 1 not in run.pending_summaries
+
+        assert call_id not in kernel._pending_tool_resumes
+
+        assert run.final_report_committed is True
+        assert result.content == "Final repair specification."
+
+        # Exactly Passes 2-5 plus the final reporter were consumed.
+        assert backend.queue == []
+
+
+async def streaming_public_retry_recovers_pending_pass_without_regeneration():
+    m = load("code-debugging")
+
+    with tempfile.TemporaryDirectory() as td:
+        m.DEBUGGING_REPORTS_ROOT = Path(td)
+
+        original_pass_1 = "Pass 1 original streamed finding."
+
+        backend = FakeStreamBackend([
+            response("DEBUGGING_INTAKE_COMPLETE: Stream intake complete."),
+            response(original_pass_1),
+            response("Pass 2 completed with no additional material finding."),
+            response("Pass 3 completed with no additional material finding."),
+            response("Pass 4 completed with no additional material finding."),
+            response("Pass 5 completed with no additional material finding."),
+            response("Final streamed repair specification."),
+        ])
+        kernel = m.JackQwenKernel(backend, m.CFG)
+
+        request_body = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Audit streaming persistence retry.",
+                }
+            ],
+            "tools": TOOLS,
+            "tool_choice": "auto",
+        }
+
+        original_atomic_replace = m._debugging_atomic_replace_report
+        failed_once = False
+
+        def fail_pass_1_persistence(report_path, report_text):
+            nonlocal failed_once
+
+            if not failed_once and original_pass_1 in report_text:
+                failed_once = True
+                raise OSError("synthetic streamed durability interruption")
+
+            return original_atomic_replace(report_path, report_text)
+
+        m._debugging_atomic_replace_report = fail_pass_1_persistence
+
+        try:
+            try:
+                async for _chunk in kernel.stream(request_body):
+                    pass
+            except OSError as exc:
+                assert "synthetic streamed durability interruption" in str(exc)
+            else:
+                raise AssertionError(
+                    "streaming request should fail at the first durability boundary"
+                )
+        finally:
+            m._debugging_atomic_replace_report = original_atomic_replace
+
+        assert len(m._DEBUGGING_RUNS) == 1
+
+        run = next(iter(m._DEBUGGING_RUNS.values()))
+
+        assert 1 not in run.summaries
+        assert run.pending_summaries[1] == original_pass_1
+        assert run.final_report_committed is False
+
+        # Intake + Pass 1 were the only streamed inference calls consumed.
+        assert len(backend.queue) == 5
+
+        # Retry the identical public streaming request. Jack must recover the
+        # original run, persist Pass 1 without inference, and begin at Pass 2.
+        chunks = []
+        async for chunk in kernel.stream(request_body):
+            chunks.append(chunk)
+
+        assert len(m._DEBUGGING_RUNS) == 1
+        assert next(iter(m._DEBUGGING_RUNS.values())) is run
+
+        assert run.summaries[1] == original_pass_1
+        assert 1 not in run.pending_summaries
+
+        assert run.final_report_committed is True
+        assert run.final_report == "Final streamed repair specification."
+
+        # Exactly Passes 2-5 plus the final reporter were consumed.
+        assert backend.queue == []
+
+        wire = b"".join(chunks)
+        assert b"Final streamed repair specification." in wire
+        assert wire.endswith(b"data: [DONE]\n\n")
+
+
+async def final_report_durability_retry_does_not_regenerate_report():
+    m = load("code-debugging")
+
+    with tempfile.TemporaryDirectory() as td:
+        m.DEBUGGING_REPORTS_ROOT = Path(td)
+
+        run = m._debugging_create_run("Audit final-report durability.")
+        m._debugging_freeze_intake(run)
+
+        for pass_number in range(1, m.DEBUGGING_PASS_COUNT + 1):
+            m._debugging_commit_pass_summary(
+                run,
+                pass_number,
+                response(
+                    f"Pass {pass_number} completed with no additional material finding."
+                ),
+            )
+
+        original_final = "Original final repair specification."
+        regenerated_final = "Regenerated final repair specification."
+
+        backend = FakeBackend([
+            response(original_final),
+            response(regenerated_final),
+        ])
+        kernel = m.JackQwenKernel(backend, m.CFG)
+
+        original_atomic_replace = m._debugging_atomic_replace_report
+        failed_once = False
+
+        def fail_original_final_persistence(report_path, report_text):
+            nonlocal failed_once
+
+            if not failed_once and original_final in report_text:
+                failed_once = True
+                raise OSError("synthetic final-report durability interruption")
+
+            return original_atomic_replace(report_path, report_text)
+
+        m._debugging_atomic_replace_report = fail_original_final_persistence
+
+        try:
+            try:
+                await kernel._run_code_debugging_nonstream(
+                    run=run,
+                    secondary_system="",
+                    usage={
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "total_tokens": 0,
+                    },
+                    tools=TOOLS,
+                    tool_choice="auto",
+                    start_pass=m.DEBUGGING_PASS_COUNT + 1,
+                )
+            except OSError as exc:
+                assert "synthetic final-report durability interruption" in str(exc)
+            else:
+                raise AssertionError(
+                    "final report should fail at the synthetic durability boundary"
+                )
+        finally:
+            m._debugging_atomic_replace_report = original_atomic_replace
+
+        assert run.final_report_committed is False
+        assert run.final_report == ""
+
+        # The original final reporter inference was consumed.
+        assert len(backend.queue) == 1
+
+        # Retry. Jack should eventually preserve the already-generated report
+        # rather than invoke the reporter again.
+        result = await kernel._run_code_debugging_nonstream(
+            run=run,
+            secondary_system="",
+            usage={
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+            },
+            tools=TOOLS,
+            tool_choice="auto",
+            start_pass=m.DEBUGGING_PASS_COUNT + 1,
+        )
+
+        assert run.final_report_committed is True
+        assert run.final_report == original_final
+        assert result.content == original_final
+
+        # The alternate reporter response must remain unused.
+        assert len(backend.queue) == 1
+        assert (
+            ((backend.queue[0].get("choices") or [{}])[0].get("message") or {})
+            .get("content")
+            == regenerated_final
+        )
+
+
+
+async def public_retry_recovers_pending_final_report_without_regeneration():
+    m = load("code-debugging")
+
+    with tempfile.TemporaryDirectory() as td:
+        m.DEBUGGING_REPORTS_ROOT = Path(td)
+
+        original_final = "Original public final repair specification."
+        unexpected_retry_inference = "What symptoms have you seen on retry?"
+
+        backend = FakeBackend([
+            response("DEBUGGING_INTAKE_COMPLETE: Intake complete."),
+            response("Pass 1 finding."),
+            response("Pass 2 finding."),
+            response("Pass 3 finding."),
+            response("Pass 4 finding."),
+            response("Pass 5 finding."),
+            response(original_final),
+
+            # This must remain unused if public durability recovery is correct.
+            response(unexpected_retry_inference),
+        ])
+        kernel = m.JackQwenKernel(backend, m.CFG)
+
+        request_body = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Audit public final-report durability.",
+                }
+            ],
+            "tools": TOOLS,
+            "tool_choice": "auto",
+        }
+
+        original_atomic_replace = m._debugging_atomic_replace_report
+        failed_once = False
+
+        def fail_final_persistence(report_path, report_text):
+            nonlocal failed_once
+
+            if not failed_once and original_final in report_text:
+                failed_once = True
+                raise OSError(
+                    "synthetic public final-report durability interruption"
+                )
+
+            return original_atomic_replace(report_path, report_text)
+
+        m._debugging_atomic_replace_report = fail_final_persistence
+
+        try:
+            try:
+                await kernel.run(request_body)
+            except OSError as exc:
+                assert (
+                    "synthetic public final-report durability interruption"
+                    in str(exc)
+                )
+            else:
+                raise AssertionError(
+                    "public final report should fail at durability boundary"
+                )
+        finally:
+            m._debugging_atomic_replace_report = original_atomic_replace
+
+        assert len(m._DEBUGGING_RUNS) == 1
+
+        run = next(iter(m._DEBUGGING_RUNS.values()))
+
+        assert run.final_report_committed is False
+        assert run.final_report == ""
+        assert run.pending_final_report == original_final
+        assert set(run.summaries) == set(
+            range(0, m.DEBUGGING_PASS_COUNT + 1)
+        )
+
+        # Only the deliberately unused retry inference remains.
+        assert len(backend.queue) == 1
+
+        # Retry the exact public request. Jack must recover this run and persist
+        # the already-completed final report without starting another run or
+        # invoking any model stage.
+        result = await kernel.run(request_body)
+
+        assert len(m._DEBUGGING_RUNS) == 1
+        assert next(iter(m._DEBUGGING_RUNS.values())) is run
+
+        assert run.final_report_committed is True
+        assert run.final_report == original_final
+        assert run.pending_final_report == ""
+
+        assert result.content == original_final
+
+        # Proof that no intake, pass, or final-reporter inference ran on retry.
+        assert len(backend.queue) == 1
+        assert (
+            ((backend.queue[0].get("choices") or [{}])[0].get("message") or {})
+            .get("content")
+            == unexpected_retry_inference
+        )
+
+
+async def streaming_retry_recovers_pending_final_report_without_regeneration():
+    m = load("code-debugging")
+
+    with tempfile.TemporaryDirectory() as td:
+        m.DEBUGGING_REPORTS_ROOT = Path(td)
+
+        original_final = "Original streamed final repair specification."
+        unexpected_retry_inference = "Unexpected streamed retry inference."
+
+        backend = FakeStreamBackend([
+            response("DEBUGGING_INTAKE_COMPLETE: Intake complete."),
+            response("Pass 1 finding."),
+            response("Pass 2 finding."),
+            response("Pass 3 finding."),
+            response("Pass 4 finding."),
+            response("Pass 5 finding."),
+            response(original_final),
+
+            # Must remain unused if recovery is persistence-only.
+            response(unexpected_retry_inference),
+        ])
+        kernel = m.JackQwenKernel(backend, m.CFG)
+
+        request_body = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Audit streamed final-report durability.",
+                }
+            ],
+            "tools": TOOLS,
+            "tool_choice": "auto",
+        }
+
+        original_atomic_replace = m._debugging_atomic_replace_report
+        failed_once = False
+
+        def fail_final_persistence(report_path, report_text):
+            nonlocal failed_once
+
+            if not failed_once and original_final in report_text:
+                failed_once = True
+                raise OSError(
+                    "synthetic streamed final-report durability interruption"
+                )
+
+            return original_atomic_replace(report_path, report_text)
+
+        m._debugging_atomic_replace_report = fail_final_persistence
+
+        first_chunks = []
+
+        try:
+            try:
+                async for chunk in kernel.stream(request_body):
+                    first_chunks.append(chunk)
+            except OSError as exc:
+                assert (
+                    "synthetic streamed final-report durability interruption"
+                    in str(exc)
+                )
+            else:
+                raise AssertionError(
+                    "streamed final report should fail at durability boundary"
+                )
+        finally:
+            m._debugging_atomic_replace_report = original_atomic_replace
+
+        assert len(m._DEBUGGING_RUNS) == 1
+
+        run = next(iter(m._DEBUGGING_RUNS.values()))
+
+        assert run.final_report_committed is False
+        assert run.final_report == ""
+        assert run.pending_final_report == original_final
+
+        assert set(run.summaries) == set(
+            range(0, m.DEBUGGING_PASS_COUNT + 1)
+        )
+
+        # The completed report was already observable on the first stream,
+        # but it did not become durable authority.
+        assert original_final.encode("utf-8") in b"".join(first_chunks)
+
+        # Only the deliberately unused retry inference remains.
+        assert len(backend.queue) == 1
+
+        retry_chunks = []
+        async for chunk in kernel.stream(request_body):
+            retry_chunks.append(chunk)
+
+        # Exact public streaming retry must recover the original transaction,
+        # not create another debugging run.
+        assert len(m._DEBUGGING_RUNS) == 1
+        assert next(iter(m._DEBUGGING_RUNS.values())) is run
+
+        assert run.final_report_committed is True
+        assert run.final_report == original_final
+        assert run.pending_final_report == ""
+
+        # Retry must emit the retained final report and complete normally.
+        retry_wire = b"".join(retry_chunks)
+        assert original_final.encode("utf-8") in retry_wire
+        assert retry_wire.endswith(b"data: [DONE]\n\n")
+
+        # No model stage may run during durability-only recovery.
+        assert len(backend.queue) == 1
+        assert (
+            ((backend.queue[0].get("choices") or [{}])[0].get("message") or {})
+            .get("content")
+            == unexpected_retry_inference
+        )
+
 async def main():
+    await streaming_retry_recovers_pending_final_report_without_regeneration()
+    await public_retry_recovers_pending_final_report_without_regeneration()
+    await final_report_durability_retry_does_not_regenerate_report()
+    await streaming_public_retry_recovers_pending_pass_without_regeneration()
+    await tool_resume_durability_retry_does_not_regenerate_cognition()
+    await clarification_durability_retry_does_not_regenerate_cognition()
+    await different_request_does_not_capture_pending_durability_transaction()
+    await ambiguous_exact_durability_ownership_fails_closed()
+    await public_run_retry_recovers_pending_pass_without_starting_new_run()
+    await pending_pass_durability_retry_does_not_regenerate_cognition()
     await intake_resume_survives_failure()
     await clarification_resume_survives_failure()
     await pending_debugging_resumes_require_positive_identity()
