@@ -29,15 +29,16 @@ jobs:
       - name: Install validated Python test environment
         shell: pwsh
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install pip==26.2.1
           python -m pip install -r requirements-test.txt
 
       - name: Report validated toolchain
         shell: pwsh
         run: |
           python --version
+          python -m pip --version
           node --version
-          python -c "import fastapi,uvicorn,httpx,pytest,starlette,pydantic; print('fastapi='+fastapi.__version__); print('uvicorn='+uvicorn.__version__); print('httpx='+httpx.__version__); print('pytest='+pytest.__version__); print('starlette='+starlette.__version__); print('pydantic='+pydantic.__version__)"
+          python -c "import sys,fastapi,uvicorn,httpx,pytest,starlette,pydantic; expected={'python':'3.14.6','fastapi':'0.137.1','uvicorn':'0.49.0','httpx':'0.28.1','pytest':'9.1.1','starlette':'1.3.1','pydantic':'2.13.4'}; actual={'python':sys.version.split()[0],'fastapi':fastapi.__version__,'uvicorn':uvicorn.__version__,'httpx':httpx.__version__,'pytest':pytest.__version__,'starlette':starlette.__version__,'pydantic':pydantic.__version__}; print(actual); assert actual == expected, (actual, expected)"
 
       - name: Compile runtime modules
         shell: pwsh
