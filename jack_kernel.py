@@ -2990,8 +2990,8 @@ def _compact_agentic_completed_capsules(
             continue
         if role != "assistant":
             continue
-        text = _content_to_text(raw.get("content")).strip()
-        if not text:
+        text = _content_to_text(raw.get("content"))
+        if not text.strip():
             continue
         item = dict(raw)
         for key in ("reasoning_content", "reasoning", "thinking", "_jack_prior_stage2_reasoning"):
@@ -3002,6 +3002,9 @@ def _compact_agentic_completed_capsules(
             if isinstance(key, str) and key.startswith("_jack_"):
                 item.pop(key, None)
         item.pop("tool_calls", None)
+        # The visible Agentic commit contains host-owned XML/separator bytes followed
+        # by the exact frozen A1. Validate emptiness above, but never normalize the
+        # committed content here or the next turn would silently rewrite A1.
         item["content"] = text
         retained.append(item)
         frozen_xml, frozen_answer = _split_prior_jack_output(text)
