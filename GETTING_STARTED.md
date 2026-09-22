@@ -30,11 +30,21 @@ Historical acceptance evidence is preserved under `Documentation/Orchestration/H
 - Python 3
 - A supported OpenAI-compatible backend with a model loaded
 
-Install dependencies from the repository root:
+The current validated development/release baseline is **Python 3.14.6**. The Pi control-bridge validation harnesses use **Node.js 24.16.0**. Other Python 3 and Node versions may work, but they are not the pinned CI baseline.
+
+Install runtime dependencies from the repository root:
 
 ```powershell
 py -3 -m pip install -r requirements.txt
 ```
+
+To reproduce the repository validation environment, install the separate test requirements:
+
+```powershell
+py -3 -m pip install -r requirements-test.txt
+```
+
+The runtime requirements pin the validated FastAPI, Uvicorn, and HTTPX versions. `constraints.txt` also pins the FastAPI-facing Starlette and Pydantic versions from the accepted Windows baseline.
 
 ## 2. Start Jack
 
