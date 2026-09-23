@@ -48,6 +48,9 @@ $env:JACK_BACKEND_MODEL = $BackendModel
 $env:JACK_BACKEND_ADMISSION_QUALIFIED = if ($BackendAdmissionQualified) { "1" } else { "0" }
 
 if (-not [string]::IsNullOrWhiteSpace($WorkerBridgeId)) {
+    if ([string]::IsNullOrWhiteSpace($WorkerControlToken)) {
+        throw "WorkerControlToken is required when WorkerBridgeId selects a named privileged worker."
+    }
     $env:JACK_PI_CONTROL_BRIDGE_ID = $WorkerBridgeId
 } else {
     Remove-Item Env:JACK_PI_CONTROL_BRIDGE_ID -ErrorAction SilentlyContinue
