@@ -8,7 +8,7 @@
 >
 > This is the first document to read. It explains the kernel, the shipped cognition programs, long-horizon state, Pi integration, and Orchestration Gateway v2 in plain English.
 
-**Current release reality:** Jack Kernel remains **v0.1.1**. Orchestration Gateway v2 is the current supervisory transport. The current validated Primary-Pi control bridge SHA-256 for the **Windows CRLF representation** is `E758883F3C18CBEFBF5590C720DBEDF7AB8E85D3314B5EA77E277B1A8C3BD3E4`. The canonical repository **LF representation** SHA-256 is `723338D4F67295AEC5B75886EFEF7843C1A44D01934BF9CBB7C2304B4603F92C`.
+**Current release reality:** Jack Kernel remains **v0.1.1**. Orchestration Gateway v2 is the current supervisory transport. The current validated Primary-Pi control bridge SHA-256 for the **Windows CRLF representation** is `93A6843CDAAEDA637474B584919ED003930296DE281570E3DDC391F54EF65565`. The canonical repository **LF representation** SHA-256 is `8FFD33FD33AE15A785E2BF9015F17FC14F1DE27B09515D5E868EC163D54C15F0`.
 
 ## Orchestration at a glance
 
@@ -87,6 +87,32 @@ POST /jack/orchestration/session/new
 ```
 
 This gateway governs supervisor-to-worker control. It does not claim that Jack intercepts every filesystem/shell/process consequence inside privileged Primary Pi.
+
+## Multi-endpoint runtime lanes
+
+The multi-endpoint runtime substrate extends the existing single-endpoint default without changing Jack's cognition contracts. Multiple isolated Jack OS processes may remain hot at the same time, each with its own runtime/lane identity and reasoning mode while sharing one configured backend model.
+
+Use `start-lane.ps1` for an explicit lane:
+
+```powershell
+.\start-lane.ps1 -RuntimeId jack-agentic-01 -Mode agentic -Port 8101
+.\start-lane.ps1 -RuntimeId jack-debug-01 -Mode code-debugging -Port 8102
+.\start-lane.ps1 -RuntimeId jack-research-01 -Mode deep-research -Port 8103
+```
+
+The configured port is a preference, not identity. With fallback enabled, an occupied preferred loopback port causes Jack to atomically bind an OS-assigned loopback port and publish the actual address. `runtime_id`, `lane_id`, session/task/run identity, and security ownership do not change when the transport endpoint changes.
+
+Current runtime discovery is available from any running lane at:
+
+```text
+GET /jack/runtimes
+```
+
+The registry reports preferred and actual endpoints, fallback state, mode, process identity, backend configuration, and whether shared-backend admission has been explicitly qualified.
+
+**Concurrency boundary:** `JACK_MAX_CONCURRENT` remains a per-process Jack limit. It is not a fleet-wide semaphore across separate lane processes. Multi-lane deployments must rely on a tested bounded-admission/slot mechanism in the shared backend, or later provide an explicit cross-process admission coordinator. `JACK_BACKEND_ADMISSION_QUALIFIED=1` is an operator assertion that this shared-backend behavior has been validated; Jack does not infer it from the existence of local semaphores.
+
+**Privileged-worker boundary:** effect-capable lanes should use one positively named Pi bridge/worker per lane in the first release. Named workers require an explicit control token and are selected with `JACK_PI_CONTROL_BRIDGE_ID`; Jack sends the selected bridge identity on control requests, and a mismatched named worker rejects the request. Shared multi-tenant privileged workers are not part of this endpoint upgrade.
 
 ## Run on Windows
 
