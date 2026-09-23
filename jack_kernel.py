@@ -7737,10 +7737,11 @@ def _load_pi_control_bridge() -> Dict[str, Any]:
     }
 
 
-def _require_pi_control_bridge() -> Tuple[str, str]:
+def _require_pi_control_bridge() -> Tuple[str, str, Optional[str]]:
     bridge = _load_pi_control_bridge()
     url = str(bridge.get("url") or "").rstrip("/")
     token = str(bridge.get("token") or "")
+    bridge_id = str(bridge.get("bridge_id") or "").strip() or None
     binding_error = str(bridge.get("binding_error") or "")
     if binding_error:
         raise HTTPException(status_code=503, detail=binding_error)
@@ -7748,13 +7749,19 @@ def _require_pi_control_bridge() -> Tuple[str, str]:
         raise HTTPException(status_code=503, detail="Pi control bridge URL is not configured")
     if not token:
         raise HTTPException(status_code=503, detail="Pi control bridge token is not configured")
-    return url, token
+    return url, token, bridge_id
 
 
 def _pi_control_headers(
-    token: str, *, content_type: Optional[str] = None, accept: Optional[str] = None
+    token: str,
+    *,
+    bridge_id: Optional[str] = None,
+    content_type: Optional[str] = None,
+    accept: Optional[str] = None,
 ) -> Dict[str, str]:
     headers = {"Authorization": f"Bearer {token}"}
+    if bridge_id:
+        headers["X-Jack-Bridge-Id"] = bridge_id
     if content_type:
         headers["Content-Type"] = content_type
     if accept:
@@ -7809,7 +7816,7 @@ async def _proxy_pi_control_request(
     request or SSE monitor remains active.
     """
     await enforce_kernel_auth(request)
-    base_url, token = _require_pi_control_bridge()
+    base_url, token, bridge_id = _require_pi_control_bridge()
     body = await request.body() if forward_body else b""
     content_type = (
         request.headers.get("content-type", "application/json")
@@ -7824,6 +7831,7 @@ async def _proxy_pi_control_request(
                 content=body if forward_body else None,
                 headers=_pi_control_headers(
                     token,
+                    bridge_id=bridge_id,
                     content_type=content_type,
                     accept="application/json",
                 ),
@@ -7885,12 +7893,14 @@ class OrchestrationEventHub:
 
     async def probe(self) -> None:
         """Preserve v1 failure semantics before an SSE client is accepted."""
-        base_url, token = _require_pi_control_bridge()
+        base_url, token, bridge_id = _require_pi_control_bridge()
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.get(
                     f"{base_url}/v1/status",
-                    headers=_pi_control_headers(token, accept="application/json"),
+                    headers=_pi_control_headers(
+                        token, bridge_id=bridge_id, accept="application/json"
+                    ),
                 )
             if response.status_code >= 500:
                 raise HTTPException(status_code=502, detail="Pi control bridge is unavailable")
@@ -8069,12 +8079,14 @@ class OrchestrationEventHub:
     async def _run(self) -> None:
         while not self._stopping:
             try:
-                base_url, token = _require_pi_control_bridge()
+                base_url, token, bridge_id = _require_pi_control_bridge()
                 async with httpx.AsyncClient(timeout=None) as client:
                     async with client.stream(
                         "GET",
                         f"{base_url}/v1/events",
-                        headers=_pi_control_headers(token, accept="text/event-stream"),
+                        headers=_pi_control_headers(
+                            token, bridge_id=bridge_id, accept="text/event-stream"
+                        ),
                     ) as upstream:
                         if upstream.status_code != 200:
                             body = await upstream.aread()
