@@ -75,6 +75,7 @@ import html
 import re
 from contextlib import asynccontextmanager
 import contextlib
+import contextvars
 import json
 import logging
 import os
@@ -2114,6 +2115,26 @@ STAGES["debug_summary"] = StageProfile(
     False,
     None,
 )
+
+
+def _runtime_activity_stage_number(stage_key: Optional[str]) -> Optional[int]:
+    """Return an observability-only stage ordinal without changing cognition."""
+    key = str(stage_key or "")
+    if key in {"thesis", "extended_initial"}:
+        return 1
+    if key == "extended_reflection":
+        return 2
+    if key == "extended_synthesis":
+        return 3
+    if key == "debug_intake":
+        return 0
+    debug_pass = _debugging_pass_from_stage_key(key)
+    if debug_pass is not None:
+        return debug_pass
+    if key == "debug_summary":
+        return DEBUGGING_PASS_COUNT + 1
+    return None
+
 
 # Qwen3.8 official recommended sampling sets.
 QWEN_THINKING_SAMPLING = {
@@ -4729,11 +4750,129 @@ class PendingToolResume:
     in_flight: bool = False
 
 
+class RuntimeActivityTracker:
+    """Out-of-band process-local activity state; never projected into model context."""
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._active: Dict[str, Dict[str, Any]] = {}
+        self._last_request: Optional[Dict[str, Any]] = None
+        self._current_request_id: contextvars.ContextVar[Optional[str]] = (
+            contextvars.ContextVar(
+                f"jack_runtime_activity_request_{id(self)}",
+                default=None,
+            )
+        )
+
+    @asynccontextmanager
+    async def request_scope(self, transport: str) -> AsyncIterator[str]:
+        request_id = f"jack-request-{uuid.uuid4().hex}"
+        started_at = time.time()
+        token = self._current_request_id.set(request_id)
+        async with self._lock:
+            self._active[request_id] = {
+                "request_id": request_id,
+                "transport": str(transport),
+                "state": "queued",
+                "stage_key": None,
+                "stage": None,
+                "stage_number": None,
+                "backend_request_active": False,
+                "started_at_unix": started_at,
+            }
+
+        outcome = "failed"
+        try:
+            yield request_id
+            outcome = "completed"
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
+        except BaseException:
+            outcome = "failed"
+            raise
+        finally:
+            ended_at = time.time()
+            async with self._lock:
+                entry = self._active.pop(request_id, None) or {
+                    "request_id": request_id,
+                    "transport": str(transport),
+                    "started_at_unix": started_at,
+                }
+                entry = dict(entry)
+                entry["status"] = outcome
+                entry["ended_at_unix"] = ended_at
+                entry["elapsed_seconds"] = round(
+                    max(0.0, ended_at - float(entry.get("started_at_unix") or started_at)),
+                    3,
+                )
+                entry["backend_request_active"] = False
+                self._last_request = entry
+            self._current_request_id.reset(token)
+
+    async def update(
+        self,
+        *,
+        state: Optional[str] = None,
+        stage_key: Optional[str] = None,
+        stage_name: Optional[str] = None,
+        stage_number: Optional[int] = None,
+        backend_request_active: Optional[bool] = None,
+    ) -> None:
+        request_id = self._current_request_id.get()
+        if not request_id:
+            return
+        async with self._lock:
+            entry = self._active.get(request_id)
+            if entry is None:
+                return
+            if state is not None:
+                entry["state"] = str(state)
+            if stage_key is not None:
+                entry["stage_key"] = str(stage_key)
+            if stage_name is not None:
+                entry["stage"] = str(stage_name)
+            if stage_number is not None:
+                entry["stage_number"] = int(stage_number)
+            if backend_request_active is not None:
+                entry["backend_request_active"] = bool(backend_request_active)
+
+    async def snapshot(self) -> Dict[str, Any]:
+        now = time.time()
+        async with self._lock:
+            active: List[Dict[str, Any]] = []
+            for raw in self._active.values():
+                entry = dict(raw)
+                entry["elapsed_seconds"] = round(
+                    max(0.0, now - float(entry.get("started_at_unix") or now)),
+                    3,
+                )
+                active.append(entry)
+            active.sort(key=lambda item: float(item.get("started_at_unix") or 0.0))
+            queued = sum(1 for item in active if item.get("state") == "queued")
+            running = sum(1 for item in active if item.get("state") == "running")
+            backend_active = sum(
+                1 for item in active if item.get("backend_request_active") is True
+            )
+            last_request = dict(self._last_request) if self._last_request else None
+
+        return {
+            "status": "busy" if active else "idle",
+            "active_count": len(active),
+            "queued_count": queued,
+            "running_count": running,
+            "backend_active_count": backend_active,
+            "requests": active,
+            "last_request": last_request,
+        }
+
+
 class JackQwenKernel:
     def __init__(self, backend: OpenAICompatibleBackend, cfg: KernelConfig):
         self.backend = backend
         self.cfg = cfg
         self._semaphore = asyncio.Semaphore(max(1, cfg.max_concurrent_requests))
+        self.activity = RuntimeActivityTracker()
         self._pending_tool_resumes: Dict[str, PendingToolResume] = {}
         self._pending_tool_resume_lock = asyncio.Lock()
         self._pending_debugging_intake_resumes: Dict[str, PendingDebuggingIntakeResume] = {}
@@ -4766,13 +4905,22 @@ class JackQwenKernel:
         )
         effective_tools = tools if profile.allow_tools else None
         effective_tool_choice = tool_choice if profile.allow_tools else None
-        data = await self.backend.chat(
-            messages=history,
-            secondary_system=secondary_system,
-            profile=profile,
-            tools=effective_tools,
-            tool_choice=effective_tool_choice,
+        await self.activity.update(
+            stage_key=stage_key,
+            stage_name=profile.name,
+            stage_number=_runtime_activity_stage_number(stage_key),
+            backend_request_active=True,
         )
+        try:
+            data = await self.backend.chat(
+                messages=history,
+                secondary_system=secondary_system,
+                profile=profile,
+                tools=effective_tools,
+                tool_choice=effective_tool_choice,
+            )
+        finally:
+            await self.activity.update(backend_request_active=False)
         aggregate_usage(usage, data.get("usage"))
         choice = (data.get("choices") or [{}])[0]
         msg = choice.get("message") or {}
@@ -4904,6 +5052,12 @@ class JackQwenKernel:
         stage_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         finish_reason = "stop"
 
+        await self.activity.update(
+            stage_key=stage_key,
+            stage_name=profile.name,
+            stage_number=_runtime_activity_stage_number(stage_key),
+            backend_request_active=True,
+        )
         backend_stream = self.backend.chat_stream(
             messages=history,
             secondary_system=secondary_system,
@@ -4994,6 +5148,7 @@ class JackQwenKernel:
             if aclose is not None:
                 with contextlib.suppress(Exception):
                     await aclose()
+            await self.activity.update(backend_request_active=False)
 
         message: Dict[str, Any] = {
             "role": "assistant",
@@ -5004,13 +5159,17 @@ class JackQwenKernel:
                 "Stage %s completed with an empty streamed backend response; retrying once non-streaming",
                 profile.name,
             )
-            recovery = await self.backend.chat(
-                messages=history,
-                secondary_system=secondary_system,
-                profile=profile,
-                tools=effective_tools,
-                tool_choice=effective_tool_choice,
-            )
+            await self.activity.update(backend_request_active=True)
+            try:
+                recovery = await self.backend.chat(
+                    messages=history,
+                    secondary_system=secondary_system,
+                    profile=profile,
+                    tools=effective_tools,
+                    tool_choice=effective_tool_choice,
+                )
+            finally:
+                await self.activity.update(backend_request_active=False)
             recovery_usage = recovery.get("usage")
             if recovery_usage:
                 aggregate_usage(usage, recovery_usage)
@@ -6659,8 +6818,13 @@ class JackQwenKernel:
         )
 
     async def run(self, request_body: Dict[str, Any]) -> KernelResult:
+        async with self.activity.request_scope("nonstream"):
+            return await self._run_impl(request_body)
+
+    async def _run_impl(self, request_body: Dict[str, Any]) -> KernelResult:
         request_body = sanitize_agent_request(request_body)
         async with self._semaphore:
+            await self.activity.update(state="running")
             messages = request_body.get("messages")
             pending = None
             debugging_intake_pending = None
@@ -6739,6 +6903,11 @@ class JackQwenKernel:
             )
 
     async def stream(self, request_body: Dict[str, Any]) -> AsyncIterator[bytes]:
+        async with self.activity.request_scope("stream"):
+            async for chunk in self._stream_impl(request_body):
+                yield chunk
+
+    async def _stream_impl(self, request_body: Dict[str, Any]) -> AsyncIterator[bytes]:
         """Stream the active Jack reasoning program.
 
         Agentic keeps its two-stage frozen-A1/XML behavior. Deep Research runs a full-retention
@@ -6777,6 +6946,7 @@ class JackQwenKernel:
             raise HTTPException(status_code=400, detail="At least one user message is required")
 
         async with self._semaphore:
+            await self.activity.update(state="running")
             debugging_intake_pending = await self._consume_pending_debugging_intake_resume(messages)
             debugging_user_pending = None if debugging_intake_pending is not None else await self._consume_pending_debugging_user_resume(messages)
             pending = None if (debugging_intake_pending is not None or debugging_user_pending is not None) else await self._consume_pending_tool_resume(messages)
@@ -8304,6 +8474,20 @@ async def runtime_registry(request: Request) -> Dict[str, Any]:
     }
 
 
+@APP.get("/jack/runtime/status")
+async def runtime_activity_status(request: Request) -> Dict[str, Any]:
+    """Authenticated out-of-band runtime activity; never model-visible state."""
+    await enforce_kernel_auth(request)
+    activity = await KERNEL.activity.snapshot()
+    return {
+        "runtime_id": RUNTIME_ID,
+        "lane_id": LANE_ID,
+        "reasoning_level": ACTIVE_REASONING_PROFILE["label"],
+        "endpoint": _runtime_endpoint_details(),
+        **activity,
+    }
+
+
 @APP.get(f"{ORCHESTRATION_BASE_PATH}/status")
 async def orchestration_status(request: Request) -> Response:
     return await _proxy_pi_control_request(request, "GET", "/v1/status")
@@ -8524,6 +8708,66 @@ async def _safe_public_stream(body: Dict[str, Any]) -> AsyncIterator[bytes]:
         await KERNEL._rearm_pending_debugging_resumes_for_messages(body.get("messages"))
 
 
+async def _wait_for_client_disconnect(
+    request: Request, poll_seconds: float = 0.25
+) -> bool:
+    """Return True only after a positive ASGI client-disconnect observation."""
+    while True:
+        try:
+            if await request.is_disconnected():
+                return True
+        except Exception:
+            LOG.exception("Client-disconnect watcher failed; leaving Jack request running")
+            return False
+        await asyncio.sleep(max(0.05, float(poll_seconds)))
+
+
+async def _run_nonstream_with_disconnect(
+    request: Request, body: Dict[str, Any]
+) -> KernelResult:
+    """Cancel non-streaming inference only on a positively observed disconnect."""
+    run_task = asyncio.create_task(
+        KERNEL.run(body),
+        name=f"jack-nonstream-{RUNTIME_ID}",
+    )
+    disconnect_task = asyncio.create_task(
+        _wait_for_client_disconnect(request),
+        name=f"jack-disconnect-watch-{RUNTIME_ID}",
+    )
+    try:
+        done, _ = await asyncio.wait(
+            {run_task, disconnect_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if run_task in done:
+            return await run_task
+
+        disconnected = await disconnect_task
+        if not disconnected:
+            return await run_task
+
+        # If inference completed in the same scheduling turn, preserve the
+        # authoritative result rather than discarding a completed commit.
+        if run_task.done():
+            return await run_task
+
+        LOG.info(
+            "Client disconnected from non-streaming request; cancelling runtime=%s",
+            RUNTIME_ID,
+        )
+        run_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await run_task
+        await KERNEL._rearm_pending_tool_resume_for_messages(body.get("messages"))
+        await KERNEL._rearm_pending_debugging_resumes_for_messages(body.get("messages"))
+        raise HTTPException(status_code=499, detail="Client disconnected")
+    finally:
+        if not disconnect_task.done():
+            disconnect_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await disconnect_task
+
+
 @APP.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     await enforce_kernel_auth(request)
@@ -8546,7 +8790,7 @@ async def chat_completions(request: Request):
                 "X-Accel-Buffering": "no",
             },
         )
-    result = await KERNEL.run(body)
+    result = await _run_nonstream_with_disconnect(request, body)
     return JSONResponse(completion_envelope(result))
 
 
