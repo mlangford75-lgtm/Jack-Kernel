@@ -126,6 +126,10 @@ def test_duplicate_live_runtime_id_is_rejected(monkeypatch, tmp_path):
         second = load_module(monkeypatch, tmp_path, port=0, runtime_id=runtime_id)
         second_listener = second._bind_runtime_listener()
         try:
+            existing = json.loads(first_path.read_text(encoding="utf-8"))
+            existing["pid"] = os.getpid() + 100000
+            first_path.write_text(json.dumps(existing), encoding="utf-8")
+            second._pid_is_alive = lambda pid: True
             with pytest.raises(RuntimeError, match="already owned by live pid"):
                 second._write_runtime_manifest("ready", claim=True)
         finally:
