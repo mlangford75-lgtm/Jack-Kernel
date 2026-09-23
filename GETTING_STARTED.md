@@ -103,8 +103,8 @@ Restart Primary Pi afterward. The installer backs up the previously installed br
 Current validated bridge identities:
 
 ```text
-Windows CRLF representation SHA-256: E758883F3C18CBEFBF5590C720DBEDF7AB8E85D3314B5EA77E277B1A8C3BD3E4
-Canonical repository LF SHA-256:    723338D4F67295AEC5B75886EFEF7843C1A44D01934BF9CBB7C2304B4603F92C
+Windows CRLF representation SHA-256: 93A6843CDAAEDA637474B584919ED003930296DE281570E3DDC391F54EF65565
+Canonical repository LF SHA-256:    8FFD33FD33AE15A785E2BF9015F17FC14F1DE27B09515D5E868EC163D54C15F0
 ```
 
 The bridge creates separate task/run identities, strips its private correlation marker before model-visible prompt processing, binds ownership only from positive run evidence, clears low-level ownership at `agent_end`, and physically closes the control run at `agent_settled`.
@@ -167,7 +167,43 @@ py -3 -m pytest -q tests\test_surgical_regressions.py
 
 Additional project regression tests remain under `tests/`.
 
-## 10. Documentation authority
+## 10. Multi-endpoint runtime lanes
+
+The legacy single-lane `start.bat` path remains valid. For independent hot runtime lanes, use `start-lane.ps1` from the repository root.
+
+Example:
+
+```powershell
+.\start-lane.ps1 -RuntimeId jack-agentic-01 -Mode agentic -Port 8101
+.\start-lane.ps1 -RuntimeId jack-debug-01 -Mode code-debugging -Port 8102
+.\start-lane.ps1 -RuntimeId jack-research-01 -Mode deep-research -Port 8103
+```
+
+Each lane is a separate Jack process. All three may point to the same LM Studio backend and loaded model. The local `JACK_MAX_CONCURRENT` semaphore limits only one Jack process; it is not a cross-process GPU scheduler.
+
+If a preferred loopback port is occupied and fallback is enabled, Jack binds an OS-assigned free loopback port. Discover the actual addresses with:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8101/jack/runtimes | ConvertTo-Json -Depth 8
+```
+
+A lane that needs a privileged Pi worker should be paired with its own named bridge. Start the worker in a separate PowerShell window with a unique bridge ID and explicit token:
+
+```powershell
+.\Pi\start-pi-worker.ps1 -BridgeId agentic-worker-01 -ControlPort 8013 -ControlToken "<lane-specific-secret>"
+```
+
+Then launch the owning Jack lane with the same worker identity/token:
+
+```powershell
+.\start-lane.ps1 -RuntimeId jack-agentic-01 -Mode agentic -Port 8101 -WorkerBridgeId agentic-worker-01 -WorkerControlToken "<lane-specific-secret>"
+```
+
+Named workers publish their actual control endpoint after binding. If the preferred worker port is occupied, the bridge can fall back to an OS-assigned port without changing worker identity. Jack resolves the named worker from the local bridge registry and rejects bridge-identity mismatches.
+
+Do not treat an available lane count as an inference-slot count. Before declaring a shared backend qualified for many concurrent lanes, verify its backend-side admission/queueing behavior under N>K load.
+
+## 11. Documentation authority
 
 Active orchestration documentation is intentionally small:
 
