@@ -175,6 +175,7 @@ def test_pi_bridge_id_registry_resolution_preserves_legacy_when_unselected(monke
     }
     (registry_dir / "session-1.json").write_text(json.dumps(manifest), encoding="utf-8")
     monkeypatch.setenv("JACK_PI_CONTROL_BRIDGE_ID", bridge_id)
+    monkeypatch.setenv("JACK_PI_CONTROL_TOKEN", "worker-secret")
 
     selected = load_module(monkeypatch, tmp_path, port=0)
     bridge = selected._load_pi_control_bridge()
@@ -182,3 +183,37 @@ def test_pi_bridge_id_registry_resolution_preserves_legacy_when_unselected(monke
     assert bridge["source"] == "bridge_registry"
     assert bridge["bridge_id"] == bridge_id
     assert bridge["configured"] is True
+
+
+def test_named_pi_bridge_rejects_ambient_persisted_token(monkeypatch, tmp_path):
+    home = tmp_path / "named-home"
+    config_dir = home / ".pi" / "agent"
+    registry_dir = config_dir / "jack-kernel-bridges"
+    config_dir.mkdir(parents=True)
+    registry_dir.mkdir(parents=True)
+    (config_dir / "jack-kernel.json").write_text(
+        json.dumps({"controlPort": 8013, "controlToken": "ambient-secret"}),
+        encoding="utf-8",
+    )
+    bridge_id = "named-worker"
+    (registry_dir / "named-session.json").write_text(
+        json.dumps({
+            "bridge_id": bridge_id,
+            "session_instance_id": "named-session",
+            "pid": os.getpid(),
+            "status": "ready",
+            "actual_port": 51234,
+        }),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("JACK_PI_CONTROL_REGISTRY_DIR", str(registry_dir))
+    monkeypatch.setenv("JACK_PI_CONTROL_BRIDGE_ID", bridge_id)
+    monkeypatch.delenv("JACK_PI_CONTROL_TOKEN", raising=False)
+
+    mod = load_module(monkeypatch, tmp_path, port=0)
+    bridge = mod._load_pi_control_bridge()
+    assert bridge["configured"] is False
+    assert "explicit JACK_PI_CONTROL_TOKEN" in bridge["binding_error"]
