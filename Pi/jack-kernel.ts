@@ -69,9 +69,6 @@ function runtimeUrlFromRegistry(runtimeId, registryDir) {
   if (String(manifest?.runtime_id || "") !== runtimeId) {
     throw new Error(`Jack runtime manifest identity mismatch for ${runtimeId}`);
   }
-  if (String(manifest?.status || "") !== "ready") {
-    throw new Error(`Jack runtime ${runtimeId} is not ready`);
-  }
 
   const endpoint = manifest?.endpoint || {};
   let host = String(endpoint.actual_host || "").trim();

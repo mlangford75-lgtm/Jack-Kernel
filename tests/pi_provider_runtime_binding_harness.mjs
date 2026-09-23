@@ -54,7 +54,7 @@ fs.writeFileSync(
   path.join(runtimeRegistry, "runtime-agentic-01.json"),
   JSON.stringify({
     runtime_id: "runtime-agentic-01",
-    status: "ready",
+    status: "stale",
     endpoint: {
       actual_host: "127.0.0.1",
       actual_port: actualPort,
