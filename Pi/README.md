@@ -41,11 +41,33 @@ Restart Primary Pi after installation.
 
 Accepted Windows CRLF bridge SHA-256:
 
-`E758883F3C18CBEFBF5590C720DBEDF7AB8E85D3314B5EA77E277B1A8C3BD3E4`
+`93A6843CDAAEDA637474B584919ED003930296DE281570E3DDC391F54EF65565`
 
 Canonical repository LF SHA-256:
 
-`723338D4F67295AEC5B75886EFEF7843C1A44D01934BF9CBB7C2304B4603F92C`
+`8FFD33FD33AE15A785E2BF9015F17FC14F1DE27B09515D5E868EC163D54C15F0`
+
+## Multi-endpoint worker bridges
+
+The default private bridge remains `127.0.0.1:8013` for compatibility. Multi-endpoint operation adds per-process environment overrides without changing the existing single-worker configuration file.
+
+For an effect-capable Jack lane, start a dedicated named Pi worker:
+
+```powershell
+.\start-pi-worker.ps1 -BridgeId debug-worker-01 -ControlPort 8014 -ControlToken "<worker-specific-secret>"
+```
+
+The bridge supports:
+
+- `JACK_PI_CONTROL_PORT` — preferred loopback control port; `0` requests an OS-assigned port.
+- `JACK_PI_CONTROL_PORT_FALLBACK` — when enabled, an occupied preferred port falls back to an OS-assigned loopback port.
+- `JACK_PI_CONTROL_BRIDGE_ID` — stable worker/bridge identity.
+- `JACK_PI_CONTROL_TOKEN` — explicit private control credential.
+- `JACK_PI_CONTROL_REGISTRY_DIR` — optional bridge-manifest directory override.
+
+A running bridge publishes a local manifest containing its bridge ID, session instance ID, PID, preferred port, actual port, and fallback state. Named Jack worker bindings require an explicit `JACK_PI_CONTROL_TOKEN`; they do not inherit the ambient persisted token as worker-scoped authority. Jack also sends `X-Jack-Bridge-Id` on named control requests, and a mismatched named bridge rejects the request.
+
+Multiple Jack lanes must not implicitly share one privileged Pi worker in the first multi-endpoint release. A future shared multi-tenant worker requires its own independently validated worker-side isolation contract.
 
 ### Run-bound identity
 
