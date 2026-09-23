@@ -674,6 +674,17 @@ export default async function (pi) {
         return;
       }
 
+      const requestedBridgeId = String(req.headers["x-jack-bridge-id"] || "").trim();
+      if (requestedBridgeId && requestedBridgeId !== bridgeId) {
+        json(res, 409, {
+          error: "bridge identity mismatch",
+          requestedBridgeId,
+          bridgeId,
+          sessionInstanceId,
+        });
+        return;
+      }
+
       const requestUrl = new URL(req.url || "/", `http://${HOST}:${actualPort || preferredPort}`);
       const pathname = requestUrl.pathname;
 
