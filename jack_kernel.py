@@ -4873,6 +4873,7 @@ class JackQwenKernel:
         self.cfg = cfg
         self._semaphore = asyncio.Semaphore(max(1, cfg.max_concurrent_requests))
         self.activity = RuntimeActivityTracker()
+        self._activity_telemetry_degraded = False
         self._pending_tool_resumes: Dict[str, PendingToolResume] = {}
         self._pending_tool_resume_lock = asyncio.Lock()
         self._pending_debugging_intake_resumes: Dict[str, PendingDebuggingIntakeResume] = {}
@@ -4880,6 +4881,61 @@ class JackQwenKernel:
         self._pending_debugging_user_resumes: Dict[str, PendingDebuggingUserResume] = {}
         self._pending_debugging_user_resume_lock = asyncio.Lock()
 
+    async def _activity_update(self, **kwargs: Any) -> None:
+        """Best-effort observability update; telemetry never governs cognition."""
+        try:
+            await self.activity.update(**kwargs)
+        except Exception:
+            self._activity_telemetry_degraded = True
+            LOG.exception(
+                "Runtime activity telemetry update failed; cognition continues"
+            )
+
+    @asynccontextmanager
+    async def _activity_request_scope(self, transport: str) -> AsyncIterator[None]:
+        """Best-effort activity lifecycle that cannot alter cognition authority."""
+        try:
+            scope = self.activity.request_scope(transport)
+            await scope.__aenter__()
+        except Exception:
+            self._activity_telemetry_degraded = True
+            LOG.exception(
+                "Runtime activity telemetry registration failed; cognition continues"
+            )
+            yield
+            return
+
+        try:
+            yield
+        except BaseException as original:
+            try:
+                await scope.__aexit__(
+                    type(original),
+                    original,
+                    original.__traceback__,
+                )
+            except asyncio.CancelledError as finalization_cancel:
+                if finalization_cancel is not original:
+                    raise
+            except Exception as finalization_error:
+                if finalization_error is not original:
+                    self._activity_telemetry_degraded = True
+                    LOG.exception(
+                        "Runtime activity telemetry finalization failed; "
+                        "preserving original cognition exception"
+                    )
+            except BaseException:
+                raise
+            raise
+        else:
+            try:
+                await scope.__aexit__(None, None, None)
+            except Exception:
+                self._activity_telemetry_degraded = True
+                LOG.exception(
+                    "Runtime activity telemetry finalization failed; "
+                    "cognition result preserved"
+                )
     async def _run_stage(
         self,
         history: List[Dict[str, Any]],
@@ -4905,7 +4961,7 @@ class JackQwenKernel:
         )
         effective_tools = tools if profile.allow_tools else None
         effective_tool_choice = tool_choice if profile.allow_tools else None
-        await self.activity.update(
+        await self._activity_update(
             stage_key=stage_key,
             stage_name=profile.name,
             stage_number=_runtime_activity_stage_number(stage_key),
@@ -4920,7 +4976,7 @@ class JackQwenKernel:
                 tool_choice=effective_tool_choice,
             )
         finally:
-            await self.activity.update(backend_request_active=False)
+            await self._activity_update(backend_request_active=False)
         aggregate_usage(usage, data.get("usage"))
         choice = (data.get("choices") or [{}])[0]
         msg = choice.get("message") or {}
@@ -5052,7 +5108,7 @@ class JackQwenKernel:
         stage_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         finish_reason = "stop"
 
-        await self.activity.update(
+        await self._activity_update(
             stage_key=stage_key,
             stage_name=profile.name,
             stage_number=_runtime_activity_stage_number(stage_key),
@@ -5148,7 +5204,7 @@ class JackQwenKernel:
             if aclose is not None:
                 with contextlib.suppress(Exception):
                     await aclose()
-            await self.activity.update(backend_request_active=False)
+            await self._activity_update(backend_request_active=False)
 
         message: Dict[str, Any] = {
             "role": "assistant",
@@ -5159,7 +5215,7 @@ class JackQwenKernel:
                 "Stage %s completed with an empty streamed backend response; retrying once non-streaming",
                 profile.name,
             )
-            await self.activity.update(backend_request_active=True)
+            await self._activity_update(backend_request_active=True)
             try:
                 recovery = await self.backend.chat(
                     messages=history,
@@ -5169,7 +5225,7 @@ class JackQwenKernel:
                     tool_choice=effective_tool_choice,
                 )
             finally:
-                await self.activity.update(backend_request_active=False)
+                await self._activity_update(backend_request_active=False)
             recovery_usage = recovery.get("usage")
             if recovery_usage:
                 aggregate_usage(usage, recovery_usage)
@@ -6818,13 +6874,13 @@ class JackQwenKernel:
         )
 
     async def run(self, request_body: Dict[str, Any]) -> KernelResult:
-        async with self.activity.request_scope("nonstream"):
+        async with self._activity_request_scope("nonstream"):
             return await self._run_impl(request_body)
 
     async def _run_impl(self, request_body: Dict[str, Any]) -> KernelResult:
         request_body = sanitize_agent_request(request_body)
         async with self._semaphore:
-            await self.activity.update(state="running")
+            await self._activity_update(state="running")
             messages = request_body.get("messages")
             pending = None
             debugging_intake_pending = None
@@ -6903,7 +6959,7 @@ class JackQwenKernel:
             )
 
     async def stream(self, request_body: Dict[str, Any]) -> AsyncIterator[bytes]:
-        async with self.activity.request_scope("stream"):
+        async with self._activity_request_scope("stream"):
             async for chunk in self._stream_impl(request_body):
                 yield chunk
 
@@ -6946,7 +7002,7 @@ class JackQwenKernel:
             raise HTTPException(status_code=400, detail="At least one user message is required")
 
         async with self._semaphore:
-            await self.activity.update(state="running")
+            await self._activity_update(state="running")
             debugging_intake_pending = await self._consume_pending_debugging_intake_resume(messages)
             debugging_user_pending = None if debugging_intake_pending is not None else await self._consume_pending_debugging_user_resume(messages)
             pending = None if (debugging_intake_pending is not None or debugging_user_pending is not None) else await self._consume_pending_tool_resume(messages)
@@ -8478,15 +8534,29 @@ async def runtime_registry(request: Request) -> Dict[str, Any]:
 async def runtime_activity_status(request: Request) -> Dict[str, Any]:
     """Authenticated out-of-band runtime activity; never model-visible state."""
     await enforce_kernel_auth(request)
-    activity = await KERNEL.activity.snapshot()
+
+    telemetry_status = "ok"
+    try:
+        activity = await KERNEL.activity.snapshot()
+        if getattr(KERNEL, "_activity_telemetry_degraded", False):
+            telemetry_status = "degraded"
+            activity = {"status": "unknown"}
+    except Exception:
+        KERNEL._activity_telemetry_degraded = True
+        telemetry_status = "degraded"
+        activity = {"status": "unknown"}
+        LOG.exception(
+            "Runtime activity telemetry snapshot failed; reporting degraded status"
+        )
+
     return {
         "runtime_id": RUNTIME_ID,
         "lane_id": LANE_ID,
         "reasoning_level": ACTIVE_REASONING_PROFILE["label"],
         "endpoint": _runtime_endpoint_details(),
+        "telemetry_status": telemetry_status,
         **activity,
     }
-
 
 @APP.get(f"{ORCHESTRATION_BASE_PATH}/status")
 async def orchestration_status(request: Request) -> Response:
@@ -8708,66 +8778,6 @@ async def _safe_public_stream(body: Dict[str, Any]) -> AsyncIterator[bytes]:
         await KERNEL._rearm_pending_debugging_resumes_for_messages(body.get("messages"))
 
 
-async def _wait_for_client_disconnect(
-    request: Request, poll_seconds: float = 0.25
-) -> bool:
-    """Return True only after a positive ASGI client-disconnect observation."""
-    while True:
-        try:
-            if await request.is_disconnected():
-                return True
-        except Exception:
-            LOG.exception("Client-disconnect watcher failed; leaving Jack request running")
-            return False
-        await asyncio.sleep(max(0.05, float(poll_seconds)))
-
-
-async def _run_nonstream_with_disconnect(
-    request: Request, body: Dict[str, Any]
-) -> KernelResult:
-    """Cancel non-streaming inference only on a positively observed disconnect."""
-    run_task = asyncio.create_task(
-        KERNEL.run(body),
-        name=f"jack-nonstream-{RUNTIME_ID}",
-    )
-    disconnect_task = asyncio.create_task(
-        _wait_for_client_disconnect(request),
-        name=f"jack-disconnect-watch-{RUNTIME_ID}",
-    )
-    try:
-        done, _ = await asyncio.wait(
-            {run_task, disconnect_task},
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        if run_task in done:
-            return await run_task
-
-        disconnected = await disconnect_task
-        if not disconnected:
-            return await run_task
-
-        # If inference completed in the same scheduling turn, preserve the
-        # authoritative result rather than discarding a completed commit.
-        if run_task.done():
-            return await run_task
-
-        LOG.info(
-            "Client disconnected from non-streaming request; cancelling runtime=%s",
-            RUNTIME_ID,
-        )
-        run_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await run_task
-        await KERNEL._rearm_pending_tool_resume_for_messages(body.get("messages"))
-        await KERNEL._rearm_pending_debugging_resumes_for_messages(body.get("messages"))
-        raise HTTPException(status_code=499, detail="Client disconnected")
-    finally:
-        if not disconnect_task.done():
-            disconnect_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await disconnect_task
-
-
 @APP.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     await enforce_kernel_auth(request)
@@ -8790,7 +8800,7 @@ async def chat_completions(request: Request):
                 "X-Accel-Buffering": "no",
             },
         )
-    result = await _run_nonstream_with_disconnect(request, body)
+    result = await KERNEL.run(body)
     return JSONResponse(completion_envelope(result))
 
 

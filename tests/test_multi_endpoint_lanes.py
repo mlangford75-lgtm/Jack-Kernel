@@ -258,59 +258,8 @@ def test_runtime_activity_tracker_reports_busy_stage_and_last_outcome(monkeypatc
     asyncio.run(exercise())
 
 
-def test_nonstream_disconnect_cancels_inflight_kernel_run(monkeypatch, tmp_path):
+def test_nonstream_disconnect_has_no_implicit_cancellation_authority(monkeypatch, tmp_path):
     mod = load_module(monkeypatch, tmp_path, port=0)
-
-    class FakeRequest:
-        def __init__(self):
-            self.calls = 0
-
-        async def is_disconnected(self):
-            self.calls += 1
-            return self.calls >= 2
-
-    class FakeKernel:
-        def __init__(self):
-            self.cancelled = False
-            self.rearmed_tool = False
-            self.rearmed_debug = False
-
-        async def run(self, _body):
-            try:
-                await asyncio.sleep(60)
-            except asyncio.CancelledError:
-                self.cancelled = True
-                raise
-
-        async def _rearm_pending_tool_resume_for_messages(self, _messages):
-            self.rearmed_tool = True
-
-        async def _rearm_pending_debugging_resumes_for_messages(self, _messages):
-            self.rearmed_debug = True
-
-    fake = FakeKernel()
-    monkeypatch.setattr(mod, "KERNEL", fake)
-
-    async def exercise():
-        with pytest.raises(mod.HTTPException) as exc:
-            await mod._run_nonstream_with_disconnect(
-                FakeRequest(),
-                {"messages": [{"role": "user", "content": "test"}]},
-            )
-        assert exc.value.status_code == 499
-
-    asyncio.run(exercise())
-    assert fake.cancelled is True
-    assert fake.rearmed_tool is True
-    assert fake.rearmed_debug is True
-
-
-def test_nonstream_completion_wins_without_disconnect_cancellation(monkeypatch, tmp_path):
-    mod = load_module(monkeypatch, tmp_path, port=0)
-
-    class FakeRequest:
-        async def is_disconnected(self):
-            return False
 
     expected = mod.KernelResult(
         content="ok",
@@ -319,24 +268,101 @@ def test_nonstream_completion_wins_without_disconnect_cancellation(monkeypatch, 
         usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     )
 
+    class FakeRequest:
+        async def json(self):
+            return {
+                "messages": [{"role": "user", "content": "test"}],
+                "stream": False,
+            }
+
+        async def is_disconnected(self):
+            raise AssertionError(
+                "HTTP transport state must not be consulted as cognition-cancellation authority"
+            )
+
     class FakeKernel:
+        def __init__(self):
+            self.completed = False
+
         async def run(self, _body):
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0)
+            self.completed = True
             return expected
 
-        async def _rearm_pending_tool_resume_for_messages(self, _messages):
-            raise AssertionError("must not rearm on normal completion")
+    fake = FakeKernel()
+    monkeypatch.setattr(mod, "KERNEL", fake)
 
-        async def _rearm_pending_debugging_resumes_for_messages(self, _messages):
-            raise AssertionError("must not rearm on normal completion")
+    async def allow_auth(_request):
+        return None
 
-    monkeypatch.setattr(mod, "KERNEL", FakeKernel())
+    monkeypatch.setattr(mod, "enforce_kernel_auth", allow_auth)
 
     async def exercise():
-        result = await mod._run_nonstream_with_disconnect(
-            FakeRequest(),
-            {"messages": [{"role": "user", "content": "test"}]},
+        response = await mod.chat_completions(FakeRequest())
+        assert response.status_code == 200
+        assert fake.completed is True
+        assert b"ok" in response.body
+
+    asyncio.run(exercise())
+
+def test_runtime_activity_failure_preserves_cognition_and_reports_degraded(monkeypatch, tmp_path):
+    mod = load_module(monkeypatch, tmp_path, port=0)
+
+    expected = mod.KernelResult(
+        content="authoritative-result",
+        tool_calls=None,
+        finish_reason="stop",
+        usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    )
+
+    async def broken_update(**_kwargs):
+        raise RuntimeError("deliberate telemetry failure")
+
+    async def successful_cognition(_body):
+        await mod.KERNEL._activity_update(state="running")
+        return expected
+
+    monkeypatch.setattr(mod.KERNEL.activity, "update", broken_update)
+    monkeypatch.setattr(mod.KERNEL, "_run_impl", successful_cognition)
+
+    async def allow_auth(_request):
+        return None
+
+    monkeypatch.setattr(mod, "enforce_kernel_auth", allow_auth)
+
+    async def exercise():
+        result = await mod.KERNEL.run(
+            {"messages": [{"role": "user", "content": "test"}]}
         )
+
         assert result is expected
+        assert result.content == "authoritative-result"
+        assert mod.KERNEL._activity_telemetry_degraded is True
+
+        status = await mod.runtime_activity_status(object())
+        assert status["telemetry_status"] == "degraded"
+        assert status["status"] == "unknown"
+        assert status["runtime_id"] == mod.RUNTIME_ID
+
+    asyncio.run(exercise())
+
+def test_runtime_activity_wrapper_preserves_original_cognition_exception(monkeypatch, tmp_path):
+    mod = load_module(monkeypatch, tmp_path, port=0)
+
+    class CognitionFailure(RuntimeError):
+        pass
+
+    async def failed_cognition(_body):
+        raise CognitionFailure("authoritative cognition failure")
+
+    monkeypatch.setattr(mod.KERNEL, "_run_impl", failed_cognition)
+
+    async def exercise():
+        with pytest.raises(CognitionFailure, match="authoritative cognition failure"):
+            await mod.KERNEL.run(
+                {"messages": [{"role": "user", "content": "test"}]}
+            )
+
+        assert mod.KERNEL._activity_telemetry_degraded is False
 
     asyncio.run(exercise())
