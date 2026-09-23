@@ -190,7 +190,7 @@ Invoke-RestMethod http://127.0.0.1:8101/jack/runtimes | ConvertTo-Json -Depth 8
 A lane that needs a privileged Pi worker should be paired with its own named bridge. Start the worker in a separate PowerShell window with a unique bridge ID and explicit token:
 
 ```powershell
-.\Pi\start-pi-worker.ps1 -BridgeId agentic-worker-01 -ControlPort 8013 -ControlToken "<lane-specific-secret>"
+.\Pi\start-pi-worker.ps1 -BridgeId agentic-worker-01 -ControlPort 8013 -ControlToken "<lane-specific-secret>" -JackRuntimeId jack-agentic-01
 ```
 
 Then launch the owning Jack lane with the same worker identity/token:
@@ -199,7 +199,7 @@ Then launch the owning Jack lane with the same worker identity/token:
 .\start-lane.ps1 -RuntimeId jack-agentic-01 -Mode agentic -Port 8101 -WorkerBridgeId agentic-worker-01 -WorkerControlToken "<lane-specific-secret>"
 ```
 
-Named workers publish their actual control endpoint after binding. If the preferred worker port is occupied, the bridge can fall back to an OS-assigned port without changing worker identity. Jack resolves the named worker from the local bridge registry and rejects bridge-identity mismatches.
+Named workers publish their actual control endpoint after binding. If the preferred worker port is occupied, the bridge can fall back to an OS-assigned port without changing worker identity. Jack resolves the named worker from the local bridge registry and rejects bridge-identity mismatches. The worker's Pi provider separately resolves its owning Jack runtime by `JackRuntimeId` from Jack's runtime registry and verifies that runtime identity before registering the provider; this prevents a named worker from falling back to the legacy global Jack endpoint for inference.
 
 Do not treat an available lane count as an inference-slot count. Before declaring a shared backend qualified for many concurrent lanes, verify its backend-side admission/queueing behavior under N>K load.
 
