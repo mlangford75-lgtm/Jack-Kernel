@@ -78,8 +78,20 @@ assert.ok(Number.isInteger(manifest.actual_port));
 assert.ok(manifest.actual_port > 0);
 assert.notEqual(manifest.actual_port, preferredPort);
 
-const headers = { Authorization: "Bearer multi-endpoint-token" };
-const statusResponse = await fetch(`http://127.0.0.1:${manifest.actual_port}/v1/status`, { headers });
+const baseUrl = `http://127.0.0.1:${manifest.actual_port}`;
+const wrongBinding = await fetch(`${baseUrl}/v1/status`, {
+  headers: {
+    Authorization: "Bearer multi-endpoint-token",
+    "X-Jack-Bridge-Id": "wrong-worker",
+  },
+});
+assert.equal(wrongBinding.status, 409, "named worker binding mismatch must be rejected");
+
+const headers = {
+  Authorization: "Bearer multi-endpoint-token",
+  "X-Jack-Bridge-Id": "debug-worker",
+};
+const statusResponse = await fetch(`${baseUrl}/v1/status`, { headers });
 assert.equal(statusResponse.status, 200);
 const status = await statusResponse.json();
 assert.equal(status.bridgeId, "debug-worker");
