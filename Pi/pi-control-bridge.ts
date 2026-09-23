@@ -6,25 +6,56 @@ import { randomUUID } from "crypto";
 
 const HOST = "127.0.0.1";
 const DEFAULT_CONTROL_PORT = 8013;
-const CONFIG_PATH = path.join(os.homedir(), ".pi", "agent", "jack-kernel.json");
+const AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
+const CONFIG_PATH = path.join(AGENT_DIR, "jack-kernel.json");
+const DEFAULT_REGISTRY_DIR = path.join(AGENT_DIR, "jack-kernel-bridges");
 const CONTROL_MARKER_PREFIX = "\u2063JACK_CONTROL_RUN:";
 const CONTROL_MARKER_SUFFIX = "\u2063";
 
+function envBool(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === null || String(raw).trim() === "") return fallback;
+  return !["0", "false", "no", "off"].includes(String(raw).trim().toLowerCase());
+}
+
+function validPort(value, fallback = DEFAULT_CONTROL_PORT) {
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 0 && port <= 65535 ? port : fallback;
+}
+
 function loadControlConfig() {
+  let parsed = {};
   try {
     if (fs.existsSync(CONFIG_PATH)) {
       const raw = fs.readFileSync(CONFIG_PATH, "utf-8");
-      const parsed = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw);
-      const port = Number(parsed?.controlPort || DEFAULT_CONTROL_PORT);
-      return {
-        port: Number.isInteger(port) && port > 0 && port <= 65535 ? port : DEFAULT_CONTROL_PORT,
-        token: typeof parsed?.controlToken === "string" ? parsed.controlToken : "",
-      };
+      parsed = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw);
     }
   } catch (error) {
     console.error(`[pi-control] Failed to read ${CONFIG_PATH}:`, error);
+    parsed = {};
   }
-  return { port: DEFAULT_CONTROL_PORT, token: "" };
+
+  const envPort = process.env.JACK_PI_CONTROL_PORT;
+  const port = validPort(
+    envPort !== undefined && String(envPort).trim() !== "" ? envPort : parsed?.controlPort,
+    DEFAULT_CONTROL_PORT,
+  );
+  const envToken = process.env.JACK_PI_CONTROL_TOKEN;
+  const token = envToken !== undefined
+    ? String(envToken)
+    : (typeof parsed?.controlToken === "string" ? parsed.controlToken : "");
+  const fallbackDefault = parsed?.controlPortFallback === undefined
+    ? true
+    : Boolean(parsed.controlPortFallback);
+  const fallback = envBool("JACK_PI_CONTROL_PORT_FALLBACK", fallbackDefault);
+  const bridgeId = String(
+    process.env.JACK_PI_CONTROL_BRIDGE_ID || parsed?.controlBridgeId || "primary"
+  ).trim() || "primary";
+  const registryDir = String(
+    process.env.JACK_PI_CONTROL_REGISTRY_DIR || DEFAULT_REGISTRY_DIR
+  ).trim() || DEFAULT_REGISTRY_DIR;
+
+  return { port, token, fallback, bridgeId, registryDir };
 }
 
 function json(res, statusCode, payload) {
@@ -134,7 +165,13 @@ function assistantFailure(message) {
 }
 
 export default async function (pi) {
-  const { port, token } = loadControlConfig();
+  const {
+    port: preferredPort,
+    token,
+    fallback: portFallback,
+    bridgeId,
+    registryDir,
+  } = loadControlConfig();
   let controlledTask = null;
   let activeCtx = null;
   let latestCtx = null;
