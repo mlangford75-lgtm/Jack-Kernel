@@ -181,6 +181,42 @@ export default async function (pi) {
   let sessionTransitioning = false;
   let server = null;
   let serverListening = false;
+  let actualPort = 0;
+  let fallbackUsed = false;
+  let fallbackReason = null;
+  let bridgeManifestPath = null;
+
+  function bridgeManifestPayload(status) {
+    return {
+      bridge_id: bridgeId,
+      session_instance_id: sessionInstanceId,
+      pid: process.pid,
+      status,
+      host: HOST,
+      preferred_port: preferredPort,
+      actual_port: actualPort,
+      fallback_enabled: Boolean(portFallback),
+      fallback_used: Boolean(fallbackUsed),
+      fallback_reason: fallbackReason,
+      started_at: new Date().toISOString(),
+    };
+  }
+
+  function writeBridgeManifest(status = "ready") {
+    if (!actualPort) return;
+    fs.mkdirSync(registryDir, { recursive: true });
+    bridgeManifestPath = path.join(registryDir, `${sessionInstanceId}.json`);
+    const temp = `${bridgeManifestPath}.${process.pid}.${randomUUID()}.tmp`;
+    fs.writeFileSync(temp, JSON.stringify(bridgeManifestPayload(status), null, 2) + "\n", "utf8");
+    fs.renameSync(temp, bridgeManifestPath);
+  }
+
+  function removeBridgeManifest() {
+    if (!bridgeManifestPath) return;
+    try {
+      if (fs.existsSync(bridgeManifestPath)) fs.unlinkSync(bridgeManifestPath);
+    } catch {}
+  }
 
   // Correlation state is deliberately separate from controlledTask. A task UUID
   // does not become event authority merely because it is the current task.
@@ -325,12 +361,16 @@ export default async function (pi) {
       sessionReady,
       sessionTransitioning,
       sessionInstanceId,
+      bridgeId,
+      preferredControlPort: preferredPort,
+      actualControlPort: actualPort || null,
+      controlPortFallbackEnabled: Boolean(portFallback),
+      controlPortFallbackUsed: Boolean(fallbackUsed),
+      controlPortFallbackReason: fallbackReason,
     };
   }
 
-  function ensureServerListening() {
-    if (serverListening) return Promise.resolve();
-
+  function listenOnce(targetPort) {
     return new Promise((resolve, reject) => {
       const onError = (error) => {
         server.off("error", onError);
@@ -338,19 +378,38 @@ export default async function (pi) {
       };
 
       server.once("error", onError);
-
-      server.listen(port, HOST, () => {
+      server.listen(targetPort, HOST, () => {
         server.off("error", onError);
+        const address = server.address();
+        actualPort = typeof address === "object" && address ? Number(address.port) : Number(targetPort);
         serverListening = true;
-        console.log(`[pi-control] Listening on http://${HOST}:${port}`);
-
-        if (!token) {
-          console.error(`[pi-control] controlToken is missing in ${CONFIG_PATH}; all HTTP requests will be unauthorized.`);
-        }
-
         resolve();
       });
     });
+  }
+
+  async function ensureServerListening() {
+    if (serverListening) return;
+
+    try {
+      await listenOnce(preferredPort);
+    } catch (error) {
+      const recoverable = error?.code === "EADDRINUSE";
+      if (!portFallback || !recoverable) throw error;
+      fallbackUsed = true;
+      fallbackReason = "EADDRINUSE";
+      await listenOnce(0);
+    }
+
+    writeBridgeManifest("ready");
+    console.log(
+      `[pi-control] Listening on http://${HOST}:${actualPort} ` +
+      `(bridgeId=${bridgeId}, preferred=${preferredPort}, fallback=${fallbackUsed ? "yes" : "no"})`
+    );
+
+    if (!token) {
+      console.error(`[pi-control] controlToken is missing in ${CONFIG_PATH}; all HTTP requests will be unauthorized.`);
+    }
   }
 
   pi.registerCommand("pi-control-new", {
@@ -597,10 +656,14 @@ export default async function (pi) {
       try { res.end(); } catch {}
     }
     sseClients.clear();
+    if (bridgeManifestPath) {
+      try { writeBridgeManifest("stopping"); } catch {}
+    }
     if (server && serverListening) {
       await new Promise((resolve) => server.close(() => resolve()));
       serverListening = false;
     }
+    removeBridgeManifest();
   });
 
   server = http.createServer(async (req, res) => {
@@ -611,7 +674,7 @@ export default async function (pi) {
         return;
       }
 
-      const requestUrl = new URL(req.url || "/", `http://${HOST}:${port}`);
+      const requestUrl = new URL(req.url || "/", `http://${HOST}:${actualPort || preferredPort}`);
       const pathname = requestUrl.pathname;
 
       if (req.method === "GET" && pathname === "/v1/status") {
@@ -790,6 +853,8 @@ export default async function (pi) {
   });
 
   server.on("error", (error) => {
-    console.error(`[pi-control] Server error on ${HOST}:${port}:`, error);
+    if (!(portFallback && error?.code === "EADDRINUSE" && !serverListening)) {
+      console.error(`[pi-control] Server error on ${HOST}:${actualPort || preferredPort}:`, error);
+    }
   });
 }
