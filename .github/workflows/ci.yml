@@ -56,3 +56,4 @@ jobs:
           node tests/pi_control_bridge_cancel_ownership_harness.mjs
           node tests/pi_control_bridge_deferred_dispatch_harness.mjs
           node tests/pi_control_bridge_retry_recovery_harness.mjs
+          node tests/pi_control_bridge_multi_endpoint_harness.mjs
