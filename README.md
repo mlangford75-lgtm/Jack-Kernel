@@ -112,7 +112,7 @@ The registry reports preferred and actual endpoints, fallback state, mode, proce
 
 **Concurrency boundary:** `JACK_MAX_CONCURRENT` remains a per-process Jack limit. It is not a fleet-wide semaphore across separate lane processes. Multi-lane deployments must rely on a tested bounded-admission/slot mechanism in the shared backend, or later provide an explicit cross-process admission coordinator. `JACK_BACKEND_ADMISSION_QUALIFIED=1` is an operator assertion that this shared-backend behavior has been validated; Jack does not infer it from the existence of local semaphores.
 
-**Privileged-worker boundary:** effect-capable lanes should use one positively named Pi bridge/worker per lane in the first release. Named workers require an explicit control token and are selected with `JACK_PI_CONTROL_BRIDGE_ID`; Jack sends the selected bridge identity on control requests, and a mismatched named worker rejects the request. Shared multi-tenant privileged workers are not part of this endpoint upgrade.
+**Privileged-worker boundary:** effect-capable lanes should use one positively named Pi bridge/worker per lane in the first release. Named workers require an explicit control token and are selected with `JACK_PI_CONTROL_BRIDGE_ID`; Jack sends the selected bridge identity on control requests, and a mismatched named worker rejects the request. The worker's Pi provider is separately bound to an explicit owning Jack `runtime_id`, resolves that runtime's current endpoint from the runtime registry, and verifies the identity before model inference. Shared multi-tenant privileged workers are not part of this endpoint upgrade.
 
 ## Run on Windows
 
