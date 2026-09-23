@@ -7725,7 +7725,13 @@ def _load_pi_control_bridge() -> Dict[str, Any]:
             url = f"http://127.0.0.1:{control_port}"
             source = "legacy_config"
 
-    token = os.getenv(_PI_CONTROL_TOKEN_ENV, "") or str(persisted.get("controlToken") or "")
+    explicit_token = os.getenv(_PI_CONTROL_TOKEN_ENV, "")
+    token = explicit_token or str(persisted.get("controlToken") or "")
+    if bridge_id and not explicit_token:
+        binding_error = (
+            "named Pi bridge binding requires an explicit JACK_PI_CONTROL_TOKEN; "
+            "ambient persisted controlToken is not worker-scoped authority"
+        )
     return {
         "url": url,
         "token": token,
