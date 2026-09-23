@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 import json
 import os
@@ -217,3 +218,151 @@ def test_named_pi_bridge_rejects_ambient_persisted_token(monkeypatch, tmp_path):
     bridge = mod._load_pi_control_bridge()
     assert bridge["configured"] is False
     assert "explicit JACK_PI_CONTROL_TOKEN" in bridge["binding_error"]
+
+
+
+def test_runtime_activity_tracker_reports_busy_stage_and_last_outcome(monkeypatch, tmp_path):
+    mod = load_module(monkeypatch, tmp_path, port=0)
+
+    async def exercise():
+        tracker = mod.RuntimeActivityTracker()
+        idle = await tracker.snapshot()
+        assert idle["status"] == "idle"
+        assert idle["active_count"] == 0
+
+        async with tracker.request_scope("nonstream"):
+            queued = await tracker.snapshot()
+            assert queued["status"] == "busy"
+            assert queued["queued_count"] == 1
+            assert queued["running_count"] == 0
+
+            await tracker.update(
+                state="running",
+                stage_key="extended_reflection",
+                stage_name="Deep Research Antithesis pass 2",
+                stage_number=2,
+                backend_request_active=True,
+            )
+            active = await tracker.snapshot()
+            assert active["running_count"] == 1
+            assert active["backend_active_count"] == 1
+            assert active["requests"][0]["stage_key"] == "extended_reflection"
+            assert active["requests"][0]["stage_number"] == 2
+
+        done = await tracker.snapshot()
+        assert done["status"] == "idle"
+        assert done["active_count"] == 0
+        assert done["last_request"]["status"] == "completed"
+        assert done["last_request"]["backend_request_active"] is False
+
+    asyncio.run(exercise())
+
+
+def test_nonstream_disconnect_has_no_implicit_cancellation_authority(monkeypatch, tmp_path):
+    mod = load_module(monkeypatch, tmp_path, port=0)
+
+    expected = mod.KernelResult(
+        content="ok",
+        tool_calls=None,
+        finish_reason="stop",
+        usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    )
+
+    class FakeRequest:
+        async def json(self):
+            return {
+                "messages": [{"role": "user", "content": "test"}],
+                "stream": False,
+            }
+
+        async def is_disconnected(self):
+            raise AssertionError(
+                "HTTP transport state must not be consulted as cognition-cancellation authority"
+            )
+
+    class FakeKernel:
+        def __init__(self):
+            self.completed = False
+
+        async def run(self, _body):
+            await asyncio.sleep(0)
+            self.completed = True
+            return expected
+
+    fake = FakeKernel()
+    monkeypatch.setattr(mod, "KERNEL", fake)
+
+    async def allow_auth(_request):
+        return None
+
+    monkeypatch.setattr(mod, "enforce_kernel_auth", allow_auth)
+
+    async def exercise():
+        response = await mod.chat_completions(FakeRequest())
+        assert response.status_code == 200
+        assert fake.completed is True
+        assert b"ok" in response.body
+
+    asyncio.run(exercise())
+
+def test_runtime_activity_failure_preserves_cognition_and_reports_degraded(monkeypatch, tmp_path):
+    mod = load_module(monkeypatch, tmp_path, port=0)
+
+    expected = mod.KernelResult(
+        content="authoritative-result",
+        tool_calls=None,
+        finish_reason="stop",
+        usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    )
+
+    async def broken_update(**_kwargs):
+        raise RuntimeError("deliberate telemetry failure")
+
+    async def successful_cognition(_body):
+        await mod.KERNEL._activity_update(state="running")
+        return expected
+
+    monkeypatch.setattr(mod.KERNEL.activity, "update", broken_update)
+    monkeypatch.setattr(mod.KERNEL, "_run_impl", successful_cognition)
+
+    async def allow_auth(_request):
+        return None
+
+    monkeypatch.setattr(mod, "enforce_kernel_auth", allow_auth)
+
+    async def exercise():
+        result = await mod.KERNEL.run(
+            {"messages": [{"role": "user", "content": "test"}]}
+        )
+
+        assert result is expected
+        assert result.content == "authoritative-result"
+        assert mod.KERNEL._activity_telemetry_degraded is True
+
+        status = await mod.runtime_activity_status(object())
+        assert status["telemetry_status"] == "degraded"
+        assert status["status"] == "unknown"
+        assert status["runtime_id"] == mod.RUNTIME_ID
+
+    asyncio.run(exercise())
+
+def test_runtime_activity_wrapper_preserves_original_cognition_exception(monkeypatch, tmp_path):
+    mod = load_module(monkeypatch, tmp_path, port=0)
+
+    class CognitionFailure(RuntimeError):
+        pass
+
+    async def failed_cognition(_body):
+        raise CognitionFailure("authoritative cognition failure")
+
+    monkeypatch.setattr(mod.KERNEL, "_run_impl", failed_cognition)
+
+    async def exercise():
+        with pytest.raises(CognitionFailure, match="authoritative cognition failure"):
+            await mod.KERNEL.run(
+                {"messages": [{"role": "user", "content": "test"}]}
+            )
+
+        assert mod.KERNEL._activity_telemetry_degraded is False
+
+    asyncio.run(exercise())
