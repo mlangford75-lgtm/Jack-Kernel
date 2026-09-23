@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 import json
 import os
@@ -217,3 +218,125 @@ def test_named_pi_bridge_rejects_ambient_persisted_token(monkeypatch, tmp_path):
     bridge = mod._load_pi_control_bridge()
     assert bridge["configured"] is False
     assert "explicit JACK_PI_CONTROL_TOKEN" in bridge["binding_error"]
+
+
+
+def test_runtime_activity_tracker_reports_busy_stage_and_last_outcome(monkeypatch, tmp_path):
+    mod = load_module(monkeypatch, tmp_path, port=0)
+
+    async def exercise():
+        tracker = mod.RuntimeActivityTracker()
+        idle = await tracker.snapshot()
+        assert idle["status"] == "idle"
+        assert idle["active_count"] == 0
+
+        async with tracker.request_scope("nonstream"):
+            queued = await tracker.snapshot()
+            assert queued["status"] == "busy"
+            assert queued["queued_count"] == 1
+            assert queued["running_count"] == 0
+
+            await tracker.update(
+                state="running",
+                stage_key="extended_reflection",
+                stage_name="Deep Research Antithesis pass 2",
+                stage_number=2,
+                backend_request_active=True,
+            )
+            active = await tracker.snapshot()
+            assert active["running_count"] == 1
+            assert active["backend_active_count"] == 1
+            assert active["requests"][0]["stage_key"] == "extended_reflection"
+            assert active["requests"][0]["stage_number"] == 2
+
+        done = await tracker.snapshot()
+        assert done["status"] == "idle"
+        assert done["active_count"] == 0
+        assert done["last_request"]["status"] == "completed"
+        assert done["last_request"]["backend_request_active"] is False
+
+    asyncio.run(exercise())
+
+
+def test_nonstream_disconnect_cancels_inflight_kernel_run(monkeypatch, tmp_path):
+    mod = load_module(monkeypatch, tmp_path, port=0)
+
+    class FakeRequest:
+        def __init__(self):
+            self.calls = 0
+
+        async def is_disconnected(self):
+            self.calls += 1
+            return self.calls >= 2
+
+    class FakeKernel:
+        def __init__(self):
+            self.cancelled = False
+            self.rearmed_tool = False
+            self.rearmed_debug = False
+
+        async def run(self, _body):
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+
+        async def _rearm_pending_tool_resume_for_messages(self, _messages):
+            self.rearmed_tool = True
+
+        async def _rearm_pending_debugging_resumes_for_messages(self, _messages):
+            self.rearmed_debug = True
+
+    fake = FakeKernel()
+    monkeypatch.setattr(mod, "KERNEL", fake)
+
+    async def exercise():
+        with pytest.raises(mod.HTTPException) as exc:
+            await mod._run_nonstream_with_disconnect(
+                FakeRequest(),
+                {"messages": [{"role": "user", "content": "test"}]},
+            )
+        assert exc.value.status_code == 499
+
+    asyncio.run(exercise())
+    assert fake.cancelled is True
+    assert fake.rearmed_tool is True
+    assert fake.rearmed_debug is True
+
+
+def test_nonstream_completion_wins_without_disconnect_cancellation(monkeypatch, tmp_path):
+    mod = load_module(monkeypatch, tmp_path, port=0)
+
+    class FakeRequest:
+        async def is_disconnected(self):
+            return False
+
+    expected = mod.KernelResult(
+        content="ok",
+        tool_calls=None,
+        finish_reason="stop",
+        usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    )
+
+    class FakeKernel:
+        async def run(self, _body):
+            await asyncio.sleep(0.01)
+            return expected
+
+        async def _rearm_pending_tool_resume_for_messages(self, _messages):
+            raise AssertionError("must not rearm on normal completion")
+
+        async def _rearm_pending_debugging_resumes_for_messages(self, _messages):
+            raise AssertionError("must not rearm on normal completion")
+
+    monkeypatch.setattr(mod, "KERNEL", FakeKernel())
+
+    async def exercise():
+        result = await mod._run_nonstream_with_disconnect(
+            FakeRequest(),
+            {"messages": [{"role": "user", "content": "test"}]},
+        )
+        assert result is expected
+
+    asyncio.run(exercise())
