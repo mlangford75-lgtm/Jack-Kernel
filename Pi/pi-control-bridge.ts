@@ -6,25 +6,56 @@ import { randomUUID } from "crypto";
 
 const HOST = "127.0.0.1";
 const DEFAULT_CONTROL_PORT = 8013;
-const CONFIG_PATH = path.join(os.homedir(), ".pi", "agent", "jack-kernel.json");
+const AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
+const CONFIG_PATH = path.join(AGENT_DIR, "jack-kernel.json");
+const DEFAULT_REGISTRY_DIR = path.join(AGENT_DIR, "jack-kernel-bridges");
 const CONTROL_MARKER_PREFIX = "\u2063JACK_CONTROL_RUN:";
 const CONTROL_MARKER_SUFFIX = "\u2063";
 
+function envBool(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === null || String(raw).trim() === "") return fallback;
+  return !["0", "false", "no", "off"].includes(String(raw).trim().toLowerCase());
+}
+
+function validPort(value, fallback = DEFAULT_CONTROL_PORT) {
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 0 && port <= 65535 ? port : fallback;
+}
+
 function loadControlConfig() {
+  let parsed = {};
   try {
     if (fs.existsSync(CONFIG_PATH)) {
       const raw = fs.readFileSync(CONFIG_PATH, "utf-8");
-      const parsed = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw);
-      const port = Number(parsed?.controlPort || DEFAULT_CONTROL_PORT);
-      return {
-        port: Number.isInteger(port) && port > 0 && port <= 65535 ? port : DEFAULT_CONTROL_PORT,
-        token: typeof parsed?.controlToken === "string" ? parsed.controlToken : "",
-      };
+      parsed = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw);
     }
   } catch (error) {
     console.error(`[pi-control] Failed to read ${CONFIG_PATH}:`, error);
+    parsed = {};
   }
-  return { port: DEFAULT_CONTROL_PORT, token: "" };
+
+  const envPort = process.env.JACK_PI_CONTROL_PORT;
+  const port = validPort(
+    envPort !== undefined && String(envPort).trim() !== "" ? envPort : parsed?.controlPort,
+    DEFAULT_CONTROL_PORT,
+  );
+  const envToken = process.env.JACK_PI_CONTROL_TOKEN;
+  const token = envToken !== undefined
+    ? String(envToken)
+    : (typeof parsed?.controlToken === "string" ? parsed.controlToken : "");
+  const fallbackDefault = parsed?.controlPortFallback === undefined
+    ? true
+    : Boolean(parsed.controlPortFallback);
+  const fallback = envBool("JACK_PI_CONTROL_PORT_FALLBACK", fallbackDefault);
+  const bridgeId = String(
+    process.env.JACK_PI_CONTROL_BRIDGE_ID || parsed?.controlBridgeId || "primary"
+  ).trim() || "primary";
+  const registryDir = String(
+    process.env.JACK_PI_CONTROL_REGISTRY_DIR || DEFAULT_REGISTRY_DIR
+  ).trim() || DEFAULT_REGISTRY_DIR;
+
+  return { port, token, fallback, bridgeId, registryDir };
 }
 
 function json(res, statusCode, payload) {
@@ -134,7 +165,13 @@ function assistantFailure(message) {
 }
 
 export default async function (pi) {
-  const { port, token } = loadControlConfig();
+  const {
+    port: preferredPort,
+    token,
+    fallback: portFallback,
+    bridgeId,
+    registryDir,
+  } = loadControlConfig();
   let controlledTask = null;
   let activeCtx = null;
   let latestCtx = null;
@@ -144,6 +181,42 @@ export default async function (pi) {
   let sessionTransitioning = false;
   let server = null;
   let serverListening = false;
+  let actualPort = 0;
+  let fallbackUsed = false;
+  let fallbackReason = null;
+  let bridgeManifestPath = null;
+
+  function bridgeManifestPayload(status) {
+    return {
+      bridge_id: bridgeId,
+      session_instance_id: sessionInstanceId,
+      pid: process.pid,
+      status,
+      host: HOST,
+      preferred_port: preferredPort,
+      actual_port: actualPort,
+      fallback_enabled: Boolean(portFallback),
+      fallback_used: Boolean(fallbackUsed),
+      fallback_reason: fallbackReason,
+      started_at: new Date().toISOString(),
+    };
+  }
+
+  function writeBridgeManifest(status = "ready") {
+    if (!actualPort) return;
+    fs.mkdirSync(registryDir, { recursive: true });
+    bridgeManifestPath = path.join(registryDir, `${sessionInstanceId}.json`);
+    const temp = `${bridgeManifestPath}.${process.pid}.${randomUUID()}.tmp`;
+    fs.writeFileSync(temp, JSON.stringify(bridgeManifestPayload(status), null, 2) + "\n", "utf8");
+    fs.renameSync(temp, bridgeManifestPath);
+  }
+
+  function removeBridgeManifest() {
+    if (!bridgeManifestPath) return;
+    try {
+      if (fs.existsSync(bridgeManifestPath)) fs.unlinkSync(bridgeManifestPath);
+    } catch {}
+  }
 
   // Correlation state is deliberately separate from controlledTask. A task UUID
   // does not become event authority merely because it is the current task.
@@ -288,12 +361,16 @@ export default async function (pi) {
       sessionReady,
       sessionTransitioning,
       sessionInstanceId,
+      bridgeId,
+      preferredControlPort: preferredPort,
+      actualControlPort: actualPort || null,
+      controlPortFallbackEnabled: Boolean(portFallback),
+      controlPortFallbackUsed: Boolean(fallbackUsed),
+      controlPortFallbackReason: fallbackReason,
     };
   }
 
-  function ensureServerListening() {
-    if (serverListening) return Promise.resolve();
-
+  function listenOnce(targetPort) {
     return new Promise((resolve, reject) => {
       const onError = (error) => {
         server.off("error", onError);
@@ -301,19 +378,38 @@ export default async function (pi) {
       };
 
       server.once("error", onError);
-
-      server.listen(port, HOST, () => {
+      server.listen(targetPort, HOST, () => {
         server.off("error", onError);
+        const address = server.address();
+        actualPort = typeof address === "object" && address ? Number(address.port) : Number(targetPort);
         serverListening = true;
-        console.log(`[pi-control] Listening on http://${HOST}:${port}`);
-
-        if (!token) {
-          console.error(`[pi-control] controlToken is missing in ${CONFIG_PATH}; all HTTP requests will be unauthorized.`);
-        }
-
         resolve();
       });
     });
+  }
+
+  async function ensureServerListening() {
+    if (serverListening) return;
+
+    try {
+      await listenOnce(preferredPort);
+    } catch (error) {
+      const recoverable = error?.code === "EADDRINUSE";
+      if (!portFallback || !recoverable) throw error;
+      fallbackUsed = true;
+      fallbackReason = "EADDRINUSE";
+      await listenOnce(0);
+    }
+
+    writeBridgeManifest("ready");
+    console.log(
+      `[pi-control] Listening on http://${HOST}:${actualPort} ` +
+      `(bridgeId=${bridgeId}, preferred=${preferredPort}, fallback=${fallbackUsed ? "yes" : "no"})`
+    );
+
+    if (!token) {
+      console.error(`[pi-control] controlToken is missing in ${CONFIG_PATH}; all HTTP requests will be unauthorized.`);
+    }
   }
 
   pi.registerCommand("pi-control-new", {
@@ -560,10 +656,14 @@ export default async function (pi) {
       try { res.end(); } catch {}
     }
     sseClients.clear();
+    if (bridgeManifestPath) {
+      try { writeBridgeManifest("stopping"); } catch {}
+    }
     if (server && serverListening) {
       await new Promise((resolve) => server.close(() => resolve()));
       serverListening = false;
     }
+    removeBridgeManifest();
   });
 
   server = http.createServer(async (req, res) => {
@@ -574,7 +674,18 @@ export default async function (pi) {
         return;
       }
 
-      const requestUrl = new URL(req.url || "/", `http://${HOST}:${port}`);
+      const requestedBridgeId = String(req.headers["x-jack-bridge-id"] || "").trim();
+      if (requestedBridgeId && requestedBridgeId !== bridgeId) {
+        json(res, 409, {
+          error: "bridge identity mismatch",
+          requestedBridgeId,
+          bridgeId,
+          sessionInstanceId,
+        });
+        return;
+      }
+
+      const requestUrl = new URL(req.url || "/", `http://${HOST}:${actualPort || preferredPort}`);
       const pathname = requestUrl.pathname;
 
       if (req.method === "GET" && pathname === "/v1/status") {
@@ -753,6 +864,8 @@ export default async function (pi) {
   });
 
   server.on("error", (error) => {
-    console.error(`[pi-control] Server error on ${HOST}:${port}:`, error);
+    if (!(portFallback && error?.code === "EADDRINUSE" && !serverListening)) {
+      console.error(`[pi-control] Server error on ${HOST}:${actualPort || preferredPort}:`, error);
+    }
   });
 }

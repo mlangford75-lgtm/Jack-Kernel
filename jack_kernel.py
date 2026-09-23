@@ -69,6 +69,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import copy
+import errno
 import getpass
 import html
 import re
@@ -78,6 +79,7 @@ import json
 import logging
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -183,6 +185,12 @@ class KernelConfig:
     # Wrapper endpoint.
     host: str = os.getenv("JACK_HOST", "127.0.0.1")
     port: int = int(os.getenv("JACK_PORT", "8001"))
+    port_fallback: bool = os.getenv("JACK_PORT_FALLBACK", "1").strip().lower() not in {
+        "0", "false", "no", "off"
+    }
+    runtime_id: str = os.getenv("JACK_RUNTIME_ID", "").strip()
+    lane_id: str = os.getenv("JACK_LANE_ID", "").strip()
+    runtime_registry_dir: str = os.getenv("JACK_RUNTIME_REGISTRY_DIR", "").strip()
     api_key: str = os.getenv("JACK_API_KEY", "")
 
     # Agent-facing URL advertised by the Kernel. This is intentionally
@@ -270,6 +278,9 @@ class KernelConfig:
     # One local 27B model is generally best served serially unless the backend
     # has explicitly been configured for parallel inference.
     max_concurrent_requests: int = int(os.getenv("JACK_MAX_CONCURRENT", "1"))
+    backend_admission_qualified: bool = os.getenv(
+        "JACK_BACKEND_ADMISSION_QUALIFIED", "0"
+    ).strip().lower() in {"1", "true", "yes", "on"}
 
     # Optional deterministic seed. Empty = let backend choose.
     seed: str = os.getenv("JACK_SEED", "")
@@ -296,6 +307,291 @@ class KernelConfig:
 
 
 CFG = KernelConfig()
+
+
+def _safe_runtime_identifier(value: str, fallback: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "").strip()).strip("-._")
+    return (cleaned or fallback)[:96]
+
+
+RUNTIME_ID = _safe_runtime_identifier(
+    CFG.runtime_id,
+    f"jack-{_safe_runtime_identifier(CFG.reasoning_level, 'runtime')}-{uuid.uuid4().hex[:12]}",
+)
+LANE_ID = _safe_runtime_identifier(CFG.lane_id, RUNTIME_ID)
+RUNTIME_STARTED_AT_UNIX = time.time()
+RUNTIME_ENDPOINT_STATE: Dict[str, Any] = {
+    "preferred_host": CFG.host,
+    "preferred_port": CFG.port,
+    "actual_host": CFG.host,
+    "actual_port": CFG.port if CFG.port > 0 else 0,
+    "fallback_enabled": bool(CFG.port_fallback),
+    "fallback_used": False,
+    "fallback_reason": None,
+}
+
+
+def _runtime_registry_root() -> Path:
+    override = str(CFG.runtime_registry_dir or "").strip()
+    if override:
+        return Path(override).expanduser()
+    if os.name == "nt":
+        base = os.getenv("APPDATA")
+        if base:
+            return Path(base) / "JackKernel" / "runtimes"
+    return Path.home() / ".jack-kernel" / "runtimes"
+
+
+def _runtime_manifest_path() -> Path:
+    return _runtime_registry_root() / f"{_safe_runtime_identifier(RUNTIME_ID, 'runtime')}.json"
+
+
+def _pid_is_alive(pid: Any) -> bool:
+    try:
+        value = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if value <= 0:
+        return False
+
+    if os.name == "nt":
+        # Windows does not provide POSIX kill(pid, 0) liveness semantics.
+        # Query the process handle instead; never signal a process merely to
+        # determine whether a runtime/bridge registry entry is stale.
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.OpenProcess.argtypes = [
+                wintypes.DWORD,
+                wintypes.BOOL,
+                wintypes.DWORD,
+            ]
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            kernel32.GetExitCodeProcess.argtypes = [
+                wintypes.HANDLE,
+                ctypes.POINTER(wintypes.DWORD),
+            ]
+            kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel32.CloseHandle.restype = wintypes.BOOL
+
+            handle = kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, value
+            )
+            if not handle:
+                return False
+            try:
+                exit_code = wintypes.DWORD()
+                if not kernel32.GetExitCodeProcess(
+                    handle, ctypes.byref(exit_code)
+                ):
+                    return False
+                return int(exit_code.value) == STILL_ACTIVE
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:
+            return False
+
+    try:
+        os.kill(value, 0)
+        return True
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def _runtime_endpoint_details() -> Dict[str, Any]:
+    return {
+        "runtime_id": RUNTIME_ID,
+        "lane_id": LANE_ID,
+        **dict(RUNTIME_ENDPOINT_STATE),
+    }
+
+
+def _runtime_agent_base_url() -> str:
+    if CFG.agent_base_url_override:
+        return CFG.agent_base_url
+    display_host = str(RUNTIME_ENDPOINT_STATE.get("actual_host") or CFG.host)
+    if display_host in {"0.0.0.0", "::", "[::]"}:
+        display_host = "127.0.0.1"
+    if ":" in display_host and not display_host.startswith("["):
+        display_host = f"[{display_host}]"
+    port = int(RUNTIME_ENDPOINT_STATE.get("actual_port") or CFG.port or 0)
+    return f"http://{display_host}:{port}/v1"
+
+
+def _runtime_registry_payload(status: str) -> Dict[str, Any]:
+    bridge: Dict[str, Any] = {}
+    loader = globals().get("_load_pi_control_bridge")
+    if callable(loader):
+        try:
+            resolved = loader()
+            bridge = {
+                "bridge_id": resolved.get("bridge_id"),
+                "url": resolved.get("url"),
+                "configured": bool(resolved.get("configured")),
+                "binding_error": resolved.get("binding_error"),
+            }
+        except Exception:
+            bridge = {"configured": False}
+    return {
+        "runtime_id": RUNTIME_ID,
+        "lane_id": LANE_ID,
+        "pid": os.getpid(),
+        "status": status,
+        "mode": CFG.reasoning_level,
+        "started_at_unix": RUNTIME_STARTED_AT_UNIX,
+        "endpoint": _runtime_endpoint_details(),
+        "backend": {
+            "profile": CFG.backend_profile,
+            "base_url": CFG.backend_base_url,
+            "configured_model": CFG.backend_model or None,
+            "max_concurrent_requests": max(1, CFG.max_concurrent_requests),
+            "concurrency_scope": "process_local",
+            "shared_admission_qualified": bool(CFG.backend_admission_qualified),
+        },
+        "worker_bridge": bridge,
+    }
+
+
+def _write_runtime_manifest(status: str = "ready", *, claim: bool = False) -> Path:
+    root = _runtime_registry_root()
+    root.mkdir(parents=True, exist_ok=True)
+    path = _runtime_manifest_path()
+    payload = _runtime_registry_payload(status)
+    encoded = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+
+    if claim:
+        if path.exists():
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                existing = {}
+            existing_pid = existing.get("pid") if isinstance(existing, dict) else None
+            if _pid_is_alive(existing_pid) and int(existing_pid) != os.getpid():
+                raise RuntimeError(
+                    f"Jack runtime_id {RUNTIME_ID!r} is already owned by live pid {existing_pid}"
+                )
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except Exception:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            raise
+        return path
+
+    temp = root / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    temp.write_text(encoded, encoding="utf-8")
+    os.replace(temp, path)
+    return path
+
+
+def _remove_runtime_manifest() -> None:
+    path = _runtime_manifest_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, ValueError):
+        return
+    if not isinstance(payload, dict):
+        return
+    if payload.get("runtime_id") != RUNTIME_ID or int(payload.get("pid") or -1) != os.getpid():
+        return
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _list_runtime_manifests() -> List[Dict[str, Any]]:
+    root = _runtime_registry_root()
+    if not root.exists():
+        return []
+    entries: List[Dict[str, Any]] = []
+    for path in sorted(root.glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        live = _pid_is_alive(payload.get("pid"))
+        item = dict(payload)
+        item["process_alive"] = live
+        if not live and item.get("status") == "ready":
+            item["status"] = "stale"
+        entries.append(item)
+    return entries
+
+
+def _loopback_bind_host(host: str) -> bool:
+    normalized = str(host or "").strip().lower().strip("[]")
+    return normalized in {"127.0.0.1", "localhost", "::1"}
+
+
+def _open_listener_socket(host: str, port: int) -> socket.socket:
+    bind_host = str(host or "").strip().strip("[]")
+    family = socket.AF_INET6 if ":" in bind_host else socket.AF_INET
+    listener = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        listener.bind((bind_host, port))
+        listener.listen(2048)
+        listener.setblocking(False)
+        return listener
+    except Exception:
+        listener.close()
+        raise
+
+
+def _bind_runtime_listener() -> socket.socket:
+    preferred = int(CFG.port)
+    if preferred < 0 or preferred > 65535:
+        raise RuntimeError("JACK_PORT must be between 0 and 65535")
+    if preferred == 0 and not _loopback_bind_host(CFG.host):
+        raise RuntimeError("Dynamic JACK_PORT=0 allocation is supported only on a loopback bind host")
+
+    fallback_reason: Optional[str] = None
+    fallback_used = False
+    try:
+        listener = _open_listener_socket(CFG.host, preferred)
+    except OSError as exc:
+        recoverable = exc.errno in {errno.EADDRINUSE, 10048}
+        if not (CFG.port_fallback and recoverable):
+            raise
+        if not _loopback_bind_host(CFG.host):
+            raise RuntimeError(
+                "Automatic Jack port fallback is limited to loopback listeners"
+            ) from exc
+        fallback_reason = "EADDRINUSE"
+        listener = _open_listener_socket(CFG.host, 0)
+        fallback_used = True
+
+    actual = listener.getsockname()
+    actual_port = int(actual[1])
+    RUNTIME_ENDPOINT_STATE.update({
+        "actual_host": CFG.host,
+        "actual_port": actual_port,
+        "fallback_used": fallback_used,
+        "fallback_reason": fallback_reason,
+    })
+    return listener
+
 
 logging.basicConfig(
     level=getattr(logging, CFG.log_level, logging.INFO),
@@ -7338,7 +7634,10 @@ KERNEL = JackQwenKernel(BACKEND, CFG)
 ORCHESTRATION_BASE_PATH = "/jack/orchestration"
 _PI_CONTROL_CONFIG_ENV = "JACK_PI_CONTROL_CONFIG"
 _PI_CONTROL_URL_ENV = "JACK_PI_CONTROL_URL"
+_PI_CONTROL_PORT_ENV = "JACK_PI_CONTROL_PORT"
 _PI_CONTROL_TOKEN_ENV = "JACK_PI_CONTROL_TOKEN"
+_PI_CONTROL_BRIDGE_ID_ENV = "JACK_PI_CONTROL_BRIDGE_ID"
+_PI_CONTROL_REGISTRY_DIR_ENV = "JACK_PI_CONTROL_REGISTRY_DIR"
 _ORCHESTRATION_REPLAY_ENV = "JACK_ORCHESTRATION_REPLAY_EVENTS"
 _ORCHESTRATION_REPLAY_DEFAULT = 512
 
@@ -7350,13 +7649,35 @@ def _pi_control_config_path() -> Path:
     return Path.home() / ".pi" / "agent" / "jack-kernel.json"
 
 
-def _load_pi_control_bridge() -> Dict[str, Any]:
-    """Resolve Pi's existing local control bridge without exposing its token.
+def _pi_control_registry_dir() -> Path:
+    override = os.getenv(_PI_CONTROL_REGISTRY_DIR_ENV, "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".pi" / "agent" / "jack-kernel-bridges"
 
-    Environment variables can override the local Pi configuration for testing.
-    Otherwise Jack reads the same ``jack-kernel.json`` already used by the Pi
-    control extension. Only ``controlPort`` and ``controlToken`` are consumed.
-    """
+
+def _find_pi_control_bridge_manifests(bridge_id: str) -> List[Dict[str, Any]]:
+    root = _pi_control_registry_dir()
+    if not root.exists():
+        return []
+    matches: List[Dict[str, Any]] = []
+    for path in sorted(root.glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(payload, dict) or str(payload.get("bridge_id") or "") != bridge_id:
+            continue
+        if not _pid_is_alive(payload.get("pid")):
+            continue
+        if str(payload.get("status") or "") != "ready":
+            continue
+        matches.append(payload)
+    return matches
+
+
+def _load_pi_control_bridge() -> Dict[str, Any]:
+    """Resolve one positively selected local Pi control bridge without exposing its token."""
     persisted: Dict[str, Any] = {}
     config_path = _pi_control_config_path()
     try:
@@ -7366,8 +7687,35 @@ def _load_pi_control_bridge() -> Dict[str, Any]:
     except (FileNotFoundError, OSError, ValueError):
         persisted = {}
 
+    bridge_id = os.getenv(_PI_CONTROL_BRIDGE_ID_ENV, "").strip()
     url = os.getenv(_PI_CONTROL_URL_ENV, "").strip().rstrip("/")
+    source = "explicit_url" if url else ""
+    binding_error = ""
+
     if not url:
+        raw_env_port = os.getenv(_PI_CONTROL_PORT_ENV, "").strip()
+        if raw_env_port:
+            try:
+                control_port = int(raw_env_port)
+            except ValueError:
+                control_port = 0
+            if 0 < control_port <= 65535:
+                url = f"http://127.0.0.1:{control_port}"
+                source = "explicit_port"
+
+    if not url and bridge_id:
+        matches = _find_pi_control_bridge_manifests(bridge_id)
+        if len(matches) == 1:
+            actual_port = int(matches[0].get("actual_port") or 0)
+            if 0 < actual_port <= 65535:
+                url = f"http://127.0.0.1:{actual_port}"
+                source = "bridge_registry"
+        elif len(matches) > 1:
+            binding_error = f"multiple live Pi bridges claim bridge_id {bridge_id!r}"
+        else:
+            binding_error = f"no live Pi bridge is registered for bridge_id {bridge_id!r}"
+
+    if not url and not bridge_id:
         raw_port = persisted.get("controlPort")
         try:
             control_port = int(raw_port)
@@ -7375,31 +7723,51 @@ def _load_pi_control_bridge() -> Dict[str, Any]:
             control_port = 0
         if 0 < control_port <= 65535:
             url = f"http://127.0.0.1:{control_port}"
+            source = "legacy_config"
 
-    token = os.getenv(_PI_CONTROL_TOKEN_ENV, "") or str(persisted.get("controlToken") or "")
+    explicit_token = os.getenv(_PI_CONTROL_TOKEN_ENV, "")
+    token = explicit_token or str(persisted.get("controlToken") or "")
+    if bridge_id and not explicit_token:
+        binding_error = (
+            "named Pi bridge binding requires an explicit JACK_PI_CONTROL_TOKEN; "
+            "ambient persisted controlToken is not worker-scoped authority"
+        )
     return {
         "url": url,
         "token": token,
-        "configured": bool(url and token),
+        "configured": bool(url and token and not binding_error),
         "config_path": str(config_path),
+        "bridge_id": bridge_id or None,
+        "source": source or None,
+        "binding_error": binding_error or None,
     }
 
 
-def _require_pi_control_bridge() -> Tuple[str, str]:
+def _require_pi_control_bridge() -> Tuple[str, str, Optional[str]]:
     bridge = _load_pi_control_bridge()
     url = str(bridge.get("url") or "").rstrip("/")
     token = str(bridge.get("token") or "")
+    bridge_id = str(bridge.get("bridge_id") or "").strip() or None
+    binding_error = str(bridge.get("binding_error") or "")
+    if binding_error:
+        raise HTTPException(status_code=503, detail=binding_error)
     if not url:
         raise HTTPException(status_code=503, detail="Pi control bridge URL is not configured")
     if not token:
         raise HTTPException(status_code=503, detail="Pi control bridge token is not configured")
-    return url, token
+    return url, token, bridge_id
 
 
 def _pi_control_headers(
-    token: str, *, content_type: Optional[str] = None, accept: Optional[str] = None
+    token: str,
+    *,
+    bridge_id: Optional[str] = None,
+    content_type: Optional[str] = None,
+    accept: Optional[str] = None,
 ) -> Dict[str, str]:
     headers = {"Authorization": f"Bearer {token}"}
+    if bridge_id:
+        headers["X-Jack-Bridge-Id"] = bridge_id
     if content_type:
         headers["Content-Type"] = content_type
     if accept:
@@ -7423,7 +7791,9 @@ def _build_agent_bridge_display() -> str:
     url = str(bridge.get("url") or "")
     if not url:
         return "NOT CONFIGURED"
-    return f"{url} [{'CONFIGURED' if bridge.get('configured') else 'TOKEN MISSING'}]"
+    bridge_id = bridge.get("bridge_id")
+    suffix = f" bridge_id={bridge_id}" if bridge_id else ""
+    return f"{url} [{'CONFIGURED' if bridge.get('configured') else 'TOKEN MISSING'}]{suffix}"
 
 
 def _downstream_pi_response(response: httpx.Response) -> Response:
@@ -7452,7 +7822,7 @@ async def _proxy_pi_control_request(
     request or SSE monitor remains active.
     """
     await enforce_kernel_auth(request)
-    base_url, token = _require_pi_control_bridge()
+    base_url, token, bridge_id = _require_pi_control_bridge()
     body = await request.body() if forward_body else b""
     content_type = (
         request.headers.get("content-type", "application/json")
@@ -7467,6 +7837,7 @@ async def _proxy_pi_control_request(
                 content=body if forward_body else None,
                 headers=_pi_control_headers(
                     token,
+                    bridge_id=bridge_id,
                     content_type=content_type,
                     accept="application/json",
                 ),
@@ -7528,12 +7899,14 @@ class OrchestrationEventHub:
 
     async def probe(self) -> None:
         """Preserve v1 failure semantics before an SSE client is accepted."""
-        base_url, token = _require_pi_control_bridge()
+        base_url, token, bridge_id = _require_pi_control_bridge()
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.get(
                     f"{base_url}/v1/status",
-                    headers=_pi_control_headers(token, accept="application/json"),
+                    headers=_pi_control_headers(
+                        token, bridge_id=bridge_id, accept="application/json"
+                    ),
                 )
             if response.status_code >= 500:
                 raise HTTPException(status_code=502, detail="Pi control bridge is unavailable")
@@ -7712,12 +8085,14 @@ class OrchestrationEventHub:
     async def _run(self) -> None:
         while not self._stopping:
             try:
-                base_url, token = _require_pi_control_bridge()
+                base_url, token, bridge_id = _require_pi_control_bridge()
                 async with httpx.AsyncClient(timeout=None) as client:
                     async with client.stream(
                         "GET",
                         f"{base_url}/v1/events",
-                        headers=_pi_control_headers(token, accept="text/event-stream"),
+                        headers=_pi_control_headers(
+                            token, bridge_id=bridge_id, accept="text/event-stream"
+                        ),
                     ) as upstream:
                         if upstream.status_code != 200:
                             body = await upstream.aread()
@@ -7739,11 +8114,21 @@ ORCHESTRATION_EVENTS = OrchestrationEventHub()
 
 @asynccontextmanager
 async def app_lifespan(_: FastAPI):
+    claimed = False
     try:
+        _write_runtime_manifest("ready", claim=True)
+        claimed = True
         yield
     finally:
+        if claimed:
+            try:
+                _write_runtime_manifest("stopping")
+            except Exception:
+                pass
         await ORCHESTRATION_EVENTS.close()
         await BACKEND.close()
+        if claimed:
+            _remove_runtime_manifest()
 
 
 APP = FastAPI(title="Jack Kernel", version=PUBLIC_VERSION, lifespan=app_lifespan)
@@ -7854,12 +8239,15 @@ async def root() -> Dict[str, Any]:
         "runtime_manifest_components": dict(RUNTIME_MANIFEST_COMPONENTS),
         "forensic_archive_mode": CFG.forensic_archive_mode,
         "runtime_identity": _runtime_identity_details(),
+        "runtime_id": RUNTIME_ID,
+        "lane_id": LANE_ID,
+        "runtime_endpoint": _runtime_endpoint_details(),
         "reasoning_level": ACTIVE_REASONING_PROFILE["label"],
         "backend_profile": CFG.backend_profile,
         "backend_name": preset["short_label"],
         "virtual_model": CFG.virtual_model,
-        "agent_base_url": CFG.agent_base_url,
-        "orchestration_base_url": _orchestration_public_base_from_agent_url(CFG.agent_base_url),
+        "agent_base_url": _runtime_agent_base_url(),
+        "orchestration_base_url": _orchestration_public_base_from_agent_url(_runtime_agent_base_url()),
         "orchestration_protocol_version": 2,
         "orchestration_replay_events": ORCHESTRATION_EVENTS.replay_limit,
     }
@@ -7879,6 +8267,9 @@ async def health(request: Request) -> Dict[str, Any]:
         "runtime_manifest_components": dict(RUNTIME_MANIFEST_COMPONENTS),
         "forensic_archive_mode": CFG.forensic_archive_mode,
         "runtime_identity": _runtime_identity_details(),
+        "runtime_id": RUNTIME_ID,
+        "lane_id": LANE_ID,
+        "runtime_endpoint": _runtime_endpoint_details(),
         "reasoning_level": ACTIVE_REASONING_PROFILE["label"],
         "backend_profile": CFG.backend_profile,
         "backend_name": preset["short_label"],
@@ -7887,12 +8278,29 @@ async def health(request: Request) -> Dict[str, Any]:
         "virtual_model": CFG.virtual_model,
         "context_length": BACKEND.context_length,
         "context_length_source": BACKEND.context_length_source,
-        "agent_base_url": CFG.agent_base_url,
-        "orchestration_base_url": _orchestration_public_base_from_agent_url(CFG.agent_base_url),
+        "agent_base_url": _runtime_agent_base_url(),
+        "orchestration_base_url": _orchestration_public_base_from_agent_url(_runtime_agent_base_url()),
         "orchestration_protocol_version": 2,
         "orchestration_replay_events": ORCHESTRATION_EVENTS.replay_limit,
         "build_agent_bridge_configured": bool(_load_pi_control_bridge().get("configured")),
-        "listen_address": f"{CFG.host}:{CFG.port}",
+        "build_agent_bridge": {
+            key: value
+            for key, value in _load_pi_control_bridge().items()
+            if key != "token"
+        },
+        "listen_address": f"{RUNTIME_ENDPOINT_STATE.get('actual_host') or CFG.host}:{RUNTIME_ENDPOINT_STATE.get('actual_port') or CFG.port}",
+        "concurrency_scope": "process_local",
+        "backend_admission_qualified": bool(CFG.backend_admission_qualified),
+    }
+
+
+@APP.get("/jack/runtimes")
+async def runtime_registry(request: Request) -> Dict[str, Any]:
+    await enforce_kernel_auth(request)
+    return {
+        "current_runtime_id": RUNTIME_ID,
+        "registry_dir": str(_runtime_registry_root()),
+        "runtimes": _list_runtime_manifests(),
     }
 
 
@@ -8329,6 +8737,7 @@ CLI_DEFAULTS: Dict[str, Any] = {
     "backend_extra_headers": {},
     "host": "127.0.0.1",
     "port": 8001,
+    "port_fallback": True,
     "agent_base_url": "",
     "api_key": "",
     "virtual_model": "jack-kernel",
@@ -9038,7 +9447,17 @@ def _edit_network(cfg: Dict[str, Any]) -> None:
     _print_back_hint()
     print()
     cfg["host"] = _prompt_value("Listen host / bind interface", cfg["host"], str)
-    cfg["port"] = _prompt_value("Listen port", cfg["port"], int)
+    cfg["port"] = _prompt_value("Listen port (0 = OS-assigned loopback port)", cfg["port"], int)
+    if not 0 <= int(cfg["port"]) <= 65535:
+        raise ValueError("Listen port must be between 0 and 65535")
+    raw_fallback = _cli_input(
+        f"Fallback to an OS-assigned loopback port if the preferred port is occupied? "
+        f"[{'Y' if cfg.get('port_fallback', True) else 'N'}]: "
+    ).strip().lower()
+    if raw_fallback in {"y", "yes"}:
+        cfg["port_fallback"] = True
+    elif raw_fallback in {"n", "no"}:
+        cfg["port_fallback"] = False
     current_agent = cfg.get("agent_base_url") or "AUTO"
     cfg["agent_base_url"] = _prompt_value(
         "Agent OpenAI base URL (type clear for automatic)",
@@ -9161,6 +9580,7 @@ def _config_to_env(cfg: Dict[str, Any]) -> Dict[str, str]:
     values = {
         "JACK_HOST": cfg["host"],
         "JACK_PORT": cfg["port"],
+        "JACK_PORT_FALLBACK": "1" if cfg.get("port_fallback", True) else "0",
         "JACK_AGENT_BASE_URL": cfg.get("agent_base_url", ""),
         "JACK_API_KEY": cfg["api_key"],
         "JACK_BACKEND_PROFILE": _backend_profile_key(cfg),
@@ -9348,14 +9768,28 @@ def run_server() -> None:
         raise RuntimeError(
             "No backend endpoint is configured. Set JACK_BACKEND_BASE_URL or configure it in the Jack launcher."
         )
+
+    listener = _bind_runtime_listener()
+    actual_port = int(RUNTIME_ENDPOINT_STATE["actual_port"])
     preset = BACKEND_PRESETS.get(CFG.backend_profile, BACKEND_PRESETS["custom"])
-    LOG.info("Starting Jack Kernel on %s:%s", CFG.host, CFG.port)
-    LOG.info("Agent OpenAI base URL: %s", CFG.agent_base_url)
-    LOG.info("Orchestration API: %s", _orchestration_public_base_from_agent_url(CFG.agent_base_url))
+    LOG.info(
+        "Starting Jack Kernel runtime_id=%s lane_id=%s on %s:%s (preferred=%s fallback=%s)",
+        RUNTIME_ID,
+        LANE_ID,
+        CFG.host,
+        actual_port,
+        CFG.port,
+        "YES" if RUNTIME_ENDPOINT_STATE.get("fallback_used") else "NO",
+    )
+    LOG.info("Agent OpenAI base URL: %s", _runtime_agent_base_url())
+    LOG.info("Orchestration API: %s", _orchestration_public_base_from_agent_url(_runtime_agent_base_url()))
     LOG.info("Orchestration protocol: v2 (run-bound IDs + sequence + replay; %s events)", ORCHESTRATION_EVENTS.replay_limit)
     LOG.info("Build agent bridge: %s", _build_agent_bridge_display())
     LOG.info("Backend profile: %s", preset["short_label"])
     LOG.info("Backend endpoint: %s", CFG.backend_base_url)
+    LOG.info("Backend concurrency scope: process_local max=%s", max(1, CFG.max_concurrent_requests))
+    LOG.info("Shared backend admission qualified: %s", "YES" if CFG.backend_admission_qualified else "NO")
+    LOG.info("Runtime registry: %s", _runtime_registry_root())
     LOG.info("Virtual model: %s", CFG.virtual_model)
     LOG.info("Qwen control shape: %s", CFG.qwen_control_shape)
     LOG.info("Reasoning level: %s", ACTIVE_REASONING_PROFILE["label"])
@@ -9363,7 +9797,22 @@ def run_server() -> None:
     LOG.info("Forensic archive: %s", CFG.forensic_archive_mode.upper())
     LOG.info("Live stage streaming: ON for OpenAI stream=true requests")
     LOG.info("Deep Research max_tokens failsafes: Thesis 100000 / Antithesis 20000 / Synthesis 100000" if ULTRA_MODE else "Kernel-side max_tokens limits: NONE")
-    uvicorn.run(APP, host=CFG.host, port=CFG.port, log_level=CFG.log_level.lower())
+
+    config = uvicorn.Config(
+        APP,
+        host=CFG.host,
+        port=actual_port,
+        log_level=CFG.log_level.lower(),
+    )
+    server = uvicorn.Server(config)
+    try:
+        server.run(sockets=[listener])
+    finally:
+        _remove_runtime_manifest()
+        try:
+            listener.close()
+        except OSError:
+            pass
 
 
 def _install_bundled_runtime_extensions() -> None:

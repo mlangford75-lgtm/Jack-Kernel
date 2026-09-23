@@ -4,9 +4,9 @@
 **Kernel:** Jack Kernel v0.1.1  
 **Subsystem:** Orchestration Gateway v2  
 **Status:** current normative orchestration specification  
-**Current validated Primary-Pi bridge SHA-256 (Windows CRLF representation):** `E758883F3C18CBEFBF5590C720DBEDF7AB8E85D3314B5EA77E277B1A8C3BD3E4`
+**Current validated Primary-Pi bridge SHA-256 (Windows CRLF representation):** `93A6843CDAAEDA637474B584919ED003930296DE281570E3DDC391F54EF65565`
 
-**Canonical repository LF SHA-256:** `723338D4F67295AEC5B75886EFEF7843C1A44D01934BF9CBB7C2304B4603F92C`
+**Canonical repository LF SHA-256:** `8FFD33FD33AE15A785E2BF9015F17FC14F1DE27B09515D5E868EC163D54C15F0`
 
 ## 1. Purpose and authority
 
@@ -325,8 +325,8 @@ The current validated Primary-Pi bridge distributed by this repository is:
 
 ```text
 Pi/pi-control-bridge.ts
-Windows CRLF SHA-256 E758883F3C18CBEFBF5590C720DBEDF7AB8E85D3314B5EA77E277B1A8C3BD3E4
-Canonical repository LF SHA-256 723338D4F67295AEC5B75886EFEF7843C1A44D01934BF9CBB7C2304B4603F92C
+Windows CRLF SHA-256 93A6843CDAAEDA637474B584919ED003930296DE281570E3DDC391F54EF65565
+Canonical repository LF SHA-256 8FFD33FD33AE15A785E2BF9015F17FC14F1DE27B09515D5E868EC163D54C15F0
 ```
 
 The September 12 Gateway v2 live acceptance was performed against an earlier bridge identity:

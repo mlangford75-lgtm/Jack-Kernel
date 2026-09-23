@@ -45,6 +45,11 @@ jobs:
         run: |
           python -m py_compile jack_kernel.py jack_secure_entrypoint.py jack_evidence_guard.py jack_responses_compat.py
 
+      - name: Report Pi bridge identities
+        shell: pwsh
+        run: |
+          python -c "from pathlib import Path; import hashlib; b=Path('Pi/pi-control-bridge.ts').read_bytes(); lf=b.replace(b'\r\n',b'\n'); crlf=lf.replace(b'\n',b'\r\n'); print('PI_BRIDGE_LF_SHA256='+hashlib.sha256(lf).hexdigest()); print('PI_BRIDGE_CRLF_SHA256='+hashlib.sha256(crlf).hexdigest())"
+
       - name: Run Python regression suite
         shell: pwsh
         run: python -m pytest -q
@@ -56,3 +61,5 @@ jobs:
           node tests/pi_control_bridge_cancel_ownership_harness.mjs
           node tests/pi_control_bridge_deferred_dispatch_harness.mjs
           node tests/pi_control_bridge_retry_recovery_harness.mjs
+          node tests/pi_control_bridge_multi_endpoint_harness.mjs
+          node tests/pi_provider_runtime_binding_harness.mjs
