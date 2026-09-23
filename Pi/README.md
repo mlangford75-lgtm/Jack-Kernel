@@ -54,7 +54,7 @@ The default private bridge remains `127.0.0.1:8013` for compatibility. Multi-end
 For an effect-capable Jack lane, start a dedicated named Pi worker:
 
 ```powershell
-.\start-pi-worker.ps1 -BridgeId debug-worker-01 -ControlPort 8014 -ControlToken "<worker-specific-secret>"
+.\start-pi-worker.ps1 -BridgeId debug-worker-01 -ControlPort 8014 -ControlToken "<worker-specific-secret>" -JackRuntimeId jack-debug-01
 ```
 
 The bridge supports:
@@ -64,8 +64,13 @@ The bridge supports:
 - `JACK_PI_CONTROL_BRIDGE_ID` — stable worker/bridge identity.
 - `JACK_PI_CONTROL_TOKEN` — explicit private control credential.
 - `JACK_PI_CONTROL_REGISTRY_DIR` — optional bridge-manifest directory override.
+- `JACK_PI_JACK_RUNTIME_ID` — owning Jack runtime identity used by the Pi provider.
+- `JACK_PI_JACK_RUNTIME_REGISTRY_DIR` — optional Jack runtime-registry override.
+- `JACK_PI_JACK_TOKEN` — optional Jack API credential for the owning runtime.
 
 A running bridge publishes a local manifest containing its bridge ID, session instance ID, PID, preferred port, actual port, and fallback state. Named Jack worker bindings require an explicit `JACK_PI_CONTROL_TOKEN`; they do not inherit the ambient persisted token as worker-scoped authority. Jack also sends `X-Jack-Bridge-Id` on named control requests, and a mismatched named bridge rejects the request.
+
+A named worker also requires an explicit owning Jack runtime ID. The Pi provider resolves that runtime's current actual endpoint from Jack's runtime registry and verifies `/health` reports the expected `runtime_id` before registering the provider. Thus a worker-control fallback or Jack-port fallback changes transport location without changing the logical worker-to-runtime binding.
 
 Multiple Jack lanes must not implicitly share one privileged Pi worker in the first multi-endpoint release. A future shared multi-tenant worker requires its own independently validated worker-side isolation contract.
 
