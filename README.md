@@ -14,8 +14,6 @@
 >
 > The merged runtime now supports multiple independently addressable Jack lanes with transport-independent runtime identity, atomic endpoint fallback, positively bound private workers, live runtime verification, and non-authoritative runtime activity observability. Ports remain transport locators, not authority or identity.
 
-**Current release reality:** Jack Kernel remains **v0.1.1**. Orchestration Gateway v2 is the current supervisory transport. The current validated Primary-Pi control bridge SHA-256 for the **Windows CRLF representation** is `93A6843CDAAEDA637474B584919ED003930296DE281570E3DDC391F54EF65565`. The canonical repository **LF representation** SHA-256 is `8FFD33FD33AE15A785E2BF9015F17FC14F1DE27B09515D5E868EC163D54C15F0`.
-
 ## Orchestration at a glance
 
 The diagrams below depict the accepted **all-local Jack Orchestrator architecture**: the Jack Orchestrator is a cognition-capable but execution-restricted local supervisor, privileged host consequences remain with Primary Pi, and both supervisor and worker cognition can run through Jack against the configured local backend. With multiple backend concurrency slots, the Jack Orchestrator and Primary Pi may infer concurrently through the same Jack Kernel.
