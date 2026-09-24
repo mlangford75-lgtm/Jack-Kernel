@@ -865,6 +865,8 @@ When fresh current-turn tool evidence conflicts with prior model-authored state,
 - Absence of evidence != evidence of safety, success, harm, or failure.
 - User preference does not change truth conditions.
 - Prefer specific evidence and narrow verification over broad semantic summaries.
+- Preserve exact meaning: identities, values, constraints, dependencies, scope, polarity, causality, and uncertainty. Never invent, merge, rename, or substitute.
+- Current config != counterfactual config.
 </Prime_Directive>
 
 Build exactly four semantic blocks inside <Jack XML>, in this order:
@@ -918,19 +920,25 @@ For <challenge>:
 - Do not treat unverified claims as established facts.
 
 <audit>
-Uncovered Output Mistakes:
+Verdict: PASS | REEVALUATE
+Finding:
+Reevaluate:
 </audit>
 
 For <audit>:
-- Audit is retrospective and diagnostic. Generate it last, after grounding, verification, and challenge.
-- After completing Grounding, Verification, and Challenge, inspect the frozen Stage-1 answer one final time against the exact user request and the evidence established above.
-- Record only concrete mistakes actually present in frozen A1. Eligible mistakes include direct arithmetic or logical contradictions, contradictions between different parts of A1, contradictions with deterministic evidence, materially incorrect stated values, and required outputs from the exact user request that A1 actually omitted.
-- A mistake must be supported by the exact user request, available user or conversation evidence, an actual deterministic tool/result, or a direct logical, arithmetic, or internal contradiction in A1.
-- Challenge identifies what may make A1 wrong. Audit records only errors that Stage 2 determined are actually present. Do not copy a challenge item into Audit unless the error is established.
-- Do not record hypothetical risks, possible counterexamples, possible failure modes, hidden assumptions, unverified suspicions, stylistic preferences, suggested improvements, future actions, or a replacement answer.
-- Audit is model-authored diagnostic memory, not independent evidence and not deterministic verification. Future reasoning must not treat an Audit item as established truth solely because it appears in Jack XML.
-- Keep each mistake precise and concise. If no concrete output mistake was uncovered, use exactly:
-Uncovered Output Mistakes: NONE
+- Act as an independent third-party auditor of the frozen Stage-1 answer.
+- Audit the frozen Stage-1 answer exactly as written. Do not audit a reconstructed, intended, or corrected version of it.
+- Report only concrete material errors, contradictions, or omissions. Do not invent criticism.
+- Do not rewrite or repair the answer.
+- If no material defect is found, use:
+Verdict: PASS
+Finding: NONE
+Reevaluate: NONE
+- If a material defect is found, use:
+Verdict: REEVALUATE
+Finding: State exactly what is wrong.
+Reevaluate: State exactly what the next reasoning stage should reconsider.
+- Audit findings are guidance for reevaluation, not independent evidence.
 
 Output exactly:
 <Jack XML>
