@@ -4,9 +4,15 @@
 
 **Probabilistic cognition may propose, but deterministic software must dispose.**
 
+**Be strict about truth, identity, authority, and irreversible consequences; be resilient about useful work.**
+
 > **START HERE — Plain-English Master Guide:** [`00_Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx`](00_Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx)
 >
 > This is the first document to read. It explains the kernel, the shipped cognition programs, long-horizon state, Pi integration, and Orchestration Gateway v2 in plain English.
+
+> **MAJOR ARCHITECTURE UPDATE — MULTI-ENDPOINT RUNTIME LANES**
+>
+> The merged runtime now supports multiple independently addressable Jack lanes with transport-independent runtime identity, atomic endpoint fallback, positively bound private workers, live runtime verification, and non-authoritative runtime activity observability. Ports remain transport locators, not authority or identity.
 
 **Current release reality:** Jack Kernel remains **v0.1.1**. Orchestration Gateway v2 is the current supervisory transport. The current validated Primary-Pi control bridge SHA-256 for the **Windows CRLF representation** is `93A6843CDAAEDA637474B584919ED003930296DE281570E3DDC391F54EF65565`. The canonical repository **LF representation** SHA-256 is `8FFD33FD33AE15A785E2BF9015F17FC14F1DE27B09515D5E868EC163D54C15F0`.
 
@@ -113,6 +119,21 @@ The registry reports preferred and actual endpoints, fallback state, mode, proce
 **Concurrency boundary:** `JACK_MAX_CONCURRENT` remains a per-process Jack limit. It is not a fleet-wide semaphore across separate lane processes. Multi-lane deployments must rely on a tested bounded-admission/slot mechanism in the shared backend, or later provide an explicit cross-process admission coordinator. `JACK_BACKEND_ADMISSION_QUALIFIED=1` is an operator assertion that this shared-backend behavior has been validated; Jack does not infer it from the existence of local semaphores.
 
 **Privileged-worker boundary:** effect-capable lanes should use one positively named Pi bridge/worker per lane in the first release. Named workers require an explicit control token and are selected with `JACK_PI_CONTROL_BRIDGE_ID`; Jack sends the selected bridge identity on control requests, and a mismatched named worker rejects the request. The worker's Pi provider is separately bound to an explicit owning Jack `runtime_id`, resolves that runtime's current endpoint from the runtime registry, and verifies the identity before model inference. Shared multi-tenant privileged workers are not part of this endpoint upgrade.
+
+### Governance clarification for multi-endpoint operation
+
+The existing multi-endpoint section above remains intact. The following rules govern how it is interpreted after PR #15 and PR #16:
+
+- a port/socket/URL is a transport locator, not runtime identity;
+- registry/manifest state is discovery evidence, while positive live `/health.runtime_id` verification establishes the runtime identity actually reached;
+- named privileged workers remain two-sided bindings: Jack lane -> named Pi worker/bridge, and Pi provider -> owning Jack `runtime_id`;
+- `JACK_MAX_CONCURRENT` remains process-local; lane availability is not fleet-wide backend admission and does not by itself prove physically simultaneous GPU generation;
+- authenticated `GET /jack/runtime/status` is observability only and is never model context or cognition/commit authority;
+- degraded telemetry reports unknown rather than fabricating idle or another known state;
+- client transport disconnect is not cognition-cancellation authority;
+- wrong identity, credentials, run/epoch authority, hard security/DLP violations, unauthorized irreversible effects, and unrecoverable integrity failures remain deterministic authority failures.
+
+Earlier wording that speaks of concurrent/simultaneous local requests should be read as evidence that requests can coexist through shared Jack/backend infrastructure unless a backend-specific test separately proves physical parallel generation. This clarification narrows the evidence claim without deleting the historical wording.
 
 ## Run on Windows
 

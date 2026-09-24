@@ -7,6 +7,8 @@
 
 > **Model source may vary. Jack remains the control boundary.**
 
+> **Strict authority. Resilient execution. Preserved useful work.**
+
 For worker supervision, every control action goes through Jack Kernel.
 
 If the orchestration agent uses a local model, its own inference also goes through Jack Kernel. A cloud-model supervisor keeps its native cloud cognition and uses Jack for worker control and observation.
@@ -50,6 +52,8 @@ POST http://127.0.0.1:8001/jack/orchestration/session/new
 For local supervisor cognition, use Jack's `/v1` model-facing surface.
 
 Do not independently discover or select the backend behind Jack.
+
+In a multi-endpoint deployment, preserve the intended Jack lane's logical `runtime_id`/`lane_id` context. Default/example ports such as `8001` and `8013` are transport locations, not identity or authority.
 
 ## 4. Forbidden direct paths
 
@@ -158,6 +162,8 @@ If an event is unowned, leave it unowned.
 
 Do not assign an event to a task merely because that task appears current.
 
+The same rule applies to runtime routing: registry state may locate a candidate runtime, but positive live runtime identity is the stronger identity fact. Do not equate a port number or stale manifest status with logical ownership.
+
 ## 9. Tool activity and evidence
 
 Observe worker tool lifecycle through Jack when available:
@@ -227,6 +233,8 @@ runOpen == true
 ```
 
 Do not submit overlapping controlled work until Jack reports that the prior run is physically closed.
+
+A lost HTTP/SSE client connection is not an implicit cancellation request. Reconnect, replay, and reconcile Jack state rather than inferring that cognition stopped or was cancelled.
 
 ## 12. Session replacement
 
@@ -316,6 +324,8 @@ If Jack reports a deterministic gateway or worker-availability failure:
 - do not blindly retry ambiguous task submission.
 
 Blind retry can duplicate work. Resolve task state through Jack before submitting another controlled task.
+
+Do not convert recoverable endpoint movement, stale observational status, runtime-activity telemetry degradation, or client transport disconnect into authoritative failure. `/jack/runtime/status` is observability only; degraded telemetry may truthfully report unknown.
 
 ## 17. Minimum operating checklist
 

@@ -16,6 +16,8 @@ The core rule is:
 
 > **MODEL SOURCE MAY VARY. CONTROL BOUNDARY DOES NOT.**
 
+> **Be strict about truth, identity, authority, and irreversible consequences; be resilient about useful work.**
+
 A supervisor may use cloud-hosted cognition or local-model cognition. Every supervisor-to-worker control action crosses Jack Kernel. When the supervisor itself uses a local model, its own inference also crosses Jack Kernel. A locally modeled supervisor or worker does not connect directly to the local model backend.
 
 This document is normative for orchestration protocol, lifecycle, authority, and compatibility. Operational behavior for a supervising agent is defined in [`ORCHESTRATOR_INSTRUCTIONS.md`](ORCHESTRATOR_INSTRUCTIONS.md).
@@ -92,6 +94,22 @@ POST /v1/session/new
 ```
 
 The reference bridge is loopback/private and separately authenticated. The supervisor must not call the private bridge directly and must not receive, read, cache, or use the Pi control token.
+
+### 3.3 Multi-endpoint runtime lanes, identity, and observability
+
+The existing public/private surfaces above remain authoritative. In a multi-endpoint deployment, a port is only a transport locator. The default Jack listener at `:8001` and the default Pi control listener at `:8013` are compatibility locations, not permanent runtime or worker identities.
+
+A runtime lane retains its logical `runtime_id`, `lane_id`, mode, and applicable task/run/security ownership when a recoverable preferred-port collision moves it to a validated OS-assigned loopback endpoint.
+
+Runtime manifests provide discovery evidence. Named Pi providers resolve a candidate endpoint from the runtime registry and positively verify live `/health.runtime_id` before use. Stale observational manifest status must not veto a positively verified live runtime; live identity mismatch remains a hard identity failure.
+
+Privileged worker ownership is explicit in both directions: Jack lane -> named Pi bridge/worker plus credential, and Pi provider -> owning Jack runtime. Endpoint movement does not change either binding.
+
+Authenticated `GET /jack/runtime/status` is process-local observability. It is not orchestration task authority, model context, cognition authority, cancellation authority, or commit authority. When telemetry is not trustworthy, Jack reports degraded/unknown state rather than manufacturing a deterministic state.
+
+A lost HTTP/SSE client transport connection is not an implicit cancellation request. Reconnection/replay/reconciliation remains the correct supervisory response unless a separate authorized cancellation exists.
+
+
 
 ## 4. Deterministic authority boundary
 
@@ -296,6 +314,8 @@ The bridge must not infer failure from free-form model/tool text. Structured run
 If Jack cannot reach the private worker bridge, Jack returns deterministic gateway failure. The supervisor must not fabricate queued/running/completed state and must not bypass Jack to contact the bridge or backend directly.
 
 Ambiguous task submission must be resolved through Jack state before retrying because blind retry can duplicate work.
+
+Recoverable endpoint collision, endpoint movement, stale observational status, runtime-activity telemetry failure, and client transport disconnect do not by themselves acquire authority to destroy otherwise valid cognition. Hard identity, credential, run/epoch, security, integrity, and irreversible-effect boundaries remain deterministic authority failures.
 
 ## 15. Supervisor compatibility contract
 
