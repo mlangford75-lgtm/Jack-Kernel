@@ -176,19 +176,27 @@ Deep Research uses host-side `max_tokens` runaway-loop failsafes of **100000 / 2
 
 ### Agentic
 
-Agentic is Jack's **Qwen-oriented Preserve-Thinking semantic-consolidation program** for capable multi-turn models.
+Agentic is Jack's **semantic-consolidation program** for capable multi-turn models. Preserve Thinking is used when the backend supports it, but Agentic does not require access to native Stage-1 reasoning to function.
 
-- **Stage 1 — Full native cognition:** X-High @ **0.70**, Preserve Thinking ON, caller tools available when supplied, and no Jack cognitive system prompt. Stage 1 produces complete answer **A1**, which Jack freezes exactly.
-- **Stage 2 — Semantic consolidation:** X-High @ **0.50**, Preserve Thinking ON, tools OFF, zero answer authority. Stage 2 receives the immediately preceding native reasoning/tool trajectory and frozen A1, then converts the future-useful epistemic state into strongly semantic Jack XML.
+- **Stage 1 — Full native cognition:** X-High @ **0.70**, caller tools available when supplied, and no Jack cognitive system prompt. Preserve Thinking is enabled where supported. Stage 1 produces complete answer **A1**, which Jack freezes exactly.
+- **Stage 2 — Semantic consolidation:** X-High @ **0.50**, tools OFF, zero answer authority. Stage 2 always receives the frozen A1 and the exact current-turn context Jack makes available; when native Stage-1 reasoning or tool trajectory is available, it may use that additional information without treating model reasoning as evidence. Stage 2 distills the smallest future-useful semantic state into Jack XML without manufacturing missing reasoning.
 
 Jack XML carries four semantic responsibilities:
 
-- **grounding** — what was actually observed and not observed;
+- **grounding** — material evidence actually observed, with absence kept distinct from inference;
 - **verification** — only deterministic proof established by actual tool evidence, with narrow scope;
-- **challenge** — prospective PREMISE / INVALIDATION / HIDDEN ASSUMPTION pressure;
-- **audit** — concrete output mistakes Stage 2 actually determined are present in frozen A1.
+- **challenge** — material PREMISE / INVALIDATION friction against the current record without manufacturing counterfactual defects;
+- **audit** — independent third-party review of frozen A1 for concrete material defects and downstream reevaluation needs.
 
 Stage 2 cannot rewrite, repair, extend, select, or regenerate A1. There is no A2 and no post-XML answer-generation pass.
+
+#### Agentic success criterion
+
+Agentic is evaluated by downstream long-context performance, not by whether Jack XML merely looks complete in the turn where it is generated.
+
+Let **X** be native long-context recall without Jack XML and **Y** be the net contribution of Jack XML. The success condition is **X <= X + Y**; the meaningful target is **Y > 0** beyond normal run-to-run variance. **Y is not assumed positive**: poor or misleading XML can make it negative.
+
+The primary measurement is therefore a controlled comparison of the same long-horizon workload with and without Jack XML. The most important probes are semantic rather than merely literal: retained relationships and dependencies, evidential provenance, deterministic-verification status and scope, unresolved findings, and prior conclusions or branches that downstream reasoning should verify, distrust, reconsider, or continue to reject.
 
 After semantic consolidation, the durable completed-turn capsule is:
 
@@ -225,7 +233,7 @@ For supervisory orchestration, Jack owns the public supervisor-to-worker gateway
 Jack deliberately uses different memory lifetimes for different programs instead of treating all reasoning as permanent context.
 
 - **Deep Research:** preserve the complete active Thesis→Antithesis→Synthesis cognition surface through Synthesis; later retire upstream transient native reasoning while retaining the durable authoritative trajectory required by the program.
-- **Agentic:** use Preserve Thinking at the immediate Stage-1→Stage-2 boundary, distill native cognition into exact user + semantic Jack XML + frozen A1, then retire completed raw native cognition/tool protocol before later turns.
+- **Agentic:** preserve exact user + semantic Jack XML + frozen A1 as the durable completed-turn capsule, use available Stage-1 cognition/tool trajectory for semantic distillation when the backend exposes it, and then retire completed transient cognition/tool protocol before later turns. Preserve Thinking enhances this boundary where supported but is not required by the semantic contract.
 - **Code Debugging / Code Debugging (Deep):** keep Preserve Thinking only inside an active pass; durably retain exact pass summaries and a compact confirmed prior-finding registry for later fresh passes, then perform a fresh tools-off final reconciliation after Pass 5.
 
 Jack XML is semantic attention state, not independent truth. Deterministic verification is represented as verified only when actual tool evidence establishes it.
