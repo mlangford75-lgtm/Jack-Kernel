@@ -10,7 +10,7 @@
 >
 > This is the first document to read. It explains the kernel, the shipped cognition programs, long-horizon state, Pi integration, and Orchestration Gateway v2 in plain English.
 
-> **MAJOR ARCHITECTURE UPDATE — MULTI-ENDPOINT RUNTIME LANES**
+> **MAJOR ARCHITECTURE UPGRADE — MULTI-ENDPOINT RUNTIME LANES**
 >
 > The merged runtime now supports multiple independently addressable Jack lanes with transport-independent runtime identity, atomic endpoint fallback, positively bound private workers, live runtime verification, and non-authoritative runtime activity observability. Ports remain transport locators, not authority or identity.
 
