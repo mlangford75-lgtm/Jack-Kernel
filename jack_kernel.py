@@ -837,13 +837,9 @@ Output only the plan."""
 
 AGENTIC_36_STAGE2_PROMPT = """Your only task in this stage is to construct a compact, high-signal Jack XML checkpoint for this completed current turn.
 
-The exact current user message is already retained deterministically by the Jack host outside Jack XML. Stage 1 has already produced:
-- that exact active user message,
-- native reasoning,
-- the frozen model answer,
-- and any actual tool calls/results.
+The exact current user message is already retained deterministically by the Jack host outside Jack XML. Stage 1 has already produced the frozen model answer. Depending on model and backend capability, Stage 2 may also receive native Stage-1 reasoning and actual tool calls/results.
 
-Jack preserves completed Agentic turns as exact user message + compact Jack XML + exact frozen Stage-1 answer. Jack XML must not become a synthetic workspace truth source. Use fewer semantic surfaces with stronger meaning. Preserve evidence, deterministic verification, adversarial pressure, and concrete discovered output mistakes; leave broad state reconstruction to future reasoning and fresh tools.
+Jack preserves completed Agentic turns as exact user message + compact Jack XML + exact frozen Stage-1 answer. Jack XML must not become a synthetic workspace truth source. Use fewer semantic surfaces with stronger meaning. Preserve the smallest future-useful semantic state that can improve downstream reasoning: decisive relationships or dependencies, actual evidence, deterministic verification, adversarial findings, unresolved verification needs, and concrete discovered output mistakes. Use the richest current-turn information actually available. If native Stage-1 reasoning is available, distill only material reasoning that matters downstream; if it is unavailable, do not invent it. Leave broad state reconstruction to future reasoning and fresh tools.
 
 Do not call tools.
 Do not generate or modify the frozen answer.
@@ -865,6 +861,9 @@ When fresh current-turn tool evidence conflicts with prior model-authored state,
 - Absence of evidence != evidence of safety, success, harm, or failure.
 - User preference does not change truth conditions.
 - Prefer specific evidence and narrow verification over broad semantic summaries.
+- Preserve exact meaning: identities, values, constraints, dependencies, scope, polarity, causality, and uncertainty. Never invent, merge, rename, or substitute.
+- Current config != counterfactual config.
+- Preserve causal precision. When A1 asserts a causal relationship, verify that the stated cause actually applies to the stated case. Do not merge distinct causes.
 </Prime_Directive>
 
 Build exactly four semantic blocks inside <Jack XML>, in this order:
@@ -875,9 +874,12 @@ Not Observed:
 </grounding>
 
 For <grounding>:
-- Record only evidence actually available in the completed current turn.
+- Observed means evidentially observed, not merely visible to Stage 2.
+- Record only material user-provided evidence, established conversation evidence, or actual tool results available in the completed current turn.
+- Do not place Stage-1 reasoning, A1, model self-checks, or model-generated conclusions under Observed merely because Stage 2 can see them.
 - Be concrete: identify the source or tool result when material.
-- Do not convert inference, prior Jack XML, Stage-1 reasoning, or A1 into evidence.
+- If no material evidence beyond the exact host-retained user message needs retention, write:
+Observed: NONE
 - If a material fact was not observed, place it under Not Observed rather than inferring it.
 - Do not describe the whole workspace, task history, or future plan.
 
@@ -889,6 +891,8 @@ Not Verified:
 
 For <verification>:
 - Include only claims directly established by an actual deterministic Stage-1 tool/result.
+- Model-authored reasoning and self-checks are not deterministic verification.
+- Not Verified means not deterministically established, not false.
 - State the exact narrow scope of the verification.
 - Never generalize syntax, file presence, grep, tests, or inspection into broader success.
 - If no deterministic tool verification occurred, use exactly:
@@ -902,35 +906,47 @@ Question: What must be true for the Stage-1 answer to satisfy the exact user req
 Answer:
 
 INVALIDATION
-Question: What material fact, counterexample, or failure condition would invalidate the Stage-1 answer?
+Question: What concrete material problem or contradiction is actually supported by the current record?
 Answer:
 
-HIDDEN ASSUMPTION
-Question: What material assumption is the Stage-1 answer relying on?
-Answer:
 </challenge>
 
 For <challenge>:
-- Materially test the frozen Stage-1 answer against the exact current user request and available evidence.
+- Materially test the frozen Stage-1 answer against the exact current user request, current stated configuration, and available evidence.
+- When native Stage-1 reasoning is available, use it to inspect material reasoning relevant to A1. When it is unavailable, do not invent hidden reasoning.
+- For INVALIDATION, identify only a problem supported by the current record. Do not invent a different interpretation or configuration in which a problem could exist. If none is found, write NONE.
 - Do not introduce requirements or success criteria the user did not ask for.
+- Do not weaken, remove, reinterpret, or replace an explicit constraint to manufacture a failure.
 - Do not manufacture uncertainty, alternative interpretations, failure modes, hypothetical edge cases, or assumptions merely to populate a lens. If no material issue exists for a lens, write NONE.
 - Do not create a replacement answer, corrective plan, or workspace summary.
 - Do not treat unverified claims as established facts.
 
+
 <audit>
-Uncovered Output Mistakes:
+Verdict: PASS | REEVALUATE
+Finding:
+Reevaluate:
 </audit>
 
 For <audit>:
-- Audit is retrospective and diagnostic. Generate it last, after grounding, verification, and challenge.
-- After completing Grounding, Verification, and Challenge, inspect the frozen Stage-1 answer one final time against the exact user request and the evidence established above.
-- Record only concrete mistakes actually present in frozen A1. Eligible mistakes include direct arithmetic or logical contradictions, contradictions between different parts of A1, contradictions with deterministic evidence, materially incorrect stated values, and required outputs from the exact user request that A1 actually omitted.
-- A mistake must be supported by the exact user request, available user or conversation evidence, an actual deterministic tool/result, or a direct logical, arithmetic, or internal contradiction in A1.
-- Challenge identifies what may make A1 wrong. Audit records only errors that Stage 2 determined are actually present. Do not copy a challenge item into Audit unless the error is established.
-- Do not record hypothetical risks, possible counterexamples, possible failure modes, hidden assumptions, unverified suspicions, stylistic preferences, suggested improvements, future actions, or a replacement answer.
-- Audit is model-authored diagnostic memory, not independent evidence and not deterministic verification. Future reasoning must not treat an Audit item as established truth solely because it appears in Jack XML.
-- Keep each mistake precise and concise. If no concrete output mistake was uncovered, use exactly:
-Uncovered Output Mistakes: NONE
+- Act as an independent third-party auditor of the frozen Stage-1 answer.
+- Audit the frozen Stage-1 answer exactly as written. Do not audit a reconstructed, intended, or corrected version of it.
+- Cross-check materially relevant claims and representations within A1 against each other.
+- Report a conflict only when it is material to correctness, execution, verification, or reliable downstream use.
+- Do not escalate non-material discrepancies that do not change the operative meaning.
+- If materially conflicting representations exist, report the contradiction even when the intended meaning can be inferred. Do not silently choose or repair a preferred version.
+- Report only concrete material errors, contradictions, or omissions. Do not invent criticism.
+- Lack of deterministic verification is not automatically an error; preserve that verification need in <verification>.
+- Do not rewrite or repair the answer.
+- If no material defect is found, use:
+Verdict: PASS
+Finding: NONE
+Reevaluate: NONE
+- If a material defect is found, use:
+Verdict: REEVALUATE
+Finding: State exactly what is wrong.
+Reevaluate: State only what downstream reasoning should verify or reconcile before relying on the affected claim. Do not resolve the discrepancy, select an interpretation, or provide the correction.
+- Audit findings are guidance for reevaluation, not independent evidence.
 
 Output exactly:
 <Jack XML>
@@ -944,7 +960,7 @@ Rules:
 - Output Jack XML only.
 - Use NONE or NOT OBSERVED when warranted rather than inventing content.
 - Each semantic block must contribute distinct information. Do not repeat the same limitation, fact, or caution across multiple blocks unless the distinction materially changes its meaning. Prefer sparse, high-signal output.
-- Preserve only material evidence, verification scope, adversarial cautions, and concrete discovered output mistakes that could improve downstream reasoning.
+- Preserve only material semantic relationships, evidence, verification scope, adversarial findings, unresolved verification needs, and concrete discovered output mistakes that could improve downstream reasoning.
 - Do not copy the user request into XML merely for retention.
 - Do not rewrite the frozen answer.
 """
