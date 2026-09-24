@@ -74,6 +74,19 @@ A named worker also requires an explicit owning Jack runtime ID. The Pi provider
 
 Multiple Jack lanes must not implicitly share one privileged Pi worker in the first multi-endpoint release. A future shared multi-tenant worker requires its own independently validated worker-side isolation contract.
 
+### Identity and transport clarification
+
+The existing worker-bridge configuration above remains unchanged. The default `127.0.0.1:8013` control location and the default Jack `:8001` listener are compatibility/preferred transport locations, not worker/runtime identity.
+
+Registry state locates candidate endpoints but does not outrank positive live identity. A named worker's Pi provider must verify that live `/health.runtime_id` matches its expected owning Jack runtime before registration. A stale manifest status does not invalidate a positively verified runtime; a live runtime-ID mismatch does.
+
+The bridge binding and runtime binding remain distinct and explicit:
+
+1. Jack lane -> named Pi worker/bridge identity plus credential.
+2. Pi worker provider -> owning Jack `runtime_id`.
+
+Endpoint fallback on either side changes transport location without changing these logical bindings.
+
 ### Run-bound identity
 
 For an accepted controlled task, the bridge:
@@ -103,6 +116,8 @@ This is a correctness repair discovered during live cancellation acceptance; it 
 ### Cancellation
 
 Cancellation is best-effort and becomes visible immediately. Physical settlement is distinct. Until the cancelled control run reaches `agent_settled`, a new controlled task is rejected. A queued cancelled private marker is swallowed at the exact input boundary rather than beginning model cognition.
+
+This explicit run-control cancellation is separate from an HTTP client transport disconnect. Client disconnect alone is not cognition-cancellation authority.
 
 ## Authority boundary
 

@@ -203,6 +203,18 @@ Named workers publish their actual control endpoint after binding. If the prefer
 
 Do not treat an available lane count as an inference-slot count. Before declaring a shared backend qualified for many concurrent lanes, verify its backend-side admission/queueing behavior under N>K load.
 
+### Multi-endpoint governance clarification
+
+The setup examples above remain valid, but their port numbers are preferences/transport locations rather than permanent identities. A runtime or worker that moves to a validated fallback endpoint retains the same logical identity and ownership.
+
+Runtime manifests are discovery evidence. A named Pi provider resolves the expected owning `runtime_id`, reaches the candidate endpoint, and verifies live `/health.runtime_id` before provider registration. A stale manifest status must not veto a positively verified live runtime, while a live identity mismatch remains a hard identity failure.
+
+Authenticated process-local activity is available at `GET /jack/runtime/status`. That surface is best-effort observability, not cognition, stage, cancellation, or commit authority. If activity telemetry becomes unreliable, Jack reports degraded/unknown state rather than inventing a known state.
+
+A disconnected HTTP client likewise does not, by itself, authorize cancellation of valid cognition. Explicit authorized cancellation remains separate.
+
+The earlier statement that two configured Jack requests may infer concurrently is retained as historical setup guidance. Normatively, the acceptance evidence proves request-level coexistence through shared infrastructure; it does not by itself prove physically simultaneous GPU generation when the backend provides fewer physical generation slots.
+
 ## 11. Documentation authority
 
 Active orchestration documentation is intentionally small:
