@@ -10120,8 +10120,34 @@ def _install_bundled_runtime_extensions() -> None:
     import jack_evidence_guard
     import jack_responses_compat
 
-    jack_evidence_guard.install(sys.modules[__name__])
-    jack_responses_compat.register(sys.modules[__name__])
+    module = sys.modules[__name__]
+
+    if getattr(
+        module,
+        "_JACK_EVIDENCE_PROVENANCE_GUARD_INSTALLED",
+        False,
+    ):
+        # Preserve the existing exact-once install contract. A later
+        # environment change cannot replace the already-bound policy.
+        jack_evidence_guard.install(module)
+    else:
+        canary_policy = (
+            jack_evidence_guard.build_static_runtime_canary_policy(
+                runtime_id=RUNTIME_ID,
+                lane_id=LANE_ID,
+                raw_json=os.getenv(
+                    jack_evidence_guard.STATIC_CANARY_POLICY_ENV,
+                    "",
+                ),
+            )
+        )
+
+        jack_evidence_guard.install(
+            module,
+            canary_policy=canary_policy,
+        )
+
+    jack_responses_compat.register(module)
     root = Path(__file__).resolve().parent
     _register_runtime_manifest_components({
         "jack_secure_entrypoint.py": root / "jack_secure_entrypoint.py",

@@ -852,3 +852,214 @@ def test_install_closure_enforces_matching_runtime_policy_snapshot():
     )
 
     assert str(exc) == "StreamingIRQ Canary match"
+
+
+
+def test_static_policy_absence_preserves_empty_default():
+    policy = guard.build_static_runtime_canary_policy(
+        runtime_id="runtime-static-empty",
+        lane_id="lane-static-empty",
+        raw_json="",
+    )
+
+    assert policy.runtime_id == "runtime-static-empty"
+    assert policy.lane_id == "lane-static-empty"
+    assert policy.canaries.count == 0
+    assert policy.canaries.required_window == 0
+    assert policy.canaries.max_window == 0
+
+
+def test_static_policy_builds_immutable_tier_a_and_b_snapshot():
+    tier_a_secret = "STATIC-TIER-A-CANARY-ALPHA"
+    tier_b_secret = "STATIC-TIER-B-CANARY-BRAVO"
+
+    raw = (
+        '{"version":1,"patterns":['
+        '{"id":"kernel.tripwire.alpha","tier":"A",'
+        '"value":"' + tier_a_secret + '"},'
+        '{"id":"operator.marker.bravo","tier":"B",'
+        '"value":"' + tier_b_secret + '"}'
+        ']}'
+    )
+
+    policy = guard.build_static_runtime_canary_policy(
+        runtime_id="runtime-static",
+        lane_id="lane-static",
+        raw_json=raw,
+    )
+
+    assert policy.canaries.count == 2
+
+    assert policy.canaries.find(
+        "prefix-" + tier_a_secret + "-suffix"
+    ) == guard.CanaryMatch(
+        canary_id="kernel.tripwire.alpha",
+        tier=guard.CanaryTier.A,
+    )
+
+    assert policy.canaries.find(
+        tier_b_secret
+    ) == guard.CanaryMatch(
+        canary_id="operator.marker.bravo",
+        tier=guard.CanaryTier.B,
+    )
+
+    rendered = repr(policy)
+
+    assert tier_a_secret not in rendered
+    assert tier_b_secret not in rendered
+
+
+def test_static_policy_rejects_tier_c():
+    raw = (
+        '{"version":1,"patterns":['
+        '{"id":"dynamic.not-static","tier":"C",'
+        '"value":"DYNAMIC-CANARY-12345"}'
+        ']}'
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="tier must be A or B",
+    ):
+        guard.build_static_runtime_canary_policy(
+            runtime_id="runtime",
+            lane_id="lane",
+            raw_json=raw,
+        )
+
+
+def test_static_policy_rejects_short_brittle_value():
+    raw = (
+        '{"version":1,"patterns":['
+        '{"id":"too.short","tier":"B","value":"abc"}'
+        ']}'
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="value is too short",
+    ):
+        guard.build_static_runtime_canary_policy(
+            runtime_id="runtime",
+            lane_id="lane",
+            raw_json=raw,
+        )
+
+
+def test_static_policy_malformed_json_fails_closed_without_secret_echo():
+    secret = "NEVER-ECHO-THIS-STATIC-CANARY"
+
+    raw = (
+        '{"version":1,"patterns":['
+        '{"id":"broken","tier":"B","value":"'
+        + secret
+        + '"}'
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        guard.build_static_runtime_canary_policy(
+            runtime_id="runtime",
+            lane_id="lane",
+            raw_json=raw,
+        )
+
+    assert secret not in str(caught.value)
+
+
+def test_static_policy_rejects_unknown_top_level_authority():
+    raw = (
+        '{"version":1,"patterns":[],'
+        '"runtime_override":"attacker"}'
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="unsupported top-level fields",
+    ):
+        guard.build_static_runtime_canary_policy(
+            runtime_id="runtime",
+            lane_id="lane",
+            raw_json=raw,
+        )
+
+
+def test_static_policy_rejects_unknown_pattern_fields():
+    raw = (
+        '{"version":1,"patterns":['
+        '{"id":"strict.shape","tier":"B",'
+        '"value":"STRICT-CANARY-VALUE",'
+        '"scope":"caller-controlled"}'
+        ']}'
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="unsupported fields",
+    ):
+        guard.build_static_runtime_canary_policy(
+            runtime_id="runtime",
+            lane_id="lane",
+            raw_json=raw,
+        )
+
+
+def test_static_policy_rejects_unbounded_pattern_count():
+    import json
+
+    raw = json.dumps(
+        {
+            "version": 1,
+            "patterns": [
+                {
+                    "id": f"pattern.{index}",
+                    "tier": "B",
+                    "value": f"STATIC-CANARY-{index:04d}",
+                }
+                for index in range(
+                    guard.STATIC_CANARY_MAX_PATTERNS + 1
+                )
+            ],
+        }
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="pattern limit",
+    ):
+        guard.build_static_runtime_canary_policy(
+            runtime_id="runtime",
+            lane_id="lane",
+            raw_json=raw,
+        )
+
+
+def test_static_policy_rejects_value_beyond_fixed_lookbehind_ceiling():
+    import json
+
+    secret = "X" * (
+        guard.STATIC_CANARY_MAX_WINDOW + 2
+    )
+
+    raw = json.dumps(
+        {
+            "version": 1,
+            "patterns": [
+                {
+                    "id": "over.window",
+                    "tier": "A",
+                    "value": secret,
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        guard.build_static_runtime_canary_policy(
+            runtime_id="runtime",
+            lane_id="lane",
+            raw_json=raw,
+        )
+
+    assert "over-window" in str(caught.value)
+    assert secret not in str(caught.value)

@@ -359,6 +359,156 @@ def _find_canary_in_nonstream_result(
     return None
 
 
+STATIC_CANARY_POLICY_ENV = "JACK_CANARY_POLICY_JSON"
+STATIC_CANARY_POLICY_VERSION = 1
+STATIC_CANARY_MAX_PATTERNS = 128
+STATIC_CANARY_MAX_WINDOW = 256
+STATIC_CANARY_MIN_VALUE_LENGTH = 8
+
+
+def build_static_runtime_canary_policy(
+    *,
+    runtime_id: str,
+    lane_id: str,
+    raw_json: str,
+) -> RuntimeCanaryPolicy:
+    """Build one immutable host-owned Tier A/B startup Canary snapshot."""
+
+    if not isinstance(raw_json, str):
+        raise TypeError("raw_json must be a string")
+
+    text = raw_json.strip()
+
+    # No configured policy preserves Jack's existing default behavior.
+    if not text:
+        return RuntimeCanaryPolicy(
+            runtime_id=runtime_id,
+            lane_id=lane_id,
+            canaries=DeterministicCanarySet(
+                (),
+                max_window=0,
+            ),
+        )
+
+    try:
+        payload = json.loads(text)
+    except Exception:
+        raise RuntimeError(
+            f"{STATIC_CANARY_POLICY_ENV} must contain valid JSON"
+        ) from None
+
+    if not isinstance(payload, dict):
+        raise RuntimeError(
+            f"{STATIC_CANARY_POLICY_ENV} must be a JSON object"
+        )
+
+    if set(payload) != {"version", "patterns"}:
+        raise RuntimeError(
+            f"{STATIC_CANARY_POLICY_ENV} has unsupported top-level fields"
+        )
+
+    version = payload.get("version")
+
+    if (
+        isinstance(version, bool)
+        or not isinstance(version, int)
+        or version != STATIC_CANARY_POLICY_VERSION
+    ):
+        raise RuntimeError(
+            f"{STATIC_CANARY_POLICY_ENV} version must be "
+            f"{STATIC_CANARY_POLICY_VERSION}"
+        )
+
+    raw_patterns = payload.get("patterns")
+
+    if not isinstance(raw_patterns, list):
+        raise RuntimeError(
+            f"{STATIC_CANARY_POLICY_ENV} patterns must be a list"
+        )
+
+    if len(raw_patterns) > STATIC_CANARY_MAX_PATTERNS:
+        raise RuntimeError(
+            f"{STATIC_CANARY_POLICY_ENV} exceeds the static pattern limit"
+        )
+
+    patterns = []
+
+    for index, item in enumerate(raw_patterns):
+        if not isinstance(item, dict):
+            raise RuntimeError(
+                f"{STATIC_CANARY_POLICY_ENV} pattern {index} "
+                "must be an object"
+            )
+
+        if set(item) != {"id", "tier", "value"}:
+            raise RuntimeError(
+                f"{STATIC_CANARY_POLICY_ENV} pattern {index} "
+                "has unsupported fields"
+            )
+
+        canary_id = item.get("id")
+        tier_value = item.get("tier")
+        value = item.get("value")
+
+        # Static startup authority is intentionally limited to A/B.
+        # Dynamic Tier C mutation belongs to controlled runtime-state
+        # transition authority rather than this immutable startup seam.
+        if tier_value not in {"A", "B"}:
+            raise RuntimeError(
+                f"{STATIC_CANARY_POLICY_ENV} pattern {index} "
+                "tier must be A or B"
+            )
+
+        if not isinstance(value, str):
+            raise RuntimeError(
+                f"{STATIC_CANARY_POLICY_ENV} pattern {index} "
+                "value must be a string"
+            )
+
+        if len(value) < STATIC_CANARY_MIN_VALUE_LENGTH:
+            raise RuntimeError(
+                f"{STATIC_CANARY_POLICY_ENV} pattern {index} "
+                "value is too short for a static hard-interrupt Canary"
+            )
+
+        try:
+            pattern = CanaryPattern(
+                canary_id=canary_id,
+                tier=CanaryTier(tier_value),
+                value=value,
+            )
+        except (TypeError, ValueError):
+            # Never render the supplied item or value into an error.
+            raise RuntimeError(
+                f"{STATIC_CANARY_POLICY_ENV} pattern {index} is invalid"
+            ) from None
+
+        patterns.append(pattern)
+
+    try:
+        canaries = DeterministicCanarySet(
+            patterns,
+            max_window=(
+                STATIC_CANARY_MAX_WINDOW
+                if patterns
+                else 0
+            ),
+        )
+    except (TypeError, ValueError):
+        # Includes duplicate IDs/values and values whose exact-match
+        # look-behind would exceed the fixed hard ceiling.
+        raise RuntimeError(
+            f"{STATIC_CANARY_POLICY_ENV} contains an invalid, duplicate, "
+            "or over-window Canary pattern"
+        ) from None
+
+    return RuntimeCanaryPolicy(
+        runtime_id=runtime_id,
+        lane_id=lane_id,
+        canaries=canaries,
+    )
+
+
 class StreamingCanaryDetector:
     """Chunk-boundary-invariant literal detector for one immutable canary set."""
 
