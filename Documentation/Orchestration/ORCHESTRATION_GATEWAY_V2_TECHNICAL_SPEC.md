@@ -376,3 +376,16 @@ Worker     -> Jack -> Local model
 > **Probabilistic cognition may propose, but deterministic software must dispose.**
 
 The supervisor and worker models may reason. Jack and deterministic worker-control software own task admission, readiness, run ownership, cancellation state, settlement, replay, and control authority.
+
+## 18. Security-layer interaction clarification
+
+The Phase 0–3 Kernel security layer is orthogonal to orchestration lifecycle state and does not transfer security authority to the supervisor.
+
+- Jack may withhold unreleased model material at the Kernel release boundary under StreamingIRQ/Canary enforcement.
+- A confirmed hard-security release event may interrupt the affected release boundary, but the supervisor must not fabricate task cancellation, settlement, worker termination, or run ownership from that fact.
+- `StreamingIRQProtocolError` is specifically an ordinary malformed-stream protocol failure, not hard-security authority. Previously proven-safe quarantined cognition may be flushed before the protocol failure propagates.
+- Client disconnect remains non-authoritative for cognition cancellation.
+- The supervisor must not bypass Jack, the guarded model-facing release path, or the private-worker boundary because a security or protocol gate denied/withheld material.
+- Security status, runtime observability, task/run lifecycle, and physical settlement remain distinct facts. Each is authoritative only within its owning deterministic mechanism.
+
+The validated Phase 0–3 security checkpoint is documented at `docs/security/SECURITY_LAYER_PHASE0_3_VALIDATED_2026-09-27.md`. Restricted Paths and Workspace Lock are Phase 4 work and are not retroactively claimed by this Gateway v2 specification.

@@ -6,6 +6,27 @@
 
 **Be strict about truth, identity, authority, and irreversible consequences; be resilient about useful work.**
 
+## Validated security layer — Phases 0–3
+
+As of **27 September 2026**, Jack Kernel ships a validated incremental host-authoritative security layer on top of the existing v0.1.1 runtime. This does **not** replace the broader programmable-safety architecture and does **not** turn Jack into a universal sandbox. It makes a specific set of deterministic protections current implementation reality:
+
+- **Phase 0 — reality and authority mapping:** public cognition-release, tool, resume, evidence, runtime-identity, configuration, ownership, and concurrency seams were mapped before hardening.
+- **Phase 1 — deterministic security outcomes:** `ALLOW`, `DENY_AND_CONTINUE`, `REQUIRE_USER_DECISION`, and `HARD_INTERRUPT`; only `HARD_INTERRUPT` carries hard-security classification.
+- **Phase 2 — StreamingIRQ pre-release quarantine:** bounded unreleased-tail inspection preserves already-safe cognition, flushes benign held material on ordinary failure, and withholds unreleased material on hard security interruption.
+- **Malformed-SSE correction:** malformed non-DONE SSE `data:` frames are withheld and raise ordinary `StreamingIRQProtocolError`; protocol failure is not promoted into hard-security authority, and previously proven-safe held cognition is preserved.
+- **Phase 3 — deterministic Canary enforcement:** exact-match Canary detection is enforced across the validated streaming/non-stream release surfaces, with immutable runtime/lane-bound policy and static Tier A/B startup policy through `JACK_CANARY_POLICY_JSON`.
+
+The validated code checkpoint is `9dda35a358baf2814102dcb9c45346116271acfc`. The documentation checkpoint/tag is `security-layer-phase0-3-validated-2026-09-27` at `bdb05a5b364759f5e79ced524bc2a47934a80fee`. Acceptance reached **175 Python tests passed plus all six Pi harnesses**.
+
+Current governing security references:
+
+- [Phase 0–3 validated checkpoint](docs/security/SECURITY_LAYER_PHASE0_3_VALIDATED_2026-09-27.md)
+- [Governing-document security amendment](Documentation/Security/GOVERNING_DOCUMENT_SECURITY_AMENDMENT_PHASES_0_3_2026-09-27.md)
+- [Security Hardening Architecture](Documentation/Security/Jack_Kernel_Security_Hardening_Architecture_2026-09-26.md)
+
+The existing v0.1.1 DOCX guide, runtime specification, preview, and whitepaper remain intact. The governing amendment is additive: it updates their security-status interpretation without deleting historical architecture, rationale, limitations, or evidence. **Phase 4 — Restricted Paths + Workspace Lock — is not yet part of this validated checkpoint.**
+
+
 > **START HERE — Plain-English Master Guide:** [`00_Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx`](00_Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx)
 >
 > This is the first document to read. It explains the kernel, the shipped cognition programs, long-horizon state, Pi integration, and Orchestration Gateway v2 in plain English.
@@ -235,6 +256,10 @@ Jack XML is semantic attention state, not independent truth. Deterministic verif
 Because Jack sits between caller and backend and owns stage, tool, validation, and commit boundaries, deployments can add code-defined request, tool, validator, approval, output, or release gates whose authority does not depend on agent intent or model compliance.
 
 Jack does **not** claim that this release ships a universal safety suite or filesystem sandbox. Those are programmable host-side layers deployments may add to the kernel control plane.
+
+### Current security implementation status
+
+The statement above remains true and is intentionally preserved: Jack still does not claim a universal safety suite or filesystem sandbox. The current runtime now additionally ships the validated **Phases 0–3 security substrate** described above. Those protections are concrete Kernel behavior, while Restricted Paths, Workspace Lock, Consequence Gate, credential DLP, later integrity layers, and controlled dynamic Tier C mutation remain separate future boundaries.
 
 ## Pi context-window synchronization
 

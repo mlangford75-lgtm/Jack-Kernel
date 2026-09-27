@@ -425,3 +425,18 @@ settlement -> physical completion
 ```
 
 > **Never bypass Jack for worker control. Never bypass Jack for local-model inference. Never replace live event supervision with stale polling. Silence is not settlement.**
+
+## 20. Respect Kernel security boundaries
+
+The current Kernel includes a validated Phase 0–3 security release layer. Treat its deterministic decisions as host-owned boundary state, not as suggestions from the model.
+
+If Jack withholds output or reports a Kernel security/protocol failure:
+
+- do not bypass Jack and contact the backend or private worker directly;
+- do not reinterpret a blocked release as proof that the worker task is cancelled, failed, or settled;
+- do not invent `task_id`, `run_id`, `run_epoch`, cancellation, or settlement consequences;
+- reconcile orchestration lifecycle through Jack's authoritative status/event surfaces;
+- preserve useful work that Jack still reports as valid;
+- distinguish ordinary `StreamingIRQProtocolError` from a true hard-security interrupt.
+
+The governing rule remains: **strict authority, resilient execution, preserved useful work.**

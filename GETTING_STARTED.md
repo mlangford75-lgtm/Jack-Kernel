@@ -224,3 +224,30 @@ Active orchestration documentation is intentionally small:
 - `Documentation/Orchestration/Historical/` — dated acceptance evidence and historical records; not current runtime identity authority.
 
 Current Primary-Pi bridge identity is also published in `Pi/README.md`.
+
+## Validated security layer (Phases 0–3)
+
+The current security-hardening checkpoint adds deterministic host-side protection without changing Jack's core installation model.
+
+The implemented boundary includes deterministic security outcomes, bounded StreamingIRQ pre-release quarantine, malformed-SSE release protection, and exact-match Canary enforcement. It follows the rule:
+
+> Fail closed on authority. Fail soft on recoverable cognition.
+
+Static Canary policy is optional and is transported at startup through `JACK_CANARY_POLICY_JSON`. An absent or blank policy preserves the empty-policy behavior. Static startup policy currently accepts Tier A and Tier B patterns only; live Tier C mutation remains deferred.
+
+Example PowerShell startup value:
+
+```powershell
+$env:JACK_CANARY_POLICY_JSON='{"version":1,"patterns":[{"id":"operator.marker","tier":"B","value":"LONG_SECRET_MARKER"}]}'
+```
+
+Current static-policy constraints include schema version 1, a maximum of 128 patterns, a maximum deterministic look-behind window of 256 characters, and a minimum static Canary value length of 8 characters. Explicit malformed policy is a configuration error rather than something the runtime silently weakens.
+
+A malformed non-DONE SSE `data:` frame is not passed through raw. Jack withholds that frame and raises `StreamingIRQProtocolError`. This is an ordinary protocol failure, not `HARD_INTERRUPT`; previously proven-safe held cognition is preserved.
+
+For the exact validated checkpoint and current scope boundaries, read:
+
+- `docs/security/SECURITY_LAYER_PHASE0_3_VALIDATED_2026-09-27.md`
+- `Documentation/Security/GOVERNING_DOCUMENT_SECURITY_AMENDMENT_PHASES_0_3_2026-09-27.md`
+
+Jack still does not claim a universal filesystem sandbox or complete consequence-control system. **Restricted Paths + Workspace Lock begins in Phase 4 and is not part of the Phase 0–3 checkpoint.**
