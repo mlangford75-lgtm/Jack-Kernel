@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import sys
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ MODULE = Path(__file__).resolve().parents[1] / "jack_evidence_guard.py"
 spec = importlib.util.spec_from_file_location("jack_evidence_guard_test", MODULE)
 guard = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
+sys.modules[spec.name] = guard
 spec.loader.exec_module(guard)
 
 
@@ -251,6 +253,8 @@ def test_install_sanitizes_kernel_output_and_marks_real_host_evidence():
         recover_pi_tool_evidence=recover,
     )
 
+    jk.RUNTIME_ID = "test-runtime"
+    jk.LANE_ID = "test-lane"
     guard.install(jk)
 
     result = asyncio.run(jk.KERNEL.run({}))
@@ -308,6 +312,8 @@ def test_caller_tool_result_origin_is_attached_only_after_resume_ingest():
         KERNEL=Kernel(),
         _tool_evidence_receipts_from_group=receipts,
     )
+    jk.RUNTIME_ID = "test-runtime"
+    jk.LANE_ID = "test-lane"
     guard.install(jk)
 
     _state, tool_messages = asyncio.run(jk.KERNEL._consume_pending_tool_resume([{"role": "tool"}]))
@@ -341,6 +347,8 @@ def test_unmarked_receipt_origin_fails_soft_to_unknown():
         }]
 
     jk = SimpleNamespace(KERNEL=Kernel(), _tool_evidence_receipts_from_group=receipts)
+    jk.RUNTIME_ID = "test-runtime"
+    jk.LANE_ID = "test-lane"
     guard.install(jk)
 
     receipt = jk._tool_evidence_receipts_from_group([{
