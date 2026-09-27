@@ -18,6 +18,59 @@ _RESERVED_TAG_NAME = "jack_tool_evidence_receipt"
 _PARTIAL_RESERVED_PREFIX = "jack_tool_evidence"
 
 
+class StreamingIRQTextQuarantine:
+    """Bounded unreleased tail for deterministic pre-release stream inspection.
+
+    This primitive has no authority to classify content, cancel cognition,
+    terminate a connection, or discard state. It only delays a bounded suffix
+    until a caller either feeds more text or explicitly flushes the tail.
+    """
+
+    def __init__(self, *, window_size: int, max_window: int) -> None:
+        if isinstance(window_size, bool) or not isinstance(window_size, int):
+            raise TypeError("window_size must be an integer")
+        if isinstance(max_window, bool) or not isinstance(max_window, int):
+            raise TypeError("max_window must be an integer")
+        if max_window < 0:
+            raise ValueError("max_window must be >= 0")
+        if window_size < 0:
+            raise ValueError("window_size must be >= 0")
+        if window_size > max_window:
+            raise ValueError("window_size must not exceed max_window")
+
+        self.window_size = window_size
+        self.max_window = max_window
+        self._carry = ""
+
+    @property
+    def held_length(self) -> int:
+        return len(self._carry)
+
+    def feed(self, text: Any) -> str:
+        data = self._carry + ("" if text is None else str(text))
+        self._carry = ""
+
+        if not data:
+            return ""
+
+        if self.window_size == 0:
+            return data
+
+        if len(data) <= self.window_size:
+            self._carry = data
+            return ""
+
+        release_length = len(data) - self.window_size
+        released = data[:release_length]
+        self._carry = data[release_length:]
+        return released
+
+    def flush(self) -> str:
+        tail = self._carry
+        self._carry = ""
+        return tail
+
+
 class ReservedEvidenceMarkerFilter:
     """Stateful structural filter for model-emitted reserved Jack evidence tags."""
 
