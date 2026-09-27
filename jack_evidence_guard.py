@@ -294,6 +294,71 @@ class RuntimeCanaryPolicy:
             )
 
 
+def _find_canary_in_release_value(
+    canaries: DeterministicCanarySet,
+    value: Any,
+) -> Optional[CanaryMatch]:
+    """Find an exact Canary in one JSON-like model-output value."""
+
+    if canaries.count == 0 or value is None:
+        return None
+
+    if isinstance(value, str):
+        return canaries.find(value)
+
+    if isinstance(value, dict):
+        # Tool-call objects are JSON-derived and preserve their structural
+        # order. Inspect values only; field names are protocol structure,
+        # not model textual payload.
+        for item in value.values():
+            match = _find_canary_in_release_value(
+                canaries,
+                item,
+            )
+
+            if match is not None:
+                return match
+
+        return None
+
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            match = _find_canary_in_release_value(
+                canaries,
+                item,
+            )
+
+            if match is not None:
+                return match
+
+    return None
+
+
+def _find_canary_in_nonstream_result(
+    canaries: DeterministicCanarySet,
+    result: Any,
+) -> Optional[CanaryMatch]:
+    """Inspect the non-stream model-output surfaces released by Jack."""
+
+    if canaries.count == 0:
+        return None
+
+    for field in (
+        "content",
+        "reasoning_content",
+        "tool_calls",
+    ):
+        match = _find_canary_in_release_value(
+            canaries,
+            getattr(result, field, None),
+        )
+
+        if match is not None:
+            return match
+
+    return None
+
+
 class StreamingCanaryDetector:
     """Chunk-boundary-invariant literal detector for one immutable canary set."""
 
@@ -1401,10 +1466,26 @@ def install(
 
     async def guarded_run(request_body: Dict[str, Any]):
         result = await original_run(request_body)
+
+        match = _find_canary_in_nonstream_result(
+            canary_policy.canaries,
+            result,
+        )
+
+        if match is not None:
+            # Non-stream output has not crossed the release boundary yet.
+            # Withhold the complete result atomically while preserving the
+            # Kernel's already-completed internal cognition/state.
+            raise StreamingIRQCanaryInterrupt(match)
+
         if getattr(result, "content", None) is not None:
             result.content = sanitize_model_text(result.content)
+
         if getattr(result, "reasoning_content", None) is not None:
-            result.reasoning_content = sanitize_model_text(result.reasoning_content)
+            result.reasoning_content = sanitize_model_text(
+                result.reasoning_content
+            )
+
         return result
 
     async def guarded_stream(request_body: Dict[str, Any]):
