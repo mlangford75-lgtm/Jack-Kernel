@@ -147,8 +147,13 @@ class CanaryDetection:
     overlaps_prior_carry: bool
 
 
+@dataclass(frozen=True, init=False, repr=False)
 class DeterministicCanarySet:
     """Immutable exact-match canary set with a bounded look-behind contract."""
+
+    _patterns: Tuple[CanaryPattern, ...]
+    max_window: int
+    required_window: int
 
     def __init__(
         self,
@@ -190,18 +195,30 @@ class DeterministicCanarySet:
                 "configured canary exceeds quarantine hard ceiling"
             )
 
-        self._patterns = tuple(
-            sorted(
-                materialized,
-                key=lambda pattern: (
-                    len(pattern.value),
-                    pattern.canary_id,
-                    pattern.tier.value,
-                ),
-            )
+        object.__setattr__(
+            self,
+            "_patterns",
+            tuple(
+                sorted(
+                    materialized,
+                    key=lambda pattern: (
+                        len(pattern.value),
+                        pattern.canary_id,
+                        pattern.tier.value,
+                    ),
+                )
+            ),
         )
-        self.max_window = max_window
-        self.required_window = required_window
+        object.__setattr__(
+            self,
+            "max_window",
+            max_window,
+        )
+        object.__setattr__(
+            self,
+            "required_window",
+            required_window,
+        )
 
     @property
     def count(self) -> int:
@@ -247,6 +264,34 @@ class DeterministicCanarySet:
             return None
 
         return found[0]
+
+
+@dataclass(frozen=True)
+class RuntimeCanaryPolicy:
+    """Immutable Canary snapshot owned by one resolved Jack runtime/lane."""
+
+    runtime_id: str
+    lane_id: str
+    canaries: DeterministicCanarySet
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.runtime_id, str):
+            raise TypeError("runtime_id must be a string")
+        if not self.runtime_id:
+            raise ValueError("runtime_id must not be empty")
+
+        if not isinstance(self.lane_id, str):
+            raise TypeError("lane_id must be a string")
+        if not self.lane_id:
+            raise ValueError("lane_id must not be empty")
+
+        if not isinstance(
+            self.canaries,
+            DeterministicCanarySet,
+        ):
+            raise TypeError(
+                "canaries must be a DeterministicCanarySet"
+            )
 
 
 class StreamingCanaryDetector:
@@ -1289,10 +1334,65 @@ def _install_recovery_provenance(jk: Any) -> None:
     jk.recover_pi_tool_evidence = guarded
 
 
-def install(jk: Any) -> None:
+def install(
+    jk: Any,
+    *,
+    canary_policy: Optional[RuntimeCanaryPolicy] = None,
+) -> None:
     """Install Jack's model-output/evidence provenance boundary exactly once."""
-    if getattr(jk, "_JACK_EVIDENCE_PROVENANCE_GUARD_INSTALLED", False):
+
+    if getattr(
+        jk,
+        "_JACK_EVIDENCE_PROVENANCE_GUARD_INSTALLED",
+        False,
+    ):
         return
+
+    runtime_id = str(
+        getattr(jk, "RUNTIME_ID", "")
+    ).strip()
+
+    lane_id = str(
+        getattr(jk, "LANE_ID", "")
+    ).strip()
+
+    if not runtime_id:
+        raise RuntimeError(
+            "Jack runtime identity is unavailable"
+        )
+
+    if not lane_id:
+        raise RuntimeError(
+            "Jack lane identity is unavailable"
+        )
+
+    if canary_policy is None:
+        canary_policy = RuntimeCanaryPolicy(
+            runtime_id=runtime_id,
+            lane_id=lane_id,
+            canaries=DeterministicCanarySet(
+                (),
+                max_window=0,
+            ),
+        )
+    elif not isinstance(
+        canary_policy,
+        RuntimeCanaryPolicy,
+    ):
+        raise TypeError(
+            "canary_policy must be a RuntimeCanaryPolicy"
+        )
+
+    if canary_policy.runtime_id != runtime_id:
+        raise RuntimeError(
+            "Canary policy runtime ownership mismatch"
+        )
+
+    if canary_policy.lane_id != lane_id:
+        raise RuntimeError(
+            "Canary policy lane ownership mismatch"
+        )
+
     jk._JACK_EVIDENCE_PROVENANCE_GUARD_INSTALLED = True
 
     kernel = jk.KERNEL
@@ -1308,7 +1408,11 @@ def install(jk: Any) -> None:
         return result
 
     async def guarded_stream(request_body: Dict[str, Any]):
-        async for chunk in _guarded_stream(original_stream, request_body):
+        async for chunk in _guarded_stream(
+            original_stream,
+            request_body,
+            canaries=canary_policy.canaries,
+        ):
             yield chunk
 
     kernel.run = guarded_run

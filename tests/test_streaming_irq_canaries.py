@@ -615,3 +615,240 @@ def test_canary_interrupt_carries_safe_structured_metadata_only():
     assert secret not in rendered
     assert "opaque-tripwire-17" not in str(exc)
     assert "tier=B" not in str(exc)
+
+
+def test_runtime_canary_policy_binds_resolved_owner_identity():
+    canaries = guard.DeterministicCanarySet(
+        [
+            pattern(
+                "owner-test",
+                guard.CanaryTier.A,
+                "OWNER-CANARY",
+            )
+        ],
+        max_window=64,
+    )
+
+    policy = guard.RuntimeCanaryPolicy(
+        runtime_id="runtime-alpha",
+        lane_id="lane-alpha",
+        canaries=canaries,
+    )
+
+    assert policy.runtime_id == "runtime-alpha"
+    assert policy.lane_id == "lane-alpha"
+    assert policy.canaries is canaries
+
+
+def test_runtime_canary_policy_is_frozen():
+    canaries = guard.DeterministicCanarySet(
+        (),
+        max_window=0,
+    )
+
+    policy = guard.RuntimeCanaryPolicy(
+        runtime_id="runtime-frozen",
+        lane_id="lane-frozen",
+        canaries=canaries,
+    )
+
+    with pytest.raises(Exception):
+        policy.runtime_id = "other-runtime"
+
+
+@pytest.mark.parametrize(
+    "runtime_id,lane_id",
+    (
+        ("", "lane"),
+        ("runtime", ""),
+    ),
+)
+def test_runtime_canary_policy_rejects_empty_owner_identity(
+    runtime_id,
+    lane_id,
+):
+    with pytest.raises(ValueError):
+        guard.RuntimeCanaryPolicy(
+            runtime_id=runtime_id,
+            lane_id=lane_id,
+            canaries=guard.DeterministicCanarySet(
+                (),
+                max_window=0,
+            ),
+        )
+
+
+
+def test_deterministic_canary_set_is_structurally_frozen():
+    canaries = guard.DeterministicCanarySet(
+        [
+            pattern(
+                "frozen-set",
+                guard.CanaryTier.A,
+                "FROZEN-CANARY",
+            )
+        ],
+        max_window=64,
+    )
+
+    with pytest.raises(AttributeError):
+        canaries.required_window = 0
+
+    with pytest.raises(AttributeError):
+        canaries.max_window = 999
+
+    with pytest.raises(AttributeError):
+        canaries._patterns = ()
+
+
+def test_install_rejects_runtime_policy_owner_mismatch():
+    class FakeJack:
+        RUNTIME_ID = "runtime-real"
+        LANE_ID = "lane-real"
+
+    policy = guard.RuntimeCanaryPolicy(
+        runtime_id="runtime-wrong",
+        lane_id="lane-real",
+        canaries=guard.DeterministicCanarySet(
+            (),
+            max_window=0,
+        ),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="runtime ownership mismatch",
+    ):
+        guard.install(
+            FakeJack(),
+            canary_policy=policy,
+        )
+
+
+def test_install_rejects_lane_policy_owner_mismatch():
+    class FakeJack:
+        RUNTIME_ID = "runtime-real"
+        LANE_ID = "lane-real"
+
+    policy = guard.RuntimeCanaryPolicy(
+        runtime_id="runtime-real",
+        lane_id="lane-wrong",
+        canaries=guard.DeterministicCanarySet(
+            (),
+            max_window=0,
+        ),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="lane ownership mismatch",
+    ):
+        guard.install(
+            FakeJack(),
+            canary_policy=policy,
+        )
+
+
+def test_reinstall_remains_exact_once_noop_before_identity_validation():
+    class AlreadyInstalled:
+        _JACK_EVIDENCE_PROVENANCE_GUARD_INSTALLED = True
+
+    guard.install(AlreadyInstalled())
+
+
+def test_install_closure_enforces_matching_runtime_policy_snapshot():
+    import asyncio
+    import json
+    from types import SimpleNamespace
+
+    secret = "INSTALL-BOUND-CANARY"
+
+    class Kernel:
+        async def run(self, _body):
+            return SimpleNamespace(
+                content="ok",
+                reasoning_content=None,
+            )
+
+        async def stream(self, _body):
+            payload = {
+                "id": "install-policy-test",
+                "object": "chat.completion.chunk",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "content":
+                                "safe-prefix-" + secret
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            }
+
+            yield (
+                "data: "
+                + json.dumps(
+                    payload,
+                    separators=(",", ":"),
+                )
+                + "\n\n"
+            ).encode("utf-8")
+
+    jk = SimpleNamespace(
+        RUNTIME_ID="runtime-bound",
+        LANE_ID="lane-bound",
+        KERNEL=Kernel(),
+    )
+
+    canaries = guard.DeterministicCanarySet(
+        [
+            pattern(
+                "install-bound",
+                guard.CanaryTier.A,
+                secret,
+            )
+        ],
+        max_window=64,
+    )
+
+    policy = guard.RuntimeCanaryPolicy(
+        runtime_id="runtime-bound",
+        lane_id="lane-bound",
+        canaries=canaries,
+    )
+
+    guard.install(
+        jk,
+        canary_policy=policy,
+    )
+
+    async def consume():
+        chunks = []
+
+        try:
+            async for chunk in jk.KERNEL.stream({}):
+                chunks.append(chunk)
+        except guard.StreamingIRQCanaryInterrupt as exc:
+            return chunks, exc
+
+        raise AssertionError(
+            "Expected installed Canary policy to interrupt"
+        )
+
+    chunks, exc = asyncio.run(consume())
+
+    rendered = b"".join(chunks).decode(
+        "utf-8",
+        "replace",
+    )
+
+    assert "safe-prefix-" in rendered
+    assert secret not in rendered
+
+    assert exc.match == guard.CanaryMatch(
+        canary_id="install-bound",
+        tier=guard.CanaryTier.A,
+    )
+
+    assert str(exc) == "StreamingIRQ Canary match"
