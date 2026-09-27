@@ -123,6 +123,16 @@ class CanaryMatch:
     tier: CanaryTier
 
 
+@dataclass(frozen=True)
+class CanaryDetection:
+    """Safe stream-location metadata for one deterministic Canary match."""
+
+    match: CanaryMatch
+    buffered_prefix_length: int
+    current_prefix_length: int
+    overlaps_prior_carry: bool
+
+
 class DeterministicCanarySet:
     """Immutable exact-match canary set with a bounded look-behind contract."""
 
@@ -183,7 +193,10 @@ class DeterministicCanarySet:
     def count(self) -> int:
         return len(self._patterns)
 
-    def find(self, text: Any) -> Optional[CanaryMatch]:
+    def _find_with_position(
+        self,
+        text: Any,
+    ) -> Optional[Tuple[CanaryMatch, int]]:
         data = "" if text is None else str(text)
         best = None
 
@@ -205,9 +218,21 @@ class DeterministicCanarySet:
                         canary_id=pattern.canary_id,
                         tier=pattern.tier,
                     ),
+                    index,
                 )
 
-        return None if best is None else best[1]
+        if best is None:
+            return None
+
+        return best[1], best[2]
+
+    def find(self, text: Any) -> Optional[CanaryMatch]:
+        found = self._find_with_position(text)
+
+        if found is None:
+            return None
+
+        return found[0]
 
 
 class StreamingCanaryDetector:
@@ -225,14 +250,30 @@ class StreamingCanaryDetector:
     def held_length(self) -> int:
         return len(self._carry)
 
-    def feed(self, text: Any) -> Optional[CanaryMatch]:
-        data = self._carry + (
-            "" if text is None else str(text)
-        )
+    def feed_detection(
+        self,
+        text: Any,
+    ) -> Optional[CanaryDetection]:
+        incoming = "" if text is None else str(text)
+        prior_carry_length = len(self._carry)
+        data = self._carry + incoming
 
-        match = self.canaries.find(data)
-        if match is not None:
-            return match
+        found = self.canaries._find_with_position(data)
+
+        if found is not None:
+            match, start = found
+
+            return CanaryDetection(
+                match=match,
+                buffered_prefix_length=start,
+                current_prefix_length=max(
+                    0,
+                    start - prior_carry_length,
+                ),
+                overlaps_prior_carry=(
+                    start < prior_carry_length
+                ),
+            )
 
         window = self.canaries.required_window
 
@@ -242,6 +283,14 @@ class StreamingCanaryDetector:
             self._carry = data[-window:]
 
         return None
+
+    def feed(self, text: Any) -> Optional[CanaryMatch]:
+        detection = self.feed_detection(text)
+
+        if detection is None:
+            return None
+
+        return detection.match
 
     def flush(self) -> None:
         self._carry = ""

@@ -379,3 +379,126 @@ def test_detector_flush_discards_only_detector_lookbehind_state():
     detector.flush()
 
     assert detector.held_length == 0
+
+
+def test_detection_reports_safe_prefix_inside_current_delta():
+    secret = "CANARY"
+
+    canaries = guard.DeterministicCanarySet(
+        [
+            pattern(
+                "boundary-current",
+                guard.CanaryTier.C,
+                secret,
+            )
+        ],
+        max_window=64,
+    )
+
+    detector = guard.StreamingCanaryDetector(
+        canaries
+    )
+
+    # Populate prior look-behind with text that is not part of the match.
+    assert detector.feed("older") is None
+
+    detection = detector.feed_detection(
+        "safe-" + secret
+    )
+
+    assert detection == guard.CanaryDetection(
+        match=guard.CanaryMatch(
+            canary_id="boundary-current",
+            tier=guard.CanaryTier.C,
+        ),
+        buffered_prefix_length=(
+            len("older") + len("safe-")
+        ),
+        current_prefix_length=len("safe-"),
+        overlaps_prior_carry=False,
+    )
+
+
+def test_detection_reports_cross_boundary_match_as_overlapping_prior_carry():
+    secret = "ABCDEF"
+
+    canaries = guard.DeterministicCanarySet(
+        [
+            pattern(
+                "boundary-cross",
+                guard.CanaryTier.A,
+                secret,
+            )
+        ],
+        max_window=64,
+    )
+
+    detector = guard.StreamingCanaryDetector(
+        canaries
+    )
+
+    assert detector.feed("xxABC") is None
+
+    detection = detector.feed_detection("DEF")
+
+    assert detection == guard.CanaryDetection(
+        match=guard.CanaryMatch(
+            canary_id="boundary-cross",
+            tier=guard.CanaryTier.A,
+        ),
+        buffered_prefix_length=len("xx"),
+        current_prefix_length=0,
+        overlaps_prior_carry=True,
+    )
+
+
+def test_detection_metadata_never_contains_canary_value():
+    secret = "PRIVATE-CANARY-VALUE"
+
+    canaries = guard.DeterministicCanarySet(
+        [
+            pattern(
+                "safe-meta",
+                guard.CanaryTier.B,
+                secret,
+            )
+        ],
+        max_window=64,
+    )
+
+    detector = guard.StreamingCanaryDetector(
+        canaries
+    )
+
+    detection = detector.feed_detection(
+        "prefix-" + secret
+    )
+
+    assert detection is not None
+    assert secret not in repr(detection)
+    assert not hasattr(detection, "value")
+    assert not hasattr(detection.match, "value")
+
+
+def test_existing_feed_api_still_returns_only_canary_match():
+    secret = "API-COMPAT-CANARY"
+
+    canaries = guard.DeterministicCanarySet(
+        [
+            pattern(
+                "api-compat",
+                guard.CanaryTier.C,
+                secret,
+            )
+        ],
+        max_window=64,
+    )
+
+    detector = guard.StreamingCanaryDetector(
+        canaries
+    )
+
+    assert detector.feed(secret) == guard.CanaryMatch(
+        canary_id="api-compat",
+        tier=guard.CanaryTier.C,
+    )
