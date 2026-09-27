@@ -71,6 +71,10 @@ class StreamingIRQTextQuarantine:
         return tail
 
 
+class StreamingIRQHardInterrupt(RuntimeError):
+    """Internal signal that forbids release of the current quarantine tail."""
+
+
 class ReservedEvidenceMarkerFilter:
     """Stateful structural filter for model-emitted reserved Jack evidence tags."""
 
@@ -226,17 +230,43 @@ def _chat_chunk_template(obj: Dict[str, Any]) -> Dict[str, Any]:
 def _flush_event(
     template: Optional[Dict[str, Any]],
     filters: Dict[Tuple[int, str], ReservedEvidenceMarkerFilter],
+    quarantines: Optional[
+        Dict[Tuple[int, str], StreamingIRQTextQuarantine]
+    ] = None,
 ) -> Optional[bytes]:
+    quarantines = quarantines or {}
+
+    keys = sorted(set(filters) | set(quarantines))
+
     if not template:
-        for filt in filters.values():
-            filt.flush()
+        for key in keys:
+            filt = filters.get(key)
+            quarantine = quarantines.get(key)
+
+            filtered_tail = filt.flush() if filt is not None else ""
+
+            if quarantine is not None:
+                quarantine.feed(filtered_tail)
+                quarantine.flush()
         return None
 
     by_choice: Dict[int, Dict[str, str]] = {}
-    for (choice_index, field), filt in filters.items():
-        tail = filt.flush()
-        if tail:
-            by_choice.setdefault(choice_index, {})[field] = tail
+
+    for key in keys:
+        choice_index, field = key
+        filt = filters.get(key)
+        quarantine = quarantines.get(key)
+
+        filtered_tail = filt.flush() if filt is not None else ""
+
+        if quarantine is not None:
+            released = quarantine.feed(filtered_tail) + quarantine.flush()
+        else:
+            released = filtered_tail
+
+        if released:
+            by_choice.setdefault(choice_index, {})[field] = released
+
     if not by_choice:
         return None
 
@@ -247,71 +277,150 @@ def _flush_event(
     return _encode_sse_object({**template, "choices": choices})
 
 
-async def _guarded_stream(original_stream: Any, request_body: Dict[str, Any]) -> AsyncIterator[bytes]:
+async def _guarded_stream(
+    original_stream: Any,
+    request_body: Dict[str, Any],
+    *,
+    quarantine_window: int = 0,
+    quarantine_max_window: int = 0,
+) -> AsyncIterator[bytes]:
     filters: Dict[Tuple[int, str], ReservedEvidenceMarkerFilter] = {}
+    quarantines: Dict[
+        Tuple[int, str], StreamingIRQTextQuarantine
+    ] = {}
     last_template: Optional[Dict[str, Any]] = None
     done_seen = False
 
-    async for chunk in original_stream(request_body):
-        text = chunk.decode("utf-8", "replace") if isinstance(chunk, (bytes, bytearray)) else str(chunk)
-        if text.strip() == "data: [DONE]":
-            flushed = _flush_event(last_template, filters)
-            if flushed is not None:
-                yield flushed
-            done_seen = True
-            yield chunk
-            continue
-
-        obj = _parse_sse_object(chunk)
-        if obj is None:
-            yield chunk
-            continue
-
-        choices = obj.get("choices")
-        if not isinstance(choices, list) or not choices:
-            yield chunk
-            continue
-
-        last_template = _chat_chunk_template(obj)
-        changed = False
-        for ordinal, choice in enumerate(choices):
-            if not isinstance(choice, dict):
-                continue
-            raw_index = choice.get("index", ordinal)
-            try:
-                choice_index = int(raw_index)
-            except (TypeError, ValueError):
-                choice_index = ordinal
-
-            delta = choice.get("delta")
-            if not isinstance(delta, dict):
+    try:
+        async for chunk in original_stream(request_body):
+            text = chunk.decode("utf-8", "replace") if isinstance(chunk, (bytes, bytearray)) else str(chunk)
+            if text.strip() == "data: [DONE]":
+                flushed = _flush_event(
+                    last_template,
+                    filters,
+                    quarantines,
+                )
+                if flushed is not None:
+                    yield flushed
+                done_seen = True
+                yield chunk
                 continue
 
-            for field in ("content", "reasoning_content", "reasoning", "thinking"):
-                if field not in delta or delta.get(field) is None:
+            obj = _parse_sse_object(chunk)
+            if obj is None:
+                yield chunk
+                continue
+
+            choices = obj.get("choices")
+            if not isinstance(choices, list) or not choices:
+                yield chunk
+                continue
+
+            last_template = _chat_chunk_template(obj)
+            changed = False
+            for ordinal, choice in enumerate(choices):
+                if not isinstance(choice, dict):
                     continue
-                key = (choice_index, field)
-                filt = filters.setdefault(key, ReservedEvidenceMarkerFilter())
-                filtered = filt.feed(delta.get(field))
-                if filtered != delta.get(field):
-                    changed = True
-                delta[field] = filtered
+                raw_index = choice.get("index", ordinal)
+                try:
+                    choice_index = int(raw_index)
+                except (TypeError, ValueError):
+                    choice_index = ordinal
 
-            if choice.get("finish_reason") is not None:
-                for field in ("content", "reasoning_content", "reasoning", "thinking"):
-                    key = (choice_index, field)
-                    filt = filters.get(key)
-                    if filt is None:
+                delta = choice.get("delta")
+                if not isinstance(delta, dict):
+                    continue
+
+                text_fields = (
+                    "content",
+                    "reasoning_content",
+                    "reasoning",
+                    "thinking",
+                )
+
+                for field in text_fields:
+                    if field not in delta or delta.get(field) is None:
                         continue
-                    tail = filt.flush()
-                    if tail:
-                        delta[field] = str(delta.get(field) or "") + tail
+
+                    key = (choice_index, field)
+                    filt = filters.setdefault(
+                        key,
+                        ReservedEvidenceMarkerFilter(),
+                    )
+                    quarantine = quarantines.setdefault(
+                        key,
+                        StreamingIRQTextQuarantine(
+                            window_size=quarantine_window,
+                            max_window=quarantine_max_window,
+                        ),
+                    )
+
+                    original_value = delta.get(field)
+                    filtered = filt.feed(original_value)
+                    released = quarantine.feed(filtered)
+
+                    if released != original_value:
                         changed = True
 
-        yield _encode_sse_object(obj) if changed else chunk
+                    delta[field] = released
+
+                if choice.get("finish_reason") is not None:
+                    for field in text_fields:
+                        key = (choice_index, field)
+
+                        filt = filters.get(key)
+                        quarantine = quarantines.get(key)
+
+                        if filt is None and quarantine is None:
+                            continue
+
+                        filtered_tail = (
+                            filt.flush()
+                            if filt is not None
+                            else ""
+                        )
+
+                        if quarantine is not None:
+                            tail = (
+                                quarantine.feed(filtered_tail)
+                                + quarantine.flush()
+                            )
+                        else:
+                            tail = filtered_tail
+
+                        if tail:
+                            delta[field] = (
+                                str(delta.get(field) or "")
+                                + tail
+                            )
+                            changed = True
+
+            yield _encode_sse_object(obj) if changed else chunk
+
+    except StreamingIRQHardInterrupt:
+        # A confirmed hard security interruption must not release the held
+        # quarantine tail. The already released safe prefix remains intact.
+        raise
+
+    except Exception:
+        # Ordinary transport/stage failure is not itself a security violation.
+        # Preserve every deterministically safe unreleased character before
+        # allowing Jack's existing outer failure handling to run.
+        flushed = _flush_event(
+            last_template,
+            filters,
+            quarantines,
+        )
+        if flushed is not None:
+            yield flushed
+        raise
 
     if not done_seen:
-        flushed = _flush_event(last_template, filters)
+        flushed = _flush_event(
+            last_template,
+            filters,
+            quarantines,
+        )
         if flushed is not None:
             yield flushed
 
