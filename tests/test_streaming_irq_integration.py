@@ -758,3 +758,456 @@ def test_ordinary_failure_flushes_benign_canary_lookbehind():
 
     assert visible_text(chunks) == "benign-tail"
     assert str(exc) == "ordinary transport failure"
+
+
+
+def streamed_tool_arguments(chunks, *, index=0):
+    parts = []
+
+    for chunk in chunks:
+        obj = data_obj(chunk)
+
+        if not obj:
+            continue
+
+        for choice in obj.get("choices") or []:
+            if not isinstance(choice, dict):
+                continue
+
+            delta = choice.get("delta") or {}
+
+            if not isinstance(delta, dict):
+                continue
+
+            for call in delta.get("tool_calls") or []:
+                if not isinstance(call, dict):
+                    continue
+
+                try:
+                    call_index = int(
+                        call.get("index", 0)
+                    )
+                except (TypeError, ValueError):
+                    call_index = 0
+
+                if call_index != index:
+                    continue
+
+                function = call.get("function")
+
+                if not isinstance(function, dict):
+                    continue
+
+                arguments = function.get("arguments")
+
+                if isinstance(arguments, str):
+                    parts.append(arguments)
+
+    return "".join(parts)
+
+
+def streamed_tool_indexes(chunks):
+    indexes = []
+
+    for chunk in chunks:
+        obj = data_obj(chunk)
+
+        if not obj:
+            continue
+
+        for choice in obj.get("choices") or []:
+            if not isinstance(choice, dict):
+                continue
+
+            delta = choice.get("delta") or {}
+
+            if not isinstance(delta, dict):
+                continue
+
+            for call in delta.get("tool_calls") or []:
+                if not isinstance(call, dict):
+                    continue
+
+                try:
+                    indexes.append(
+                        int(call.get("index", 0))
+                    )
+                except (TypeError, ValueError):
+                    indexes.append(0)
+
+    return indexes
+
+
+def streamed_finish_reasons(chunks):
+    reasons = []
+
+    for chunk in chunks:
+        obj = data_obj(chunk)
+
+        if not obj:
+            continue
+
+        for choice in obj.get("choices") or []:
+            if not isinstance(choice, dict):
+                continue
+
+            reason = choice.get("finish_reason")
+
+            if reason is not None:
+                reasons.append(reason)
+
+    return reasons
+
+
+def test_tool_argument_gate_preserves_benign_fragmented_call():
+    secret = "UNSEEN-TOOL-CANARY"
+
+    canaries = make_canaries(secret)
+
+    fragments = [
+        '{"path":"a',
+        '.txt","content":"hel',
+        'lo"}',
+    ]
+
+    async def source(_body):
+        yield event(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call-benign",
+                        "type": "function",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": fragments[0],
+                        },
+                    }
+                ]
+            }
+        )
+
+        for fragment in fragments[1:]:
+            yield event(
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "function": {
+                                "arguments": fragment,
+                            },
+                        }
+                    ]
+                }
+            )
+
+        yield event(
+            {},
+            finish_reason="tool_calls",
+        )
+        yield b"data: [DONE]\n\n"
+
+    chunks = collect(
+        source,
+        window=0,
+        maximum=0,
+        canaries=canaries,
+    )
+
+    assert streamed_tool_arguments(
+        chunks,
+        index=0,
+    ) == "".join(fragments)
+
+    assert streamed_finish_reasons(
+        chunks
+    ) == ["tool_calls"]
+
+    assert chunks[-1] == b"data: [DONE]\n\n"
+
+
+def test_same_delta_tool_argument_canary_releases_only_safe_prefix():
+    secret = "TOOL-ARG-CANARY"
+
+    canaries = make_canaries(
+        secret,
+        canary_id="tool-arg-hit",
+        tier=guard.CanaryTier.B,
+    )
+
+    async def source(_body):
+        yield event(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call-hit",
+                        "type": "function",
+                        "function": {
+                            "name": "write_file",
+                            "arguments":
+                                "safe-" + secret + "-after",
+                        },
+                    }
+                ]
+            }
+        )
+
+        yield event(
+            {},
+            finish_reason="tool_calls",
+        )
+        yield b"data: [DONE]\n\n"
+
+    chunks, exc = collect_until_canary_interrupt(
+        source,
+        canaries=canaries,
+    )
+
+    assert streamed_tool_arguments(
+        chunks,
+        index=0,
+    ) == "safe-"
+
+    serialized = b"".join(chunks).decode(
+        "utf-8",
+        "replace",
+    )
+
+    assert secret not in serialized
+    assert streamed_finish_reasons(chunks) == []
+    assert b"data: [DONE]" not in b"".join(chunks)
+
+    assert isinstance(
+        exc,
+        guard.StreamingIRQCanaryInterrupt,
+    )
+
+    assert exc.match == guard.CanaryMatch(
+        canary_id="tool-arg-hit",
+        tier=guard.CanaryTier.B,
+    )
+
+
+def test_cross_boundary_tool_argument_canary_preserves_safe_prefix():
+    secret = "ABCDEF"
+
+    canaries = make_canaries(
+        secret,
+        canary_id="tool-cross-boundary",
+    )
+
+    async def source(_body):
+        yield event(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call-cross",
+                        "type": "function",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": "safe-xxABC",
+                        },
+                    }
+                ]
+            }
+        )
+
+        yield event(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "function": {
+                            "arguments": "DEF-after",
+                        },
+                    }
+                ]
+            }
+        )
+
+    chunks, exc = collect_until_canary_interrupt(
+        source,
+        canaries=canaries,
+    )
+
+    assert streamed_tool_arguments(
+        chunks,
+        index=0,
+    ) == "safe-xx"
+
+    assert exc.match.canary_id == (
+        "tool-cross-boundary"
+    )
+
+
+def test_tool_argument_canary_state_is_isolated_by_tool_index():
+    secret = "ABCDEF"
+
+    canaries = make_canaries(secret)
+
+    async def source(_body):
+        yield event(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call-zero",
+                        "type": "function",
+                        "function": {
+                            "name": "tool_zero",
+                            "arguments": "ABC",
+                        },
+                    },
+                    {
+                        "index": 1,
+                        "id": "call-one",
+                        "type": "function",
+                        "function": {
+                            "name": "tool_one",
+                            "arguments": "DEF",
+                        },
+                    },
+                ]
+            }
+        )
+
+        yield event(
+            {},
+            finish_reason="tool_calls",
+        )
+        yield b"data: [DONE]\n\n"
+
+    chunks = collect(
+        source,
+        window=0,
+        maximum=0,
+        canaries=canaries,
+    )
+
+    assert streamed_tool_arguments(
+        chunks,
+        index=0,
+    ) == "ABC"
+
+    assert streamed_tool_arguments(
+        chunks,
+        index=1,
+    ) == "DEF"
+
+    assert streamed_finish_reasons(
+        chunks
+    ) == ["tool_calls"]
+
+
+def test_ordinary_failure_flushes_benign_tool_argument_tail():
+    secret = "UNSEEN-TOOL-CANARY"
+
+    canaries = make_canaries(secret)
+
+    class ExpectedFailure(RuntimeError):
+        pass
+
+    async def source(_body):
+        yield event(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call-failure",
+                        "type": "function",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": "benign-tail",
+                        },
+                    }
+                ]
+            }
+        )
+
+        raise ExpectedFailure(
+            "ordinary transport failure"
+        )
+
+    async def run():
+        chunks = []
+
+        try:
+            async for chunk in guard._guarded_stream(
+                source,
+                {},
+                quarantine_window=0,
+                quarantine_max_window=0,
+                canaries=canaries,
+            ):
+                chunks.append(chunk)
+        except ExpectedFailure as exc:
+            return chunks, exc
+
+        raise AssertionError(
+            "Expected ordinary failure"
+        )
+
+    chunks, exc = asyncio.run(run())
+
+    assert streamed_tool_arguments(
+        chunks,
+        index=0,
+    ) == "benign-tail"
+
+    assert str(exc) == "ordinary transport failure"
+
+
+def test_text_canary_preserves_prior_safe_tool_tail_but_blocks_current_tool():
+    secret = "TEXT-CANARY"
+
+    canaries = make_canaries(secret)
+
+    async def source(_body):
+        yield event(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call-prior",
+                        "type": "function",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": "benign-tool-args",
+                        },
+                    }
+                ]
+            }
+        )
+
+        yield event(
+            {
+                "content": "safe-" + secret,
+                "tool_calls": [
+                    {
+                        "index": 1,
+                        "id": "call-current",
+                        "type": "function",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": "same-event-tool",
+                        },
+                    }
+                ],
+            }
+        )
+
+    chunks, _exc = collect_until_canary_interrupt(
+        source,
+        canaries=canaries,
+    )
+
+    assert visible_text(chunks) == "safe-"
+
+    assert streamed_tool_arguments(
+        chunks,
+        index=0,
+    ) == "benign-tool-args"
+
+    assert 1 not in streamed_tool_indexes(chunks)

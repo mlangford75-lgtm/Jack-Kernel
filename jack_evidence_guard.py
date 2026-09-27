@@ -639,9 +639,13 @@ def _flush_event(
     canary_detectors: Optional[
         Dict[Tuple[int, str], StreamingCanaryDetector]
     ] = None,
+    tool_canary_detectors: Optional[
+        Dict[Tuple[int, int], StreamingCanaryDetector]
+    ] = None,
 ) -> Optional[bytes]:
     quarantines = quarantines or {}
     canary_detectors = canary_detectors or {}
+    tool_canary_detectors = tool_canary_detectors or {}
 
     keys = sorted(
         set(filters)
@@ -674,9 +678,12 @@ def _flush_event(
                 quarantine.feed(filtered_tail)
                 quarantine.flush()
 
+        for detector in tool_canary_detectors.values():
+            detector.flush_safe()
+
         return None
 
-    by_choice: Dict[int, Dict[str, str]] = {}
+    by_choice: Dict[int, Dict[str, Any]] = {}
 
     for key in keys:
         choice_index, field = key
@@ -713,6 +720,36 @@ def _flush_event(
                 choice_index,
                 {},
             )[field] = released
+
+    for (
+        choice_index,
+        tool_index,
+    ), detector in sorted(
+        tool_canary_detectors.items()
+    ):
+        tail = detector.flush_safe()
+
+        if not tail:
+            continue
+
+        delta = by_choice.setdefault(
+            choice_index,
+            {},
+        )
+
+        tool_calls = delta.setdefault(
+            "tool_calls",
+            [],
+        )
+
+        tool_calls.append(
+            {
+                "index": tool_index,
+                "function": {
+                    "arguments": tail,
+                },
+            }
+        )
 
     if not by_choice:
         return None
@@ -773,6 +810,11 @@ async def _guarded_stream(
         StreamingCanaryDetector,
     ] = {}
 
+    tool_canary_detectors: Dict[
+        Tuple[int, int],
+        StreamingCanaryDetector,
+    ] = {}
+
     last_template: Optional[Dict[str, Any]] = None
     done_seen = False
 
@@ -800,6 +842,7 @@ async def _guarded_stream(
                     filters,
                     quarantines,
                     canary_detectors,
+                    tool_canary_detectors,
                 )
 
                 if flushed is not None:
@@ -829,6 +872,8 @@ async def _guarded_stream(
 
             field_entries = []
             detections = []
+            tool_argument_entries = []
+            tool_detections = []
 
             # ------------------------------------------------
             # Canary inspection is performed on RAW textual
@@ -910,13 +955,132 @@ async def _guarded_stream(
                     )
 
             # ------------------------------------------------
+            # Tool-call arguments are an independent streamed
+            # model-output channel. They are keyed exactly as
+            # Jack reconstructs them: choice index + tool index.
+            #
+            # Do this only after textual fields prove this event
+            # has no text Canary. A text-violating event retains
+            # Jack's existing same-chunk tool release barrier.
+            # ------------------------------------------------
+            if canary_enabled and not detections:
+                stop_tool_scan = False
+
+                for ordinal, choice in enumerate(choices):
+                    if not isinstance(choice, dict):
+                        continue
+
+                    raw_index = choice.get(
+                        "index",
+                        ordinal,
+                    )
+
+                    try:
+                        choice_index = int(raw_index)
+                    except (TypeError, ValueError):
+                        choice_index = ordinal
+
+                    delta = choice.get("delta")
+
+                    if not isinstance(delta, dict):
+                        continue
+
+                    tool_calls = delta.get("tool_calls")
+
+                    if not isinstance(tool_calls, list):
+                        continue
+
+                    for tool_order, call in enumerate(
+                        tool_calls
+                    ):
+                        if not isinstance(call, dict):
+                            continue
+
+                        raw_tool_index = call.get(
+                            "index",
+                            0,
+                        )
+
+                        try:
+                            tool_index = int(
+                                raw_tool_index
+                            )
+                        except (TypeError, ValueError):
+                            tool_index = 0
+
+                        function = call.get("function")
+
+                        if not isinstance(function, dict):
+                            continue
+
+                        arguments = function.get(
+                            "arguments"
+                        )
+
+                        # OpenAI streaming function arguments are
+                        # string fragments. Do not stringify or
+                        # reinterpret non-string protocol values.
+                        if not isinstance(arguments, str):
+                            continue
+
+                        key = (
+                            choice_index,
+                            tool_index,
+                        )
+
+                        detector = (
+                            tool_canary_detectors.setdefault(
+                                key,
+                                StreamingCanaryDetector(
+                                    canaries
+                                ),
+                            )
+                        )
+
+                        (
+                            raw_released,
+                            detection,
+                        ) = detector.feed_guarded(
+                            arguments
+                        )
+
+                        tool_argument_entries.append(
+                            (
+                                choice_index,
+                                tool_index,
+                                call,
+                                arguments,
+                                raw_released,
+                            )
+                        )
+
+                        if detection is not None:
+                            tool_detections.append(
+                                (
+                                    ordinal,
+                                    tool_order,
+                                    choice_index,
+                                    tool_index,
+                                    detection,
+                                )
+                            )
+
+                            # No later material in this event is
+                            # needed to establish the violation.
+                            stop_tool_scan = True
+                            break
+
+                    if stop_tool_scan:
+                        break
+
+            # ------------------------------------------------
             # HARD CANARY INTERRUPT
             #
             # Release only material proven to precede the
             # violating Canary. Do not release normal terminal
             # semantics or other consequential delta material.
             # ------------------------------------------------
-            if detections:
+            if detections or tool_detections:
                 detected_keys = {
                     (
                         choice_index,
@@ -929,6 +1093,20 @@ async def _guarded_stream(
                         field,
                         _detection,
                     ) in detections
+                }
+
+                detected_tool_keys = {
+                    (
+                        choice_index,
+                        tool_index,
+                    )
+                    for (
+                        _ordinal,
+                        _tool_order,
+                        choice_index,
+                        tool_index,
+                        _detection,
+                    ) in tool_detections
                 }
 
                 raw_safe: Dict[
@@ -969,9 +1147,75 @@ async def _guarded_stream(
                         + detector.flush_safe()
                     )
 
+                safe_tool_calls: Dict[
+                    int,
+                    list,
+                ] = {}
+
+                if tool_detections:
+                    for (
+                        choice_index,
+                        _tool_index,
+                        call,
+                        _original_arguments,
+                        raw_released,
+                    ) in tool_argument_entries:
+                        safe_call = dict(call)
+                        safe_function = safe_call.get(
+                            "function"
+                        )
+
+                        if isinstance(
+                            safe_function,
+                            dict,
+                        ):
+                            safe_function = dict(
+                                safe_function
+                            )
+                            safe_function[
+                                "arguments"
+                            ] = raw_released
+                            safe_call[
+                                "function"
+                            ] = safe_function
+
+                        safe_tool_calls.setdefault(
+                            choice_index,
+                            [],
+                        ).append(safe_call)
+
+                for key, detector in (
+                    tool_canary_detectors.items()
+                ):
+                    if key in detected_tool_keys:
+                        detector.flush()
+                        continue
+
+                    tail = detector.flush_safe()
+
+                    if not tail:
+                        continue
+
+                    (
+                        choice_index,
+                        tool_index,
+                    ) = key
+
+                    safe_tool_calls.setdefault(
+                        choice_index,
+                        [],
+                    ).append(
+                        {
+                            "index": tool_index,
+                            "function": {
+                                "arguments": tail,
+                            },
+                        }
+                    )
+
                 by_choice: Dict[
                     int,
-                    Dict[str, str],
+                    Dict[str, Any],
                 ] = {}
 
                 keys = sorted(
@@ -1051,6 +1295,18 @@ async def _guarded_stream(
                             {},
                         )[field] = released
 
+                for (
+                    choice_index,
+                    calls,
+                ) in sorted(
+                    safe_tool_calls.items()
+                ):
+                    if calls:
+                        by_choice.setdefault(
+                            choice_index,
+                            {},
+                        )["tool_calls"] = calls
+
                 if by_choice:
                     safe_choices = [
                         {
@@ -1070,15 +1326,26 @@ async def _guarded_stream(
                         }
                     )
 
-                primary = sorted(
-                    detections,
-                    key=lambda item: (
-                        item[0],
-                        item[1],
-                        item[2],
-                        item[3],
-                    ),
-                )[0][4]
+                if detections:
+                    primary = sorted(
+                        detections,
+                        key=lambda item: (
+                            item[0],
+                            item[1],
+                            item[2],
+                            item[3],
+                        ),
+                    )[0][4]
+                else:
+                    primary = sorted(
+                        tool_detections,
+                        key=lambda item: (
+                            item[0],
+                            item[1],
+                            item[2],
+                            item[3],
+                        ),
+                    )[0][4]
 
                 raise StreamingIRQCanaryInterrupt(
                     primary.match
@@ -1130,6 +1397,23 @@ async def _guarded_stream(
                     changed = True
 
                 delta[field] = released
+
+            for (
+                _choice_index,
+                _tool_index,
+                call,
+                original_arguments,
+                raw_released,
+            ) in tool_argument_entries:
+                function = call.get("function")
+
+                if not isinstance(function, dict):
+                    continue
+
+                if raw_released != original_arguments:
+                    changed = True
+
+                function["arguments"] = raw_released
 
             # ------------------------------------------------
             # NORMAL FINISH
@@ -1223,6 +1507,36 @@ async def _guarded_stream(
                         )
                         changed = True
 
+                for (
+                    tool_choice_index,
+                    tool_index,
+                ), detector in sorted(
+                    tool_canary_detectors.items()
+                ):
+                    if tool_choice_index != choice_index:
+                        continue
+
+                    tail = detector.flush_safe()
+
+                    if not tail:
+                        continue
+
+                    tool_calls = delta.get("tool_calls")
+
+                    if not isinstance(tool_calls, list):
+                        tool_calls = []
+                        delta["tool_calls"] = tool_calls
+
+                    tool_calls.append(
+                        {
+                            "index": tool_index,
+                            "function": {
+                                "arguments": tail,
+                            },
+                        }
+                    )
+                    changed = True
+
             yield (
                 _encode_sse_object(obj)
                 if changed
@@ -1244,6 +1558,7 @@ async def _guarded_stream(
             filters,
             quarantines,
             canary_detectors,
+            tool_canary_detectors,
         )
 
         if flushed is not None:
@@ -1257,6 +1572,7 @@ async def _guarded_stream(
             filters,
             quarantines,
             canary_detectors,
+            tool_canary_detectors,
         )
 
         if flushed is not None:
