@@ -77,6 +77,10 @@ class StreamingIRQHardInterrupt(RuntimeError):
     """Internal signal that forbids release of the current quarantine tail."""
 
 
+class StreamingIRQProtocolError(RuntimeError):
+    """Ordinary stream-protocol failure at the guarded release boundary."""
+
+
 class CanaryTier(str, Enum):
     """Deterministic canary ownership tier."""
 
@@ -1005,6 +1009,14 @@ async def _guarded_stream(
             obj = _parse_sse_object(chunk)
 
             if obj is None:
+                if text.strip().startswith("data:"):
+                    raise StreamingIRQProtocolError(
+                        "Malformed model stream SSE data frame"
+                    )
+
+                # SSE comments / keepalives and other non-data control
+                # material carry no model textual payload and remain
+                # transparent to the guarded release boundary.
                 yield chunk
                 continue
 
