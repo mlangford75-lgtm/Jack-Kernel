@@ -87,6 +87,7 @@ import time
 import uuid
 from pathlib import Path
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from typing import Any, AsyncIterator, Dict, Iterable, List, Optional, Tuple
 
 import httpx
@@ -95,6 +96,35 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 PUBLIC_VERSION = "v.0.1.1"
 CONFIG_SCHEMA_VERSION = 1
+
+
+# ---------------------------------------------------------------------------
+# Deterministic security outcomes
+# ---------------------------------------------------------------------------
+
+
+class SecurityOutcome(str, Enum):
+    """Host-authoritative outcome of a deterministic security decision."""
+
+    ALLOW = "ALLOW"
+    DENY_AND_CONTINUE = "DENY_AND_CONTINUE"
+    REQUIRE_USER_DECISION = "REQUIRE_USER_DECISION"
+    HARD_INTERRUPT = "HARD_INTERRUPT"
+
+
+# These outcomes do not themselves perform cancellation, state destruction,
+# connection teardown, or any other consequence. Enforcement belongs to the
+# security mechanism that owns the affected boundary.
+NON_HARD_SECURITY_OUTCOMES = frozenset({
+    SecurityOutcome.ALLOW,
+    SecurityOutcome.DENY_AND_CONTINUE,
+    SecurityOutcome.REQUIRE_USER_DECISION,
+})
+
+
+def is_hard_security_outcome(outcome: SecurityOutcome) -> bool:
+    """Return True only for the explicit hard-security outcome."""
+    return outcome is SecurityOutcome.HARD_INTERRUPT
 
 
 # ---------------------------------------------------------------------------
