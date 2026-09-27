@@ -123,6 +123,20 @@ class CanaryMatch:
     tier: CanaryTier
 
 
+class StreamingIRQCanaryInterrupt(StreamingIRQHardInterrupt):
+    """Hard interrupt carrying only safe structured Canary metadata."""
+
+    def __init__(self, match: CanaryMatch) -> None:
+        if not isinstance(match, CanaryMatch):
+            raise TypeError("match must be a CanaryMatch")
+
+        self.match = match
+
+        # Keep the externally visible exception text generic. Structured
+        # identity remains available to trusted Kernel-side consumers.
+        super().__init__("StreamingIRQ Canary match")
+
+
 @dataclass(frozen=True)
 class CanaryDetection:
     """Safe stream-location metadata for one deterministic Canary match."""
@@ -283,6 +297,64 @@ class StreamingCanaryDetector:
             self._carry = data[-window:]
 
         return None
+
+    def feed_guarded(
+        self,
+        text: Any,
+    ) -> Tuple[str, Optional[CanaryDetection]]:
+        """Release only raw text proven safe against the configured canaries."""
+
+        incoming = "" if text is None else str(text)
+        prior_carry_length = len(self._carry)
+        data = self._carry + incoming
+
+        found = self.canaries._find_with_position(data)
+
+        if found is not None:
+            match, start = found
+            safe_prefix = data[:start]
+
+            # The remainder begins at the matched Canary. It is intentionally
+            # not returned and is not retained after the hard-stop decision.
+            self._carry = ""
+
+            return (
+                safe_prefix,
+                CanaryDetection(
+                    match=match,
+                    buffered_prefix_length=start,
+                    current_prefix_length=max(
+                        0,
+                        start - prior_carry_length,
+                    ),
+                    overlaps_prior_carry=(
+                        start < prior_carry_length
+                    ),
+                ),
+            )
+
+        window = self.canaries.required_window
+
+        if window == 0:
+            self._carry = ""
+            return data, None
+
+        if len(data) <= window:
+            self._carry = data
+            return "", None
+
+        release_length = len(data) - window
+        released = data[:release_length]
+        self._carry = data[release_length:]
+
+        return released, None
+
+    def flush_safe(self) -> str:
+        """Release benign detector carry when the stream ends normally."""
+
+        tail = self._carry
+        self._carry = ""
+        return tail
 
     def feed(self, text: Any) -> Optional[CanaryMatch]:
         detection = self.feed_detection(text)
@@ -454,48 +526,102 @@ def _flush_event(
     quarantines: Optional[
         Dict[Tuple[int, str], StreamingIRQTextQuarantine]
     ] = None,
+    canary_detectors: Optional[
+        Dict[Tuple[int, str], StreamingCanaryDetector]
+    ] = None,
 ) -> Optional[bytes]:
     quarantines = quarantines or {}
+    canary_detectors = canary_detectors or {}
 
-    keys = sorted(set(filters) | set(quarantines))
+    keys = sorted(
+        set(filters)
+        | set(quarantines)
+        | set(canary_detectors)
+    )
 
     if not template:
         for key in keys:
+            detector = canary_detectors.get(key)
             filt = filters.get(key)
             quarantine = quarantines.get(key)
 
-            filtered_tail = filt.flush() if filt is not None else ""
+            raw_tail = (
+                detector.flush_safe()
+                if detector is not None
+                else ""
+            )
+
+            filtered_tail = ""
+
+            if filt is not None:
+                if raw_tail:
+                    filtered_tail += filt.feed(raw_tail)
+                filtered_tail += filt.flush()
+            else:
+                filtered_tail = raw_tail
 
             if quarantine is not None:
                 quarantine.feed(filtered_tail)
                 quarantine.flush()
+
         return None
 
     by_choice: Dict[int, Dict[str, str]] = {}
 
     for key in keys:
         choice_index, field = key
+
+        detector = canary_detectors.get(key)
         filt = filters.get(key)
         quarantine = quarantines.get(key)
 
-        filtered_tail = filt.flush() if filt is not None else ""
+        raw_tail = (
+            detector.flush_safe()
+            if detector is not None
+            else ""
+        )
+
+        filtered_tail = ""
+
+        if filt is not None:
+            if raw_tail:
+                filtered_tail += filt.feed(raw_tail)
+            filtered_tail += filt.flush()
+        else:
+            filtered_tail = raw_tail
 
         if quarantine is not None:
-            released = quarantine.feed(filtered_tail) + quarantine.flush()
+            released = (
+                quarantine.feed(filtered_tail)
+                + quarantine.flush()
+            )
         else:
             released = filtered_tail
 
         if released:
-            by_choice.setdefault(choice_index, {})[field] = released
+            by_choice.setdefault(
+                choice_index,
+                {},
+            )[field] = released
 
     if not by_choice:
         return None
 
     choices = [
-        {"index": index, "delta": delta, "finish_reason": None}
+        {
+            "index": index,
+            "delta": delta,
+            "finish_reason": None,
+        }
         for index, delta in sorted(by_choice.items())
     ]
-    return _encode_sse_object({**template, "choices": choices})
+
+    return _encode_sse_object(
+        {
+            **template,
+            "choices": choices,
+        }
+    )
 
 
 async def _guarded_stream(
@@ -504,136 +630,515 @@ async def _guarded_stream(
     *,
     quarantine_window: int = 0,
     quarantine_max_window: int = 0,
+    canaries: Optional[DeterministicCanarySet] = None,
 ) -> AsyncIterator[bytes]:
-    filters: Dict[Tuple[int, str], ReservedEvidenceMarkerFilter] = {}
-    quarantines: Dict[
-        Tuple[int, str], StreamingIRQTextQuarantine
+    if (
+        canaries is not None
+        and not isinstance(
+            canaries,
+            DeterministicCanarySet,
+        )
+    ):
+        raise TypeError(
+            "canaries must be a DeterministicCanarySet"
+        )
+
+    canary_enabled = (
+        canaries is not None
+        and canaries.count > 0
+    )
+
+    filters: Dict[
+        Tuple[int, str],
+        ReservedEvidenceMarkerFilter,
     ] = {}
+
+    quarantines: Dict[
+        Tuple[int, str],
+        StreamingIRQTextQuarantine,
+    ] = {}
+
+    canary_detectors: Dict[
+        Tuple[int, str],
+        StreamingCanaryDetector,
+    ] = {}
+
     last_template: Optional[Dict[str, Any]] = None
     done_seen = False
 
+    text_fields = (
+        "content",
+        "reasoning_content",
+        "reasoning",
+        "thinking",
+    )
+
     try:
         async for chunk in original_stream(request_body):
-            text = chunk.decode("utf-8", "replace") if isinstance(chunk, (bytes, bytearray)) else str(chunk)
+            text = (
+                chunk.decode("utf-8", "replace")
+                if isinstance(
+                    chunk,
+                    (bytes, bytearray),
+                )
+                else str(chunk)
+            )
+
             if text.strip() == "data: [DONE]":
                 flushed = _flush_event(
                     last_template,
                     filters,
                     quarantines,
+                    canary_detectors,
                 )
+
                 if flushed is not None:
                     yield flushed
+
                 done_seen = True
                 yield chunk
                 continue
 
             obj = _parse_sse_object(chunk)
+
             if obj is None:
                 yield chunk
                 continue
 
             choices = obj.get("choices")
-            if not isinstance(choices, list) or not choices:
+
+            if (
+                not isinstance(choices, list)
+                or not choices
+            ):
                 yield chunk
                 continue
 
             last_template = _chat_chunk_template(obj)
             changed = False
+
+            field_entries = []
+            detections = []
+
+            # ------------------------------------------------
+            # Canary inspection is performed on RAW textual
+            # deltas before evidence rewriting.
+            # ------------------------------------------------
             for ordinal, choice in enumerate(choices):
                 if not isinstance(choice, dict):
                     continue
-                raw_index = choice.get("index", ordinal)
+
+                raw_index = choice.get(
+                    "index",
+                    ordinal,
+                )
+
                 try:
                     choice_index = int(raw_index)
                 except (TypeError, ValueError):
                     choice_index = ordinal
 
                 delta = choice.get("delta")
+
                 if not isinstance(delta, dict):
                     continue
 
-                text_fields = (
-                    "content",
-                    "reasoning_content",
-                    "reasoning",
-                    "thinking",
-                )
-
-                for field in text_fields:
-                    if field not in delta or delta.get(field) is None:
+                for field_order, field in enumerate(
+                    text_fields
+                ):
+                    if (
+                        field not in delta
+                        or delta.get(field) is None
+                    ):
                         continue
 
-                    key = (choice_index, field)
-                    filt = filters.setdefault(
-                        key,
-                        ReservedEvidenceMarkerFilter(),
-                    )
-                    quarantine = quarantines.setdefault(
-                        key,
-                        StreamingIRQTextQuarantine(
-                            window_size=quarantine_window,
-                            max_window=quarantine_max_window,
-                        ),
+                    key = (
+                        choice_index,
+                        field,
                     )
 
                     original_value = delta.get(field)
-                    filtered = filt.feed(original_value)
-                    released = quarantine.feed(filtered)
 
-                    if released != original_value:
-                        changed = True
-
-                    delta[field] = released
-
-                if choice.get("finish_reason") is not None:
-                    for field in text_fields:
-                        key = (choice_index, field)
-
-                        filt = filters.get(key)
-                        quarantine = quarantines.get(key)
-
-                        if filt is None and quarantine is None:
-                            continue
-
-                        filtered_tail = (
-                            filt.flush()
-                            if filt is not None
-                            else ""
+                    if canary_enabled:
+                        detector = (
+                            canary_detectors.setdefault(
+                                key,
+                                StreamingCanaryDetector(
+                                    canaries
+                                ),
+                            )
                         )
 
-                        if quarantine is not None:
-                            tail = (
-                                quarantine.feed(filtered_tail)
-                                + quarantine.flush()
-                            )
-                        else:
-                            tail = filtered_tail
+                        (
+                            raw_released,
+                            detection,
+                        ) = detector.feed_guarded(
+                            original_value
+                        )
 
-                        if tail:
-                            delta[field] = (
-                                str(delta.get(field) or "")
-                                + tail
+                        if detection is not None:
+                            detections.append(
+                                (
+                                    ordinal,
+                                    field_order,
+                                    choice_index,
+                                    field,
+                                    detection,
+                                )
                             )
-                            changed = True
+                    else:
+                        raw_released = original_value
 
-            yield _encode_sse_object(obj) if changed else chunk
+                    field_entries.append(
+                        (
+                            choice_index,
+                            field,
+                            delta,
+                            original_value,
+                            raw_released,
+                        )
+                    )
+
+            # ------------------------------------------------
+            # HARD CANARY INTERRUPT
+            #
+            # Release only material proven to precede the
+            # violating Canary. Do not release normal terminal
+            # semantics or other consequential delta material.
+            # ------------------------------------------------
+            if detections:
+                detected_keys = {
+                    (
+                        choice_index,
+                        field,
+                    )
+                    for (
+                        _ordinal,
+                        _field_order,
+                        choice_index,
+                        field,
+                        _detection,
+                    ) in detections
+                }
+
+                raw_safe: Dict[
+                    Tuple[int, str],
+                    str,
+                ] = {}
+
+                for (
+                    choice_index,
+                    field,
+                    _delta,
+                    _original_value,
+                    raw_released,
+                ) in field_entries:
+                    key = (
+                        choice_index,
+                        field,
+                    )
+
+                    raw_safe[key] = (
+                        raw_safe.get(key, "")
+                        + str(raw_released or "")
+                    )
+
+                # A hard Canary match terminates this stream.
+                # Other textual fields therefore have no future
+                # continuation and their benign look-behind may
+                # be finalized safely.
+                for key, detector in (
+                    canary_detectors.items()
+                ):
+                    if key in detected_keys:
+                        detector.flush()
+                        continue
+
+                    raw_safe[key] = (
+                        raw_safe.get(key, "")
+                        + detector.flush_safe()
+                    )
+
+                by_choice: Dict[
+                    int,
+                    Dict[str, str],
+                ] = {}
+
+                keys = sorted(
+                    set(raw_safe)
+                    | set(filters)
+                    | set(quarantines)
+                )
+
+                for key in keys:
+                    choice_index, field = key
+                    raw_piece = raw_safe.get(
+                        key,
+                        "",
+                    )
+
+                    filt = filters.get(key)
+
+                    if (
+                        filt is None
+                        and raw_piece
+                    ):
+                        filt = filters.setdefault(
+                            key,
+                            ReservedEvidenceMarkerFilter(),
+                        )
+
+                    filtered = ""
+
+                    if filt is not None:
+                        if raw_piece:
+                            filtered += filt.feed(
+                                raw_piece
+                            )
+
+                        # The safe prefix is final because this
+                        # stream is about to hard-interrupt.
+                        filtered += filt.flush()
+                    else:
+                        filtered = raw_piece
+
+                    quarantine = quarantines.get(
+                        key
+                    )
+
+                    if (
+                        quarantine is None
+                        and (
+                            filtered
+                            or key in raw_safe
+                        )
+                    ):
+                        quarantine = (
+                            quarantines.setdefault(
+                                key,
+                                StreamingIRQTextQuarantine(
+                                    window_size=(
+                                        quarantine_window
+                                    ),
+                                    max_window=(
+                                        quarantine_max_window
+                                    ),
+                                ),
+                            )
+                        )
+
+                    if quarantine is not None:
+                        released = (
+                            quarantine.feed(filtered)
+                            + quarantine.flush()
+                        )
+                    else:
+                        released = filtered
+
+                    if released:
+                        by_choice.setdefault(
+                            choice_index,
+                            {},
+                        )[field] = released
+
+                if by_choice:
+                    safe_choices = [
+                        {
+                            "index": index,
+                            "delta": delta,
+                            "finish_reason": None,
+                        }
+                        for index, delta in sorted(
+                            by_choice.items()
+                        )
+                    ]
+
+                    yield _encode_sse_object(
+                        {
+                            **last_template,
+                            "choices": safe_choices,
+                        }
+                    )
+
+                primary = sorted(
+                    detections,
+                    key=lambda item: (
+                        item[0],
+                        item[1],
+                        item[2],
+                        item[3],
+                    ),
+                )[0][4]
+
+                raise StreamingIRQCanaryInterrupt(
+                    primary.match
+                )
+
+            # ------------------------------------------------
+            # NORMAL SAFE RELEASE
+            # ------------------------------------------------
+            for (
+                choice_index,
+                field,
+                delta,
+                original_value,
+                raw_released,
+            ) in field_entries:
+                key = (
+                    choice_index,
+                    field,
+                )
+
+                filt = filters.setdefault(
+                    key,
+                    ReservedEvidenceMarkerFilter(),
+                )
+
+                quarantine = (
+                    quarantines.setdefault(
+                        key,
+                        StreamingIRQTextQuarantine(
+                            window_size=(
+                                quarantine_window
+                            ),
+                            max_window=(
+                                quarantine_max_window
+                            ),
+                        ),
+                    )
+                )
+
+                filtered = filt.feed(
+                    raw_released
+                )
+
+                released = quarantine.feed(
+                    filtered
+                )
+
+                if released != original_value:
+                    changed = True
+
+                delta[field] = released
+
+            # ------------------------------------------------
+            # NORMAL FINISH
+            #
+            # No future text will extend these fields, so benign
+            # Canary look-behind can now be finalized.
+            # ------------------------------------------------
+            for ordinal, choice in enumerate(choices):
+                if not isinstance(choice, dict):
+                    continue
+
+                if choice.get(
+                    "finish_reason"
+                ) is None:
+                    continue
+
+                raw_index = choice.get(
+                    "index",
+                    ordinal,
+                )
+
+                try:
+                    choice_index = int(raw_index)
+                except (TypeError, ValueError):
+                    choice_index = ordinal
+
+                delta = choice.get("delta")
+
+                if not isinstance(delta, dict):
+                    continue
+
+                for field in text_fields:
+                    key = (
+                        choice_index,
+                        field,
+                    )
+
+                    detector = (
+                        canary_detectors.get(key)
+                    )
+
+                    filt = filters.get(key)
+                    quarantine = quarantines.get(
+                        key
+                    )
+
+                    if (
+                        detector is None
+                        and filt is None
+                        and quarantine is None
+                    ):
+                        continue
+
+                    raw_tail = (
+                        detector.flush_safe()
+                        if detector is not None
+                        else ""
+                    )
+
+                    filtered_tail = ""
+
+                    if filt is not None:
+                        if raw_tail:
+                            filtered_tail += (
+                                filt.feed(raw_tail)
+                            )
+
+                        filtered_tail += (
+                            filt.flush()
+                        )
+                    else:
+                        filtered_tail = raw_tail
+
+                    if quarantine is not None:
+                        tail = (
+                            quarantine.feed(
+                                filtered_tail
+                            )
+                            + quarantine.flush()
+                        )
+                    else:
+                        tail = filtered_tail
+
+                    if tail:
+                        delta[field] = (
+                            str(
+                                delta.get(field)
+                                or ""
+                            )
+                            + tail
+                        )
+                        changed = True
+
+            yield (
+                _encode_sse_object(obj)
+                if changed
+                else chunk
+            )
 
     except StreamingIRQHardInterrupt:
-        # A confirmed hard security interruption must not release the held
-        # quarantine tail. The already released safe prefix remains intact.
+        # A confirmed hard security interruption must not release
+        # any remaining affected quarantine state.
         raise
 
     except Exception:
-        # Ordinary transport/stage failure is not itself a security violation.
-        # Preserve every deterministically safe unreleased character before
-        # allowing Jack's existing outer failure handling to run.
+        # Ordinary transport/stage failure is not itself a
+        # security violation. Preserve deterministically safe
+        # unreleased work before Jack's existing outer failure
+        # handling runs.
         flushed = _flush_event(
             last_template,
             filters,
             quarantines,
+            canary_detectors,
         )
+
         if flushed is not None:
             yield flushed
+
         raise
 
     if not done_seen:
@@ -641,7 +1146,9 @@ async def _guarded_stream(
             last_template,
             filters,
             quarantines,
+            canary_detectors,
         )
+
         if flushed is not None:
             yield flushed
 

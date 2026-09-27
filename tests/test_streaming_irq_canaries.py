@@ -502,3 +502,116 @@ def test_existing_feed_api_still_returns_only_canary_match():
         canary_id="api-compat",
         tier=guard.CanaryTier.C,
     )
+
+
+def test_feed_guarded_releases_only_text_older_than_required_window():
+    canaries = guard.DeterministicCanarySet(
+        [
+            pattern(
+                "gate-window",
+                guard.CanaryTier.A,
+                "ABCDEF",
+            )
+        ],
+        max_window=32,
+    )
+
+    detector = guard.StreamingCanaryDetector(
+        canaries
+    )
+
+    released, detection = detector.feed_guarded(
+        "safe-xxABC"
+    )
+
+    assert released == "safe-"
+    assert detection is None
+    assert detector.held_length == len("xxABC")
+
+
+def test_feed_guarded_cross_boundary_match_returns_safe_buffered_prefix():
+    canaries = guard.DeterministicCanarySet(
+        [
+            pattern(
+                "gate-cross",
+                guard.CanaryTier.A,
+                "ABCDEF",
+            )
+        ],
+        max_window=32,
+    )
+
+    detector = guard.StreamingCanaryDetector(
+        canaries
+    )
+
+    released, detection = detector.feed_guarded(
+        "safe-xxABC"
+    )
+
+    assert released == "safe-"
+    assert detection is None
+
+    released, detection = detector.feed_guarded(
+        "DEF-after"
+    )
+
+    assert released == "xx"
+    assert detection is not None
+    assert detection.buffered_prefix_length == 2
+    assert detector.held_length == 0
+
+
+def test_flush_safe_releases_only_benign_detector_carry():
+    canaries = guard.DeterministicCanarySet(
+        [
+            pattern(
+                "gate-flush",
+                guard.CanaryTier.C,
+                "ABCDEFGHIJ",
+            )
+        ],
+        max_window=32,
+    )
+
+    detector = guard.StreamingCanaryDetector(
+        canaries
+    )
+
+    released, detection = detector.feed_guarded(
+        "benign"
+    )
+
+    assert released == ""
+    assert detection is None
+
+    assert detector.flush_safe() == "benign"
+    assert detector.held_length == 0
+
+
+def test_canary_interrupt_carries_safe_structured_metadata_only():
+    secret = "NEVER-IN-EXCEPTION"
+
+    match = guard.CanaryMatch(
+        canary_id="opaque-tripwire-17",
+        tier=guard.CanaryTier.B,
+    )
+
+    exc = guard.StreamingIRQCanaryInterrupt(
+        match
+    )
+
+    assert isinstance(
+        exc,
+        guard.StreamingIRQHardInterrupt,
+    )
+
+    assert exc.match == match
+
+    assert str(exc) == "StreamingIRQ Canary match"
+
+    rendered = repr(exc)
+
+    assert secret not in rendered
+    assert "opaque-tripwire-17" not in str(exc)
+    assert "tier=B" not in str(exc)
