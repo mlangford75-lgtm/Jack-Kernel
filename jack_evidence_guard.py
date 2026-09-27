@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
-from typing import Any, AsyncIterator, Dict, Optional, Tuple
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, AsyncIterator, Dict, Iterable, Optional, Tuple
 
 
 PROVENANCE_VERSION = 1
@@ -73,6 +75,176 @@ class StreamingIRQTextQuarantine:
 
 class StreamingIRQHardInterrupt(RuntimeError):
     """Internal signal that forbids release of the current quarantine tail."""
+
+
+class CanaryTier(str, Enum):
+    """Deterministic canary ownership tier."""
+
+    A = "A"
+    B = "B"
+    C = "C"
+
+
+_CANARY_ID_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyz"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "0123456789._:-"
+)
+
+
+@dataclass(frozen=True)
+class CanaryPattern:
+    """One exact-match canary without exposing its value through repr()."""
+
+    canary_id: str
+    tier: CanaryTier
+    value: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.canary_id, str):
+            raise TypeError("canary_id must be a string")
+        if not self.canary_id or len(self.canary_id) > 128:
+            raise ValueError("canary_id length is invalid")
+        if any(ch not in _CANARY_ID_CHARS for ch in self.canary_id):
+            raise ValueError("canary_id contains unsupported characters")
+        if not isinstance(self.tier, CanaryTier):
+            raise TypeError("tier must be a CanaryTier")
+        if not isinstance(self.value, str):
+            raise TypeError("canary value must be a string")
+        if not self.value:
+            raise ValueError("canary value must not be empty")
+
+
+@dataclass(frozen=True)
+class CanaryMatch:
+    """Safe metadata describing a deterministic canary match."""
+
+    canary_id: str
+    tier: CanaryTier
+
+
+class DeterministicCanarySet:
+    """Immutable exact-match canary set with a bounded look-behind contract."""
+
+    def __init__(
+        self,
+        patterns: Iterable[CanaryPattern],
+        *,
+        max_window: int,
+    ) -> None:
+        if isinstance(max_window, bool) or not isinstance(max_window, int):
+            raise TypeError("max_window must be an integer")
+        if max_window < 0:
+            raise ValueError("max_window must be >= 0")
+
+        materialized = tuple(patterns)
+
+        for pattern in materialized:
+            if not isinstance(pattern, CanaryPattern):
+                raise TypeError(
+                    "patterns must contain CanaryPattern instances"
+                )
+
+        ids = set()
+        values = set()
+
+        for pattern in materialized:
+            if pattern.canary_id in ids:
+                raise ValueError("duplicate canary_id")
+            if pattern.value in values:
+                raise ValueError("duplicate canary value")
+            ids.add(pattern.canary_id)
+            values.add(pattern.value)
+
+        required_window = max(
+            (len(pattern.value) - 1 for pattern in materialized),
+            default=0,
+        )
+
+        if required_window > max_window:
+            raise ValueError(
+                "configured canary exceeds quarantine hard ceiling"
+            )
+
+        self._patterns = tuple(
+            sorted(
+                materialized,
+                key=lambda pattern: (
+                    len(pattern.value),
+                    pattern.canary_id,
+                    pattern.tier.value,
+                ),
+            )
+        )
+        self.max_window = max_window
+        self.required_window = required_window
+
+    @property
+    def count(self) -> int:
+        return len(self._patterns)
+
+    def find(self, text: Any) -> Optional[CanaryMatch]:
+        data = "" if text is None else str(text)
+        best = None
+
+        for pattern in self._patterns:
+            index = data.find(pattern.value)
+            if index < 0:
+                continue
+
+            candidate_key = (
+                index,
+                len(pattern.value),
+                pattern.canary_id,
+            )
+
+            if best is None or candidate_key < best[0]:
+                best = (
+                    candidate_key,
+                    CanaryMatch(
+                        canary_id=pattern.canary_id,
+                        tier=pattern.tier,
+                    ),
+                )
+
+        return None if best is None else best[1]
+
+
+class StreamingCanaryDetector:
+    """Chunk-boundary-invariant literal detector for one immutable canary set."""
+
+    def __init__(self, canaries: DeterministicCanarySet) -> None:
+        if not isinstance(canaries, DeterministicCanarySet):
+            raise TypeError(
+                "canaries must be a DeterministicCanarySet"
+            )
+        self.canaries = canaries
+        self._carry = ""
+
+    @property
+    def held_length(self) -> int:
+        return len(self._carry)
+
+    def feed(self, text: Any) -> Optional[CanaryMatch]:
+        data = self._carry + (
+            "" if text is None else str(text)
+        )
+
+        match = self.canaries.find(data)
+        if match is not None:
+            return match
+
+        window = self.canaries.required_window
+
+        if window == 0:
+            self._carry = ""
+        else:
+            self._carry = data[-window:]
+
+        return None
+
+    def flush(self) -> None:
+        self._carry = ""
 
 
 class ReservedEvidenceMarkerFilter:

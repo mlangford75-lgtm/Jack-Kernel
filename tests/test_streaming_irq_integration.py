@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import sys
 import json
 from pathlib import Path
 
@@ -13,6 +14,7 @@ spec = importlib.util.spec_from_file_location(
 )
 guard = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
+sys.modules[spec.name] = guard
 spec.loader.exec_module(guard)
 
 
