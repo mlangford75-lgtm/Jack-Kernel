@@ -70,7 +70,7 @@ def test_ambiguity_without_workspace_does_not_invent_restriction():
 
 
 def test_executor_identity_mismatch_is_admission_only():
-    d = decide(gate.ExecutorAdmissionIdentityFact(False, True, True))
+    d = decide(gate.ExecutorAdmissionIdentityFact(False, True))
     assert d.outcome is kernel.SecurityOutcome.DENY_AND_CONTINUE
     assert d.containment_scope is gate.ContainmentScope.EXECUTOR_ADMISSION
 
@@ -115,7 +115,7 @@ def test_conflicting_nonhard_outcomes_are_not_reordered():
 
 def test_different_nonhard_scopes_are_not_broadened():
     with pytest.raises(RuntimeError):
-        decide(gate.ToolSchemaFact(False), gate.ExecutorAdmissionIdentityFact(False, True, True))
+        decide(gate.ToolSchemaFact(False), gate.ExecutorAdmissionIdentityFact(False, True))
 
 
 def test_empty_gate_does_not_silently_allow():

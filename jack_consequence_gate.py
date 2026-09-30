@@ -53,9 +53,15 @@ class ToolSchemaFact:
 
 @dataclass(frozen=True)
 class ExecutorAdmissionIdentityFact:
+    """Live Phase-5 identity facts currently integrated at executor admission.
+
+    Exact pending tool-call correlation remains owned by the existing Phase-4
+    admission mechanism until its raw-fact seam is centralized without changing
+    validation order or blast radius.
+    """
+
     runtime_matches: bool
     lane_matches: bool
-    call_matches: bool = True
 
 
 @dataclass(frozen=True)
@@ -190,7 +196,7 @@ def _decision_for_fact(fact: AuthorityFact, *, boundary: ConsequenceBoundary, ou
         )
 
     if isinstance(fact, ExecutorAdmissionIdentityFact):
-        ok = fact.runtime_matches and fact.lane_matches and fact.call_matches
+        ok = fact.runtime_matches and fact.lane_matches
         return _single(fact, allow if ok else deny, ContainmentScope.NONE if ok else ContainmentScope.EXECUTOR_ADMISSION, not ok)
 
     if isinstance(fact, SettlementFact):
@@ -360,7 +366,7 @@ def install(jk: Any) -> None:
                 runtime_matches = str(payload.get("runtime_id") or "").strip() == str(getattr(jk, "RUNTIME_ID", ""))
                 lane_matches = str(payload.get("lane_id") or "").strip() == str(getattr(jk, "LANE_ID", ""))
                 decision = evaluator(
-                    (ExecutorAdmissionIdentityFact(runtime_matches=runtime_matches, lane_matches=lane_matches, call_matches=True),),
+                    (ExecutorAdmissionIdentityFact(runtime_matches=runtime_matches, lane_matches=lane_matches),),
                     boundary=ConsequenceBoundary.EXECUTOR_ADMISSION,
                 )
                 if decision.outcome is outcome_type.DENY_AND_CONTINUE:
