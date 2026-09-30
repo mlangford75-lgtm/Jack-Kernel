@@ -4,64 +4,272 @@ from dataclasses import dataclass
 from enum import Enum
 from functools import wraps
 from pathlib import Path
-from typing import Any, Iterable, Optional, Tuple
+from typing import Any, Iterable, Optional, Tuple, Union
 
 from jack_kernel import SecurityOutcome
 
 
-class ConsequenceFactKind(str, Enum):
-    """Deterministic authority domains Phase 5 is permitted to compose.
+class ContainmentScope(str, Enum):
+    """Smallest consequential boundary the Gate is allowed to contain."""
 
-    The enum is intentionally closed. Ordinary telemetry, UI state, logging
-    health, natural-language claims, and other observational data are not fact
-    kinds and therefore cannot enter disposition merely by naming themselves
-    authoritative.
-    """
-
-    STAGE_AUTHORITY = "stage_authority"
-    TOOL_AUTHORITY = "tool_authority"
-    TOOL_SCHEMA = "tool_schema"
-    TASK_AUTHORITY = "task_authority"
-    RUN_AUTHORITY = "run_authority"
-    RUN_EPOCH_AUTHORITY = "run_epoch_authority"
-    PATH_POLICY = "path_policy"
-    WORKSPACE_POLICY = "workspace_policy"
-    EVIDENCE_PROVENANCE = "evidence_provenance"
-    APPROVAL_STATE = "approval_state"
-    SETTLEMENT_STATE = "settlement_state"
-    SECURITY_HEALTH = "security_health"
+    NONE = "none"
+    TOOL_CALL = "tool_call"
+    TOOL_BATCH = "tool_batch"
     EXECUTOR_ADMISSION = "executor_admission"
+    OVERLAP_ADMISSION = "overlap_admission"
+    EVIDENCE_FRAGMENT = "evidence_fragment"
+    CONSEQUENCE = "consequence"
+
+
+class UnmappedAuthorityFact(RuntimeError):
+    """An authoritative fact exists, but Phase 5 has no justified mapping yet."""
 
 
 @dataclass(frozen=True)
-class ConsequenceFact:
-    """One already-established deterministic authority fact.
+class StageToolAuthorityFact:
+    authorized: bool
 
-    Phase 5 consumes this representation; it does not discover the fact or
-    reinterpret the producer's existing severity. Only the explicit authority
-    domains above are accepted by the shared gate.
+
+@dataclass(frozen=True)
+class ToolSchemaFact:
+    valid: bool
+    errors: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PathPolicyFact:
+    """Raw represented-path facts already established by path authority.
+
+    This is deliberately not constructed from a desired SecurityOutcome.  It is
+    the Gate contract for the future raw Phase-4 path seam: a positive NEVER
+    match, whether Workspace Lock exists, whether the represented target is
+    deterministic enough for that lock, and whether it is inside the workspace.
     """
 
-    kind: ConsequenceFactKind
-    outcome: SecurityOutcome
-    reason: str = ""
+    never_match: bool = False
+    workspace_configured: bool = False
+    deterministic: bool = True
+    inside_workspace: Optional[bool] = None
+
+
+@dataclass(frozen=True)
+class ExecutorAdmissionIdentityFact:
+    runtime_matches: bool
+    lane_matches: bool
+    call_matches: bool = True
+
+
+@dataclass(frozen=True)
+class SettlementFact:
+    run_open: bool
+    overlapping_admission_requested: bool
+
+
+@dataclass(frozen=True)
+class EvidenceProvenanceFact:
+    """Evidence fact without treating unknown provenance as a violation."""
+
+    origin_known: bool
+    forged_reserved_namespace: bool = False
+
+
+@dataclass(frozen=True)
+class ApprovalFact:
+    approval_required: bool
+    approval_valid: bool
+
+
+@dataclass(frozen=True)
+class LifecycleAuthorityFact:
+    """Current task/run/epoch identity facts.
+
+    Current Jack establishes these facts, but Phase 5 intentionally does not
+    guess a single severity for every possible lifecycle mismatch yet.
+    """
+
+    task_matches: bool
+    run_matches: bool
+    run_epoch_matches: bool
+
+
+AuthorityFact = Union[
+    StageToolAuthorityFact,
+    ToolSchemaFact,
+    PathPolicyFact,
+    ExecutorAdmissionIdentityFact,
+    SettlementFact,
+    EvidenceProvenanceFact,
+    ApprovalFact,
+    LifecycleAuthorityFact,
+]
+
+_AUTHORITY_FACT_TYPES = (
+    StageToolAuthorityFact,
+    ToolSchemaFact,
+    PathPolicyFact,
+    ExecutorAdmissionIdentityFact,
+    SettlementFact,
+    EvidenceProvenanceFact,
+    ApprovalFact,
+    LifecycleAuthorityFact,
+)
 
 
 @dataclass(frozen=True)
 class ConsequenceDecision:
     outcome: SecurityOutcome
-    decisive_fact: Optional[ConsequenceFact]
-    evaluated_kinds: Tuple[ConsequenceFactKind, ...]
+    containment_scope: ContainmentScope
+    decisive_fact: Optional[AuthorityFact]
+    evaluated_fact_types: Tuple[str, ...]
 
 
-def evaluate_consequence(facts: Iterable[ConsequenceFact]) -> ConsequenceDecision:
-    """Compose deterministic producer outcomes without inventing new facts.
+def _decision_for_fact(fact: AuthorityFact) -> ConsequenceDecision:
+    fact_name = type(fact).__name__
 
-    HARD_INTERRUPT is the only universally dominant outcome because an already
-    established hard-security fact may not be masked by a recoverable denial.
-    If authoritative producers disagree between distinct non-hard dispositions,
-    the gate surfaces the inconsistency instead of inventing a new precedence
-    rule for Phase 5.
+    if isinstance(fact, StageToolAuthorityFact):
+        if fact.authorized:
+            return ConsequenceDecision(
+                SecurityOutcome.ALLOW,
+                ContainmentScope.NONE,
+                None,
+                (fact_name,),
+            )
+        return ConsequenceDecision(
+            SecurityOutcome.DENY_AND_CONTINUE,
+            ContainmentScope.TOOL_CALL,
+            fact,
+            (fact_name,),
+        )
+
+    if isinstance(fact, ToolSchemaFact):
+        if fact.valid:
+            return ConsequenceDecision(
+                SecurityOutcome.ALLOW,
+                ContainmentScope.NONE,
+                None,
+                (fact_name,),
+            )
+        return ConsequenceDecision(
+            SecurityOutcome.DENY_AND_CONTINUE,
+            ContainmentScope.TOOL_CALL,
+            fact,
+            (fact_name,),
+        )
+
+    if isinstance(fact, PathPolicyFact):
+        if fact.never_match:
+            # Preserve the already-validated Phase-4 hard boundary.  Phase 4
+            # currently prevents release of the complete consequential batch
+            # when a positive NEVER match is established.
+            return ConsequenceDecision(
+                SecurityOutcome.HARD_INTERRUPT,
+                ContainmentScope.TOOL_BATCH,
+                fact,
+                (fact_name,),
+            )
+
+        if fact.workspace_configured:
+            if not fact.deterministic or fact.inside_workspace is False:
+                return ConsequenceDecision(
+                    SecurityOutcome.DENY_AND_CONTINUE,
+                    ContainmentScope.TOOL_CALL,
+                    fact,
+                    (fact_name,),
+                )
+
+        # Ambiguity without Workspace Lock does not manufacture a restriction.
+        return ConsequenceDecision(
+            SecurityOutcome.ALLOW,
+            ContainmentScope.NONE,
+            None,
+            (fact_name,),
+        )
+
+    if isinstance(fact, ExecutorAdmissionIdentityFact):
+        if fact.runtime_matches and fact.lane_matches and fact.call_matches:
+            return ConsequenceDecision(
+                SecurityOutcome.ALLOW,
+                ContainmentScope.NONE,
+                None,
+                (fact_name,),
+            )
+        return ConsequenceDecision(
+            SecurityOutcome.DENY_AND_CONTINUE,
+            ContainmentScope.EXECUTOR_ADMISSION,
+            fact,
+            (fact_name,),
+        )
+
+    if isinstance(fact, SettlementFact):
+        if fact.run_open and fact.overlapping_admission_requested:
+            return ConsequenceDecision(
+                SecurityOutcome.DENY_AND_CONTINUE,
+                ContainmentScope.OVERLAP_ADMISSION,
+                fact,
+                (fact_name,),
+            )
+        return ConsequenceDecision(
+            SecurityOutcome.ALLOW,
+            ContainmentScope.NONE,
+            None,
+            (fact_name,),
+        )
+
+    if isinstance(fact, EvidenceProvenanceFact):
+        if fact.forged_reserved_namespace:
+            return ConsequenceDecision(
+                SecurityOutcome.DENY_AND_CONTINUE,
+                ContainmentScope.EVIDENCE_FRAGMENT,
+                fact,
+                (fact_name,),
+            )
+        # Unknown provenance by itself is not proof of a security violation.
+        return ConsequenceDecision(
+            SecurityOutcome.ALLOW,
+            ContainmentScope.NONE,
+            None,
+            (fact_name,),
+        )
+
+    if isinstance(fact, ApprovalFact):
+        if fact.approval_required and not fact.approval_valid:
+            return ConsequenceDecision(
+                SecurityOutcome.REQUIRE_USER_DECISION,
+                ContainmentScope.CONSEQUENCE,
+                fact,
+                (fact_name,),
+            )
+        return ConsequenceDecision(
+            SecurityOutcome.ALLOW,
+            ContainmentScope.NONE,
+            None,
+            (fact_name,),
+        )
+
+    if isinstance(fact, LifecycleAuthorityFact):
+        if fact.task_matches and fact.run_matches and fact.run_epoch_matches:
+            return ConsequenceDecision(
+                SecurityOutcome.ALLOW,
+                ContainmentScope.NONE,
+                None,
+                (fact_name,),
+            )
+        raise UnmappedAuthorityFact(
+            "task/run/run_epoch mismatch has authoritative facts but no single "
+            "Phase-5 severity may be invented until the exact existing boundary "
+            "semantics are mapped"
+        )
+
+    raise TypeError(f"Unsupported authority fact type: {fact_name}")
+
+
+def evaluate_consequence(facts: Iterable[AuthorityFact]) -> ConsequenceDecision:
+    """Map authoritative state facts to the smallest justified disposition.
+
+    This function owns disposition.  Callers do not supply SecurityOutcome as
+    input.  HARD_INTERRUPT may dominate a recoverable decision only where a raw
+    fact already maps to that established hard invariant.  The Gate refuses to
+    guess between conflicting non-hard outcomes or conflicting blast radii.
     """
 
     items = tuple(facts)
@@ -69,78 +277,92 @@ def evaluate_consequence(facts: Iterable[ConsequenceFact]) -> ConsequenceDecisio
         raise ValueError("Consequence Gate requires at least one authority fact")
 
     for fact in items:
-        if not isinstance(fact, ConsequenceFact):
-            raise TypeError("Consequence Gate accepts ConsequenceFact values only")
-        if not isinstance(fact.kind, ConsequenceFactKind):
-            raise TypeError("Consequence fact kind must be ConsequenceFactKind")
-        if not isinstance(fact.outcome, SecurityOutcome):
+        if not isinstance(fact, _AUTHORITY_FACT_TYPES):
             raise TypeError(
-                f"Consequence fact {fact.kind.value!r} must use SecurityOutcome"
+                "Consequence Gate accepts only typed deterministic authority facts"
             )
 
-    kinds = tuple(fact.kind for fact in items)
-
-    for fact in items:
-        if fact.outcome is SecurityOutcome.HARD_INTERRUPT:
-            return ConsequenceDecision(
-                outcome=SecurityOutcome.HARD_INTERRUPT,
-                decisive_fact=fact,
-                evaluated_kinds=kinds,
-            )
-
+    decisions = tuple(_decision_for_fact(fact) for fact in items)
+    fact_types = tuple(type(fact).__name__ for fact in items)
     non_allow = tuple(
-        fact for fact in items if fact.outcome is not SecurityOutcome.ALLOW
+        (fact, decision)
+        for fact, decision in zip(items, decisions)
+        if decision.outcome is not SecurityOutcome.ALLOW
     )
+
     if not non_allow:
         return ConsequenceDecision(
-            outcome=SecurityOutcome.ALLOW,
-            decisive_fact=None,
-            evaluated_kinds=kinds,
+            SecurityOutcome.ALLOW,
+            ContainmentScope.NONE,
+            None,
+            fact_types,
         )
 
-    outcomes = frozenset(fact.outcome for fact in non_allow)
-    if len(outcomes) != 1:
-        rendered = ", ".join(
-            f"{fact.kind.value}={fact.outcome.value}" for fact in non_allow
-        )
-        raise RuntimeError(
-            "Consequence Gate received conflicting authoritative non-hard "
-            f"dispositions: {rendered}"
-        )
-
-    decisive = non_allow[0]
-    return ConsequenceDecision(
-        outcome=decisive.outcome,
-        decisive_fact=decisive,
-        evaluated_kinds=kinds,
+    hard = tuple(
+        pair
+        for pair in non_allow
+        if pair[1].outcome is SecurityOutcome.HARD_INTERRUPT
     )
+    if hard:
+        hard_scopes = frozenset(pair[1].containment_scope for pair in hard)
+        if len(hard_scopes) != 1:
+            raise RuntimeError(
+                "Consequence Gate received hard facts with conflicting containment scopes"
+            )
+        fact, decision = hard[0]
+        return ConsequenceDecision(
+            SecurityOutcome.HARD_INTERRUPT,
+            decision.containment_scope,
+            fact,
+            fact_types,
+        )
 
+    outcomes = frozenset(pair[1].outcome for pair in non_allow)
+    if len(outcomes) != 1:
+        raise RuntimeError(
+            "Consequence Gate received conflicting authoritative non-hard dispositions"
+        )
 
-def _single_fact_decision(
-    kind: ConsequenceFactKind,
-    outcome: SecurityOutcome,
-    reason: str = "",
-) -> SecurityOutcome:
-    return evaluate_consequence(
-        (ConsequenceFact(kind=kind, outcome=outcome, reason=reason),)
-    ).outcome
+    scopes = frozenset(pair[1].containment_scope for pair in non_allow)
+    if len(scopes) != 1:
+        raise RuntimeError(
+            "Consequence Gate will not guess a broader containment scope for "
+            "multiple non-hard facts"
+        )
+
+    fact, decision = non_allow[0]
+    return ConsequenceDecision(
+        decision.outcome,
+        decision.containment_scope,
+        fact,
+        fact_types,
+    )
 
 
 def install(jk: Any) -> None:
-    """Converge existing consequence surfaces on the shared Phase-5 gate.
+    """Install only Phase-5 integrations whose fact/severity mapping is clear.
 
-    The wrapped producers remain authoritative. Their established return values,
-    exceptions, containment, and executor behavior are preserved exactly; this
-    installer only routes their already-determined disposition through the
-    shared gate. Missing future producers (approval/integrity health, etc.) are
-    intentionally not fabricated.
+    This deliberately does *not* wrap Phase-4 path partitioning merely to observe
+    a disposition that Phase 4 already made.  PathPolicyFact defines the correct
+    raw-fact Gate contract, but live path integration must wait for the raw path
+    fact seam.  Likewise, no approval or future integrity authority is fabricated.
     """
 
     if getattr(jk, "_JACK_CONSEQUENCE_GATE_INSTALLED", False):
         return
 
-    jk.ConsequenceFactKind = ConsequenceFactKind
-    jk.ConsequenceFact = ConsequenceFact
+    # Expose the pure Gate contract to the Kernel namespace for tests and later
+    # authoritative producers without giving model/caller data a construction path.
+    jk.ContainmentScope = ContainmentScope
+    jk.UnmappedAuthorityFact = UnmappedAuthorityFact
+    jk.StageToolAuthorityFact = StageToolAuthorityFact
+    jk.ToolSchemaFact = ToolSchemaFact
+    jk.PathPolicyFact = PathPolicyFact
+    jk.ExecutorAdmissionIdentityFact = ExecutorAdmissionIdentityFact
+    jk.SettlementFact = SettlementFact
+    jk.EvidenceProvenanceFact = EvidenceProvenanceFact
+    jk.ApprovalFact = ApprovalFact
+    jk.LifecycleAuthorityFact = LifecycleAuthorityFact
     jk.ConsequenceDecision = ConsequenceDecision
     jk.evaluate_consequence = evaluate_consequence
 
@@ -148,78 +370,100 @@ def install(jk: Any) -> None:
     if callable(original_validation):
         @wraps(original_validation)
         def governed_validation(calls: Any, tools: Any) -> Any:
-            errors = original_validation(calls, tools)
-            outcome = (
-                SecurityOutcome.DENY_AND_CONTINUE
-                if errors
-                else SecurityOutcome.ALLOW
+            errors = list(original_validation(calls, tools))
+            decision = evaluate_consequence((
+                ToolSchemaFact(
+                    valid=not errors,
+                    errors=tuple(str(error) for error in errors),
+                ),
+            ))
+            if decision.outcome is SecurityOutcome.ALLOW:
+                return []
+            if (
+                decision.outcome is SecurityOutcome.DENY_AND_CONTINUE
+                and decision.containment_scope is ContainmentScope.TOOL_CALL
+            ):
+                return errors
+            raise AssertionError(
+                "Tool-schema Gate produced an unsupported disposition/containment"
             )
-            _single_fact_decision(
-                ConsequenceFactKind.TOOL_SCHEMA,
-                outcome,
-                "existing tool/schema validation result",
-            )
-            return errors
 
         jk._tool_call_validation_errors = governed_validation
-
-    original_partition = getattr(jk, "_phase4_partition_structured_tool_calls", None)
-    phase4_interrupt = getattr(jk, "Phase4RestrictedPathInterrupt", None)
-    if callable(original_partition):
-        @wraps(original_partition)
-        def governed_partition(calls: Any) -> Any:
-            try:
-                allowed, errors = original_partition(calls)
-            except BaseException as exc:
-                if phase4_interrupt is not None and isinstance(exc, phase4_interrupt):
-                    decision = _single_fact_decision(
-                        ConsequenceFactKind.PATH_POLICY,
-                        SecurityOutcome.HARD_INTERRUPT,
-                        "existing Phase-4 restricted-path hard interrupt",
-                    )
-                    if decision is not SecurityOutcome.HARD_INTERRUPT:
-                        raise AssertionError(
-                            "Consequence Gate masked Phase-4 hard security"
-                        )
-                raise
-
-            outcome = (
-                SecurityOutcome.DENY_AND_CONTINUE
-                if errors
-                else SecurityOutcome.ALLOW
-            )
-            _single_fact_decision(
-                ConsequenceFactKind.PATH_POLICY,
-                outcome,
-                "existing Phase-4 represented-target decision",
-            )
-            return allowed, errors
-
-        jk._phase4_partition_structured_tool_calls = governed_partition
 
     original_executor_admission = getattr(jk, "_phase4_executor_admission_decision", None)
     if callable(original_executor_admission):
         @wraps(original_executor_admission)
-        def governed_executor_admission(*args: Any, **kwargs: Any) -> Any:
-            result = original_executor_admission(*args, **kwargs)
-            raw_outcome = result.get("outcome") if isinstance(result, dict) else None
-            if isinstance(raw_outcome, SecurityOutcome):
-                outcome = raw_outcome
-            else:
-                try:
-                    outcome = SecurityOutcome(str(raw_outcome))
-                except ValueError:
-                    return result
-            decision = _single_fact_decision(
-                ConsequenceFactKind.EXECUTOR_ADMISSION,
-                outcome,
-                "existing Phase-4 executor-admission result",
+        def governed_executor_admission(
+            payload: Any,
+            *,
+            expected_call: Optional[dict[str, Any]] = None,
+        ) -> Any:
+            # Preserve the existing Phase-4 structural/protocol validation order.
+            # The Gate takes authority only once the payload is structurally in
+            # the current executor-admission protocol and runtime/lane identity is
+            # the next consequential question the old code would answer.
+            allowed_fields = {
+                "protocol_version",
+                "runtime_id",
+                "lane_id",
+                "tool_call_id",
+                "tool_name",
+                "arguments",
+                "executor_cwd",
+                "executor_platform",
+                "command_dialect",
+            }
+            protocol_version = getattr(
+                jk,
+                "PHASE4_EXECUTOR_ADMISSION_PROTOCOL_VERSION",
+                None,
             )
-            if decision is not outcome:
-                raise AssertionError(
-                    "Consequence Gate changed executor-admission semantics"
+            if (
+                isinstance(payload, dict)
+                and not (set(payload) - allowed_fields)
+                and payload.get("protocol_version") == protocol_version
+            ):
+                runtime_matches = (
+                    str(payload.get("runtime_id") or "").strip()
+                    == str(getattr(jk, "RUNTIME_ID", ""))
                 )
-            return result
+                lane_matches = (
+                    str(payload.get("lane_id") or "").strip()
+                    == str(getattr(jk, "LANE_ID", ""))
+                )
+                decision = evaluate_consequence((
+                    ExecutorAdmissionIdentityFact(
+                        runtime_matches=runtime_matches,
+                        lane_matches=lane_matches,
+                        # Exact pending-call correlation remains with the existing
+                        # producer until its raw seam can be integrated without
+                        # changing validation order.
+                        call_matches=True,
+                    ),
+                ))
+                if decision.outcome is SecurityOutcome.DENY_AND_CONTINUE:
+                    if (
+                        decision.containment_scope
+                        is not ContainmentScope.EXECUTOR_ADMISSION
+                    ):
+                        raise AssertionError(
+                            "Executor identity denial escaped admission scope"
+                        )
+                    if not runtime_matches:
+                        raise jk.HTTPException(
+                            status_code=409,
+                            detail="Phase-4 executor admission runtime identity mismatch",
+                        )
+                    if not lane_matches:
+                        raise jk.HTTPException(
+                            status_code=409,
+                            detail="Phase-4 executor admission lane identity mismatch",
+                        )
+
+            return original_executor_admission(
+                payload,
+                expected_call=expected_call,
+            )
 
         jk._phase4_executor_admission_decision = governed_executor_admission
 
