@@ -5,6 +5,7 @@ import json
 import pytest
 
 import jack_consequence_gate as gate
+import jack_path_authority_facts as path_facts
 import jack_path_policy as path_policy
 
 
@@ -39,6 +40,41 @@ def installed_path_gate():
         yield
     finally:
         path_policy.authorize_represented_path = original
+
+
+def test_path_adapter_reports_never_fact_without_disposition():
+    facts = path_facts.inspect_represented_path(
+        build(),
+        r"D:\Sensitive\secret.txt",
+    )
+    assert facts.never_match is True
+    assert facts.workspace_configured is True
+    assert facts.deterministic is True
+    assert facts.canonical_target is not None
+    assert not hasattr(facts, "outcome")
+
+
+def test_path_adapter_reports_workspace_membership_without_disposition():
+    facts = path_facts.inspect_represented_path(
+        build(),
+        r"D:\Other\artifact.txt",
+    )
+    assert facts.never_match is False
+    assert facts.inside_workspace is False
+    assert facts.deterministic is True
+    assert not hasattr(facts, "outcome")
+
+
+def test_path_adapter_preserves_fail_soft_unknown_without_disposition():
+    facts = path_facts.inspect_represented_path(
+        build(None),
+        r"relative\target.txt",
+    )
+    assert facts.workspace_configured is False
+    assert facts.deterministic is False
+    assert facts.invalid is False
+    assert facts.canonical_target is None
+    assert not hasattr(facts, "outcome")
 
 
 def test_gate_preserves_never_hard_interrupt(installed_path_gate):
