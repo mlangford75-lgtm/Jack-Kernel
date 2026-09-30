@@ -52,10 +52,6 @@ def _fake_kernel_namespace():
         def _phase4_executor_admission_decision(payload, *, expected_call=None):
             return {"outcome": "ALLOW", "payload": payload}
 
-        @staticmethod
-        def _register_runtime_manifest_components(components):
-            FakeKernel.manifest = dict(components)
-
     return FakeKernel
 
 
@@ -72,9 +68,14 @@ def _executor_payload(*, runtime_id="runtime-1", lane_id="lane-1"):
     }
 
 
-def test_executor_runtime_identity_mismatch_remains_admission_scoped():
-    fake = _fake_kernel_namespace()
+def _install_admission_only(fake, monkeypatch):
+    monkeypatch.setattr(gate, "_install_represented_path_gate", lambda: None)
     gate.install(fake)
+
+
+def test_executor_runtime_identity_mismatch_remains_admission_scoped(monkeypatch):
+    fake = _fake_kernel_namespace()
+    _install_admission_only(fake, monkeypatch)
 
     with pytest.raises(fake.HTTPException) as caught:
         fake._phase4_executor_admission_decision(
@@ -85,9 +86,9 @@ def test_executor_runtime_identity_mismatch_remains_admission_scoped():
     assert "runtime identity mismatch" in str(caught.value.detail)
 
 
-def test_executor_lane_identity_mismatch_remains_admission_scoped():
+def test_executor_lane_identity_mismatch_remains_admission_scoped(monkeypatch):
     fake = _fake_kernel_namespace()
-    gate.install(fake)
+    _install_admission_only(fake, monkeypatch)
 
     with pytest.raises(fake.HTTPException) as caught:
         fake._phase4_executor_admission_decision(
