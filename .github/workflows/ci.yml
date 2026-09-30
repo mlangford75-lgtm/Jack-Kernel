@@ -6,50 +6,9 @@ on:
   pull_request:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  apply-phase5-architecture-corrections:
-    if: github.event_name == 'pull_request' && github.event.pull_request.draft == true && github.event.pull_request.head.ref == 'security-phase5-consequence-gate' && github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out exact draft branch
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          ref: security-phase5-consequence-gate
-          fetch-depth: 0
-
-      - name: Apply narrow Phase-5 authority corrections when staged
-        shell: bash
-        run: |
-          if [ ! -f .github/phase5_apply_corrections.py ]; then
-            echo "No staged correction applicator remains; nothing to apply."
-            exit 0
-          fi
-          python .github/phase5_apply_corrections.py
-          # Workflow files are restored to the checked-out version here because
-          # the Actions token is intentionally not workflow-authoritative. The
-          # authenticated repository connector restores final read-only CI later.
-          git checkout -- .github/workflows/ci.yml
-          python -c "from pathlib import Path; p=Path('jack_path_policy.py'); p.write_text(p.read_text(encoding='utf-8').rstrip('\\n')+'\\n', encoding='utf-8', newline='\\n')"
-          git diff --check
-          test ! -e .github/phase5_apply_corrections.py
-          test ! -e jack_path_authority_facts.py
-          git status --short
-
-      - name: Commit corrected draft branch when changes exist
-        shell: bash
-        run: |
-          if git diff --quiet && git diff --cached --quiet; then
-            echo "No correction changes to commit."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "Phase 5: correct security authority ownership"
-          git push origin HEAD:security-phase5-consequence-gate
-
   windows-validated-baseline:
     runs-on: windows-latest
 
@@ -84,7 +43,7 @@ jobs:
       - name: Compile runtime modules
         shell: pwsh
         run: |
-          python -m py_compile jack_kernel.py jack_secure_entrypoint.py jack_evidence_guard.py jack_path_policy.py jack_path_authority_facts.py jack_responses_compat.py jack_consequence_gate.py
+          python -m py_compile jack_kernel.py jack_secure_entrypoint.py jack_evidence_guard.py jack_path_policy.py jack_responses_compat.py jack_consequence_gate.py
 
       - name: Report Pi bridge identities
         shell: pwsh
