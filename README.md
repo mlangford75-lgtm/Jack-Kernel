@@ -8,11 +8,13 @@
 
 <!-- PHASE4_CURRENT_SECURITY_STATUS_2026-09-30 -->
 
-## Current validated security checkpoint ? Phases 0?4
+## Current validated security checkpoint — Phases 0–4
 
-As of **30 September 2026**, Phase 4 ? **Restricted Paths + Workspace Lock** ? is validated implementation reality.
+As of **30 September 2026**, Phase 4 — **Restricted Paths + Workspace Lock** — is validated implementation reality.
 
 Implementation freeze: `0e897b801d5b5da8d604cf21556b40da769c26fe`.
+
+Checkpoint release: `security-layer-phase4-validated-2026-09-30` at merge commit `0c15331d4673412befc626b64d7c4e52f7018fb4`.
 
 Phase 4 adds host-owned immutable path policy, deterministic NEVER-path enforcement, optional Workspace Lock, represented-path normalization, bounded recognized Bash/PowerShell command authorization, non-stream and streaming consequence-release enforcement, executor admission, and minimum multi-call containment.
 
@@ -28,7 +30,7 @@ The Phase 0-3 checkpoint remains historical evidence. Older statements below des
 
 Phase 4 does not claim a universal filesystem sandbox. Jack authorizes represented targets it can deterministically observe; final-object resolution remains an executor/OS boundary.
 
-## Validated security layer — Phases 0–3
+## Historical Phase 0–3 security checkpoint
 
 As of **27 September 2026**, Jack Kernel ships a validated incremental host-authoritative security layer on top of the existing v0.1.1 runtime. This does **not** replace the broader programmable-safety architecture and does **not** turn Jack into a universal sandbox. It makes a specific set of deterministic protections current implementation reality:
 

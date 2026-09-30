@@ -43,7 +43,7 @@ jobs:
       - name: Compile runtime modules
         shell: pwsh
         run: |
-          python -m py_compile jack_kernel.py jack_secure_entrypoint.py jack_evidence_guard.py jack_responses_compat.py
+          python -m py_compile jack_kernel.py jack_secure_entrypoint.py jack_evidence_guard.py jack_path_policy.py jack_responses_compat.py
 
       - name: Report Pi bridge identities
         shell: pwsh
@@ -63,3 +63,4 @@ jobs:
           node tests/pi_control_bridge_retry_recovery_harness.mjs
           node tests/pi_control_bridge_multi_endpoint_harness.mjs
           node tests/pi_provider_runtime_binding_harness.mjs
+          node tests/pi_phase4_executor_admission_harness.mjs

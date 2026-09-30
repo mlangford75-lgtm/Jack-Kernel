@@ -1,4 +1,4 @@
-# Implementation Status Update ? 30 September 2026
+# Implementation Status Update — 30 September 2026
 
 This status update is additive. Every earlier status note and the complete Security Hardening Architecture remain preserved below.
 
@@ -20,7 +20,7 @@ This status update is additive. Every earlier status note and the complete Secur
 
 **Phase-4 implementation freeze:** `0e897b801d5b5da8d604cf21556b40da769c26fe`
 
-**Planned checkpoint tag:** `security-layer-phase4-validated-2026-09-30`
+**Checkpoint tag:** `security-layer-phase4-validated-2026-09-30` (target: `0c15331d4673412befc626b64d7c4e52f7018fb4`)
 
 **Regression state:** 201 targeted Phase-4 tests; 376 full Python tests; seven Pi harnesses; `git diff --check` PASS.
 

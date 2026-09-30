@@ -256,9 +256,11 @@ Jack still does not claim a universal filesystem sandbox or complete consequence
 
 ## Current Phase-4 security checkpoint
 
-Phase 4 ? **Restricted Paths + Workspace Lock** ? is now validated.
+Phase 4 — **Restricted Paths + Workspace Lock** — is now validated.
 
 Implementation freeze: `0e897b801d5b5da8d604cf21556b40da769c26fe`.
+
+Checkpoint release: `security-layer-phase4-validated-2026-09-30` at merge commit `0c15331d4673412befc626b64d7c4e52f7018fb4`.
 
 Validation:
 
@@ -274,5 +276,47 @@ Current references:
 - `Documentation/Security/Jack_Kernel_Security_Hardening_Architecture_2026-09-26.md`
 
 The older Phase 0-3 section remains historical checkpoint documentation. Its statement that Restricted Paths and Workspace Lock were future work is no longer the current implementation state.
+
+### Configure Phase 4 path policy
+
+Phase 4 path policy is supplied at startup through `JACK_PATH_POLICY_JSON`. Jack snapshots that configuration into immutable runtime/lane policy. Model output, caller content, tool results, retries, and later environment changes do not redefine the active policy.
+
+The JSON object uses exactly these three keys:
+
+```json
+{
+  "version": 1,
+  "workspace_root": "D:\\Projects\\Jack",
+  "never_paths": [
+    "D:\\Sensitive"
+  ]
+}
+```
+
+- `version` must be integer `1`.
+- `workspace_root` must be an absolute Windows path string or `null`.
+- `never_paths` must be a list of path strings.
+- User-supplied `never_paths` are cumulative with Jack's host-derived default NEVER roots. They do not replace or weaken those defaults.
+- `workspace_root: null` disables Workspace Lock. It does not disable NEVER protection.
+- If `JACK_PATH_POLICY_JSON` is absent or blank, Jack creates no Workspace Lock and adds no user NEVER paths; host-derived default NEVER roots still remain active.
+- Explicit malformed JSON, unsupported schema versions, missing or extra keys, and invalid field types are startup configuration errors rather than conditions Jack silently weakens.
+
+PowerShell example with Workspace Lock enabled:
+
+```powershell
+$env:JACK_PATH_POLICY_JSON='{"version":1,"workspace_root":"D:\\Projects\\Jack","never_paths":["D:\\Sensitive"]}'
+.\start.bat
+```
+
+PowerShell example with no Workspace Lock and one additional NEVER path:
+
+```powershell
+$env:JACK_PATH_POLICY_JSON='{"version":1,"workspace_root":null,"never_paths":["D:\\Sensitive"]}'
+.\start.bat
+```
+
+Set the environment value before starting the Jack runtime or lane. To change the active path policy, restart that runtime with the new startup configuration.
+
+Phase 4 authorizes represented filesystem targets Jack can deterministically observe. It does not claim final-object or descriptor-level confinement across symlinks, junctions, reparse points, mounts, or hard-link relationships.
 
 Jack still does not claim universal filesystem-object attestation.

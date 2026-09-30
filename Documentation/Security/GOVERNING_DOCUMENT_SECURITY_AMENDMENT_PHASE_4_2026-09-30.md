@@ -1,10 +1,10 @@
-# Jack Kernel Governing-Document Security Amendment ? Phase 4
+# Jack Kernel Governing-Document Security Amendment — Phase 4
 
 **Date:** 2026-09-30
 **Status:** Current governing amendment
 **Applies to:** Jack Kernel v0.1.1 documentation set
 **Implementation freeze:** `0e897b801d5b5da8d604cf21556b40da769c26fe`
-**Planned checkpoint tag:** `security-layer-phase4-validated-2026-09-30`
+**Checkpoint tag:** `security-layer-phase4-validated-2026-09-30` (target: `0c15331d4673412befc626b64d7c4e52f7018fb4`)
 **Predecessor:** `GOVERNING_DOCUMENT_SECURITY_AMENDMENT_PHASES_0_3_2026-09-27.md`
 
 ## 1. Documentation preservation rule
