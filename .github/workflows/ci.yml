@@ -50,6 +50,10 @@ jobs:
         run: |
           python -c "from pathlib import Path; import hashlib; b=Path('Pi/pi-control-bridge.ts').read_bytes(); lf=b.replace(b'\r\n',b'\n'); crlf=lf.replace(b'\n',b'\r\n'); print('PI_BRIDGE_LF_SHA256='+hashlib.sha256(lf).hexdigest()); print('PI_BRIDGE_CRLF_SHA256='+hashlib.sha256(crlf).hexdigest())"
 
+      - name: Run Phase-5 targeted tests
+        shell: pwsh
+        run: python -m pytest -q tests/test_phase5_consequence_gate.py tests/test_phase5_path_gate_integration.py tests/test_phase5_runtime_integration.py tests/test_phase5_secure_entrypoint.py
+
       - name: Run Python regression suite
         shell: pwsh
         run: python -m pytest -q
