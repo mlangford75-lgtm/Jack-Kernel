@@ -28,14 +28,14 @@ def test_valid_action_is_allowed():
     assert decision.decisive_fact is None
 
 
-def test_bad_tool_schema_preserves_recoverable_denial():
+def test_bad_tool_schema_preserves_existing_recoverable_denial():
     decision = gate.evaluate_consequence((
         fact("tool_schema", kernel.SecurityOutcome.DENY_AND_CONTINUE),
     ))
     assert decision.outcome is kernel.SecurityOutcome.DENY_AND_CONTINUE
 
 
-def test_wrong_stage_preserves_stage_producer_denial():
+def test_wrong_stage_preserves_existing_recoverable_denial():
     decision = gate.evaluate_consequence((
         fact("stage_authority", kernel.SecurityOutcome.DENY_AND_CONTINUE),
     ))
@@ -43,12 +43,30 @@ def test_wrong_stage_preserves_stage_producer_denial():
 
 
 @pytest.mark.parametrize("producer", ["task_id", "run_id", "run_epoch"])
-def test_stale_lifecycle_identity_cannot_authorize(producer: str):
+@pytest.mark.parametrize(
+    "producer_outcome",
+    [
+        kernel.SecurityOutcome.DENY_AND_CONTINUE,
+        kernel.SecurityOutcome.REQUIRE_USER_DECISION,
+        kernel.SecurityOutcome.HARD_INTERRUPT,
+    ],
+)
+def test_lifecycle_mismatch_cannot_be_silently_promoted_to_allow(
+    producer: str,
+    producer_outcome: kernel.SecurityOutcome,
+):
+    """Phase 5 must preserve lifecycle-producer severity, not invent it.
+
+    Current orchestration/lifecycle code does not expose task/run/epoch mismatch
+    as SecurityOutcome yet. This test therefore verifies composition only: once
+    the owning producer supplies a non-ALLOW disposition, unrelated ALLOW facts
+    cannot erase it.
+    """
     decision = gate.evaluate_consequence((
-        fact(producer, kernel.SecurityOutcome.DENY_AND_CONTINUE),
+        fact(producer, producer_outcome),
         fact("tool_authority", kernel.SecurityOutcome.ALLOW),
     ))
-    assert decision.outcome is kernel.SecurityOutcome.DENY_AND_CONTINUE
+    assert decision.outcome is producer_outcome
     assert decision.decisive_fact is not None
     assert decision.decisive_fact.producer == producer
 
@@ -60,11 +78,21 @@ def test_valid_evidence_survives_centralization():
     assert decision.outcome is kernel.SecurityOutcome.ALLOW
 
 
-def test_forged_evidence_preserves_producer_severity_instead_of_escalating():
+@pytest.mark.parametrize(
+    "producer_outcome",
+    [
+        kernel.SecurityOutcome.DENY_AND_CONTINUE,
+        kernel.SecurityOutcome.HARD_INTERRUPT,
+    ],
+)
+def test_invalid_evidence_preserves_producer_severity(
+    producer_outcome: kernel.SecurityOutcome,
+):
+    """The gate does not reclassify evidence authority on its own."""
     decision = gate.evaluate_consequence((
-        fact("evidence_provenance", kernel.SecurityOutcome.DENY_AND_CONTINUE),
+        fact("evidence_provenance", producer_outcome),
     ))
-    assert decision.outcome is kernel.SecurityOutcome.DENY_AND_CONTINUE
+    assert decision.outcome is producer_outcome
 
 
 def test_approval_required_is_distinct_from_security_failure():
