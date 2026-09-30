@@ -336,6 +336,7 @@ def _legacy_path_decision(
 
 
 def _install_represented_path_gate() -> None:
+    import jack_path_authority_facts as path_facts
     import jack_path_policy as path_policy
 
     original = path_policy.authorize_represented_path
@@ -350,134 +351,28 @@ def _install_represented_path_gate() -> None:
         executor_cwd: Optional[str] = None,
         defer_relative_without_executor: bool = False,
     ) -> Any:
-        if not isinstance(policy, path_policy.RuntimePathPolicy):
-            raise TypeError("policy must be a RuntimePathPolicy")
-
-        environment = policy.path_environment()
-        canonical_cwd = None
-        if executor_cwd is not None:
-            try:
-                canonical_cwd = path_policy.normalize_represented_windows_path(
-                    executor_cwd,
-                    environment=environment,
-                )
-            except path_policy.RepresentedPathError as exc:
-                decision = evaluate_consequence((
-                    PathPolicyFact(
-                        workspace_configured=policy.workspace_enabled,
-                        deterministic=False,
-                        invalid=True,
-                    ),
-                ))
-                return _legacy_path_decision(
-                    path_policy,
-                    decision,
-                    f"executor cwd is not a deterministic absolute Windows path: {exc}",
-                )
-
-        try:
-            canonical = path_policy.normalize_represented_windows_path(
-                represented_path,
-                base_root=canonical_cwd,
-                environment=environment,
-            )
-        except path_policy.RepresentedPathNeedsExecutorCwd as exc:
-            if defer_relative_without_executor:
-                decision = evaluate_consequence((
-                    PathPolicyFact(
-                        workspace_configured=policy.workspace_enabled,
-                        deterministic=False,
-                        deferred_to_executor=True,
-                    ),
-                ))
-                return _legacy_path_decision(
-                    path_policy,
-                    decision,
-                    f"executor cwd admission is required before execution: {exc}",
-                )
-            decision = evaluate_consequence((
-                PathPolicyFact(
-                    workspace_configured=policy.workspace_enabled,
-                    deterministic=False,
-                ),
-            ))
-            reason = (
-                f"workspace membership cannot be established: {exc}"
-                if policy.workspace_enabled
-                else f"no workspace lock; represented target unresolved: {exc}"
-            )
-            return _legacy_path_decision(path_policy, decision, reason)
-        except path_policy.RepresentedPathInvalid as exc:
-            decision = evaluate_consequence((
-                PathPolicyFact(
-                    workspace_configured=policy.workspace_enabled,
-                    deterministic=False,
-                    invalid=True,
-                ),
-            ))
-            return _legacy_path_decision(
-                path_policy,
-                decision,
-                f"invalid represented path: {exc}",
-            )
-        except path_policy.RepresentedPathAmbiguous as exc:
-            decision = evaluate_consequence((
-                PathPolicyFact(
-                    workspace_configured=policy.workspace_enabled,
-                    deterministic=False,
-                ),
-            ))
-            reason = (
-                f"workspace membership cannot be established: {exc}"
-                if policy.workspace_enabled
-                else f"no workspace lock; represented target unresolved: {exc}"
-            )
-            return _legacy_path_decision(path_policy, decision, reason)
-
-        try:
-            comparison_target = path_policy._policy_object_windows_path(canonical)
-        except path_policy.RepresentedPathAmbiguous as exc:
-            decision = evaluate_consequence((
-                PathPolicyFact(
-                    workspace_configured=policy.workspace_enabled,
-                    deterministic=False,
-                ),
-            ))
-            reason = (
-                f"workspace membership cannot be established: {exc}"
-                if policy.workspace_enabled
-                else f"no workspace lock; represented target unresolved: {exc}"
-            )
-            return _legacy_path_decision(path_policy, decision, reason, canonical)
-
-        never_match = any(
-            path_policy.path_is_within_or_equal(comparison_target, never_root)
-            for never_root in policy.never_roots
-        )
-        inside_workspace = (
-            None
-            if policy.workspace_root is None
-            else path_policy.path_is_within_or_equal(
-                comparison_target,
-                policy.workspace_root,
-            )
+        raw = path_facts.inspect_represented_path(
+            policy,
+            represented_path,
+            executor_cwd=executor_cwd,
+            defer_relative_without_executor=defer_relative_without_executor,
         )
         decision = evaluate_consequence((
             PathPolicyFact(
-                never_match=never_match,
-                workspace_configured=policy.workspace_enabled,
-                deterministic=True,
-                inside_workspace=inside_workspace,
+                never_match=raw.never_match,
+                workspace_configured=raw.workspace_configured,
+                deterministic=raw.deterministic,
+                inside_workspace=raw.inside_workspace,
+                invalid=raw.invalid,
+                deferred_to_executor=raw.deferred_to_executor,
             ),
         ))
-
-        if decision.outcome is SecurityOutcome.HARD_INTERRUPT:
-            reason = "represented target positively matches a NEVER root"
-        elif decision.outcome is SecurityOutcome.DENY_AND_CONTINUE:
-            reason = "represented target is outside the configured workspace"
-        else:
-            reason = "represented target is authorized by Phase-4 path policy"
-        return _legacy_path_decision(path_policy, decision, reason, canonical)
+        return _legacy_path_decision(
+            path_policy,
+            decision,
+            raw.reason,
+            raw.canonical_target,
+        )
 
     governed._jack_phase5_consequence_gate = True
     path_policy.authorize_represented_path = governed
