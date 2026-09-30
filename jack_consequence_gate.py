@@ -1,45 +1,20 @@
 from __future__ import annotations
 
 import contextvars
-import importlib
-import os
-import sys
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from enum import Enum
 from functools import wraps
 from typing import Any, Callable, Iterable, Optional, Tuple, Union
 
-
-def _active_kernel_module() -> Any:
-    """Return the active Jack Kernel module without silently duplicating it.
-
-    Direct ``python jack_kernel.py`` execution names the runtime ``__main__``.
-    In that case alias the active module as ``jack_kernel`` before any ordinary
-    import can create a second runtime authority domain.  Isolated regression
-    modules loaded under synthetic names are not treated as the active runtime.
-    """
-
-    named = sys.modules.get("jack_kernel")
-    main = sys.modules.get("__main__")
-    main_file = os.path.basename(str(getattr(main, "__file__", "") or ""))
-    direct = main if main_file in {"jack_kernel.py", "jack_kernel.pyc"} else None
-
-    if direct is not None:
-        if named is not None and named is not direct:
-            raise RuntimeError(
-                "Jack Kernel module identity is split between __main__ and jack_kernel"
-            )
-        sys.modules["jack_kernel"] = direct
-        return direct
-
-    if named is not None:
-        return named
-    return importlib.import_module("jack_kernel")
+import jack_path_policy as path_policy
 
 
-_ACTIVE_KERNEL = _active_kernel_module()
-SecurityOutcome = _ACTIVE_KERNEL.SecurityOutcome
-_EXPECTED_OUTCOME_VALUES = tuple(member.value for member in SecurityOutcome)
+_EXPECTED_OUTCOME_VALUES = (
+    "ALLOW",
+    "DENY_AND_CONTINUE",
+    "REQUIRE_USER_DECISION",
+    "HARD_INTERRUPT",
+)
 
 
 class ConsequenceBoundary(str, Enum):
@@ -62,7 +37,7 @@ class ContainmentScope(str, Enum):
 
 
 class UnmappedAuthorityFact(RuntimeError):
-    """The fact is authoritative, but Phase 5 has no justified mapping yet."""
+    """An authoritative fact exists, but Phase 5 has no justified mapping yet."""
 
 
 @dataclass(frozen=True)
@@ -74,16 +49,6 @@ class StageToolAuthorityFact:
 class ToolSchemaFact:
     valid: bool
     errors: Tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class PathPolicyFact:
-    never_match: bool = False
-    workspace_configured: bool = False
-    deterministic: bool = True
-    inside_workspace: Optional[bool] = None
-    invalid: bool = False
-    deferred_to_executor: bool = False
 
 
 @dataclass(frozen=True)
@@ -100,13 +65,20 @@ class SettlementFact:
 
 
 @dataclass(frozen=True)
-class EvidenceProvenanceFact:
-    origin_known: bool
-    forged_reserved_namespace: bool = False
+class ReservedEvidenceNamespaceFact:
+    """The one live evidence violation Phase 5 can currently name precisely.
+
+    Unknown provenance is intentionally not represented as a violation. This is
+    not a generalized evidence-trust classifier.
+    """
+
+    forged: bool
 
 
 @dataclass(frozen=True)
 class ApprovalFact:
+    """Policy contract only; Phase 5 has no live approval-state producer."""
+
     approval_required: bool
     approval_valid: bool
 
@@ -121,10 +93,10 @@ class LifecycleAuthorityFact:
 AuthorityFact = Union[
     StageToolAuthorityFact,
     ToolSchemaFact,
-    PathPolicyFact,
+    path_policy.RepresentedPathAuthorityFacts,
     ExecutorAdmissionIdentityFact,
     SettlementFact,
-    EvidenceProvenanceFact,
+    ReservedEvidenceNamespaceFact,
     ApprovalFact,
     LifecycleAuthorityFact,
 ]
@@ -132,10 +104,10 @@ AuthorityFact = Union[
 _AUTHORITY_FACT_TYPES = (
     StageToolAuthorityFact,
     ToolSchemaFact,
-    PathPolicyFact,
+    path_policy.RepresentedPathAuthorityFacts,
     ExecutorAdmissionIdentityFact,
     SettlementFact,
-    EvidenceProvenanceFact,
+    ReservedEvidenceNamespaceFact,
     ApprovalFact,
     LifecycleAuthorityFact,
 )
@@ -156,12 +128,21 @@ class ConsequenceDecision:
     evaluated_fact_types: Tuple[str, ...]
 
 
-def _single(
-    fact: AuthorityFact,
-    outcome: Any,
-    scope: ContainmentScope,
-    decisive: bool,
-) -> ConsequenceDecision:
+def _enum_values(outcome_type: Any) -> Tuple[str, ...]:
+    try:
+        return tuple(member.value for member in outcome_type)
+    except Exception as exc:
+        raise RuntimeError("Jack Kernel SecurityOutcome vocabulary is not iterable") from exc
+
+
+def _require_compatible_outcome_type(outcome_type: Any) -> None:
+    if _enum_values(outcome_type) != _EXPECTED_OUTCOME_VALUES:
+        raise RuntimeError(
+            "Jack Kernel SecurityOutcome vocabulary does not match Phase-5 contract"
+        )
+
+
+def _single(fact: AuthorityFact, outcome: Any, scope: ContainmentScope, decisive: bool) -> ConsequenceDecision:
     return ConsequenceDecision(
         outcome=outcome,
         containment_scope=scope,
@@ -170,11 +151,7 @@ def _single(
     )
 
 
-def _path_scope(
-    boundary: ConsequenceBoundary,
-    *,
-    hard: bool,
-) -> ContainmentScope:
+def _path_scope(boundary: ConsequenceBoundary, *, hard: bool) -> ContainmentScope:
     if boundary is ConsequenceBoundary.EXECUTOR_ADMISSION:
         return ContainmentScope.EXECUTOR_ADMISSION
     if hard and boundary is ConsequenceBoundary.TOOL_RELEASE_BATCH:
@@ -182,43 +159,25 @@ def _path_scope(
     return ContainmentScope.TOOL_CALL
 
 
-def _decision_for_fact(
-    fact: AuthorityFact,
-    *,
-    boundary: ConsequenceBoundary,
-    outcome_type: Any,
-) -> ConsequenceDecision:
+def _decision_for_fact(fact: AuthorityFact, *, boundary: ConsequenceBoundary, outcome_type: Any) -> ConsequenceDecision:
     allow = outcome_type.ALLOW
     deny = outcome_type.DENY_AND_CONTINUE
     require = outcome_type.REQUIRE_USER_DECISION
     hard = outcome_type.HARD_INTERRUPT
 
     if isinstance(fact, StageToolAuthorityFact):
-        return _single(
-            fact,
-            allow if fact.authorized else deny,
-            ContainmentScope.NONE if fact.authorized else ContainmentScope.TOOL_CALL,
-            not fact.authorized,
-        )
+        denied = not fact.authorized
+        return _single(fact, deny if denied else allow, ContainmentScope.TOOL_CALL if denied else ContainmentScope.NONE, denied)
 
     if isinstance(fact, ToolSchemaFact):
-        return _single(
-            fact,
-            allow if fact.valid else deny,
-            ContainmentScope.NONE if fact.valid else ContainmentScope.TOOL_CALL,
-            not fact.valid,
-        )
+        denied = not fact.valid
+        return _single(fact, deny if denied else allow, ContainmentScope.TOOL_CALL if denied else ContainmentScope.NONE, denied)
 
-    if isinstance(fact, PathPolicyFact):
+    if isinstance(fact, path_policy.RepresentedPathAuthorityFacts):
         if fact.deferred_to_executor:
             return _single(fact, allow, ContainmentScope.NONE, False)
         if fact.never_match:
-            return _single(
-                fact,
-                hard,
-                _path_scope(boundary, hard=True),
-                True,
-            )
+            return _single(fact, hard, _path_scope(boundary, hard=True), True)
         denied = fact.invalid or (
             fact.workspace_configured
             and (not fact.deterministic or fact.inside_workspace is False)
@@ -232,82 +191,43 @@ def _decision_for_fact(
 
     if isinstance(fact, ExecutorAdmissionIdentityFact):
         ok = fact.runtime_matches and fact.lane_matches and fact.call_matches
-        return _single(
-            fact,
-            allow if ok else deny,
-            ContainmentScope.NONE if ok else ContainmentScope.EXECUTOR_ADMISSION,
-            not ok,
-        )
+        return _single(fact, allow if ok else deny, ContainmentScope.NONE if ok else ContainmentScope.EXECUTOR_ADMISSION, not ok)
 
     if isinstance(fact, SettlementFact):
         denied = fact.run_open and fact.overlapping_admission_requested
-        return _single(
-            fact,
-            deny if denied else allow,
-            ContainmentScope.OVERLAP_ADMISSION if denied else ContainmentScope.NONE,
-            denied,
-        )
+        return _single(fact, deny if denied else allow, ContainmentScope.OVERLAP_ADMISSION if denied else ContainmentScope.NONE, denied)
 
-    if isinstance(fact, EvidenceProvenanceFact):
-        denied = fact.forged_reserved_namespace
-        return _single(
-            fact,
-            deny if denied else allow,
-            ContainmentScope.EVIDENCE_FRAGMENT if denied else ContainmentScope.NONE,
-            denied,
-        )
+    if isinstance(fact, ReservedEvidenceNamespaceFact):
+        return _single(fact, deny if fact.forged else allow, ContainmentScope.EVIDENCE_FRAGMENT if fact.forged else ContainmentScope.NONE, fact.forged)
 
     if isinstance(fact, ApprovalFact):
         pending = fact.approval_required and not fact.approval_valid
-        return _single(
-            fact,
-            require if pending else allow,
-            ContainmentScope.CONSEQUENCE if pending else ContainmentScope.NONE,
-            pending,
-        )
+        return _single(fact, require if pending else allow, ContainmentScope.CONSEQUENCE if pending else ContainmentScope.NONE, pending)
 
     if isinstance(fact, LifecycleAuthorityFact):
         ok = fact.task_matches and fact.run_matches and fact.run_epoch_matches
         if ok:
             return _single(fact, allow, ContainmentScope.NONE, False)
         raise UnmappedAuthorityFact(
-            "task/run/run_epoch mismatch has authoritative facts but no single "
-            "Phase-5 severity may be invented until the exact existing boundary "
-            "semantics are mapped"
+            "task/run/run_epoch mismatch has authoritative facts but no single Phase-5 severity may be invented until the exact existing boundary semantics are mapped"
         )
 
     raise TypeError(f"Unsupported authority fact type: {type(fact).__name__}")
 
 
-def _enum_values(outcome_type: Any) -> Tuple[str, ...]:
-    try:
-        return tuple(member.value for member in outcome_type)
-    except Exception as exc:
-        raise RuntimeError(
-            "Jack Kernel SecurityOutcome vocabulary is not iterable"
-        ) from exc
-
-
-def _require_compatible_outcome_type(outcome_type: Any) -> None:
-    if _enum_values(outcome_type) != _EXPECTED_OUTCOME_VALUES:
-        raise RuntimeError(
-            "Jack Kernel SecurityOutcome vocabulary does not match Phase-5 contract"
-        )
-
-
-def _evaluate(
+def evaluate_consequence(
     facts: Iterable[AuthorityFact],
     *,
-    boundary: Optional[ConsequenceBoundary],
     outcome_type: Any,
+    boundary: Optional[ConsequenceBoundary] = None,
 ) -> ConsequenceDecision:
+    """Map grounded raw facts to outcome plus minimum necessary containment."""
+
     items = tuple(facts)
     if not items:
         raise ValueError("Consequence Gate requires at least one authority fact")
     if any(not isinstance(fact, _AUTHORITY_FACT_TYPES) for fact in items):
-        raise TypeError(
-            "Consequence Gate accepts only typed deterministic authority facts"
-        )
+        raise TypeError("Consequence Gate accepts only typed deterministic authority facts")
     _require_compatible_outcome_type(outcome_type)
 
     resolved_boundary = boundary or _CURRENT_CONSEQUENCE_BOUNDARY.get()
@@ -315,11 +235,7 @@ def _evaluate(
         raise TypeError("Consequence Gate boundary must be host-owned ConsequenceBoundary")
 
     decisions = tuple(
-        _decision_for_fact(
-            fact,
-            boundary=resolved_boundary,
-            outcome_type=outcome_type,
-        )
+        _decision_for_fact(fact, boundary=resolved_boundary, outcome_type=outcome_type)
         for fact in items
     )
     fact_types = tuple(type(fact).__name__ for fact in items)
@@ -328,107 +244,46 @@ def _evaluate(
         for fact, decision in zip(items, decisions)
         if decision.outcome is not outcome_type.ALLOW
     )
-
     if not non_allow:
-        return ConsequenceDecision(
-            outcome_type.ALLOW,
-            ContainmentScope.NONE,
-            None,
-            fact_types,
-        )
+        return ConsequenceDecision(outcome_type.ALLOW, ContainmentScope.NONE, None, fact_types)
 
-    hard_pairs = tuple(
-        pair
-        for pair in non_allow
-        if pair[1].outcome is outcome_type.HARD_INTERRUPT
-    )
+    hard_pairs = tuple(pair for pair in non_allow if pair[1].outcome is outcome_type.HARD_INTERRUPT)
     if hard_pairs:
         scopes = frozenset(pair[1].containment_scope for pair in hard_pairs)
         if len(scopes) != 1:
-            raise RuntimeError(
-                "Consequence Gate received hard facts with conflicting containment scopes"
-            )
+            raise RuntimeError("Consequence Gate received hard facts with conflicting containment scopes")
         fact, decision = hard_pairs[0]
-        return ConsequenceDecision(
-            outcome_type.HARD_INTERRUPT,
-            decision.containment_scope,
-            fact,
-            fact_types,
-        )
+        return ConsequenceDecision(outcome_type.HARD_INTERRUPT, decision.containment_scope, fact, fact_types)
 
     outcomes = frozenset(pair[1].outcome for pair in non_allow)
     if len(outcomes) != 1:
-        raise RuntimeError(
-            "Consequence Gate received conflicting authoritative non-hard dispositions"
-        )
-
+        raise RuntimeError("Consequence Gate received conflicting authoritative non-hard dispositions")
     scopes = frozenset(pair[1].containment_scope for pair in non_allow)
     if len(scopes) != 1:
-        raise RuntimeError(
-            "Consequence Gate will not guess a broader containment scope for "
-            "multiple non-hard facts"
-        )
+        raise RuntimeError("Consequence Gate will not guess a broader containment scope for multiple non-hard facts")
 
     fact, decision = non_allow[0]
-    return ConsequenceDecision(
-        decision.outcome,
-        decision.containment_scope,
-        fact,
-        fact_types,
-    )
-
-
-def evaluate_consequence(
-    facts: Iterable[AuthorityFact],
-    *,
-    boundary: Optional[ConsequenceBoundary] = None,
-) -> ConsequenceDecision:
-    """Map raw deterministic facts plus release boundary to outcome and scope."""
-    return _evaluate(
-        facts,
-        boundary=boundary,
-        outcome_type=SecurityOutcome,
-    )
+    return ConsequenceDecision(decision.outcome, decision.containment_scope, fact, fact_types)
 
 
 def _bound_evaluator(outcome_type: Any) -> Callable[..., ConsequenceDecision]:
     _require_compatible_outcome_type(outcome_type)
 
-    def bound(
-        facts: Iterable[AuthorityFact],
-        *,
-        boundary: Optional[ConsequenceBoundary] = None,
-    ) -> ConsequenceDecision:
-        return _evaluate(
-            facts,
-            boundary=boundary,
-            outcome_type=outcome_type,
-        )
+    def bound(facts: Iterable[AuthorityFact], *, boundary: Optional[ConsequenceBoundary] = None) -> ConsequenceDecision:
+        return evaluate_consequence(facts, outcome_type=outcome_type, boundary=boundary)
 
     return bound
 
 
-def _legacy_path_decision(
-    path_policy: Any,
-    decision: ConsequenceDecision,
-    reason: str,
-    canonical: Optional[str],
-) -> Any:
+def _legacy_path_decision(decision: ConsequenceDecision, raw: path_policy.RepresentedPathAuthorityFacts) -> path_policy.PathAuthorizationDecision:
     try:
         legacy = path_policy.PathAuthorizationOutcome(decision.outcome.value)
     except ValueError as exc:
-        raise AssertionError(
-            "Phase-5 path decision cannot be represented by Phase-4 release machinery"
-        ) from exc
-    return path_policy.PathAuthorizationDecision(legacy, reason, canonical)
+        raise AssertionError("Phase-5 path decision cannot be represented by Phase-4 release machinery") from exc
+    return path_policy.PathAuthorizationDecision(legacy, raw.reason, raw.canonical_target)
 
 
-def _install_represented_path_gate(
-    evaluator: Callable[..., ConsequenceDecision] = evaluate_consequence,
-) -> None:
-    import jack_path_authority_facts as path_facts
-    import jack_path_policy as path_policy
-
+def _install_represented_path_gate(evaluator: Callable[..., ConsequenceDecision]) -> None:
     original = path_policy.authorize_represented_path
     if getattr(original, "_jack_phase5_consequence_gate", False):
         return
@@ -441,35 +296,22 @@ def _install_represented_path_gate(
         executor_cwd: Optional[str] = None,
         defer_relative_without_executor: bool = False,
     ) -> Any:
-        raw = path_facts.inspect_represented_path(
+        raw = path_policy.inspect_represented_path(
             policy,
             represented_path,
             executor_cwd=executor_cwd,
             defer_relative_without_executor=defer_relative_without_executor,
         )
-        decision = evaluator((
-            PathPolicyFact(
-                never_match=raw.never_match,
-                workspace_configured=raw.workspace_configured,
-                deterministic=raw.deterministic,
-                inside_workspace=raw.inside_workspace,
-                invalid=raw.invalid,
-                deferred_to_executor=raw.deferred_to_executor,
-            ),
-        ))
-        return _legacy_path_decision(
-            path_policy,
-            decision,
-            raw.reason,
-            raw.canonical_target,
-        )
+        return _legacy_path_decision(evaluator((raw,)), raw)
 
     governed._jack_phase5_consequence_gate = True
+    governed._jack_phase5_legacy_authorizer = original
     path_policy.authorize_represented_path = governed
 
 
 def install(jk: Any) -> None:
-    """Install only grounded disposition seams; do not invent missing authority."""
+    """Install grounded disposition seams from the authoritative Kernel owner."""
+
     if getattr(jk, "_JACK_CONSEQUENCE_GATE_INSTALLED", False):
         return
 
@@ -482,10 +324,10 @@ def install(jk: Any) -> None:
     jk.UnmappedAuthorityFact = UnmappedAuthorityFact
     jk.StageToolAuthorityFact = StageToolAuthorityFact
     jk.ToolSchemaFact = ToolSchemaFact
-    jk.PathPolicyFact = PathPolicyFact
+    jk.RepresentedPathAuthorityFacts = path_policy.RepresentedPathAuthorityFacts
     jk.ExecutorAdmissionIdentityFact = ExecutorAdmissionIdentityFact
     jk.SettlementFact = SettlementFact
-    jk.EvidenceProvenanceFact = EvidenceProvenanceFact
+    jk.ReservedEvidenceNamespaceFact = ReservedEvidenceNamespaceFact
     jk.ApprovalFact = ApprovalFact
     jk.LifecycleAuthorityFact = LifecycleAuthorityFact
     jk.ConsequenceDecision = ConsequenceDecision
@@ -497,95 +339,43 @@ def install(jk: Any) -> None:
     if callable(original_partition):
         @wraps(original_partition)
         def governed_partition(calls: Any) -> Any:
-            token = _CURRENT_CONSEQUENCE_BOUNDARY.set(
-                ConsequenceBoundary.TOOL_RELEASE_BATCH
-            )
+            token = _CURRENT_CONSEQUENCE_BOUNDARY.set(ConsequenceBoundary.TOOL_RELEASE_BATCH)
             try:
                 return original_partition(calls)
             finally:
                 _CURRENT_CONSEQUENCE_BOUNDARY.reset(token)
-
         jk._phase4_partition_structured_tool_calls = governed_partition
 
     original_admission = getattr(jk, "_phase4_executor_admission_decision", None)
     if callable(original_admission):
         @wraps(original_admission)
-        def governed_admission(
-            payload: Any,
-            *,
-            expected_call: Optional[dict[str, Any]] = None,
-        ) -> Any:
+        def governed_admission(payload: Any, *, expected_call: Optional[dict[str, Any]] = None) -> Any:
             allowed_fields = {
-                "protocol_version",
-                "runtime_id",
-                "lane_id",
-                "tool_call_id",
-                "tool_name",
-                "arguments",
-                "executor_cwd",
-                "executor_platform",
+                "protocol_version", "runtime_id", "lane_id", "tool_call_id",
+                "tool_name", "arguments", "executor_cwd", "executor_platform",
                 "command_dialect",
             }
-            protocol_version = getattr(
-                jk,
-                "PHASE4_EXECUTOR_ADMISSION_PROTOCOL_VERSION",
-                None,
-            )
-            if (
-                isinstance(payload, dict)
-                and not (set(payload) - allowed_fields)
-                and payload.get("protocol_version") == protocol_version
-            ):
-                runtime_matches = (
-                    str(payload.get("runtime_id") or "").strip()
-                    == str(getattr(jk, "RUNTIME_ID", ""))
-                )
-                lane_matches = (
-                    str(payload.get("lane_id") or "").strip()
-                    == str(getattr(jk, "LANE_ID", ""))
-                )
+            protocol_version = getattr(jk, "PHASE4_EXECUTOR_ADMISSION_PROTOCOL_VERSION", None)
+            if isinstance(payload, dict) and not (set(payload) - allowed_fields) and payload.get("protocol_version") == protocol_version:
+                runtime_matches = str(payload.get("runtime_id") or "").strip() == str(getattr(jk, "RUNTIME_ID", ""))
+                lane_matches = str(payload.get("lane_id") or "").strip() == str(getattr(jk, "LANE_ID", ""))
                 decision = evaluator(
-                    (
-                        ExecutorAdmissionIdentityFact(
-                            runtime_matches=runtime_matches,
-                            lane_matches=lane_matches,
-                            call_matches=True,
-                        ),
-                    ),
+                    (ExecutorAdmissionIdentityFact(runtime_matches=runtime_matches, lane_matches=lane_matches, call_matches=True),),
                     boundary=ConsequenceBoundary.EXECUTOR_ADMISSION,
                 )
                 if decision.outcome is outcome_type.DENY_AND_CONTINUE:
-                    if (
-                        decision.containment_scope
-                        is not ContainmentScope.EXECUTOR_ADMISSION
-                    ):
-                        raise AssertionError(
-                            "Executor identity denial escaped admission scope"
-                        )
+                    if decision.containment_scope is not ContainmentScope.EXECUTOR_ADMISSION:
+                        raise AssertionError("Executor identity denial escaped admission scope")
                     if not runtime_matches:
-                        raise jk.HTTPException(
-                            status_code=409,
-                            detail="Phase-4 executor admission runtime identity mismatch",
-                        )
+                        raise jk.HTTPException(status_code=409, detail="Phase-4 executor admission runtime identity mismatch")
                     if not lane_matches:
-                        raise jk.HTTPException(
-                            status_code=409,
-                            detail="Phase-4 executor admission lane identity mismatch",
-                        )
+                        raise jk.HTTPException(status_code=409, detail="Phase-4 executor admission lane identity mismatch")
 
-            token = _CURRENT_CONSEQUENCE_BOUNDARY.set(
-                ConsequenceBoundary.EXECUTOR_ADMISSION
-            )
+            token = _CURRENT_CONSEQUENCE_BOUNDARY.set(ConsequenceBoundary.EXECUTOR_ADMISSION)
             try:
-                return original_admission(
-                    payload,
-                    expected_call=expected_call,
-                )
+                return original_admission(payload, expected_call=expected_call)
             finally:
                 _CURRENT_CONSEQUENCE_BOUNDARY.reset(token)
-
         jk._phase4_executor_admission_decision = governed_admission
 
-    # Runtime manifests remain observational. Authority comes from the installed
-    # consequence boundary, not from manifest presence.
     jk._JACK_CONSEQUENCE_GATE_INSTALLED = True

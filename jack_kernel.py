@@ -10852,6 +10852,7 @@ def run_server() -> None:
 
 def _install_bundled_runtime_extensions() -> None:
     """Install Jack's bundled authority/security extensions for every supported entrypoint."""
+    import jack_consequence_gate
     import jack_evidence_guard
     import jack_path_policy
     import jack_responses_compat
@@ -10887,12 +10888,18 @@ def _install_bundled_runtime_extensions() -> None:
             canary_policy=canary_policy,
         )
 
+    # Phase 5 is Kernel-owned authority. Install it explicitly from the shared
+    # bundled-extension seam after predecessor security policy is bound and
+    # before compatibility surfaces are registered.
+    jack_consequence_gate.install(module)
+
     jack_responses_compat.register(module)
     root = Path(__file__).resolve().parent
     _register_runtime_manifest_components({
         "jack_secure_entrypoint.py": root / "jack_secure_entrypoint.py",
         "jack_evidence_guard.py": Path(jack_evidence_guard.__file__).resolve(),
         "jack_path_policy.py": Path(jack_path_policy.__file__).resolve(),
+        "jack_consequence_gate.py": Path(jack_consequence_gate.__file__).resolve(),
         "jack_responses_compat.py": Path(jack_responses_compat.__file__).resolve(),
     })
 
