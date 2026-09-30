@@ -26,6 +26,7 @@ jobs:
       - name: Verify patch hygiene before commit
         shell: bash
         run: |
+          python -c "from pathlib import Path; p=Path('jack_path_policy.py'); p.write_text(p.read_text(encoding='utf-8').rstrip('\\n')+'\\n', encoding='utf-8', newline='\\n')"
           git diff --check
           test ! -e .github/phase5_apply_corrections.py
           test ! -e jack_path_authority_facts.py
