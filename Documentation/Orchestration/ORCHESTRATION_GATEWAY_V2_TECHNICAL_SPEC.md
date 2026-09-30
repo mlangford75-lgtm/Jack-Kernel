@@ -389,3 +389,31 @@ The Phase 0–3 Kernel security layer is orthogonal to orchestration lifecycle s
 - Security status, runtime observability, task/run lifecycle, and physical settlement remain distinct facts. Each is authoritative only within its owning deterministic mechanism.
 
 The validated Phase 0–3 security checkpoint is documented at `docs/security/SECURITY_LAYER_PHASE0_3_VALIDATED_2026-09-27.md`. Restricted Paths and Workspace Lock are Phase 4 work and are not retroactively claimed by this Gateway v2 specification.
+
+<!-- PHASE4_ORCHESTRATION_SECURITY_INTERACTION_2026-09-30 -->
+
+## 19. Phase-4 Restricted Paths and Workspace Lock interaction
+
+Phase 4 is validated at implementation freeze `0e897b801d5b5da8d604cf21556b40da769c26fe`.
+
+The Phase 0-3 discussion in Section 18 remains preserved as historical checkpoint documentation. Its statement that Restricted Paths and Workspace Lock were future work describes the earlier checkpoint only.
+
+Current rules:
+
+- a positive deterministic NEVER-path match is a Kernel hard-security decision;
+- an ordinary deterministic outside-workspace filesystem consequence is normally `DENY_AND_CONTINUE`;
+- neither result gives a supervisor authority to fabricate cancellation, settlement, worker termination, run ownership, or runtime activity state;
+- independently safe cognition and independently safe sibling consequences remain preservable where protocol truth permits;
+- deterministic non-filesystem PowerShell providers and pathless ordinary commands are not converted into workspace violations merely because cwd is elsewhere;
+- the supervisor must not bypass Jack to evade a path-policy decision;
+- represented-path authorization does not claim final-object filesystem attestation.
+
+Security outcome, runtime observability, task/run ownership, cancellation, physical settlement, and orchestration authority remain separate deterministic domains.
+
+Current Phase-4 validation record:
+
+`docs/security/SECURITY_LAYER_PHASE4_VALIDATED_2026-09-30.md`
+
+Current governing amendment:
+
+`Documentation/Security/GOVERNING_DOCUMENT_SECURITY_AMENDMENT_PHASE_4_2026-09-30.md`
