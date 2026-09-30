@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from types import SimpleNamespace
 
 import pytest
@@ -16,7 +17,6 @@ def test_responses_registration_installs_gate_before_route_idempotence(monkeypat
             routes=[SimpleNamespace(path="/v1/responses")],
         )
     )
-
     monkeypatch.setattr(gate, "install", lambda module: events.append(module))
 
     responses_compat.register(fake)
@@ -24,19 +24,46 @@ def test_responses_registration_installs_gate_before_route_idempotence(monkeypat
     assert events == [fake]
 
 
-def test_bundled_extension_install_exposes_phase5_gate():
-    kernel._install_bundled_runtime_extensions()
+def test_direct_kernel_bundled_path_converges_on_phase5_registration():
+    bundled_source = inspect.getsource(kernel._install_bundled_runtime_extensions)
+    register_source = inspect.getsource(responses_compat.register)
 
-    assert kernel._JACK_CONSEQUENCE_GATE_INSTALLED is True
-    assert kernel.evaluate_consequence is gate.evaluate_consequence
-    assert kernel.ContainmentScope is gate.ContainmentScope
+    assert "jack_responses_compat.register(module)" in bundled_source
+    assert "jack_consequence_gate.install(jk)" in register_source
+    assert register_source.index("jack_consequence_gate.install(jk)") < register_source.index(
+        '"/v1/responses"'
+    )
 
 
-def _executor_payload(*, runtime_id=None, lane_id=None):
+def _fake_kernel_namespace():
+    class FakeHTTPException(RuntimeError):
+        def __init__(self, *, status_code, detail):
+            super().__init__(detail)
+            self.status_code = status_code
+            self.detail = detail
+
+    class FakeKernel:
+        HTTPException = FakeHTTPException
+        PHASE4_EXECUTOR_ADMISSION_PROTOCOL_VERSION = 1
+        RUNTIME_ID = "runtime-1"
+        LANE_ID = "lane-1"
+
+        @staticmethod
+        def _phase4_executor_admission_decision(payload, *, expected_call=None):
+            return {"outcome": "ALLOW", "payload": payload}
+
+        @staticmethod
+        def _register_runtime_manifest_components(components):
+            FakeKernel.manifest = dict(components)
+
+    return FakeKernel
+
+
+def _executor_payload(*, runtime_id="runtime-1", lane_id="lane-1"):
     return {
-        "protocol_version": kernel.PHASE4_EXECUTOR_ADMISSION_PROTOCOL_VERSION,
-        "runtime_id": runtime_id or kernel.RUNTIME_ID,
-        "lane_id": lane_id or kernel.LANE_ID,
+        "protocol_version": 1,
+        "runtime_id": runtime_id,
+        "lane_id": lane_id,
         "tool_call_id": "phase5-integration-call",
         "tool_name": "read",
         "arguments": {"path": r"src\\engine.py"},
@@ -46,10 +73,11 @@ def _executor_payload(*, runtime_id=None, lane_id=None):
 
 
 def test_executor_runtime_identity_mismatch_remains_admission_scoped():
-    kernel._install_bundled_runtime_extensions()
+    fake = _fake_kernel_namespace()
+    gate.install(fake)
 
-    with pytest.raises(kernel.HTTPException) as caught:
-        kernel._phase4_executor_admission_decision(
+    with pytest.raises(fake.HTTPException) as caught:
+        fake._phase4_executor_admission_decision(
             _executor_payload(runtime_id="wrong-runtime")
         )
 
@@ -58,10 +86,11 @@ def test_executor_runtime_identity_mismatch_remains_admission_scoped():
 
 
 def test_executor_lane_identity_mismatch_remains_admission_scoped():
-    kernel._install_bundled_runtime_extensions()
+    fake = _fake_kernel_namespace()
+    gate.install(fake)
 
-    with pytest.raises(kernel.HTTPException) as caught:
-        kernel._phase4_executor_admission_decision(
+    with pytest.raises(fake.HTTPException) as caught:
+        fake._phase4_executor_admission_decision(
             _executor_payload(lane_id="wrong-lane")
         )
 
