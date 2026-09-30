@@ -35,6 +35,22 @@ def test_direct_kernel_bundled_path_converges_on_phase5_registration():
     )
 
 
+def test_gate_is_bound_to_the_active_kernel_security_outcome_type():
+    assert gate.SecurityOutcome is kernel.SecurityOutcome
+    assert gate._active_kernel_module() is kernel
+
+
+def test_install_rejects_split_kernel_outcome_identity(monkeypatch):
+    class OtherOutcome:
+        pass
+
+    fake = SimpleNamespace(SecurityOutcome=OtherOutcome)
+    monkeypatch.setattr(gate, "_install_represented_path_gate", lambda: None)
+
+    with pytest.raises(RuntimeError, match="SecurityOutcome identity"):
+        gate.install(fake)
+
+
 def _fake_kernel_namespace():
     class FakeHTTPException(RuntimeError):
         def __init__(self, *, status_code, detail):
@@ -43,6 +59,7 @@ def _fake_kernel_namespace():
             self.detail = detail
 
     class FakeKernel:
+        SecurityOutcome = kernel.SecurityOutcome
         HTTPException = FakeHTTPException
         PHASE4_EXECUTOR_ADMISSION_PROTOCOL_VERSION = 1
         RUNTIME_ID = "runtime-1"
