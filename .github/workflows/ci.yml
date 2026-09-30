@@ -19,22 +19,31 @@ jobs:
           ref: security-phase5-consequence-gate
           fetch-depth: 0
 
-      - name: Apply narrow Phase-5 authority corrections
-        shell: bash
-        run: python .github/phase5_apply_corrections.py
-
-      - name: Verify patch hygiene before commit
+      - name: Apply narrow Phase-5 authority corrections when staged
         shell: bash
         run: |
+          if [ ! -f .github/phase5_apply_corrections.py ]; then
+            echo "No staged correction applicator remains; nothing to apply."
+            exit 0
+          fi
+          python .github/phase5_apply_corrections.py
+          # Workflow files are restored to the checked-out version here because
+          # the Actions token is intentionally not workflow-authoritative. The
+          # authenticated repository connector restores final read-only CI later.
+          git checkout -- .github/workflows/ci.yml
           python -c "from pathlib import Path; p=Path('jack_path_policy.py'); p.write_text(p.read_text(encoding='utf-8').rstrip('\\n')+'\\n', encoding='utf-8', newline='\\n')"
           git diff --check
           test ! -e .github/phase5_apply_corrections.py
           test ! -e jack_path_authority_facts.py
           git status --short
 
-      - name: Commit corrected draft branch
+      - name: Commit corrected draft branch when changes exist
         shell: bash
         run: |
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "No correction changes to commit."
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
