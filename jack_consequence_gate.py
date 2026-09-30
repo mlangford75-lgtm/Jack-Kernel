@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import wraps
+from pathlib import Path
 from typing import Any, Iterable, Optional, Tuple
 
 from jack_kernel import SecurityOutcome
@@ -34,9 +35,9 @@ def evaluate_consequence(facts: Iterable[ConsequenceFact]) -> ConsequenceDecisio
 
     HARD_INTERRUPT is the only universally dominant outcome because an already
     established hard-security fact may not be masked by a recoverable denial.
-    Among non-hard outcomes, the caller-provided order is preserved. That keeps
-    existing boundary semantics authoritative instead of creating a new global
-    Phase-5 precedence table.
+    If authoritative producers disagree between distinct non-hard dispositions,
+    the gate surfaces the inconsistency instead of inventing a new precedence
+    rule for Phase 5.
     """
 
     items = tuple(facts)
@@ -67,22 +68,39 @@ def evaluate_consequence(facts: Iterable[ConsequenceFact]) -> ConsequenceDecisio
                 evaluated_producers=producers,
             )
 
-    for fact in items:
-        if fact.outcome is not SecurityOutcome.ALLOW:
-            return ConsequenceDecision(
-                outcome=fact.outcome,
-                decisive_fact=fact,
-                evaluated_producers=producers,
-            )
+    non_allow = tuple(
+        fact for fact in items if fact.outcome is not SecurityOutcome.ALLOW
+    )
+    if not non_allow:
+        return ConsequenceDecision(
+            outcome=SecurityOutcome.ALLOW,
+            decisive_fact=None,
+            evaluated_producers=producers,
+        )
 
+    outcomes = frozenset(fact.outcome for fact in non_allow)
+    if len(outcomes) != 1:
+        rendered = ", ".join(
+            f"{fact.producer}={fact.outcome.value}" for fact in non_allow
+        )
+        raise RuntimeError(
+            "Consequence Gate received conflicting authoritative non-hard "
+            f"dispositions: {rendered}"
+        )
+
+    decisive = non_allow[0]
     return ConsequenceDecision(
-        outcome=SecurityOutcome.ALLOW,
-        decisive_fact=None,
+        outcome=decisive.outcome,
+        decisive_fact=decisive,
         evaluated_producers=producers,
     )
 
 
-def _single_fact_decision(producer: str, outcome: SecurityOutcome, reason: str = "") -> SecurityOutcome:
+def _single_fact_decision(
+    producer: str,
+    outcome: SecurityOutcome,
+    reason: str = "",
+) -> SecurityOutcome:
     return evaluate_consequence(
         (ConsequenceFact(producer=producer, outcome=outcome, reason=reason),)
     ).outcome
@@ -139,7 +157,9 @@ def install(jk: Any) -> None:
                         "existing Phase-4 restricted-path hard interrupt",
                     )
                     if decision is not SecurityOutcome.HARD_INTERRUPT:
-                        raise AssertionError("Consequence Gate masked Phase-4 hard security")
+                        raise AssertionError(
+                            "Consequence Gate masked Phase-4 hard security"
+                        )
                 raise
 
             outcome = (
@@ -175,9 +195,17 @@ def install(jk: Any) -> None:
                 "existing Phase-4 executor-admission result",
             )
             if decision is not outcome:
-                raise AssertionError("Consequence Gate changed executor-admission semantics")
+                raise AssertionError(
+                    "Consequence Gate changed executor-admission semantics"
+                )
             return result
 
         jk._phase4_executor_admission_decision = governed_executor_admission
+
+    register_manifest = getattr(jk, "_register_runtime_manifest_components", None)
+    if callable(register_manifest):
+        register_manifest({
+            "jack_consequence_gate.py": Path(__file__).resolve(),
+        })
 
     jk._JACK_CONSEQUENCE_GATE_INSTALLED = True
