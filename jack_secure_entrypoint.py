@@ -3,11 +3,13 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import jack_consequence_gate
 import jack_kernel as jk
 
 
 def main() -> None:
     jk._install_bundled_runtime_extensions()
+    jack_consequence_gate.install(jk)
 
     # The interactive launcher spawns a fresh serving child. Keep both the
     # Responses API compatibility route and the evidence-provenance guard active
