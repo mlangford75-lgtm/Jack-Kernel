@@ -70,17 +70,34 @@ def test_ambiguity_without_workspace_does_not_invent_restriction():
     assert decision.outcome is kernel.SecurityOutcome.ALLOW
 
 
-def test_never_match_keeps_existing_hard_batch_boundary():
-    decision = gate.evaluate_consequence((
-        gate.PathPolicyFact(
-            never_match=True,
-            workspace_configured=True,
-            deterministic=True,
-            inside_workspace=False,
-        ),
-    ))
+def test_never_match_at_prerelease_keeps_existing_hard_batch_boundary():
+    fact = gate.PathPolicyFact(
+        never_match=True,
+        workspace_configured=True,
+        deterministic=True,
+        inside_workspace=False,
+    )
+    decision = gate.evaluate_consequence(
+        (fact,),
+        boundary=gate.ConsequenceBoundary.TOOL_RELEASE_BATCH,
+    )
     assert decision.outcome is kernel.SecurityOutcome.HARD_INTERRUPT
     assert decision.containment_scope is gate.ContainmentScope.TOOL_BATCH
+
+
+def test_same_never_fact_at_executor_admission_has_narrower_blast_radius():
+    fact = gate.PathPolicyFact(
+        never_match=True,
+        workspace_configured=True,
+        deterministic=True,
+        inside_workspace=False,
+    )
+    decision = gate.evaluate_consequence(
+        (fact,),
+        boundary=gate.ConsequenceBoundary.EXECUTOR_ADMISSION,
+    )
+    assert decision.outcome is kernel.SecurityOutcome.HARD_INTERRUPT
+    assert decision.containment_scope is gate.ContainmentScope.EXECUTOR_ADMISSION
 
 
 def test_executor_identity_mismatch_is_admission_scoped():
@@ -172,6 +189,14 @@ def test_different_nonhard_scopes_are_not_broadened():
 def test_observability_object_is_not_gate_authority():
     with pytest.raises(TypeError):
         gate.evaluate_consequence((SimpleNamespace(healthy=False),))
+
+
+def test_boundary_must_be_host_owned_enum():
+    with pytest.raises(TypeError):
+        gate.evaluate_consequence(
+            (gate.PathPolicyFact(),),
+            boundary="executor_admission",
+        )
 
 
 def test_empty_gate_does_not_silently_allow():
