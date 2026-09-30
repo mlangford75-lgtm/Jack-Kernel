@@ -7,12 +7,12 @@ import jack_kernel as kernel
 
 
 def fact(
-    producer: str,
+    kind: gate.ConsequenceFactKind,
     outcome: kernel.SecurityOutcome,
     reason: str = "",
 ) -> gate.ConsequenceFact:
     return gate.ConsequenceFact(
-        producer=producer,
+        kind=kind,
         outcome=outcome,
         reason=reason,
     )
@@ -20,9 +20,9 @@ def fact(
 
 def test_valid_action_is_allowed():
     decision = gate.evaluate_consequence((
-        fact("stage_authority", kernel.SecurityOutcome.ALLOW),
-        fact("tool_authority", kernel.SecurityOutcome.ALLOW),
-        fact("path_policy", kernel.SecurityOutcome.ALLOW),
+        fact(gate.ConsequenceFactKind.STAGE_AUTHORITY, kernel.SecurityOutcome.ALLOW),
+        fact(gate.ConsequenceFactKind.TOOL_AUTHORITY, kernel.SecurityOutcome.ALLOW),
+        fact(gate.ConsequenceFactKind.PATH_POLICY, kernel.SecurityOutcome.ALLOW),
     ))
     assert decision.outcome is kernel.SecurityOutcome.ALLOW
     assert decision.decisive_fact is None
@@ -30,19 +30,32 @@ def test_valid_action_is_allowed():
 
 def test_bad_tool_schema_preserves_existing_recoverable_denial():
     decision = gate.evaluate_consequence((
-        fact("tool_schema", kernel.SecurityOutcome.DENY_AND_CONTINUE),
+        fact(
+            gate.ConsequenceFactKind.TOOL_SCHEMA,
+            kernel.SecurityOutcome.DENY_AND_CONTINUE,
+        ),
     ))
     assert decision.outcome is kernel.SecurityOutcome.DENY_AND_CONTINUE
 
 
 def test_wrong_stage_preserves_existing_recoverable_denial():
     decision = gate.evaluate_consequence((
-        fact("stage_authority", kernel.SecurityOutcome.DENY_AND_CONTINUE),
+        fact(
+            gate.ConsequenceFactKind.STAGE_AUTHORITY,
+            kernel.SecurityOutcome.DENY_AND_CONTINUE,
+        ),
     ))
     assert decision.outcome is kernel.SecurityOutcome.DENY_AND_CONTINUE
 
 
-@pytest.mark.parametrize("producer", ["task_id", "run_id", "run_epoch"])
+@pytest.mark.parametrize(
+    "kind",
+    [
+        gate.ConsequenceFactKind.TASK_AUTHORITY,
+        gate.ConsequenceFactKind.RUN_AUTHORITY,
+        gate.ConsequenceFactKind.RUN_EPOCH_AUTHORITY,
+    ],
+)
 @pytest.mark.parametrize(
     "producer_outcome",
     [
@@ -52,7 +65,7 @@ def test_wrong_stage_preserves_existing_recoverable_denial():
     ],
 )
 def test_lifecycle_mismatch_cannot_be_silently_promoted_to_allow(
-    producer: str,
+    kind: gate.ConsequenceFactKind,
     producer_outcome: kernel.SecurityOutcome,
 ):
     """Phase 5 must preserve lifecycle-producer severity, not invent it.
@@ -63,17 +76,20 @@ def test_lifecycle_mismatch_cannot_be_silently_promoted_to_allow(
     cannot erase it.
     """
     decision = gate.evaluate_consequence((
-        fact(producer, producer_outcome),
-        fact("tool_authority", kernel.SecurityOutcome.ALLOW),
+        fact(kind, producer_outcome),
+        fact(gate.ConsequenceFactKind.TOOL_AUTHORITY, kernel.SecurityOutcome.ALLOW),
     ))
     assert decision.outcome is producer_outcome
     assert decision.decisive_fact is not None
-    assert decision.decisive_fact.producer == producer
+    assert decision.decisive_fact.kind is kind
 
 
 def test_valid_evidence_survives_centralization():
     decision = gate.evaluate_consequence((
-        fact("evidence_provenance", kernel.SecurityOutcome.ALLOW),
+        fact(
+            gate.ConsequenceFactKind.EVIDENCE_PROVENANCE,
+            kernel.SecurityOutcome.ALLOW,
+        ),
     ))
     assert decision.outcome is kernel.SecurityOutcome.ALLOW
 
@@ -90,64 +106,82 @@ def test_invalid_evidence_preserves_producer_severity(
 ):
     """The gate does not reclassify evidence authority on its own."""
     decision = gate.evaluate_consequence((
-        fact("evidence_provenance", producer_outcome),
+        fact(gate.ConsequenceFactKind.EVIDENCE_PROVENANCE, producer_outcome),
     ))
     assert decision.outcome is producer_outcome
 
 
 def test_approval_required_is_distinct_from_security_failure():
     decision = gate.evaluate_consequence((
-        fact("approval_state", kernel.SecurityOutcome.REQUIRE_USER_DECISION),
+        fact(
+            gate.ConsequenceFactKind.APPROVAL_STATE,
+            kernel.SecurityOutcome.REQUIRE_USER_DECISION,
+        ),
     ))
     assert decision.outcome is kernel.SecurityOutcome.REQUIRE_USER_DECISION
 
 
 def test_workspace_denial_preserves_phase4_narrow_containment():
     decision = gate.evaluate_consequence((
-        fact("workspace_policy", kernel.SecurityOutcome.DENY_AND_CONTINUE),
+        fact(
+            gate.ConsequenceFactKind.WORKSPACE_POLICY,
+            kernel.SecurityOutcome.DENY_AND_CONTINUE,
+        ),
     ))
     assert decision.outcome is kernel.SecurityOutcome.DENY_AND_CONTINUE
 
 
 def test_never_path_hard_interrupt_cannot_be_masked_by_recoverable_fact():
     decision = gate.evaluate_consequence((
-        fact("tool_schema", kernel.SecurityOutcome.DENY_AND_CONTINUE),
-        fact("path_policy", kernel.SecurityOutcome.HARD_INTERRUPT),
+        fact(
+            gate.ConsequenceFactKind.TOOL_SCHEMA,
+            kernel.SecurityOutcome.DENY_AND_CONTINUE,
+        ),
+        fact(
+            gate.ConsequenceFactKind.PATH_POLICY,
+            kernel.SecurityOutcome.HARD_INTERRUPT,
+        ),
     ))
     assert decision.outcome is kernel.SecurityOutcome.HARD_INTERRUPT
     assert decision.decisive_fact is not None
-    assert decision.decisive_fact.producer == "path_policy"
+    assert decision.decisive_fact.kind is gate.ConsequenceFactKind.PATH_POLICY
 
 
 def test_conflicting_non_hard_dispositions_are_not_silently_reordered():
     with pytest.raises(RuntimeError, match="conflicting authoritative non-hard"):
         gate.evaluate_consequence((
-            fact("tool_schema", kernel.SecurityOutcome.DENY_AND_CONTINUE),
-            fact("approval_state", kernel.SecurityOutcome.REQUIRE_USER_DECISION),
+            fact(
+                gate.ConsequenceFactKind.TOOL_SCHEMA,
+                kernel.SecurityOutcome.DENY_AND_CONTINUE,
+            ),
+            fact(
+                gate.ConsequenceFactKind.APPROVAL_STATE,
+                kernel.SecurityOutcome.REQUIRE_USER_DECISION,
+            ),
         ))
 
 
 def test_matching_non_hard_dispositions_compose_without_escalation():
     decision = gate.evaluate_consequence((
-        fact("stage_authority", kernel.SecurityOutcome.DENY_AND_CONTINUE),
-        fact("tool_schema", kernel.SecurityOutcome.DENY_AND_CONTINUE),
+        fact(
+            gate.ConsequenceFactKind.STAGE_AUTHORITY,
+            kernel.SecurityOutcome.DENY_AND_CONTINUE,
+        ),
+        fact(
+            gate.ConsequenceFactKind.TOOL_SCHEMA,
+            kernel.SecurityOutcome.DENY_AND_CONTINUE,
+        ),
     ))
     assert decision.outcome is kernel.SecurityOutcome.DENY_AND_CONTINUE
 
 
-def test_non_authoritative_telemetry_cannot_drive_disposition():
-    with pytest.raises(ValueError, match="Non-authoritative"):
-        gate.evaluate_consequence((
-            gate.ConsequenceFact(
-                producer="telemetry",
-                outcome=kernel.SecurityOutcome.HARD_INTERRUPT,
-                authoritative=False,
-            ),
-        ))
+def test_observability_telemetry_is_not_an_accepted_fact_domain():
+    with pytest.raises(ValueError):
+        gate.ConsequenceFactKind("telemetry")
 
 
 def test_empty_gate_does_not_silently_authorize_without_facts():
-    with pytest.raises(ValueError, match="at least one authoritative fact"):
+    with pytest.raises(ValueError, match="at least one authority fact"):
         gate.evaluate_consequence(())
 
 
@@ -193,6 +227,7 @@ def test_installer_is_idempotent_and_exposes_shared_gate():
     assert fake._tool_call_validation_errors is first_validation
     assert fake._phase4_partition_structured_tool_calls is first_partition
     assert fake.evaluate_consequence is gate.evaluate_consequence
+    assert fake.ConsequenceFactKind is gate.ConsequenceFactKind
     assert fake.ConsequenceFact is gate.ConsequenceFact
     assert "jack_consequence_gate.py" in fake.registered_manifest_components
 
