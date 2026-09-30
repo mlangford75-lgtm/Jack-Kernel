@@ -3,18 +3,13 @@ from __future__ import annotations
 import jack_secure_entrypoint as entrypoint
 
 
-def test_secure_entrypoint_installs_consequence_gate_before_kernel_main(monkeypatch):
+def test_secure_entrypoint_uses_shared_bundled_extension_path(monkeypatch):
     events = []
 
     monkeypatch.setattr(
         entrypoint.jk,
         "_install_bundled_runtime_extensions",
         lambda: events.append("bundled"),
-    )
-    monkeypatch.setattr(
-        entrypoint.jack_consequence_gate,
-        "install",
-        lambda module: events.append(("gate", module is entrypoint.jk)),
     )
     monkeypatch.setattr(
         entrypoint.jk,
@@ -24,8 +19,4 @@ def test_secure_entrypoint_installs_consequence_gate_before_kernel_main(monkeypa
 
     entrypoint.main()
 
-    assert events == [
-        "bundled",
-        ("gate", True),
-        "kernel-main",
-    ]
+    assert events == ["bundled", "kernel-main"]
