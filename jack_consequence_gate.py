@@ -1,12 +1,45 @@
 from __future__ import annotations
 
 import contextvars
+import importlib
+import os
+import sys
 from dataclasses import dataclass
 from enum import Enum
 from functools import wraps
 from typing import Any, Iterable, Optional, Tuple, Union
 
-from jack_kernel import SecurityOutcome
+
+def _active_kernel_module() -> Any:
+    """Return the already-running Jack Kernel module without duplicating identity.
+
+    Direct ``python jack_kernel.py`` execution names the active module ``__main__``.
+    Importing ``jack_kernel`` again from a security extension would create a
+    second runtime/enum/config authority domain in the same process. Prefer and
+    alias the active direct-execution module when present. If both identities
+    already exist and disagree, fail rather than silently split authority.
+    """
+
+    named = sys.modules.get("jack_kernel")
+    main = sys.modules.get("__main__")
+    main_file = os.path.basename(str(getattr(main, "__file__", "") or ""))
+    direct_kernel = main if main_file in {"jack_kernel.py", "jack_kernel.pyc"} else None
+
+    if direct_kernel is not None:
+        if named is not None and named is not direct_kernel:
+            raise RuntimeError(
+                "Jack Kernel module identity is split between __main__ and jack_kernel"
+            )
+        sys.modules["jack_kernel"] = direct_kernel
+        return direct_kernel
+
+    if named is not None:
+        return named
+
+    return importlib.import_module("jack_kernel")
+
+
+SecurityOutcome = _active_kernel_module().SecurityOutcome
 
 
 class ConsequenceBoundary(str, Enum):
@@ -382,6 +415,12 @@ def install(jk: Any) -> None:
     """Install integrations whose disposition and containment are grounded."""
     if getattr(jk, "_JACK_CONSEQUENCE_GATE_INSTALLED", False):
         return
+
+    # The Gate must bind to the exact active Kernel authority domain.
+    if SecurityOutcome is not getattr(jk, "SecurityOutcome", None):
+        raise RuntimeError(
+            "Consequence Gate SecurityOutcome identity does not match active Jack Kernel"
+        )
 
     jk.ConsequenceBoundary = ConsequenceBoundary
     jk.ContainmentScope = ContainmentScope
