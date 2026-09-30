@@ -5,6 +5,13 @@ import path from "path";
 const PROVIDER_NAME = "jack-kernel";
 const DEFAULT_JACK_URL = "http://127.0.0.1:8001";
 const CONFIG_PATH = path.join(os.homedir(), ".pi", "agent", "jack-kernel.json");
+const EXECUTOR_ADMISSION_PROTOCOL_VERSION = 1;
+const STRUCTURED_PATH_TOOLS = new Set(["read", "edit", "write", "grep", "find", "ls"]);
+const COMMAND_DIALECT_BY_TOOL = new Map([
+  ["bash", "bash"],
+  ["powershell", "powershell"],
+  ["pwsh", "powershell"],
+]);
 
 function resolveValue(value) {
   if (typeof value !== "string") return value;
@@ -121,15 +128,41 @@ async function fetchJson(url, token, timeoutMs = 5000) {
   }
 }
 
+async function postJson(url, token, payload, timeoutMs = 5000) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders(token),
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      throw new Error(`Jack Kernel HTTP status ${response.status}: ${await response.text()}`);
+    }
+    return await response.json();
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 async function verifyRuntimeIdentity(url, token, expectedRuntimeId) {
-  if (!expectedRuntimeId) return;
   const root = String(url || DEFAULT_JACK_URL).replace(/\/+$/, "").replace(/\/v1$/, "");
   const health = await fetchJson(`${root}/health`, token);
-  if (String(health?.runtime_id || "") !== expectedRuntimeId) {
+  const actualRuntimeId = String(health?.runtime_id || "");
+  if (!actualRuntimeId) {
+    throw new Error("Jack runtime did not report runtime_id");
+  }
+  if (expectedRuntimeId && actualRuntimeId !== expectedRuntimeId) {
     throw new Error(
-      `Jack runtime identity mismatch: expected ${expectedRuntimeId}, got ${health?.runtime_id || "unknown"}`
+      `Jack runtime identity mismatch: expected ${expectedRuntimeId}, got ${actualRuntimeId || "unknown"}`
     );
   }
+  return health;
 }
 
 async function fetchJackModels(url, token) {
@@ -158,13 +191,21 @@ async function fetchJackModels(url, token) {
 }
 
 export default async function (pi) {
+  let activeRuntimeBinding = null;
+
   async function syncProvider() {
     const { url, token, expectedRuntimeId } = resolveJackTarget();
+    activeRuntimeBinding = null;
     try {
-      await verifyRuntimeIdentity(url, token, expectedRuntimeId);
+      const health = await verifyRuntimeIdentity(url, token, expectedRuntimeId);
       const models = await fetchJackModels(url, token);
       if (!models.length) return;
       const root = String(url || DEFAULT_JACK_URL).replace(/\/+$/, "").replace(/\/v1$/, "");
+      const runtimeId = String(health?.runtime_id || "");
+      const laneId = String(health?.lane_id || "");
+      if (!laneId) {
+        throw new Error("Jack runtime did not report lane_id");
+      }
       const provider = {
         baseUrl: `${root}/v1/`,
         api: "openai-completions",
@@ -172,12 +213,101 @@ export default async function (pi) {
         models,
       };
       pi.registerProvider(PROVIDER_NAME, provider);
+      activeRuntimeBinding = { root, token, runtimeId, laneId };
     } catch (error) {
       console.error("[jack-kernel] Context/model sync skipped:", error);
     }
   }
 
   await syncProvider();
+
+  pi.on("before_provider_headers", (event, ctx) => {
+    const binding = activeRuntimeBinding;
+    if (!binding || String(ctx?.model?.provider || "") !== PROVIDER_NAME) {
+      return;
+    }
+
+    event.headers["X-Jack-Executor-Admission-Version"] =
+      String(EXECUTOR_ADMISSION_PROTOCOL_VERSION);
+    event.headers["X-Jack-Executor-Runtime-Id"] = binding.runtimeId;
+    event.headers["X-Jack-Executor-Lane-Id"] = binding.laneId;
+    event.headers["X-Jack-Executor-Cwd"] = String(ctx?.cwd || "");
+    event.headers["X-Jack-Executor-Platform"] = process.platform;
+    event.headers["X-Jack-Executor-Adapter"] = "pi";
+  });
+
+  pi.on("tool_call", async (event, ctx) => {
+    if (String(ctx?.model?.provider || "") !== PROVIDER_NAME) {
+      return undefined;
+    }
+
+    const toolName = String(event?.toolName || "");
+    const commandDialect = COMMAND_DIALECT_BY_TOOL.get(toolName) || null;
+    if (!STRUCTURED_PATH_TOOLS.has(toolName) && !commandDialect) {
+      return undefined;
+    }
+
+    const binding = activeRuntimeBinding;
+    if (!binding) {
+      return {
+        block: true,
+        reason: "Jack Phase-4 executor admission is unavailable.",
+      };
+    }
+
+    try {
+      const decision = await postJson(
+        `${binding.root}/jack/security/path-admission`,
+        binding.token,
+        {
+          protocol_version: EXECUTOR_ADMISSION_PROTOCOL_VERSION,
+          runtime_id: binding.runtimeId,
+          lane_id: binding.laneId,
+          tool_call_id: String(event?.toolCallId || ""),
+          tool_name: toolName,
+          arguments: event?.input && typeof event.input === "object" ? event.input : {},
+          executor_cwd: String(ctx?.cwd || ""),
+          executor_platform: process.platform,
+          ...(commandDialect ? { command_dialect: commandDialect } : {}),
+        },
+      );
+
+      const outcome = String(decision?.outcome || "");
+      if (decision?.contract_applied !== true) {
+        return {
+          block: true,
+          reason: "Jack Phase-4 executor admission found no matching host-owned contract.",
+        };
+      }
+      if (outcome === "ALLOW") {
+        return undefined;
+      }
+      if (outcome === "HARD_INTERRUPT") {
+        if (typeof ctx?.abort === "function") ctx.abort();
+        return {
+          block: true,
+          reason: "Blocked by Jack Phase-4 restricted-path policy.",
+          terminate: true,
+        };
+      }
+      if (outcome === "DENY_AND_CONTINUE") {
+        return {
+          block: true,
+          reason: "Blocked by Jack Phase-4 Workspace Lock.",
+        };
+      }
+      return {
+        block: true,
+        reason: "Jack Phase-4 executor admission returned an unknown outcome.",
+      };
+    } catch (error) {
+      console.error("[jack-kernel] Phase-4 executor admission failed:", error);
+      return {
+        block: true,
+        reason: "Jack Phase-4 executor admission failed closed for this filesystem action.",
+      };
+    }
+  });
 
   let refreshedThisTurn = false;
   pi.on("before_agent_start", async () => {

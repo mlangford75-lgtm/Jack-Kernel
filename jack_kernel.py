@@ -127,6 +127,15 @@ def is_hard_security_outcome(outcome: SecurityOutcome) -> bool:
     return outcome is SecurityOutcome.HARD_INTERRUPT
 
 
+class Phase4RestrictedPathInterrupt(RuntimeError):
+    """Hard Phase-4 boundary with no protected path detail exposed downstream."""
+
+    security_outcome = SecurityOutcome.HARD_INTERRUPT
+
+    def __init__(self) -> None:
+        super().__init__("Phase-4 restricted-path hard interrupt")
+
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -350,6 +359,73 @@ RUNTIME_ID = _safe_runtime_identifier(
     f"jack-{_safe_runtime_identifier(CFG.reasoning_level, 'runtime')}-{uuid.uuid4().hex[:12]}",
 )
 LANE_ID = _safe_runtime_identifier(CFG.lane_id, RUNTIME_ID)
+
+# Phase 4 path authority is host-owned startup state. It is deliberately
+# separate from ordinary request fields and model-visible conversation state.
+# Binding occurs once before the serving/runtime entrypoint begins accepting
+# work. Later environment changes cannot replace the already-bound snapshot.
+_RUNTIME_PATH_POLICY: Any = None
+
+
+@dataclass(frozen=True)
+class Phase4ExecutorRequestContext:
+    """Trusted transport facts supplied by a cooperating executor adapter."""
+
+    protocol_version: int
+    runtime_id: str
+    lane_id: str
+    cwd: str
+    platform: str
+    adapter: str
+    command_dialect: Optional[str] = None
+
+
+_PHASE4_EXECUTOR_REQUEST_CONTEXT: contextvars.ContextVar[
+    Optional[Phase4ExecutorRequestContext]
+] = contextvars.ContextVar(
+    f"jack_phase4_executor_request_context_{RUNTIME_ID}",
+    default=None,
+)
+
+
+def _phase4_current_executor_context() -> Optional[Phase4ExecutorRequestContext]:
+    return _PHASE4_EXECUTOR_REQUEST_CONTEXT.get()
+
+
+def _bind_runtime_path_policy() -> Any:
+    """Bind exactly one immutable host-owned Phase-4 policy to this runtime/lane."""
+    global _RUNTIME_PATH_POLICY
+
+    if _RUNTIME_PATH_POLICY is not None:
+        return _RUNTIME_PATH_POLICY
+
+    import jack_path_policy
+
+    policy = jack_path_policy.build_runtime_path_policy(
+        runtime_id=RUNTIME_ID,
+        lane_id=LANE_ID,
+        raw_json=os.getenv(
+            jack_path_policy.STATIC_PATH_POLICY_ENV,
+            "",
+        ),
+    )
+
+    if policy.runtime_id != RUNTIME_ID:
+        raise RuntimeError("Path policy runtime ownership mismatch")
+    if policy.lane_id != LANE_ID:
+        raise RuntimeError("Path policy lane ownership mismatch")
+
+    _RUNTIME_PATH_POLICY = policy
+    return policy
+
+
+def _runtime_path_policy() -> Any:
+    """Return the already-bound runtime policy; never synthesize request-local authority."""
+    if _RUNTIME_PATH_POLICY is None:
+        raise RuntimeError("Phase-4 runtime path policy is not bound")
+    return _RUNTIME_PATH_POLICY
+
+
 RUNTIME_STARTED_AT_UNIX = time.time()
 RUNTIME_ENDPOINT_STATE: Dict[str, Any] = {
     "preferred_host": CFG.host,
@@ -2859,6 +2935,327 @@ def _tool_call_validation_errors(
     return errors
 
 
+def _phase4_partition_structured_tool_calls(
+    calls: Any,
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Partition completed calls at the narrowest Phase-4 release boundary.
+
+    Exact structured filesystem tools are canonicalized under Workspace Lock
+    before release. Exact command-capability contracts are authorized using
+    transport-owned executor facts when available. A positive NEVER match
+    interrupts the whole consequential batch before any sibling can be released.
+    """
+
+    if not isinstance(calls, list):
+        return [], []
+
+    if _RUNTIME_PATH_POLICY is None:
+        return [
+            copy.deepcopy(call)
+            for call in calls
+            if isinstance(call, dict)
+        ], []
+
+    import jack_path_policy
+
+    active_policy = _runtime_path_policy()
+    executor_context = _phase4_current_executor_context()
+    executor_cwd = executor_context.cwd if executor_context is not None else None
+    executor_platform = (
+        executor_context.platform
+        if executor_context is not None
+        else None
+    )
+    command_dialect = (
+        executor_context.command_dialect
+        if executor_context is not None
+        else None
+    )
+
+    allowed: List[Dict[str, Any]] = []
+    errors: List[str] = []
+
+    for index, call in enumerate(calls):
+        if not isinstance(call, dict):
+            continue
+
+        function = call.get("function")
+        function_name = (
+            str(function.get("name") or "").strip()
+            if isinstance(function, dict)
+            else ""
+        )
+        raw_arguments = (
+            function.get("arguments")
+            if isinstance(function, dict)
+            else None
+        )
+
+        structured = jack_path_policy.extract_structured_tool_paths(
+            function_name,
+            raw_arguments,
+        )
+
+        if structured.applicable:
+            candidate = (
+                jack_path_policy.rewrite_structured_tool_call_for_workspace_release(
+                    active_policy,
+                    call,
+                )
+            )
+            decision = jack_path_policy.authorize_structured_tool_call(
+                active_policy,
+                candidate,
+                defer_relative_without_executor=False,
+            )
+            contract_applied = True
+        else:
+            decision, contract_applied = (
+                jack_path_policy.authorize_executor_tool_call(
+                    active_policy,
+                    call,
+                    executor_cwd=executor_cwd,
+                    command_dialect=command_dialect,
+                    executor_platform=executor_platform,
+                )
+            )
+            candidate = copy.deepcopy(call)
+
+        if (
+            not contract_applied
+            and active_policy.workspace_enabled
+            and jack_path_policy.is_command_capability_tool_name(function_name)
+        ):
+            errors.append(
+                f"tool call {index}: Workspace Lock requires a deterministic "
+                "command dialect/executor contract"
+            )
+            continue
+
+        if not contract_applied:
+            allowed.append(candidate)
+            continue
+
+        if (
+            decision.outcome
+            is jack_path_policy.PathAuthorizationOutcome.HARD_INTERRUPT
+        ):
+            raise Phase4RestrictedPathInterrupt()
+
+        if (
+            decision.outcome
+            is jack_path_policy.PathAuthorizationOutcome.DENY_AND_CONTINUE
+        ):
+            errors.append(
+                f"tool call {index}: host-owned Phase-4 path policy denied "
+                "the represented filesystem target"
+            )
+            continue
+
+        allowed.append(candidate)
+
+    return allowed, errors
+
+
+def _phase4_structured_tool_authorization_errors(
+    calls: Any,
+) -> List[str]:
+    """Compatibility wrapper returning only recoverable Phase-4 denials."""
+    _, errors = _phase4_partition_structured_tool_calls(calls)
+    return errors
+
+
+PHASE4_EXECUTOR_ADMISSION_PROTOCOL_VERSION = 1
+
+
+def _phase4_executor_admission_decision(
+    payload: Any,
+    *,
+    expected_call: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Evaluate executor facts against Jack-owned immutable Phase-4 policy."""
+
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="Phase-4 executor admission body must be an object",
+        )
+
+    allowed = {
+        "protocol_version",
+        "runtime_id",
+        "lane_id",
+        "tool_call_id",
+        "tool_name",
+        "arguments",
+        "executor_cwd",
+        "executor_platform",
+        "command_dialect",
+    }
+    if set(payload) - allowed:
+        raise HTTPException(
+            status_code=400,
+            detail="Phase-4 executor admission contains unsupported fields",
+        )
+
+    if payload.get("protocol_version") != PHASE4_EXECUTOR_ADMISSION_PROTOCOL_VERSION:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported Phase-4 executor admission protocol version",
+        )
+
+    runtime_id = str(payload.get("runtime_id") or "").strip()
+    if runtime_id != RUNTIME_ID:
+        raise HTTPException(
+            status_code=409,
+            detail="Phase-4 executor admission runtime identity mismatch",
+        )
+
+    lane_id = str(payload.get("lane_id") or "").strip()
+    if lane_id != LANE_ID:
+        raise HTTPException(
+            status_code=409,
+            detail="Phase-4 executor admission lane identity mismatch",
+        )
+
+    tool_call_id = str(payload.get("tool_call_id") or "").strip()
+    if not tool_call_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Phase-4 executor admission requires tool_call_id",
+        )
+
+    tool_name = str(payload.get("tool_name") or "").strip()
+    if not tool_name:
+        raise HTTPException(
+            status_code=400,
+            detail="Phase-4 executor admission requires tool_name",
+        )
+
+    arguments = payload.get("arguments")
+    if not isinstance(arguments, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="Phase-4 executor admission arguments must be an object",
+        )
+
+    executor_cwd = payload.get("executor_cwd")
+    if not isinstance(executor_cwd, str) or not executor_cwd.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Phase-4 executor admission requires executor_cwd",
+        )
+
+    executor_platform = str(
+        payload.get("executor_platform") or ""
+    ).strip().casefold()
+    if not executor_platform:
+        raise HTTPException(
+            status_code=400,
+            detail="Phase-4 executor admission requires executor_platform",
+        )
+
+    command_dialect = payload.get("command_dialect")
+    if (
+        command_dialect is not None
+        and str(command_dialect).strip().casefold()
+        not in {"bash", "powershell"}
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported Phase-4 command dialect",
+        )
+
+    if expected_call is not None:
+        if not isinstance(expected_call, dict):
+            raise HTTPException(
+                status_code=409,
+                detail="Phase-4 executor admission has no valid pending call",
+            )
+        if str(expected_call.get("id") or "").strip() != tool_call_id:
+            raise HTTPException(
+                status_code=409,
+                detail="Phase-4 executor admission tool-call identity mismatch",
+            )
+
+        expected_function = expected_call.get("function")
+        if not isinstance(expected_function, dict):
+            raise HTTPException(
+                status_code=409,
+                detail="Phase-4 executor admission pending call is malformed",
+            )
+
+        if str(expected_function.get("name") or "").strip() != tool_name:
+            raise HTTPException(
+                status_code=409,
+                detail="Phase-4 executor admission tool identity mismatch",
+            )
+
+        expected_arguments = expected_function.get("arguments")
+        if isinstance(expected_arguments, str):
+            try:
+                expected_arguments = json.loads(expected_arguments)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Phase-4 executor admission pending arguments are malformed",
+                ) from exc
+
+        if not isinstance(expected_arguments, dict) or expected_arguments != arguments:
+            raise HTTPException(
+                status_code=409,
+                detail="Phase-4 executor admission arguments do not match the released call",
+            )
+
+    import jack_path_policy
+
+    call = {
+        "id": tool_call_id,
+        "type": "function",
+        "function": {
+            "name": tool_name,
+            "arguments": json.dumps(arguments, ensure_ascii=False),
+        },
+    }
+
+    decision, contract_applied = jack_path_policy.authorize_executor_tool_call(
+        _runtime_path_policy(),
+        call,
+        executor_cwd=executor_cwd,
+        command_dialect=command_dialect,
+        executor_platform=executor_platform,
+    )
+
+    return {
+        "protocol_version": PHASE4_EXECUTOR_ADMISSION_PROTOCOL_VERSION,
+        "runtime_id": RUNTIME_ID,
+        "lane_id": LANE_ID,
+        "tool_call_id": tool_call_id,
+        "outcome": decision.outcome.value,
+        "contract_applied": contract_applied,
+    }
+
+
+def _tool_rejection_notice(
+    errors: Iterable[str],
+    stage_name: str,
+) -> Dict[str, Any]:
+    """Build one host-owned same-stage rejection notice without leaking targets."""
+    items = [str(item) for item in errors if str(item).strip()]
+    return {
+        "role": "user",
+        "content": (
+            "[JACK INTERNAL TOOL REJECTION — SAME STAGE, NOT A NEW USER REQUEST]\n"
+            + f"Stage: {stage_name}\n"
+            + "\n".join(f"- {item}" for item in items)
+            + "\nThe proposed tool action was rejected before execution. Execution evidence: NONE. "
+              "Preserve the useful analysis that led here. If this stage has tool authority, correct the invocation "
+              "if the tool is still needed; otherwise continue the same stage without tools."
+        ),
+        "_jack_internal_tool_validation_rejection": True,
+    }
+
+
 def _tool_rejection_history(
     history: List[Dict[str, Any]], message: Dict[str, Any], errors: List[str], stage_name: str
 ) -> List[Dict[str, Any]]:
@@ -2880,18 +3277,7 @@ def _tool_rejection_history(
     elif isinstance(thinking, str) and thinking:
         checkpoint["thinking"] = thinking
     out.append(checkpoint)
-    out.append({
-        "role": "user",
-        "content": (
-            "[JACK INTERNAL TOOL REJECTION — SAME STAGE, NOT A NEW USER REQUEST]\n"
-            + f"Stage: {stage_name}\n"
-            + "\n".join(f"- {item}" for item in errors)
-            + "\nThe proposed tool action was rejected before execution. Execution evidence: NONE. "
-              "Preserve the useful analysis that led here. If this stage has tool authority, correct the invocation "
-              "if the tool is still needed; otherwise continue the same stage without tools."
-        ),
-        "_jack_internal_tool_validation_rejection": True,
-    })
+    out.append(_tool_rejection_notice(errors, stage_name))
     return out
 
 
@@ -4793,6 +5179,7 @@ class PendingToolResume:
     expected_tool_call_ids: Tuple[str, ...]
     created_at: float
     debugging_run_id: Optional[str] = None
+    deferred_tool_rejection_errors: Tuple[str, ...] = ()
     in_flight: bool = False
 
 
@@ -5045,6 +5432,57 @@ class JackQwenKernel:
                     repair_history, secondary_system, stage_key, usage, tools=tools, tool_choice=tool_choice,
                     append=append, same_stage_resume=True, tool_validation_repair_depth=tool_validation_repair_depth + 1,
                 )
+
+        if msg.get("tool_calls"):
+            allowed_calls, path_authorization_errors = (
+                _phase4_partition_structured_tool_calls(
+                    msg.get("tool_calls")
+                )
+            )
+            if path_authorization_errors:
+                if not allowed_calls:
+                    if tool_validation_repair_depth >= 2:
+                        raise HTTPException(
+                            status_code=502,
+                            detail=(
+                                f"{STAGES[stage_key].name} repeatedly emitted "
+                                "rejected Phase-4 filesystem actions"
+                            ),
+                        )
+                    LOG.warning(
+                        "%s rejected Phase-4 filesystem action before execution",
+                        STAGES[stage_key].name,
+                    )
+                    repair_history = _tool_rejection_history(
+                        history,
+                        msg,
+                        path_authorization_errors,
+                        STAGES[stage_key].name,
+                    )
+                    return await self._run_stage(
+                        repair_history,
+                        secondary_system,
+                        stage_key,
+                        usage,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                        append=append,
+                        same_stage_resume=True,
+                        tool_validation_repair_depth=tool_validation_repair_depth + 1,
+                    )
+
+                LOG.warning(
+                    "%s selectively withheld %d recoverably denied Phase-4 "
+                    "tool call(s) while preserving %d releasable sibling(s)",
+                    STAGES[stage_key].name,
+                    len(path_authorization_errors),
+                    len(allowed_calls),
+                )
+                msg["tool_calls"] = allowed_calls
+                msg["_jack_phase4_deferred_tool_rejection_errors"] = list(
+                    path_authorization_errors
+                )
+
         if not msg.get("tool_calls"):
             if SELF_ADVERSARIAL_MODE and stage_key == "extended_initial":
                 if AGENTIC_MODE and CFG.forensic_archive_mode == "stage":
@@ -5130,9 +5568,12 @@ class JackQwenKernel:
     ) -> AsyncIterator[Dict[str, Any]]:
         """Run one Jack stage with backend streaming and reconstruct its message.
 
-        Packets with kind=reasoning/content/tool_calls are suitable for immediate
-        forwarding to an OpenAI streaming client. The final kind=result packet
-        contains the reconstructed OpenAI-style stage response used internally.
+        Reasoning/content packets remain suitable for immediate forwarding.
+        Executable tool-call fragments are reconstructed privately and are not
+        released from this stage runner. The outer runtime releases one complete
+        tool call only after deterministic validation/Phase-4 authorization and
+        stage-local checkpointing. The final kind=result packet contains the
+        reconstructed OpenAI-style stage response used internally.
         """
         force_native_resume = bool(
             same_stage_resume
@@ -5229,15 +5670,12 @@ class JackQwenKernel:
 
                 tool_deltas = delta.get("tool_calls")
                 if tool_deltas:
+                    # Phase 4 release barrier: executable tool-call fragments stay
+                    # private to Jack until the full call is reconstructed. Normal
+                    # reasoning/content still streams live above. This prevents a
+                    # client/executor from acting on an incomplete or unauthorized
+                    # represented target before deterministic authorization runs.
                     self._merge_tool_call_delta(tool_state, tool_deltas)
-                    # Tool-call arguments are model output too. Large write/edit
-                    # calls can contain most of a coding stage's generated tokens,
-                    # so buffering them until JSON completion defeats live stage
-                    # streaming. Forward each OpenAI delta immediately while the
-                    # reconstruction above retains the exact deterministic call.
-                    if not (CODE_DEBUGGING_MODE and _debugging_pass_from_stage_key(stage_key) is not None):
-                        tool_call_fragments_streamed = True
-                        yield {"kind": "tool_calls", "tool_calls": copy.deepcopy(tool_deltas)}
 
                 if choice.get("finish_reason"):
                     finish_reason = str(choice["finish_reason"])
@@ -5341,6 +5779,65 @@ class JackQwenKernel:
                 ):
                     yield packet
                 return
+
+        if message.get("tool_calls"):
+            allowed_calls, path_authorization_errors = (
+                _phase4_partition_structured_tool_calls(
+                    message.get("tool_calls")
+                )
+            )
+            if path_authorization_errors:
+                if not allowed_calls:
+                    if tool_validation_repair_depth >= 2:
+                        raise HTTPException(
+                            status_code=502,
+                            detail=(
+                                f"{STAGES[stage_key].name} repeatedly emitted "
+                                "rejected Phase-4 filesystem actions"
+                            ),
+                        )
+                    LOG.warning(
+                        "%s rejected streamed Phase-4 filesystem action before execution",
+                        STAGES[stage_key].name,
+                    )
+                    repair_history = _tool_rejection_history(
+                        history,
+                        message,
+                        path_authorization_errors,
+                        STAGES[stage_key].name,
+                    )
+                    yield {
+                        "kind": "reasoning",
+                        "text": (
+                            "\n[JACK PHASE-4 FILESYSTEM ACTION REJECTED BEFORE "
+                            "EXECUTION — CORRECTING IN SAME STAGE]\n"
+                        ),
+                    }
+                    async for packet in self._run_stage_streamed(
+                        repair_history,
+                        secondary_system,
+                        stage_key,
+                        usage,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                        append=append,
+                        same_stage_resume=True,
+                        tool_validation_repair_depth=tool_validation_repair_depth + 1,
+                    ):
+                        yield packet
+                    return
+
+                LOG.warning(
+                    "%s selectively withheld %d streamed recoverably denied "
+                    "Phase-4 tool call(s) while preserving %d releasable sibling(s)",
+                    STAGES[stage_key].name,
+                    len(path_authorization_errors),
+                    len(allowed_calls),
+                )
+                message["tool_calls"] = allowed_calls
+                message["_jack_phase4_deferred_tool_rejection_errors"] = list(
+                    path_authorization_errors
+                )
 
         unexpected_reasoning = message.get("reasoning_content") or message.get("reasoning")
         if unexpected_reasoning and not profile.thinking:
@@ -6097,6 +6594,18 @@ class JackQwenKernel:
         elif isinstance(thinking, str) and thinking:
             checkpoint_message["thinking"] = thinking
         resume_history.append(checkpoint_message)
+        deferred_errors = tuple(
+            str(item)
+            for item in (
+                msg.get("_jack_phase4_deferred_tool_rejection_errors")
+                if isinstance(
+                    msg.get("_jack_phase4_deferred_tool_rejection_errors"),
+                    list,
+                )
+                else []
+            )
+            if str(item).strip()
+        )
         state = PendingToolResume(
             resume_id=f"jack-resume-{uuid.uuid4().hex}",
             stage_key=stage_key,
@@ -6108,6 +6617,7 @@ class JackQwenKernel:
             expected_tool_call_ids=call_ids,
             created_at=time.time(),
             debugging_run_id=debugging_run_id,
+            deferred_tool_rejection_errors=deferred_errors,
         )
         async with self._pending_tool_resume_lock:
             await self._expire_pending_tool_resumes_locked()
@@ -6134,6 +6644,46 @@ class JackQwenKernel:
             finish_reason="tool_calls",
             usage=normalize_usage(dict(usage)),
             reasoning_content=(str(reasoning) if (reasoning and not AGENTIC_MODE) else None),
+        )
+
+    async def _phase4_pending_tool_call_snapshot(
+        self,
+        tool_call_id: str,
+    ) -> Dict[str, Any]:
+        """Return the exact currently released pending call for executor admission."""
+
+        call_id = str(tool_call_id or "").strip()
+        if not call_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Phase-4 executor admission requires tool_call_id",
+            )
+
+        async with self._pending_tool_resume_lock:
+            await self._expire_pending_tool_resumes_locked()
+            state = self._pending_tool_resumes.get(call_id)
+            if state is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Phase-4 executor admission does not match a pending Jack tool call",
+                )
+
+            for message in reversed(state.history):
+                if not isinstance(message, dict):
+                    continue
+                calls = message.get("tool_calls")
+                if not isinstance(calls, list):
+                    continue
+                for call in calls:
+                    if (
+                        isinstance(call, dict)
+                        and str(call.get("id") or "").strip() == call_id
+                    ):
+                        return copy.deepcopy(call)
+
+        raise HTTPException(
+            status_code=500,
+            detail="Pending Jack tool transaction is missing its released call",
         )
 
     async def _consume_pending_tool_resume(
@@ -6188,6 +6738,16 @@ class JackQwenKernel:
                 )
             expected = set(state.expected_tool_call_ids)
             supplied = {i for i in ids_in_request if i in expected}
+            unexpected = set(ids_in_request) - expected
+            if unexpected:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Unexpected {STAGES[state.stage_key].name} tool-result "
+                        "tool_call_id(s): "
+                        + ", ".join(sorted(unexpected))
+                    ),
+                )
             missing = expected - supplied
             if missing:
                 raise HTTPException(
@@ -6204,6 +6764,22 @@ class JackQwenKernel:
             len(matched_messages),
         )
         return state, matched_messages
+
+    @staticmethod
+    def _pending_tool_resume_history(
+        state: PendingToolResume,
+        tool_messages: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        history = list(state.history)
+        history.extend(tool_messages)
+        if state.deferred_tool_rejection_errors:
+            history.append(
+                _tool_rejection_notice(
+                    state.deferred_tool_rejection_errors,
+                    STAGES[state.stage_key].name,
+                )
+            )
+        return history
 
     async def _retire_pending_tool_resume(self, state: PendingToolResume) -> None:
         async with self._pending_tool_resume_lock:
@@ -6512,8 +7088,10 @@ class JackQwenKernel:
         if state.stage_key not in allowed:
             raise HTTPException(status_code=500, detail="Unsupported pending Jack stage resume for active reasoning mode")
 
-        history = list(state.history)
-        history.extend(tool_messages)
+        history = self._pending_tool_resume_history(
+            state,
+            tool_messages,
+        )
         usage = dict(state.usage)
         stage_key = state.stage_key
         debugging_run = _debugging_get_run(state.debugging_run_id) if CODE_DEBUGGING_MODE else None
@@ -6919,9 +7497,18 @@ class JackQwenKernel:
             reasoning_content=str(reasoning) if reasoning else None,
         )
 
-    async def run(self, request_body: Dict[str, Any]) -> KernelResult:
-        async with self._activity_request_scope("nonstream"):
-            return await self._run_impl(request_body)
+    async def run(
+        self,
+        request_body: Dict[str, Any],
+        *,
+        executor_context: Optional[Phase4ExecutorRequestContext] = None,
+    ) -> KernelResult:
+        token = _PHASE4_EXECUTOR_REQUEST_CONTEXT.set(executor_context)
+        try:
+            async with self._activity_request_scope("nonstream"):
+                return await self._run_impl(request_body)
+        finally:
+            _PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
 
     async def _run_impl(self, request_body: Dict[str, Any]) -> KernelResult:
         request_body = sanitize_agent_request(request_body)
@@ -7004,10 +7591,19 @@ class JackQwenKernel:
                 reasoning_content=_stage2_reasoning_trace(prepared.stage2_reasoning),
             )
 
-    async def stream(self, request_body: Dict[str, Any]) -> AsyncIterator[bytes]:
-        async with self._activity_request_scope("stream"):
-            async for chunk in self._stream_impl(request_body):
-                yield chunk
+    async def stream(
+        self,
+        request_body: Dict[str, Any],
+        *,
+        executor_context: Optional[Phase4ExecutorRequestContext] = None,
+    ) -> AsyncIterator[bytes]:
+        token = _PHASE4_EXECUTOR_REQUEST_CONTEXT.set(executor_context)
+        try:
+            async with self._activity_request_scope("stream"):
+                async for chunk in self._stream_impl(request_body):
+                    yield chunk
+        finally:
+            _PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
 
     async def _stream_impl(self, request_body: Dict[str, Any]) -> AsyncIterator[bytes]:
         """Stream the active Jack reasoning program.
@@ -7108,8 +7704,10 @@ class JackQwenKernel:
                     raise HTTPException(status_code=500, detail="Unsupported pending Jack stage resume for active reasoning mode")
                 resume_stage_key = state.stage_key
                 secondary_system = state.secondary_system
-                history = list(state.history)
-                history.extend(tool_messages)
+                history = self._pending_tool_resume_history(
+                    state,
+                    tool_messages,
+                )
                 tools = state.tools
                 tool_choice = state.tool_choice
                 usage = dict(state.usage)
@@ -7331,12 +7929,10 @@ class JackQwenKernel:
                                         name = str(function.get("name") or "tool")
                                         label = "STAGE 1" if stage_key == "extended_initial" else "SYNTHESIS"
                                         yield event({"reasoning_content": f"\n[{label} TOOL GENERATION: {name}]\n"})
-                                    function = call.get("function") if isinstance(call.get("function"), dict) else {}
-                                    arguments = function.get("arguments")
-                                    if arguments is not None:
-                                        text = str(arguments)
-                                        if text:
-                                            yield event({"reasoning_content": text})
+                                    # Raw executable arguments are intentionally
+                                    # not mirrored onto caller-visible reasoning.
+                                    # They remain consequential state until Phase-4
+                                    # authorization has completed.
                             else:
                                 yield event({"tool_calls": packet["tool_calls"]})
                         elif kind == "keepalive":
@@ -8414,6 +9010,88 @@ async def enforce_kernel_auth(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Invalid Jack Kernel API key")
 
 
+def _phase4_executor_context_from_request(
+    request: Request,
+) -> Optional[Phase4ExecutorRequestContext]:
+    """Read executor facts from host transport headers, never from request JSON."""
+
+    header_names = {
+        "version": "x-jack-executor-admission-version",
+        "runtime_id": "x-jack-executor-runtime-id",
+        "lane_id": "x-jack-executor-lane-id",
+        "cwd": "x-jack-executor-cwd",
+        "platform": "x-jack-executor-platform",
+        "adapter": "x-jack-executor-adapter",
+        "command_dialect": "x-jack-executor-command-dialect",
+    }
+    headers = getattr(request, "headers", None)
+    if headers is None:
+        # Preserve compatibility with in-process/test request doubles and other
+        # ordinary callers that provide no executor transport metadata. A real
+        # Starlette/FastAPI Request always exposes headers.
+        return None
+
+    values = {
+        key: str(headers.get(name) or "").strip()
+        for key, name in header_names.items()
+    }
+
+    required_keys = {
+        "version", "runtime_id", "lane_id", "cwd", "platform", "adapter"
+    }
+    if not any(values[key] for key in required_keys) and not values["command_dialect"]:
+        return None
+
+    if any(not values[key] for key in required_keys):
+        raise HTTPException(
+            status_code=400,
+            detail="Incomplete Phase-4 executor transport context",
+        )
+
+    command_dialect = values["command_dialect"].casefold() or None
+    if command_dialect not in {None, "bash", "powershell"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported Phase-4 executor transport command dialect",
+        )
+
+    try:
+        version = int(values["version"])
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid Phase-4 executor transport protocol version",
+        ) from exc
+
+    if version != PHASE4_EXECUTOR_ADMISSION_PROTOCOL_VERSION:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported Phase-4 executor transport protocol version",
+        )
+
+    if values["runtime_id"] != RUNTIME_ID:
+        raise HTTPException(
+            status_code=409,
+            detail="Phase-4 executor transport runtime identity mismatch",
+        )
+
+    if values["lane_id"] != LANE_ID:
+        raise HTTPException(
+            status_code=409,
+            detail="Phase-4 executor transport lane identity mismatch",
+        )
+
+    return Phase4ExecutorRequestContext(
+        protocol_version=version,
+        runtime_id=RUNTIME_ID,
+        lane_id=LANE_ID,
+        cwd=values["cwd"],
+        platform=values["platform"].casefold(),
+        adapter=values["adapter"],
+        command_dialect=command_dialect,
+    )
+
+
 def completion_envelope(result: KernelResult) -> Dict[str, Any]:
     now = int(time.time())
     response_id = f"chatcmpl-jack-{uuid.uuid4().hex}"
@@ -8674,6 +9352,37 @@ async def orchestration_events(request: Request):
     )
 
 
+@APP.post("/jack/security/path-admission")
+async def phase4_executor_path_admission(request: Request) -> Dict[str, Any]:
+    """Universal pre-execution Phase-4 admission for cooperating executor adapters."""
+    await enforce_kernel_auth(request)
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON body: {exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="Phase-4 executor admission body must be an object",
+        )
+
+    tool_call_id = str(payload.get("tool_call_id") or "").strip()
+    if not tool_call_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Phase-4 executor admission requires tool_call_id",
+        )
+
+    expected_call = await KERNEL._phase4_pending_tool_call_snapshot(
+        tool_call_id
+    )
+    return _phase4_executor_admission_decision(
+        payload,
+        expected_call=expected_call,
+    )
+
+
 @APP.get("/jack/tool-evidence/{tool_call_id}")
 async def jack_tool_evidence(tool_call_id: str, request: Request) -> Dict[str, Any]:
     """Read-only exact-key recovery of a retired Pi tool result.
@@ -8786,10 +9495,21 @@ async def lmstudio_compatible_models(request: Request) -> Dict[str, Any]:
     }
 
 
-async def _safe_public_stream(body: Dict[str, Any]) -> AsyncIterator[bytes]:
+async def _safe_public_stream(
+    body: Dict[str, Any],
+    *,
+    executor_context: Optional[Phase4ExecutorRequestContext] = None,
+) -> AsyncIterator[bytes]:
     """Convert internal stage failures into a clean OpenAI SSE termination."""
     try:
-        async for chunk in KERNEL.stream(body):
+        if executor_context is None:
+            stream = KERNEL.stream(body)
+        else:
+            stream = KERNEL.stream(
+                body,
+                executor_context=executor_context,
+            )
+        async for chunk in stream:
             yield chunk
     except Exception as exc:
         LOG.exception("Jack streamed request failed; closing SSE cleanly")
@@ -8835,10 +9555,19 @@ async def chat_completions(request: Request):
     # Agent Authority Boundary. Reconstruct from the allowlist before deciding
     # transport behavior; cognition-control fields are ignored, never forwarded.
     body = sanitize_agent_request(body)
+    executor_context = _phase4_executor_context_from_request(request)
 
     if body.get("stream"):
+        public_stream = (
+            _safe_public_stream(body)
+            if executor_context is None
+            else _safe_public_stream(
+                body,
+                executor_context=executor_context,
+            )
+        )
         return StreamingResponse(
-            _safe_public_stream(body),
+            public_stream,
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache, no-transform",
@@ -8846,7 +9575,13 @@ async def chat_completions(request: Request):
                 "X-Accel-Buffering": "no",
             },
         )
-    result = await KERNEL.run(body)
+    if executor_context is None:
+        result = await KERNEL.run(body)
+    else:
+        result = await KERNEL.run(
+            body,
+            executor_context=executor_context,
+        )
     return JSONResponse(completion_envelope(result))
 
 
@@ -10118,9 +10853,14 @@ def run_server() -> None:
 def _install_bundled_runtime_extensions() -> None:
     """Install Jack's bundled authority/security extensions for every supported entrypoint."""
     import jack_evidence_guard
+    import jack_path_policy
     import jack_responses_compat
 
     module = sys.modules[__name__]
+
+    # Phase 4 startup authority is bound before endpoint compatibility is
+    # registered and before any request can supply ordinary model/caller data.
+    _bind_runtime_path_policy()
 
     if getattr(
         module,
@@ -10152,6 +10892,7 @@ def _install_bundled_runtime_extensions() -> None:
     _register_runtime_manifest_components({
         "jack_secure_entrypoint.py": root / "jack_secure_entrypoint.py",
         "jack_evidence_guard.py": Path(jack_evidence_guard.__file__).resolve(),
+        "jack_path_policy.py": Path(jack_path_policy.__file__).resolve(),
         "jack_responses_compat.py": Path(jack_responses_compat.__file__).resolve(),
     })
 

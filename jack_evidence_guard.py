@@ -1942,8 +1942,16 @@ def install(
     original_run = kernel.run
     original_stream = kernel.stream
 
-    async def guarded_run(request_body: Dict[str, Any]):
-        result = await original_run(request_body)
+    async def guarded_run(
+        request_body: Dict[str, Any],
+        *args: Any,
+        **kwargs: Any,
+    ):
+        result = await original_run(
+            request_body,
+            *args,
+            **kwargs,
+        )
 
         match = _find_canary_in_nonstream_result(
             canary_policy.canaries,
@@ -1966,9 +1974,21 @@ def install(
 
         return result
 
-    async def guarded_stream(request_body: Dict[str, Any]):
+    async def guarded_stream(
+        request_body: Dict[str, Any],
+        *args: Any,
+        **kwargs: Any,
+    ):
+        async def bound_stream(body: Dict[str, Any]):
+            async for chunk in original_stream(
+                body,
+                *args,
+                **kwargs,
+            ):
+                yield chunk
+
         async for chunk in _guarded_stream(
-            original_stream,
+            bound_stream,
             request_body,
             canaries=canary_policy.canaries,
         ):

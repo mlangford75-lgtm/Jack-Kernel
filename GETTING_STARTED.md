@@ -251,3 +251,28 @@ For the exact validated checkpoint and current scope boundaries, read:
 - `Documentation/Security/GOVERNING_DOCUMENT_SECURITY_AMENDMENT_PHASES_0_3_2026-09-27.md`
 
 Jack still does not claim a universal filesystem sandbox or complete consequence-control system. **Restricted Paths + Workspace Lock begins in Phase 4 and is not part of the Phase 0–3 checkpoint.**
+
+<!-- PHASE4_GETTING_STARTED_STATUS_2026-09-30 -->
+
+## Current Phase-4 security checkpoint
+
+Phase 4 ? **Restricted Paths + Workspace Lock** ? is now validated.
+
+Implementation freeze: `0e897b801d5b5da8d604cf21556b40da769c26fe`.
+
+Validation:
+
+- **201/201** targeted Phase-4 tests;
+- **376/376** full Python tests;
+- **7/7** Pi harnesses;
+- clean `git diff --check`.
+
+Current references:
+
+- `docs/security/SECURITY_LAYER_PHASE4_VALIDATED_2026-09-30.md`
+- `Documentation/Security/GOVERNING_DOCUMENT_SECURITY_AMENDMENT_PHASE_4_2026-09-30.md`
+- `Documentation/Security/Jack_Kernel_Security_Hardening_Architecture_2026-09-26.md`
+
+The older Phase 0-3 section remains historical checkpoint documentation. Its statement that Restricted Paths and Workspace Lock were future work is no longer the current implementation state.
+
+Jack still does not claim universal filesystem-object attestation.

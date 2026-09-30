@@ -1,3 +1,37 @@
+# Implementation Status Update ? 30 September 2026
+
+This status update is additive. Every earlier status note and the complete Security Hardening Architecture remain preserved below.
+
+**Validated / implemented through Phase 4:**
+
+- Phase 0 reality and authority mapping
+- deterministic `SecurityOutcome` semantics
+- StreamingIRQ bounded pre-release quarantine
+- malformed-SSE release-barrier correction
+- deterministic Canary enforcement
+- immutable runtime/lane-bound Canary policy
+- Restricted Paths
+- optional Workspace Lock
+- non-stream and streaming represented-target enforcement
+- executor admission
+- bounded recognized Bash/PowerShell command authorization
+- multi-call minimum containment
+- Slice-10 Windows/PowerShell representation closure
+
+**Phase-4 implementation freeze:** `0e897b801d5b5da8d604cf21556b40da769c26fe`
+
+**Planned checkpoint tag:** `security-layer-phase4-validated-2026-09-30`
+
+**Regression state:** 201 targeted Phase-4 tests; 376 full Python tests; seven Pi harnesses; `git diff --check` PASS.
+
+Deterministic NEVER matches remain hard security. Ordinary outside-workspace consequences are denied while safe cognition is preserved. Lack of universal knowledge about unrelated execution semantics is not itself a security violation.
+
+The Path Resolution Gap remains explicit: represented-target authorization does not prove the final object resolved by an external executor or operating system.
+
+Earlier prospective Phase-4 design sections remain preserved below as design provenance.
+
+---
+
 # Implementation Status Update — 27 September 2026
 
 This repository copy preserves the full Security Hardening Architecture design paper below and adds this implementation-status note rather than rewriting the design history.

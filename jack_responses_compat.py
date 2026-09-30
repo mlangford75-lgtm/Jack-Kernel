@@ -239,7 +239,13 @@ def _chat_events(chunk: Any) -> List[Any]:
     return out
 
 
-async def _stream(jk: Any, chat: Dict[str, Any], kinds: Dict[str, str]) -> AsyncIterator[bytes]:
+async def _stream(
+    jk: Any,
+    chat: Dict[str, Any],
+    kinds: Dict[str, str],
+    *,
+    executor_context: Any = None,
+) -> AsyncIterator[bytes]:
     rid, created = f"resp_jack_{uuid.uuid4().hex}", int(time.time())
     stub = {"id": rid, "object": "response", "created_at": created, "status": "in_progress", "model": jk.CFG.virtual_model, "output": []}
     yield _sse("response.created", {"response": stub})
@@ -248,7 +254,14 @@ async def _stream(jk: Any, chat: Dict[str, Any], kinds: Dict[str, str]) -> Async
     visible: List[str] = []; reasoning: List[str] = []; tool_acc: Dict[int, Dict[str, Any]] = {}; usage = None
     msg_open = rs_open = False
     try:
-        async for chunk in jk.KERNEL.stream(chat):
+        if executor_context is None:
+            source_stream = jk.KERNEL.stream(chat)
+        else:
+            source_stream = jk.KERNEL.stream(
+                chat,
+                executor_context=executor_context,
+            )
+        async for chunk in source_stream:
             for obj in _chat_events(chunk):
                 if not isinstance(obj, dict): continue
                 if isinstance(obj.get("usage"), dict): usage = obj["usage"]
@@ -339,9 +352,31 @@ def register(jk: Any) -> None:
         # Reuse the existing public authority filter; Responses parameters cannot
         # override Jack's model, reasoning, sampling, limits, or stage topology.
         chat = jk.sanitize_agent_request(chat)
+        executor_context = jk._phase4_executor_context_from_request(request)
         if body.get("stream"):
-            return StreamingResponse(_stream(jk, chat, kinds), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive"})
-        try: result = await jk.KERNEL.run(chat)
+            response_stream = (
+                _stream(jk, chat, kinds)
+                if executor_context is None
+                else _stream(
+                    jk,
+                    chat,
+                    kinds,
+                    executor_context=executor_context,
+                )
+            )
+            return StreamingResponse(
+                response_stream,
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+            )
+        try:
+            if executor_context is None:
+                result = await jk.KERNEL.run(chat)
+            else:
+                result = await jk.KERNEL.run(
+                    chat,
+                    executor_context=executor_context,
+                )
         except HTTPException: raise
         except Exception as exc:
             jk.LOG.exception("Responses compatibility request failed")

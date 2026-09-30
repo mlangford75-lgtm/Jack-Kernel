@@ -30,7 +30,7 @@ let healthRuntimeId = "runtime-agentic-01";
 const server = http.createServer((req, res) => {
   res.setHeader("Content-Type", "application/json");
   if (req.url === "/health") {
-    res.end(JSON.stringify({ runtime_id: healthRuntimeId }));
+    res.end(JSON.stringify({ runtime_id: healthRuntimeId, lane_id: "lane-agentic-01" }));
     return;
   }
   if (req.url === "/api/v1/models") {
