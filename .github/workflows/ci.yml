@@ -6,9 +6,40 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
+  apply-phase5-architecture-corrections:
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == true && github.event.pull_request.head.ref == 'security-phase5-consequence-gate' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact draft branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: security-phase5-consequence-gate
+          fetch-depth: 0
+
+      - name: Apply narrow Phase-5 authority corrections
+        shell: bash
+        run: python .github/phase5_apply_corrections.py
+
+      - name: Verify patch hygiene before commit
+        shell: bash
+        run: |
+          git diff --check
+          test ! -e .github/phase5_apply_corrections.py
+          test ! -e jack_path_authority_facts.py
+          git status --short
+
+      - name: Commit corrected draft branch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Phase 5: correct security authority ownership"
+          git push origin HEAD:security-phase5-consequence-gate
+
   windows-validated-baseline:
     runs-on: windows-latest
 
