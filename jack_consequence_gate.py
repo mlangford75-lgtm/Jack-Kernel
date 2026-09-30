@@ -1,11 +1,23 @@
 from __future__ import annotations
 
+import contextvars
 from dataclasses import dataclass
 from enum import Enum
 from functools import wraps
 from typing import Any, Iterable, Optional, Tuple, Union
 
 from jack_kernel import SecurityOutcome
+
+
+class ConsequenceBoundary(str, Enum):
+    """Host-owned boundary at which a consequence is about to escape."""
+
+    TOOL_CALL = "tool_call"
+    TOOL_RELEASE_BATCH = "tool_release_batch"
+    EXECUTOR_ADMISSION = "executor_admission"
+    OVERLAP_ADMISSION = "overlap_admission"
+    EVIDENCE_FRAGMENT = "evidence_fragment"
+    CONSEQUENCE = "consequence"
 
 
 class ContainmentScope(str, Enum):
@@ -97,6 +109,13 @@ _AUTHORITY_FACT_TYPES = (
     LifecycleAuthorityFact,
 )
 
+_CURRENT_CONSEQUENCE_BOUNDARY: contextvars.ContextVar[ConsequenceBoundary] = (
+    contextvars.ContextVar(
+        "jack_phase5_consequence_boundary",
+        default=ConsequenceBoundary.TOOL_CALL,
+    )
+)
+
 
 @dataclass(frozen=True)
 class ConsequenceDecision:
@@ -120,7 +139,23 @@ def _single(
     )
 
 
-def _decision_for_fact(fact: AuthorityFact) -> ConsequenceDecision:
+def _path_scope(
+    *,
+    boundary: ConsequenceBoundary,
+    hard: bool,
+) -> ContainmentScope:
+    if boundary is ConsequenceBoundary.EXECUTOR_ADMISSION:
+        return ContainmentScope.EXECUTOR_ADMISSION
+    if hard and boundary is ConsequenceBoundary.TOOL_RELEASE_BATCH:
+        return ContainmentScope.TOOL_BATCH
+    return ContainmentScope.TOOL_CALL
+
+
+def _decision_for_fact(
+    fact: AuthorityFact,
+    *,
+    boundary: ConsequenceBoundary,
+) -> ConsequenceDecision:
     if isinstance(fact, StageToolAuthorityFact):
         return _single(
             fact,
@@ -144,14 +179,14 @@ def _decision_for_fact(fact: AuthorityFact) -> ConsequenceDecision:
             return _single(
                 fact,
                 SecurityOutcome.HARD_INTERRUPT,
-                ContainmentScope.TOOL_BATCH,
+                _path_scope(boundary=boundary, hard=True),
                 True,
             )
         if fact.invalid:
             return _single(
                 fact,
                 SecurityOutcome.DENY_AND_CONTINUE,
-                ContainmentScope.TOOL_CALL,
+                _path_scope(boundary=boundary, hard=False),
                 True,
             )
         if fact.workspace_configured and (
@@ -160,7 +195,7 @@ def _decision_for_fact(fact: AuthorityFact) -> ConsequenceDecision:
             return _single(
                 fact,
                 SecurityOutcome.DENY_AND_CONTINUE,
-                ContainmentScope.TOOL_CALL,
+                _path_scope(boundary=boundary, hard=False),
                 True,
             )
         return _single(fact, SecurityOutcome.ALLOW, ContainmentScope.NONE, False)
@@ -214,8 +249,12 @@ def _decision_for_fact(fact: AuthorityFact) -> ConsequenceDecision:
     raise TypeError(f"Unsupported authority fact type: {type(fact).__name__}")
 
 
-def evaluate_consequence(facts: Iterable[AuthorityFact]) -> ConsequenceDecision:
-    """Map raw deterministic authority facts to disposition and blast radius."""
+def evaluate_consequence(
+    facts: Iterable[AuthorityFact],
+    *,
+    boundary: Optional[ConsequenceBoundary] = None,
+) -> ConsequenceDecision:
+    """Map raw deterministic facts plus release boundary to disposition/scope."""
     items = tuple(facts)
     if not items:
         raise ValueError("Consequence Gate requires at least one authority fact")
@@ -223,8 +262,14 @@ def evaluate_consequence(facts: Iterable[AuthorityFact]) -> ConsequenceDecision:
         raise TypeError(
             "Consequence Gate accepts only typed deterministic authority facts"
         )
+    resolved_boundary = boundary or _CURRENT_CONSEQUENCE_BOUNDARY.get()
+    if not isinstance(resolved_boundary, ConsequenceBoundary):
+        raise TypeError("Consequence Gate boundary must be host-owned ConsequenceBoundary")
 
-    decisions = tuple(_decision_for_fact(fact) for fact in items)
+    decisions = tuple(
+        _decision_for_fact(fact, boundary=resolved_boundary)
+        for fact in items
+    )
     fact_types = tuple(type(fact).__name__ for fact in items)
     non_allow = tuple(
         (fact, decision)
@@ -439,10 +484,11 @@ def _install_represented_path_gate() -> None:
 
 
 def install(jk: Any) -> None:
-    """Install only integrations whose disposition and containment are grounded."""
+    """Install integrations whose disposition and containment are grounded."""
     if getattr(jk, "_JACK_CONSEQUENCE_GATE_INSTALLED", False):
         return
 
+    jk.ConsequenceBoundary = ConsequenceBoundary
     jk.ContainmentScope = ContainmentScope
     jk.UnmappedAuthorityFact = UnmappedAuthorityFact
     jk.StageToolAuthorityFact = StageToolAuthorityFact
@@ -457,6 +503,20 @@ def install(jk: Any) -> None:
     jk.evaluate_consequence = evaluate_consequence
 
     _install_represented_path_gate()
+
+    original_partition = getattr(jk, "_phase4_partition_structured_tool_calls", None)
+    if callable(original_partition):
+        @wraps(original_partition)
+        def governed_partition(calls: Any) -> Any:
+            token = _CURRENT_CONSEQUENCE_BOUNDARY.set(
+                ConsequenceBoundary.TOOL_RELEASE_BATCH
+            )
+            try:
+                return original_partition(calls)
+            finally:
+                _CURRENT_CONSEQUENCE_BOUNDARY.reset(token)
+
+        jk._phase4_partition_structured_tool_calls = governed_partition
 
     original_executor_admission = getattr(jk, "_phase4_executor_admission_decision", None)
     if callable(original_executor_admission):
@@ -487,13 +547,16 @@ def install(jk: Any) -> None:
                     str(payload.get("lane_id") or "").strip()
                     == str(getattr(jk, "LANE_ID", ""))
                 )
-                decision = evaluate_consequence((
-                    ExecutorAdmissionIdentityFact(
-                        runtime_matches=runtime_matches,
-                        lane_matches=lane_matches,
-                        call_matches=True,
+                decision = evaluate_consequence(
+                    (
+                        ExecutorAdmissionIdentityFact(
+                            runtime_matches=runtime_matches,
+                            lane_matches=lane_matches,
+                            call_matches=True,
+                        ),
                     ),
-                ))
+                    boundary=ConsequenceBoundary.EXECUTOR_ADMISSION,
+                )
                 if decision.outcome is SecurityOutcome.DENY_AND_CONTINUE:
                     if decision.containment_scope is not ContainmentScope.EXECUTOR_ADMISSION:
                         raise AssertionError("Executor identity denial escaped admission scope")
@@ -507,7 +570,17 @@ def install(jk: Any) -> None:
                             status_code=409,
                             detail="Phase-4 executor admission lane identity mismatch",
                         )
-            return original_executor_admission(payload, expected_call=expected_call)
+
+            token = _CURRENT_CONSEQUENCE_BOUNDARY.set(
+                ConsequenceBoundary.EXECUTOR_ADMISSION
+            )
+            try:
+                return original_executor_admission(
+                    payload,
+                    expected_call=expected_call,
+                )
+            finally:
+                _CURRENT_CONSEQUENCE_BOUNDARY.reset(token)
 
         jk._phase4_executor_admission_decision = governed_executor_admission
 
