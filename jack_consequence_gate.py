@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from functools import wraps
 from pathlib import Path
 from typing import Any, Iterable, Optional, Tuple
@@ -8,26 +9,49 @@ from typing import Any, Iterable, Optional, Tuple
 from jack_kernel import SecurityOutcome
 
 
+class ConsequenceFactKind(str, Enum):
+    """Deterministic authority domains Phase 5 is permitted to compose.
+
+    The enum is intentionally closed. Ordinary telemetry, UI state, logging
+    health, natural-language claims, and other observational data are not fact
+    kinds and therefore cannot enter disposition merely by naming themselves
+    authoritative.
+    """
+
+    STAGE_AUTHORITY = "stage_authority"
+    TOOL_AUTHORITY = "tool_authority"
+    TOOL_SCHEMA = "tool_schema"
+    TASK_AUTHORITY = "task_authority"
+    RUN_AUTHORITY = "run_authority"
+    RUN_EPOCH_AUTHORITY = "run_epoch_authority"
+    PATH_POLICY = "path_policy"
+    WORKSPACE_POLICY = "workspace_policy"
+    EVIDENCE_PROVENANCE = "evidence_provenance"
+    APPROVAL_STATE = "approval_state"
+    SETTLEMENT_STATE = "settlement_state"
+    SECURITY_HEALTH = "security_health"
+    EXECUTOR_ADMISSION = "executor_admission"
+
+
 @dataclass(frozen=True)
 class ConsequenceFact:
     """One already-established deterministic authority fact.
 
     Phase 5 consumes this representation; it does not discover the fact or
-    reinterpret the producer's existing severity. Non-authoritative state is
-    not valid gate input and should remain outside the disposition boundary.
+    reinterpret the producer's existing severity. Only the explicit authority
+    domains above are accepted by the shared gate.
     """
 
-    producer: str
+    kind: ConsequenceFactKind
     outcome: SecurityOutcome
     reason: str = ""
-    authoritative: bool = True
 
 
 @dataclass(frozen=True)
 class ConsequenceDecision:
     outcome: SecurityOutcome
     decisive_fact: Optional[ConsequenceFact]
-    evaluated_producers: Tuple[str, ...]
+    evaluated_kinds: Tuple[ConsequenceFactKind, ...]
 
 
 def evaluate_consequence(facts: Iterable[ConsequenceFact]) -> ConsequenceDecision:
@@ -42,30 +66,26 @@ def evaluate_consequence(facts: Iterable[ConsequenceFact]) -> ConsequenceDecisio
 
     items = tuple(facts)
     if not items:
-        raise ValueError("Consequence Gate requires at least one authoritative fact")
+        raise ValueError("Consequence Gate requires at least one authority fact")
 
     for fact in items:
         if not isinstance(fact, ConsequenceFact):
             raise TypeError("Consequence Gate accepts ConsequenceFact values only")
-        if not fact.producer.strip():
-            raise ValueError("Consequence fact producer must be named")
-        if not fact.authoritative:
-            raise ValueError(
-                f"Non-authoritative fact from {fact.producer!r} cannot drive disposition"
-            )
+        if not isinstance(fact.kind, ConsequenceFactKind):
+            raise TypeError("Consequence fact kind must be ConsequenceFactKind")
         if not isinstance(fact.outcome, SecurityOutcome):
             raise TypeError(
-                f"Consequence fact {fact.producer!r} must use SecurityOutcome"
+                f"Consequence fact {fact.kind.value!r} must use SecurityOutcome"
             )
 
-    producers = tuple(fact.producer for fact in items)
+    kinds = tuple(fact.kind for fact in items)
 
     for fact in items:
         if fact.outcome is SecurityOutcome.HARD_INTERRUPT:
             return ConsequenceDecision(
                 outcome=SecurityOutcome.HARD_INTERRUPT,
                 decisive_fact=fact,
-                evaluated_producers=producers,
+                evaluated_kinds=kinds,
             )
 
     non_allow = tuple(
@@ -75,13 +95,13 @@ def evaluate_consequence(facts: Iterable[ConsequenceFact]) -> ConsequenceDecisio
         return ConsequenceDecision(
             outcome=SecurityOutcome.ALLOW,
             decisive_fact=None,
-            evaluated_producers=producers,
+            evaluated_kinds=kinds,
         )
 
     outcomes = frozenset(fact.outcome for fact in non_allow)
     if len(outcomes) != 1:
         rendered = ", ".join(
-            f"{fact.producer}={fact.outcome.value}" for fact in non_allow
+            f"{fact.kind.value}={fact.outcome.value}" for fact in non_allow
         )
         raise RuntimeError(
             "Consequence Gate received conflicting authoritative non-hard "
@@ -92,17 +112,17 @@ def evaluate_consequence(facts: Iterable[ConsequenceFact]) -> ConsequenceDecisio
     return ConsequenceDecision(
         outcome=decisive.outcome,
         decisive_fact=decisive,
-        evaluated_producers=producers,
+        evaluated_kinds=kinds,
     )
 
 
 def _single_fact_decision(
-    producer: str,
+    kind: ConsequenceFactKind,
     outcome: SecurityOutcome,
     reason: str = "",
 ) -> SecurityOutcome:
     return evaluate_consequence(
-        (ConsequenceFact(producer=producer, outcome=outcome, reason=reason),)
+        (ConsequenceFact(kind=kind, outcome=outcome, reason=reason),)
     ).outcome
 
 
@@ -119,6 +139,7 @@ def install(jk: Any) -> None:
     if getattr(jk, "_JACK_CONSEQUENCE_GATE_INSTALLED", False):
         return
 
+    jk.ConsequenceFactKind = ConsequenceFactKind
     jk.ConsequenceFact = ConsequenceFact
     jk.ConsequenceDecision = ConsequenceDecision
     jk.evaluate_consequence = evaluate_consequence
@@ -134,7 +155,7 @@ def install(jk: Any) -> None:
                 else SecurityOutcome.ALLOW
             )
             _single_fact_decision(
-                "tool_schema",
+                ConsequenceFactKind.TOOL_SCHEMA,
                 outcome,
                 "existing tool/schema validation result",
             )
@@ -152,7 +173,7 @@ def install(jk: Any) -> None:
             except BaseException as exc:
                 if phase4_interrupt is not None and isinstance(exc, phase4_interrupt):
                     decision = _single_fact_decision(
-                        "path_policy",
+                        ConsequenceFactKind.PATH_POLICY,
                         SecurityOutcome.HARD_INTERRUPT,
                         "existing Phase-4 restricted-path hard interrupt",
                     )
@@ -168,7 +189,7 @@ def install(jk: Any) -> None:
                 else SecurityOutcome.ALLOW
             )
             _single_fact_decision(
-                "path_policy",
+                ConsequenceFactKind.PATH_POLICY,
                 outcome,
                 "existing Phase-4 represented-target decision",
             )
@@ -190,7 +211,7 @@ def install(jk: Any) -> None:
                 except ValueError:
                     return result
             decision = _single_fact_decision(
-                "executor_admission",
+                ConsequenceFactKind.EXECUTOR_ADMISSION,
                 outcome,
                 "existing Phase-4 executor-admission result",
             )
