@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from functools import wraps
-from pathlib import Path
 from typing import Any, Iterable, Optional, Tuple, Union
 
 from jack_kernel import SecurityOutcome
@@ -276,18 +275,19 @@ def evaluate_consequence(facts: Iterable[AuthorityFact]) -> ConsequenceDecision:
     )
 
 
-def _legacy_path_decision(path_policy: Any, decision: ConsequenceDecision, reason: str, canonical: Optional[str] = None) -> Any:
+def _legacy_path_decision(
+    path_policy: Any,
+    decision: ConsequenceDecision,
+    reason: str,
+    canonical: Optional[str] = None,
+) -> Any:
     try:
         legacy_outcome = path_policy.PathAuthorizationOutcome(decision.outcome.value)
     except ValueError as exc:
         raise AssertionError(
             "Phase-5 path decision cannot be represented by the Phase-4 release mechanism"
         ) from exc
-    return path_policy.PathAuthorizationDecision(
-        legacy_outcome,
-        reason,
-        canonical,
-    )
+    return path_policy.PathAuthorizationDecision(legacy_outcome, reason, canonical)
 
 
 def _install_represented_path_gate() -> None:
@@ -417,13 +417,14 @@ def _install_represented_path_gate() -> None:
                 policy.workspace_root,
             )
         )
-        fact = PathPolicyFact(
-            never_match=never_match,
-            workspace_configured=policy.workspace_enabled,
-            deterministic=True,
-            inside_workspace=inside_workspace,
-        )
-        decision = evaluate_consequence((fact,))
+        decision = evaluate_consequence((
+            PathPolicyFact(
+                never_match=never_match,
+                workspace_configured=policy.workspace_enabled,
+                deterministic=True,
+                inside_workspace=inside_workspace,
+            ),
+        ))
 
         if decision.outcome is SecurityOutcome.HARD_INTERRUPT:
             reason = "represented target positively matches a NEVER root"
@@ -455,9 +456,6 @@ def install(jk: Any) -> None:
     jk.ConsequenceDecision = ConsequenceDecision
     jk.evaluate_consequence = evaluate_consequence
 
-    # Phase 4 still owns path normalization and represented-target facts. Phase 5
-    # now owns the final mapping of those facts into ALLOW / DENY / HARD while
-    # preserving the existing Phase-4 release object and containment behavior.
     _install_represented_path_gate()
 
     original_executor_admission = getattr(jk, "_phase4_executor_admission_decision", None)
@@ -513,8 +511,6 @@ def install(jk: Any) -> None:
 
         jk._phase4_executor_admission_decision = governed_executor_admission
 
-    register_manifest = getattr(jk, "_register_runtime_manifest_components", None)
-    if callable(register_manifest):
-        register_manifest({"jack_consequence_gate.py": Path(__file__).resolve()})
-
+    # Runtime manifests remain forensic/observational. Gate authority comes from
+    # the installed consequential boundary, not from appearing in a manifest.
     jk._JACK_CONSEQUENCE_GATE_INSTALLED = True
