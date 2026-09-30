@@ -339,6 +339,13 @@ def _nonstream(jk: Any, result: Any, kinds: Dict[str, str]) -> Dict[str, Any]:
 
 
 def register(jk: Any) -> None:
+    # This is the shared bundled-extension convergence seam used by direct
+    # jack_kernel.py startup, the secure launcher, and Responses compatibility.
+    # Install Phase 5 before route idempotence can return so every supported
+    # Kernel runtime path receives the same consequence-disposition boundary.
+    import jack_consequence_gate
+    jack_consequence_gate.install(jk)
+
     if any(getattr(route, "path", None) == "/v1/responses" for route in jk.APP.routes):
         return
 
