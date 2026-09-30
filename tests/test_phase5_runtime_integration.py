@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from enum import Enum
 from types import SimpleNamespace
 
 import pytest
@@ -40,15 +41,33 @@ def test_gate_is_bound_to_the_active_kernel_security_outcome_type():
     assert gate._active_kernel_module() is kernel
 
 
-def test_install_rejects_split_kernel_outcome_identity(monkeypatch):
-    class OtherOutcome:
-        pass
+def test_install_rejects_incompatible_kernel_outcome_vocabulary(monkeypatch):
+    class OtherOutcome(str, Enum):
+        ALLOW = "ALLOW"
+        HARD_INTERRUPT = "HARD_INTERRUPT"
 
     fake = SimpleNamespace(SecurityOutcome=OtherOutcome)
-    monkeypatch.setattr(gate, "_install_represented_path_gate", lambda: None)
+    monkeypatch.setattr(gate, "_install_represented_path_gate", lambda *args, **kwargs: None)
 
-    with pytest.raises(RuntimeError, match="SecurityOutcome identity"):
+    with pytest.raises(RuntimeError, match="SecurityOutcome vocabulary"):
         gate.install(fake)
+
+
+def test_equivalent_isolated_kernel_enum_receives_its_own_outcome_type(monkeypatch):
+    class IsolatedOutcome(str, Enum):
+        ALLOW = "ALLOW"
+        DENY_AND_CONTINUE = "DENY_AND_CONTINUE"
+        REQUIRE_USER_DECISION = "REQUIRE_USER_DECISION"
+        HARD_INTERRUPT = "HARD_INTERRUPT"
+
+    fake = SimpleNamespace(SecurityOutcome=IsolatedOutcome)
+    monkeypatch.setattr(gate, "_install_represented_path_gate", lambda *args, **kwargs: None)
+
+    gate.install(fake)
+    decision = fake.evaluate_consequence((gate.StageToolAuthorityFact(authorized=False),))
+
+    assert decision.outcome is IsolatedOutcome.DENY_AND_CONTINUE
+    assert decision.containment_scope is gate.ContainmentScope.TOOL_CALL
 
 
 def _fake_kernel_namespace():
@@ -86,7 +105,7 @@ def _executor_payload(*, runtime_id="runtime-1", lane_id="lane-1"):
 
 
 def _install_admission_only(fake, monkeypatch):
-    monkeypatch.setattr(gate, "_install_represented_path_gate", lambda: None)
+    monkeypatch.setattr(gate, "_install_represented_path_gate", lambda *args, **kwargs: None)
     gate.install(fake)
 
 
