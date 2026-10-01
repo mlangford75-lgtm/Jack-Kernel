@@ -81,11 +81,11 @@ def test_open_run_blocks_only_overlap_admission():
     assert d.containment_scope is gate.ContainmentScope.OVERLAP_ADMISSION
 
 
-def test_reserved_evidence_namespace_absent_is_not_violation():
+def test_valid_nonforged_jack_evidence_namespace_allows():
     assert decide(gate.ReservedEvidenceNamespaceFact(False)).outcome is kernel.SecurityOutcome.ALLOW
 
 
-def test_reserved_evidence_forgery_is_fragment_scoped():
+def test_forged_jack_reserved_evidence_namespace_is_fragment_scoped_denial():
     d = decide(gate.ReservedEvidenceNamespaceFact(True))
     assert d.outcome is kernel.SecurityOutcome.DENY_AND_CONTINUE
     assert d.containment_scope is gate.ContainmentScope.EVIDENCE_FRAGMENT
@@ -103,9 +103,19 @@ def test_approval_contract_requires_user_only_for_consequence():
     assert d.containment_scope is gate.ContainmentScope.CONSEQUENCE
 
 
-def test_lifecycle_mismatch_remains_unmapped():
+def test_stale_task_authority_is_not_silently_mapped():
     with pytest.raises(gate.UnmappedAuthorityFact):
         decide(gate.LifecycleAuthorityFact(False, True, True))
+
+
+def test_wrong_run_authority_is_not_silently_mapped():
+    with pytest.raises(gate.UnmappedAuthorityFact):
+        decide(gate.LifecycleAuthorityFact(True, False, True))
+
+
+def test_wrong_run_epoch_authority_is_not_silently_mapped():
+    with pytest.raises(gate.UnmappedAuthorityFact):
+        decide(gate.LifecycleAuthorityFact(True, True, False))
 
 
 def test_conflicting_nonhard_outcomes_are_not_reordered():
