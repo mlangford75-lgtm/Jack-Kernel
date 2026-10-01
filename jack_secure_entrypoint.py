@@ -7,11 +7,13 @@ import jack_kernel as jk
 
 
 def main() -> None:
+    # All bundled authority/security extensions, including the Phase-5
+    # Consequence Gate, converge through this shared Kernel installer.
     jk._install_bundled_runtime_extensions()
 
-    # The interactive launcher spawns a fresh serving child. Keep both the
-    # Responses API compatibility route and the evidence-provenance guard active
-    # in that child rather than falling back to bare jack_kernel.py.
+    # The interactive launcher spawns a fresh serving child. Keep the bundled
+    # runtime-extension path active in that child rather than falling back to a
+    # different authority surface.
     jk._server_command = lambda: [
         sys.executable,
         str(Path(__file__).resolve()),

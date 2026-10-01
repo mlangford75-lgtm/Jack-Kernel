@@ -405,6 +405,7 @@ def test_direct_kernel_entrypoint_installs_bundled_security_and_compatibility():
         "jack_secure_entrypoint.py",
         "jack_evidence_guard.py",
         "jack_path_policy.py",
+        "jack_consequence_gate.py",
         "jack_responses_compat.py",
     }
     assert all(value != "UNAVAILABLE" for value in mod.RUNTIME_MANIFEST_COMPONENTS.values())

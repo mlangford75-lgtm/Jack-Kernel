@@ -82,6 +82,25 @@ class PathAuthorizationDecision:
 
 
 @dataclass(frozen=True)
+class RepresentedPathAuthorityFacts:
+    """Raw deterministic Phase-4 represented-target facts.
+
+    This is the single fact representation for represented-path normalization,
+    NEVER matching, Workspace Lock membership, ambiguity, and executor-cwd
+    deferral. It never claims final filesystem-object resolution or host effect.
+    """
+
+    canonical_target: Optional[str]
+    never_match: bool
+    workspace_configured: bool
+    deterministic: bool
+    inside_workspace: Optional[bool]
+    invalid: bool
+    deferred_to_executor: bool
+    reason: str
+
+
+@dataclass(frozen=True)
 class StructuredToolPathContract:
     """Host-owned contract for one exact structured filesystem tool."""
 
@@ -1941,14 +1960,14 @@ def authorize_structured_tool_call(
     )
 
 
-def authorize_represented_path(
+def inspect_represented_path(
     policy: RuntimePathPolicy,
     represented_path: Any,
     *,
     executor_cwd: Optional[str] = None,
     defer_relative_without_executor: bool = False,
-) -> PathAuthorizationDecision:
-    """Authorize only the represented target facts Phase 4 actually owns."""
+) -> RepresentedPathAuthorityFacts:
+    """Establish raw path facts without choosing a Phase-5 SecurityOutcome."""
 
     if not isinstance(policy, RuntimePathPolicy):
         raise TypeError("policy must be a RuntimePathPolicy")
@@ -1963,9 +1982,18 @@ def authorize_represented_path(
                 environment=environment,
             )
         except RepresentedPathError as exc:
-            return PathAuthorizationDecision(
-                PathAuthorizationOutcome.DENY_AND_CONTINUE,
-                f"executor cwd is not a deterministic absolute Windows path: {exc}",
+            return RepresentedPathAuthorityFacts(
+                canonical_target=None,
+                never_match=False,
+                workspace_configured=policy.workspace_enabled,
+                deterministic=False,
+                inside_workspace=None,
+                invalid=True,
+                deferred_to_executor=False,
+                reason=(
+                    "executor cwd is not a deterministic absolute Windows path: "
+                    f"{exc}"
+                ),
             )
 
     try:
@@ -1976,73 +2004,135 @@ def authorize_represented_path(
         )
     except RepresentedPathNeedsExecutorCwd as exc:
         if defer_relative_without_executor:
-            return PathAuthorizationDecision(
-                PathAuthorizationOutcome.ALLOW,
-                f"executor cwd admission is required before execution: {exc}",
+            return RepresentedPathAuthorityFacts(
+                canonical_target=None,
+                never_match=False,
+                workspace_configured=policy.workspace_enabled,
+                deterministic=False,
+                inside_workspace=None,
+                invalid=False,
+                deferred_to_executor=True,
+                reason=f"executor cwd admission is required before execution: {exc}",
             )
-        if policy.workspace_enabled:
-            return PathAuthorizationDecision(
-                PathAuthorizationOutcome.DENY_AND_CONTINUE,
-                f"workspace membership cannot be established: {exc}",
-            )
-        return PathAuthorizationDecision(
-            PathAuthorizationOutcome.ALLOW,
-            f"no workspace lock; represented target unresolved: {exc}",
+        return RepresentedPathAuthorityFacts(
+            canonical_target=None,
+            never_match=False,
+            workspace_configured=policy.workspace_enabled,
+            deterministic=False,
+            inside_workspace=None,
+            invalid=False,
+            deferred_to_executor=False,
+            reason=(
+                f"workspace membership cannot be established: {exc}"
+                if policy.workspace_enabled
+                else f"no workspace lock; represented target unresolved: {exc}"
+            ),
         )
     except RepresentedPathInvalid as exc:
-        return PathAuthorizationDecision(
-            PathAuthorizationOutcome.DENY_AND_CONTINUE,
-            f"invalid represented path: {exc}",
+        return RepresentedPathAuthorityFacts(
+            canonical_target=None,
+            never_match=False,
+            workspace_configured=policy.workspace_enabled,
+            deterministic=False,
+            inside_workspace=None,
+            invalid=True,
+            deferred_to_executor=False,
+            reason=f"invalid represented path: {exc}",
         )
     except RepresentedPathAmbiguous as exc:
-        if policy.workspace_enabled:
-            return PathAuthorizationDecision(
-                PathAuthorizationOutcome.DENY_AND_CONTINUE,
-                f"workspace membership cannot be established: {exc}",
-            )
-        return PathAuthorizationDecision(
-            PathAuthorizationOutcome.ALLOW,
-            f"no workspace lock; represented target unresolved: {exc}",
+        return RepresentedPathAuthorityFacts(
+            canonical_target=None,
+            never_match=False,
+            workspace_configured=policy.workspace_enabled,
+            deterministic=False,
+            inside_workspace=None,
+            invalid=False,
+            deferred_to_executor=False,
+            reason=(
+                f"workspace membership cannot be established: {exc}"
+                if policy.workspace_enabled
+                else f"no workspace lock; represented target unresolved: {exc}"
+            ),
         )
 
     try:
         comparison_target = _policy_object_windows_path(canonical)
     except RepresentedPathAmbiguous as exc:
-        if policy.workspace_enabled:
-            return PathAuthorizationDecision(
-                PathAuthorizationOutcome.DENY_AND_CONTINUE,
-                f"workspace membership cannot be established: {exc}",
-                canonical,
-            )
-        return PathAuthorizationDecision(
-            PathAuthorizationOutcome.ALLOW,
-            f"no workspace lock; represented target unresolved: {exc}",
-            canonical,
+        return RepresentedPathAuthorityFacts(
+            canonical_target=canonical,
+            never_match=False,
+            workspace_configured=policy.workspace_enabled,
+            deterministic=False,
+            inside_workspace=None,
+            invalid=False,
+            deferred_to_executor=False,
+            reason=(
+                f"workspace membership cannot be established: {exc}"
+                if policy.workspace_enabled
+                else f"no workspace lock; represented target unresolved: {exc}"
+            ),
         )
 
-    for never_root in policy.never_roots:
-        if path_is_within_or_equal(comparison_target, never_root):
-            return PathAuthorizationDecision(
-                PathAuthorizationOutcome.HARD_INTERRUPT,
-                "represented target positively matches a NEVER root",
-                canonical,
-            )
+    never_match = any(
+        path_is_within_or_equal(comparison_target, never_root)
+        for never_root in policy.never_roots
+    )
+    inside_workspace = (
+        None
+        if policy.workspace_root is None
+        else path_is_within_or_equal(comparison_target, policy.workspace_root)
+    )
 
-    if (
-        policy.workspace_root is not None
-        and not path_is_within_or_equal(
-            comparison_target,
-            policy.workspace_root,
-        )
+    if never_match:
+        reason = "represented target positively matches a NEVER root"
+    elif inside_workspace is False:
+        reason = "represented target is outside the configured workspace"
+    else:
+        reason = "represented target is authorized by Phase-4 path policy"
+
+    return RepresentedPathAuthorityFacts(
+        canonical_target=canonical,
+        never_match=never_match,
+        workspace_configured=policy.workspace_enabled,
+        deterministic=True,
+        inside_workspace=inside_workspace,
+        invalid=False,
+        deferred_to_executor=False,
+        reason=reason,
+    )
+
+
+def authorize_represented_path(
+    policy: RuntimePathPolicy,
+    represented_path: Any,
+    *,
+    executor_cwd: Optional[str] = None,
+    defer_relative_without_executor: bool = False,
+) -> PathAuthorizationDecision:
+    """Legacy Phase-4 mapping from the shared raw represented-path facts."""
+
+    facts = inspect_represented_path(
+        policy,
+        represented_path,
+        executor_cwd=executor_cwd,
+        defer_relative_without_executor=defer_relative_without_executor,
+    )
+
+    if facts.deferred_to_executor:
+        outcome = PathAuthorizationOutcome.ALLOW
+    elif facts.never_match:
+        outcome = PathAuthorizationOutcome.HARD_INTERRUPT
+    elif facts.invalid:
+        outcome = PathAuthorizationOutcome.DENY_AND_CONTINUE
+    elif facts.workspace_configured and (
+        not facts.deterministic or facts.inside_workspace is False
     ):
-        return PathAuthorizationDecision(
-            PathAuthorizationOutcome.DENY_AND_CONTINUE,
-            "represented target is outside the configured workspace",
-            canonical,
-        )
+        outcome = PathAuthorizationOutcome.DENY_AND_CONTINUE
+    else:
+        outcome = PathAuthorizationOutcome.ALLOW
 
     return PathAuthorizationDecision(
-        PathAuthorizationOutcome.ALLOW,
-        "represented target is authorized by Phase-4 path policy",
-        canonical,
+        outcome,
+        facts.reason,
+        facts.canonical_target,
     )
