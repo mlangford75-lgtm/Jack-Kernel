@@ -1,10 +1,10 @@
 # Jack Kernel Governing-Document Security Amendment — Phase 5
 
-**Date:** 2026-10-01  
-**Status:** Current governing amendment  
-**Applies to:** Jack Kernel v0.1.1 documentation set  
-**Accepted implementation head:** `551eda0d200fe4b819c3b09cb9480c1ad52f0bdd`  
-**Release merge commit:** `eaf0c2e9663bf9b877c51918f7ccead2b07cb1ba`  
+**Date:** 2026-10-01
+**Status:** Current governing amendment
+**Applies to:** Jack Kernel v0.1.1 documentation set
+**Accepted implementation head:** `551eda0d200fe4b819c3b09cb9480c1ad52f0bdd`
+**Release merge commit:** `eaf0c2e9663bf9b877c51918f7ccead2b07cb1ba`
 **Predecessor:** `GOVERNING_DOCUMENT_SECURITY_AMENDMENT_PHASE_4_2026-09-30.md`
 
 ## 1. Documentation preservation rule
