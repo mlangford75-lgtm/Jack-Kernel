@@ -1,12 +1,12 @@
 # Jack Kernel Security Layer — Phase 5 Validated Checkpoint
 
-**Date:** 2026-10-01  
-**Phase:** Deterministic Consequence Gate  
-**Baseline before Phase 5:** `0c3395154b89b3dbdb1b5448ecce6e38d5d8238e`  
-**Accepted implementation head:** `551eda0d200fe4b819c3b09cb9480c1ad52f0bdd`  
-**Release merge commit on `main`:** `eaf0c2e9663bf9b877c51918f7ccead2b07cb1ba`  
-**Pull request:** #25 — `Phase 5: deterministic Consequence Gate`  
-**Architectural acceptance:** accepted at the Phase-5 stop-gate boundary before merge  
+**Date:** 2026-10-01
+**Phase:** Deterministic Consequence Gate
+**Baseline before Phase 5:** `0c3395154b89b3dbdb1b5448ecce6e38d5d8238e`
+**Accepted implementation head:** `551eda0d200fe4b819c3b09cb9480c1ad52f0bdd`
+**Release merge commit on `main`:** `eaf0c2e9663bf9b877c51918f7ccead2b07cb1ba`
+**Pull request:** #25 — `Phase 5: deterministic Consequence Gate`
+**Architectural acceptance:** accepted at the Phase-5 stop-gate boundary before merge
 **Release state:** merged to `main`; Phase 6 not started
 
 ## Scope
