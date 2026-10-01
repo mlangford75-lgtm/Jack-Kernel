@@ -1,6 +1,6 @@
 # Phase 5 — Deterministic Consequence Gate
 
-**Status:** Released and validated on `main`  
+**Status:** Released and validated on `main`
 **Date:** 2026-10-01
 
 Phase 5 centralizes deterministic consequence disposition while preserving distributed fact ownership and minimum containment.
