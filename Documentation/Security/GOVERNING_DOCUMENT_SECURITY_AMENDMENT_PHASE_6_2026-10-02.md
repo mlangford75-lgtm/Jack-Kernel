@@ -1,12 +1,12 @@
 # Jack Kernel Governing-Document Security Amendment — Phase 6
 
-**Date:** 2026-10-02  
-**Status:** Documentation/checkpoint closure candidate pending separate merge and tag authorization  
-**Applies to:** Jack Kernel v0.1.1 documentation set  
-**Accepted implementation head:** `6bb326bde22cd96ee8ba13227005b88e9d2184f0`  
-**Implementation merge commit:** `04d7c0843ca6830afaeff4b1bd65e90c87770595`  
-**Implementation merge tree:** `82485fc24b9960a3ea2125ef7e0898b470b52e84`  
-**Predecessor:** `GOVERNING_DOCUMENT_SECURITY_AMENDMENT_PHASE_5_2026-10-01.md`  
+**Date:** 2026-10-02
+**Status:** Documentation/checkpoint closure candidate pending separate merge and tag authorization
+**Applies to:** Jack Kernel v0.1.1 documentation set
+**Accepted implementation head:** `6bb326bde22cd96ee8ba13227005b88e9d2184f0`
+**Implementation merge commit:** `04d7c0843ca6830afaeff4b1bd65e90c87770595`
+**Implementation merge tree:** `82485fc24b9960a3ea2125ef7e0898b470b52e84`
+**Predecessor:** `GOVERNING_DOCUMENT_SECURITY_AMENDMENT_PHASE_5_2026-10-01.md`
 **Intended final checkpoint tag:** `security-layer-phase6-validated-2026-10-02` — not yet created
 
 ## 1. Documentation preservation rule
