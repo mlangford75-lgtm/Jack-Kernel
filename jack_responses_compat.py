@@ -338,7 +338,72 @@ def _nonstream(jk: Any, result: Any, kinds: Dict[str, str]) -> Dict[str, Any]:
             "usage": _usage(getattr(result, "usage", None)), "metadata": {}}
 
 
+_CALLER_SYSTEM_STAGE_DELIMITER = "\n\n--- JACK RUNTIME STAGE CONTRACT ---\n"
+_CALLER_SYSTEM_COMPAT_MARKER = "_JACK_CALLER_SYSTEM_CONTRACT_COMPAT_INSTALLED"
+
+
+def _leading_caller_system_contract(jk: Any, messages: Any) -> str:
+    """Return only the leading caller-owned system contract.
+
+    Pi projects its current rendered system prompt as the leading provider-facing
+    ``system`` message. Jack deliberately does not promote caller ``developer``
+    material into this contract: developer/internal scaffolding remains outside
+    the caller-owned cognitive surface.
+    """
+    if not isinstance(messages, list) or not messages:
+        return ""
+    first = messages[0]
+    if not isinstance(first, dict) or first.get("role") != "system":
+        return ""
+    content = first.get("content")
+    if isinstance(content, str):
+        return content
+    return jk._content_to_text(content)
+
+
+def _install_caller_system_contract_compat(jk: Any) -> None:
+    """Install the narrow caller-system compatibility correction once.
+
+    The caller system contract is model-visible cognitive context only. It never
+    changes Jack-owned stage topology, tool authority, security, retention, or
+    consequence authority. Existing stage contracts are obtained byte-for-byte
+    from Jack's original builder and are appended only after the stable caller
+    prefix.
+    """
+    if getattr(jk, _CALLER_SYSTEM_COMPAT_MARKER, False):
+        return
+
+    original_build_stage_system_prompt = jk.build_stage_system_prompt
+
+    def merged_caller_system_prompt(messages: List[Dict[str, Any]]) -> str:
+        contract = _leading_caller_system_contract(jk, messages)
+        if contract:
+            jk.LOG.info(
+                "Preserving leading caller system contract for backend stages (chars=%d)",
+                len(contract),
+            )
+        return contract
+
+    def build_stage_system_prompt(
+        caller_system: str,
+        profile: Any,
+        messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        stage_contract = original_build_stage_system_prompt("", profile, messages)
+        caller_contract = caller_system if isinstance(caller_system, str) else str(caller_system or "")
+        if not caller_contract:
+            return stage_contract
+        if not stage_contract:
+            return caller_contract
+        return caller_contract + _CALLER_SYSTEM_STAGE_DELIMITER + stage_contract
+
+    jk.merged_secondary_system_prompt = merged_caller_system_prompt
+    jk.build_stage_system_prompt = build_stage_system_prompt
+    setattr(jk, _CALLER_SYSTEM_COMPAT_MARKER, True)
+
+
 def register(jk: Any) -> None:
+    _install_caller_system_contract_compat(jk)
     if any(getattr(route, "path", None) == "/v1/responses" for route in jk.APP.routes):
         return
 
