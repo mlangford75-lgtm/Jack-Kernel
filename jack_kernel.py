@@ -10552,6 +10552,9 @@ def _test_backend(cfg: Dict[str, Any]) -> None:
 
 def _config_to_env(cfg: Dict[str, Any]) -> Dict[str, str]:
     env = os.environ.copy()
+    # A stale parent-process value from an older Jack launcher must not leak into
+    # the server child. The legacy secondary-prompt channel is retired.
+    env.pop("JACK_SECONDARY_SYSTEM_PROMPT_FILE", None)
     values = {
         "JACK_HOST": cfg["host"],
         "JACK_PORT": cfg["port"],
