@@ -9,57 +9,6 @@ permissions:
   contents: read
 
 jobs:
-  phase6-manifest-patch:
-    if: github.event_name == 'pull_request' && github.head_ref == 'phase6-authority-security-ledger'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Check out exact Phase-6 branch
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          ref: phase6-authority-security-ledger
-          fetch-depth: 0
-
-      - name: Insert ledger into runtime manifest identity exactly once
-        shell: pwsh
-        run: |
-          @'
-          from pathlib import Path
-          path = Path("jack_kernel.py")
-          text = path.read_text(encoding="utf-8")
-          anchor = (
-              '        "jack_consequence_gate.py": Path(jack_consequence_gate.__file__).resolve(),\n'
-              '        "jack_responses_compat.py": Path(jack_responses_compat.__file__).resolve(),'
-          )
-          replacement = (
-              '        "jack_consequence_gate.py": Path(jack_consequence_gate.__file__).resolve(),\n'
-              '        "jack_authority_ledger.py": root / "jack_authority_ledger.py",\n'
-              '        "jack_responses_compat.py": Path(jack_responses_compat.__file__).resolve(),'
-          )
-          assert text.count(anchor) == 1, "expected exact runtime-manifest anchor once"
-          assert '"jack_authority_ledger.py": root / "jack_authority_ledger.py"' not in text
-          path.write_text(text.replace(anchor, replacement), encoding="utf-8", newline="\n")
-          '@ | python -
-          git diff --check
-          $changed = @(git diff --name-only)
-          if ($changed.Count -ne 1 -or $changed[0] -ne "jack_kernel.py") {
-            throw "Temporary patcher changed an unexpected file: $($changed -join ', ')"
-          }
-          $numstat = git diff --numstat -- jack_kernel.py
-          if ($numstat -ne "1`t0`tjack_kernel.py") {
-            throw "Expected exactly one added kernel line; got: $numstat"
-          }
-
-      - name: Commit exact one-line manifest correction
-        shell: pwsh
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -- jack_kernel.py
-          git commit -m "Phase 6: include ledger in runtime manifest identity"
-          git push origin HEAD:phase6-authority-security-ledger
-
   windows-validated-baseline:
     runs-on: windows-latest
 
