@@ -6,6 +6,7 @@ from enum import Enum
 from functools import wraps
 from typing import Any, Callable, Iterable, Optional, Tuple, Union
 
+import jack_authority_ledger as authority_ledger
 import jack_path_policy as path_policy
 
 
@@ -308,7 +309,19 @@ def _install_represented_path_gate(evaluator: Callable[..., ConsequenceDecision]
             executor_cwd=executor_cwd,
             defer_relative_without_executor=defer_relative_without_executor,
         )
-        return _legacy_path_decision(evaluator((raw,)), raw)
+        decision = evaluator((raw,))
+        authority_ledger.record_represented_path_decision_failsoft(
+            deterministic=raw.deterministic,
+            never_match=raw.never_match,
+            workspace_configured=raw.workspace_configured,
+            inside_workspace=raw.inside_workspace,
+            invalid=raw.invalid,
+            deferred_to_executor=raw.deferred_to_executor,
+            outcome=decision.outcome,
+            containment_scope=decision.containment_scope,
+            boundary=_CURRENT_CONSEQUENCE_BOUNDARY.get(),
+        )
+        return _legacy_path_decision(decision, raw)
 
     governed._jack_phase5_consequence_gate = True
     governed._jack_phase5_legacy_authorizer = original
@@ -323,6 +336,14 @@ def install(jk: Any) -> None:
 
     outcome_type = getattr(jk, "SecurityOutcome", None)
     _require_compatible_outcome_type(outcome_type)
+
+    # Phase 6 is installed only for the real Kernel-owned convergence path.
+    # Lightweight policy-test fakes remain valid Phase-5 evaluator hosts without
+    # acquiring runtime/process authority they do not possess.
+    ledger = None
+    if callable(getattr(jk, "_install_bundled_runtime_extensions", None)):
+        ledger = authority_ledger.install(jk)
+
     evaluator = _bound_evaluator(outcome_type)
 
     jk.ConsequenceBoundary = ConsequenceBoundary
@@ -347,7 +368,10 @@ def install(jk: Any) -> None:
         def governed_partition(calls: Any) -> Any:
             token = _CURRENT_CONSEQUENCE_BOUNDARY.set(ConsequenceBoundary.TOOL_RELEASE_BATCH)
             try:
-                return original_partition(calls)
+                if ledger is None:
+                    return original_partition(calls)
+                with authority_ledger.live_ledger_scope(ledger):
+                    return original_partition(calls)
             finally:
                 _CURRENT_CONSEQUENCE_BOUNDARY.reset(token)
         jk._phase4_partition_structured_tool_calls = governed_partition
@@ -369,6 +393,14 @@ def install(jk: Any) -> None:
                     (ExecutorAdmissionIdentityFact(runtime_matches=runtime_matches, lane_matches=lane_matches),),
                     boundary=ConsequenceBoundary.EXECUTOR_ADMISSION,
                 )
+                if ledger is not None:
+                    authority_ledger.record_executor_identity_decision_failsoft(
+                        ledger,
+                        runtime_matches=runtime_matches,
+                        lane_matches=lane_matches,
+                        outcome=decision.outcome,
+                        containment_scope=decision.containment_scope,
+                    )
                 if decision.outcome is outcome_type.DENY_AND_CONTINUE:
                     if decision.containment_scope is not ContainmentScope.EXECUTOR_ADMISSION:
                         raise AssertionError("Executor identity denial escaped admission scope")
@@ -379,7 +411,10 @@ def install(jk: Any) -> None:
 
             token = _CURRENT_CONSEQUENCE_BOUNDARY.set(ConsequenceBoundary.EXECUTOR_ADMISSION)
             try:
-                return original_admission(payload, expected_call=expected_call)
+                if ledger is None:
+                    return original_admission(payload, expected_call=expected_call)
+                with authority_ledger.live_ledger_scope(ledger):
+                    return original_admission(payload, expected_call=expected_call)
             finally:
                 _CURRENT_CONSEQUENCE_BOUNDARY.reset(token)
         jk._phase4_executor_admission_decision = governed_admission
