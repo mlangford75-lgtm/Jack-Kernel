@@ -147,3 +147,32 @@ def test_closed_event_schema_rejects_unsafe_metadata_and_loose_booleans(tmp_path
         active.record_executor_identity_decision(runtime_matches="yes", lane_matches=True, outcome="ALLOW", containment_scope="none")
     assert active.active_head.sequence == 0
     active.close()
+
+
+def test_committed_projection_bytes_are_immutable_after_authority_transition(tmp_path, monkeypatch):
+    active = make(tmp_path, instance="immutable-projection")
+    monkeypatch.setattr(active, "_ensure_writer", lambda: None)
+
+    record = active.record_canary_match(canary_id="kernel:original", tier="A")
+    with pytest.raises(TypeError):
+        record.payload["canary_id"] = "changed-after-digest"
+
+    caller_copy = dict(record.payload)
+    caller_copy["canary_id"] = "changed-copy"
+
+    projection = active._projection_queue.get_nowait()
+    try:
+        assert isinstance(projection, ledger.ProjectionRequest)
+        assert projection.sequence == record.sequence
+        assert projection.record_digest == record.record_digest
+        active._project_one(projection)
+    finally:
+        active._projection_queue.task_done()
+
+    projected_files = list(active.records_dir.glob("*.json"))
+    assert len(projected_files) == 1
+    persisted = json.loads(projected_files[0].read_text(encoding="utf-8"))
+    stored_digest = persisted.pop("record_digest")
+    assert persisted["payload"]["canary_id"] == "kernel:original"
+    assert ledger._digest_record_material(persisted) == stored_digest == record.record_digest
+    active.close()
