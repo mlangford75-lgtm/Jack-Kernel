@@ -163,7 +163,7 @@ def test_caller_contract_does_not_change_kernel_authority_surfaces(monkeypatch):
     before = {
         key: (
             profile.name,
-            profile.enable_thinking,
+            profile.thinking,
             profile.reasoning_effort,
             profile.allow_tools,
             profile.temperature,
@@ -175,7 +175,7 @@ def test_caller_contract_does_not_change_kernel_authority_surfaces(monkeypatch):
     after = {
         key: (
             profile.name,
-            profile.enable_thinking,
+            profile.thinking,
             profile.reasoning_effort,
             profile.allow_tools,
             profile.temperature,
