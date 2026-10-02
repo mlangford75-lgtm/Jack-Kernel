@@ -1,17 +1,17 @@
 # Jack Kernel Security Layer — Phase 6 Validated Checkpoint Candidate
 
-**Date:** 2026-10-02  
-**Phase:** Runtime-Scoped Authority & Security Ledger  
-**Baseline before Phase 6:** `a0ac5b3db1e9278bef8eecbc0bfd1bce94aa22a4`  
-**Accepted implementation head:** `6bb326bde22cd96ee8ba13227005b88e9d2184f0`  
-**Implementation merge commit on `main`:** `04d7c0843ca6830afaeff4b1bd65e90c87770595`  
-**Implementation merge tree:** `82485fc24b9960a3ea2125ef7e0898b470b52e84`  
-**Merge parent 1 — previous Phase-5 `main`:** `a0ac5b3db1e9278bef8eecbc0bfd1bce94aa22a4`  
-**Merge parent 2 — accepted Phase-6 candidate:** `6bb326bde22cd96ee8ba13227005b88e9d2184f0`  
-**Implementation pull request:** #27 — `Phase 6: runtime-scoped Authority & Security Ledger`  
-**Architectural acceptance:** accepted at the Phase-6 implementation stop-gate boundary before merge  
-**Implementation state:** merged to `main` and post-merge validated  
-**Documentation state:** closure candidate pending separate merge and tag authorization  
+**Date:** 2026-10-02
+**Phase:** Runtime-Scoped Authority & Security Ledger
+**Baseline before Phase 6:** `a0ac5b3db1e9278bef8eecbc0bfd1bce94aa22a4`
+**Accepted implementation head:** `6bb326bde22cd96ee8ba13227005b88e9d2184f0`
+**Implementation merge commit on `main`:** `04d7c0843ca6830afaeff4b1bd65e90c87770595`
+**Implementation merge tree:** `82485fc24b9960a3ea2125ef7e0898b470b52e84`
+**Merge parent 1 — previous Phase-5 `main`:** `a0ac5b3db1e9278bef8eecbc0bfd1bce94aa22a4`
+**Merge parent 2 — accepted Phase-6 candidate:** `6bb326bde22cd96ee8ba13227005b88e9d2184f0`
+**Implementation pull request:** #27 — `Phase 6: runtime-scoped Authority & Security Ledger`
+**Architectural acceptance:** accepted at the Phase-6 implementation stop-gate boundary before merge
+**Implementation state:** merged to `main` and post-merge validated
+**Documentation state:** closure candidate pending separate merge and tag authorization
 **Intended final checkpoint tag:** `security-layer-phase6-validated-2026-10-02` — not yet created
 
 ## Scope
