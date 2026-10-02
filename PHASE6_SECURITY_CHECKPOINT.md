@@ -1,6 +1,6 @@
 # Phase 6 — Runtime-Scoped Authority & Security Ledger
 
-**Status:** Implementation merged and post-merge validated on `main`; documentation/checkpoint closure candidate pending separate merge and tag authorization  
+**Status:** Implementation merged and post-merge validated on `main`; documentation/checkpoint closure candidate pending separate merge and tag authorization
 **Date:** 2026-10-02
 
 Phase 6 adds a runtime-scoped Authority & Security Ledger that records Jack Kernel's deterministic authority decisions and Kernel-owned security events without becoming the source of the authority it records.
