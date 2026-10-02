@@ -6,202 +6,145 @@
 
 **Be strict about truth, identity, authority, and irreversible consequences; be resilient about useful work.**
 
-<!-- PHASE4_CURRENT_SECURITY_STATUS_2026-09-30 -->
+Jack Kernel is a **local-first, host-authoritative inference mediation and control runtime** that sits between an application or agent and an OpenAI-compatible model backend.
 
-## Current validated security checkpoint — Phases 0–4
+Jack is **not the agent and not the LLM**. The agent chooses the task and workflow. The model supplies probabilistic cognition. Jack owns deterministic boundaries around that cognition: stage topology, reasoning and sampling controls, tool exposure, context projection, answer/commit authority, retention, evidence handling, runtime identity, consequence disposition, and selected security controls.
 
-As of **30 September 2026**, Phase 4 — **Restricted Paths + Workspace Lock** — is validated implementation reality.
+Deep Research, Agentic, and Code Debugging are **reference programs built on the kernel**. They demonstrate what Jack can express; they are not the product boundary.
 
-Implementation freeze: `0e897b801d5b5da8d604cf21556b40da769c26fe`.
-
-Checkpoint release: `security-layer-phase4-validated-2026-09-30` at merge commit `0c15331d4673412befc626b64d7c4e52f7018fb4`.
-
-Phase 4 adds host-owned immutable path policy, deterministic NEVER-path enforcement, optional Workspace Lock, represented-path normalization, bounded recognized Bash/PowerShell command authorization, non-stream and streaming consequence-release enforcement, executor admission, and minimum multi-call containment.
-
-Validation reached **201 targeted Phase-4 tests, 376 full Python tests, all 7 Pi harnesses, and clean `git diff --check`**.
-
-Current Phase-4 references:
-
-- `docs/security/SECURITY_LAYER_PHASE4_VALIDATED_2026-09-30.md`
-- `Documentation/Security/GOVERNING_DOCUMENT_SECURITY_AMENDMENT_PHASE_4_2026-09-30.md`
-- `Documentation/Security/Jack_Kernel_Security_Hardening_Architecture_2026-09-26.md`
-
-The Phase 0-3 checkpoint remains historical evidence. Older statements below describing Restricted Paths or Workspace Lock as future work describe that earlier checkpoint, not the current Phase-4 state.
-
-Phase 4 does not claim a universal filesystem sandbox. Jack authorizes represented targets it can deterministically observe; final-object resolution remains an executor/OS boundary.
-
-## Historical Phase 0–3 security checkpoint
-
-As of **27 September 2026**, Jack Kernel ships a validated incremental host-authoritative security layer on top of the existing v0.1.1 runtime. This does **not** replace the broader programmable-safety architecture and does **not** turn Jack into a universal sandbox. It makes a specific set of deterministic protections current implementation reality:
-
-- **Phase 0 — reality and authority mapping:** public cognition-release, tool, resume, evidence, runtime-identity, configuration, ownership, and concurrency seams were mapped before hardening.
-- **Phase 1 — deterministic security outcomes:** `ALLOW`, `DENY_AND_CONTINUE`, `REQUIRE_USER_DECISION`, and `HARD_INTERRUPT`; only `HARD_INTERRUPT` carries hard-security classification.
-- **Phase 2 — StreamingIRQ pre-release quarantine:** bounded unreleased-tail inspection preserves already-safe cognition, flushes benign held material on ordinary failure, and withholds unreleased material on hard security interruption.
-- **Malformed-SSE correction:** malformed non-DONE SSE `data:` frames are withheld and raise ordinary `StreamingIRQProtocolError`; protocol failure is not promoted into hard-security authority, and previously proven-safe held cognition is preserved.
-- **Phase 3 — deterministic Canary enforcement:** exact-match Canary detection is enforced across the validated streaming/non-stream release surfaces, with immutable runtime/lane-bound policy and static Tier A/B startup policy through `JACK_CANARY_POLICY_JSON`.
-
-The validated code checkpoint is `9dda35a358baf2814102dcb9c45346116271acfc`. The documentation checkpoint/tag is `security-layer-phase0-3-validated-2026-09-27` at `bdb05a5b364759f5e79ced524bc2a47934a80fee`. Acceptance reached **175 Python tests passed plus all six Pi harnesses**.
-
-Current governing security references:
-
-- [Phase 0–3 validated checkpoint](docs/security/SECURITY_LAYER_PHASE0_3_VALIDATED_2026-09-27.md)
-- [Governing-document security amendment](Documentation/Security/GOVERNING_DOCUMENT_SECURITY_AMENDMENT_PHASES_0_3_2026-09-27.md)
-- [Security Hardening Architecture](Documentation/Security/Jack_Kernel_Security_Hardening_Architecture_2026-09-26.md)
-
-The existing v0.1.1 DOCX guide, runtime specification, preview, and whitepaper remain intact. The governing amendment is additive: it updates their security-status interpretation without deleting historical architecture, rationale, limitations, or evidence. **Phase 4 — Restricted Paths + Workspace Lock — is not yet part of this validated checkpoint.**
-
-
-> **START HERE — Plain-English Master Guide:** [`00_Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx`](00_Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx)
+> **Start here:** [`00_Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx`](00_Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx)
 >
-> This is the first document to read. It explains the kernel, the shipped cognition programs, long-horizon state, Pi integration, and Orchestration Gateway v2 in plain English.
-
-> **MAJOR ARCHITECTURE UPGRADE — MULTI-ENDPOINT RUNTIME LANES**
+> **Install and run:** [`GETTING_STARTED.md`](GETTING_STARTED.md)
 >
-> The merged runtime now supports multiple independently addressable Jack lanes with transport-independent runtime identity, atomic endpoint fallback, positively bound private workers, live runtime verification, and non-authoritative runtime activity observability. Ports remain transport locators, not authority or identity.
+> **Current security state:** [`CURRENT_SECURITY_STATUS.md`](CURRENT_SECURITY_STATUS.md)
 
-## Orchestration at a glance
+## Architecture at a glance
 
-The diagrams below depict the accepted **all-local Jack Orchestrator architecture**: the Jack Orchestrator is a cognition-capable but execution-restricted local supervisor, privileged host consequences remain with Primary Pi, and both supervisor and worker cognition can run through Jack against the configured local backend. With multiple backend concurrency slots, the Jack Orchestrator and Primary Pi may infer concurrently through the same Jack Kernel.
+```text
+Application / Agent / Supervisor
+            |
+            v
+       Jack Kernel
+            |
+            v
+OpenAI-compatible model backend
+```
+
+With Orchestration Gateway v2 enabled, Jack also mediates the supervisor-to-worker control boundary:
+
+```text
+Supervisor
+   |
+   v
+Jack Kernel :8001/jack/orchestration
+   |
+   v
+private authenticated worker bridge
+   |
+   v
+Primary Pi / privileged worker
+   |
+   v
+Jack Kernel :8001/v1
+   |
+   v
+configured local backend
+```
+
+A cloud-model supervisor retains its native cloud cognition and uses Jack for worker control. A local-model supervisor uses Jack for both local cognition and worker control.
+
+The accepted all-local architecture is illustrated here:
 
 ![Jack Kernel Orchestration Architecture Schematic](assets/orchestration/Jack_Kernel_Orchestration_Architecture_Schematic.png)
 
 ![Jack Orchestration Flow](assets/orchestration/jack_orchestration_flow_diagram.png)
 
-**These diagrams depict the all-local reference architecture.** A cloud-model supervisor such as Codex Desktop retains its native cloud cognition and uses Jack only for the supervisor-to-worker control path. Primary Pi remains the local privileged worker whose model inference runs through Jack to the configured local backend. Codex is a reference example of a broader class of cloud-model supervisory agents, not an architectural dependency.
+## What Jack owns
 
-For installation and first-run steps, see [`GETTING_STARTED.md`](GETTING_STARTED.md).
+Jack's host-authoritative boundary includes, where applicable:
 
-Current orchestration documentation is intentionally limited to:
+- caller request reconstruction and hidden-authority stripping;
+- virtual caller-facing model identity versus actual backend identity;
+- mode and stage topology;
+- stage-specific reasoning and sampling controls;
+- tool visibility and tool-call validation;
+- context preparation and long-horizon state projection;
+- answer/commit authority;
+- evidence namespace protection;
+- runtime and lane identity surfaces;
+- supervisor-to-worker orchestration mediation;
+- deterministic security outcomes and consequence disposition;
+- represented-path policy;
+- the current runtime-scoped Authority & Security Ledger.
 
-- [`ORCHESTRATION_GATEWAY_V2_TECHNICAL_SPEC.md`](Documentation/Orchestration/ORCHESTRATION_GATEWAY_V2_TECHNICAL_SPEC.md) — canonical protocol, lifecycle, authority, and supervisor compatibility contract.
-- [`ORCHESTRATOR_INSTRUCTIONS.md`](Documentation/Orchestration/ORCHESTRATOR_INSTRUCTIONS.md) — canonical operating instructions for supervisory agents, including the Codex cloud-supervisor quickstart.
-- [`Documentation/Orchestration/Historical/`](Documentation/Orchestration/Historical/) — dated acceptance evidence and historical records; these are not current runtime identity authority.
+Jack does not acquire authority merely because it can observe a value. Observability is not authority, evidence is not authority, a port is not identity, cancellation is not settlement, and represented targets are not necessarily resolved host objects.
 
-Jack Kernel is a local-first host-authoritative inference mediation/control layer between an agent/client and an OpenAI-compatible model backend. Jack is **not the agent and not the LLM**. The agent chooses the task and application workflow. The model supplies probabilistic cognition. Jack controls the host-governed inference environment and authority boundaries around model cognition: stage topology, reasoning and sampling, tool exposure, context projection, answer/commit authority, retention, evidence handling, and host-side execution boundaries.
+## What Jack does not claim
 
-Deep Research, Agentic, and Code Debugging are **reference programs that demonstrate what can be expressed on the kernel**. They are not the product boundary. Jack can be used to build other staged reasoning, memory, evidence, validation, safety, approval, routing, training-data, and long-horizon workflow layers.
+Jack is not a universal operating-system sandbox, filesystem-object attestation layer, shell-effects oracle, distributed consensus ledger, or proof that every represented consequence was physically realized by an external executor.
 
-## A Note from the Creator — JML
+The current security checkpoint deliberately preserves these boundaries. See [`CURRENT_SECURITY_STATUS.md`](CURRENT_SECURITY_STATUS.md) for the exact current claims and nonclaims.
 
-Jack Kernel is much more than the custom modes shipped with it. Deep Research, Agentic, and Code Debugging are examples of what becomes possible when a deterministic kernel sits between the agent and the LLM. The larger opportunity is to build your own inference layers: dynamic and adaptive reasoning and parameter control, orchestrated agentic workflows, custom staged reasoning, custom context and memory management, model routing, evidence and verification layers, approval gates, and other host-authoritative programs. Treat the bundled modes as starting points, not limits. Experiment, specialize them, replace them, and build new layers that fit your own models and workloads.
+## Current validated state
 
-## Supervisory orchestration — Orchestration Gateway v2
+The current frozen security checkpoint is **Phase 6 — Runtime-Scoped Authority & Security Ledger**.
 
-Jack's host-authoritative boundary extends beyond agent-to-model inference to a supervisor-to-worker control path.
+Validated annotated tag:
 
-All-local reference topology:
+`security-layer-phase6-validated-2026-10-02`
 
-```text
-Jack Orchestrator
-  -> cognition -> Jack Kernel :8001/v1 -> local backend
-  -> supervision -> Jack Kernel :8001/jack/orchestration
-                    -> private Pi bridge
-                    -> Primary Pi
-                    -> Jack Kernel :8001/v1
-                    -> local backend
-```
+Tag object:
 
-Cloud-supervisor topology:
+`1e46b9872db66cc3944b79550aa30509b4c84296`
 
-```text
-Cloud model <-> Cloud supervisor
-Cloud supervisor -> Jack Kernel :8001/jack/orchestration
-                  -> private Pi bridge
-                  -> Primary Pi
-                  -> Jack Kernel :8001/v1
-                  -> local backend
-```
+Validated closure target:
 
-Codex Desktop is one reference cloud supervisor, not an architectural dependency. In cloud-supervisor mode, the supervisor retains native cloud cognition; Jack governs the supervisor-to-worker control path. In local-supervisor mode, supervisor cognition also runs through Jack.
+`51e29b197ab62db410e6b4b43c92688ba613826f`
 
-Gateway v2 provides:
+The cumulative validated security stack is:
 
-- positive run-bound `task_id` / `run_id` / `run_epoch` attribution;
-- replayable SSE with monotonic process-local sequence numbers;
-- explicit readiness and session replacement state;
-- separation of logical cancellation from physical settlement;
-- deterministic worker-unavailable failure;
-- recoverable retry epochs without stale assistant failure poisoning the new live epoch;
-- structured tool failures retained as diagnostics without automatically forcing a recovered task to fail;
-- current runtime identity through the validated bridge and runtime manifest surfaces.
+- **Phases 0–3:** deterministic `SecurityOutcome`, StreamingIRQ bounded pre-release quarantine, malformed-SSE release protection, exact-match Canary enforcement, immutable runtime/lane-bound static Tier A/B Canary policy.
+- **Phase 4:** Restricted Paths, optional Workspace Lock, represented-path normalization, bounded recognized command authorization, executor admission, and minimum multi-call containment.
+- **Phase 5:** deterministic Consequence Gate that consumes typed authoritative facts and selects the narrowest justified disposition without centralizing failure blast radius.
+- **Phase 6:** process-local Authority & Security Ledger with closed event schemas, canonical predecessor chaining, immutable committed projection, bounded fail-soft durability, restart isolation, and narrow ledger-authority freeze semantics.
 
-Accepted public orchestration surface:
+Phase 7 and Phases 8–11 have not started.
 
-```text
-GET  /jack/orchestration/status
-GET  /jack/orchestration/events
-POST /jack/orchestration/tasks
-POST /jack/orchestration/tasks/cancel
-POST /jack/orchestration/session/new
-```
-
-This gateway governs supervisor-to-worker control. It does not claim that Jack intercepts every filesystem/shell/process consequence inside privileged Primary Pi.
-
-## Multi-endpoint runtime lanes
-
-The multi-endpoint runtime substrate extends the existing single-endpoint default without changing Jack's cognition contracts. Multiple isolated Jack OS processes may remain hot at the same time, each with its own runtime/lane identity and reasoning mode while sharing one configured backend model.
-
-Use `start-lane.ps1` for an explicit lane:
-
-```powershell
-.\start-lane.ps1 -RuntimeId jack-agentic-01 -Mode agentic -Port 8101
-.\start-lane.ps1 -RuntimeId jack-debug-01 -Mode code-debugging -Port 8102
-.\start-lane.ps1 -RuntimeId jack-research-01 -Mode deep-research -Port 8103
-```
-
-The configured port is a preference, not identity. With fallback enabled, an occupied preferred loopback port causes Jack to atomically bind an OS-assigned loopback port and publish the actual address. `runtime_id`, `lane_id`, session/task/run identity, and security ownership do not change when the transport endpoint changes.
-
-Current runtime discovery is available from any running lane at:
-
-```text
-GET /jack/runtimes
-```
-
-The registry reports preferred and actual endpoints, fallback state, mode, process identity, backend configuration, and whether shared-backend admission has been explicitly qualified.
-
-**Concurrency boundary:** `JACK_MAX_CONCURRENT` remains a per-process Jack limit. It is not a fleet-wide semaphore across separate lane processes. Multi-lane deployments must rely on a tested bounded-admission/slot mechanism in the shared backend, or later provide an explicit cross-process admission coordinator. `JACK_BACKEND_ADMISSION_QUALIFIED=1` is an operator assertion that this shared-backend behavior has been validated; Jack does not infer it from the existence of local semaphores.
-
-**Privileged-worker boundary:** effect-capable lanes should use one positively named Pi bridge/worker per lane in the first release. Named workers require an explicit control token and are selected with `JACK_PI_CONTROL_BRIDGE_ID`; Jack sends the selected bridge identity on control requests, and a mismatched named worker rejects the request. The worker's Pi provider is separately bound to an explicit owning Jack `runtime_id`, resolves that runtime's current endpoint from the runtime registry, and verifies the identity before model inference. Shared multi-tenant privileged workers are not part of this endpoint upgrade.
-
-### Governance clarification for multi-endpoint operation
-
-The existing multi-endpoint section above remains intact. The following rules govern how it is interpreted after PR #15 and PR #16:
-
-- a port/socket/URL is a transport locator, not runtime identity;
-- registry/manifest state is discovery evidence, while positive live `/health.runtime_id` verification establishes the runtime identity actually reached;
-- named privileged workers remain two-sided bindings: Jack lane -> named Pi worker/bridge, and Pi provider -> owning Jack `runtime_id`;
-- `JACK_MAX_CONCURRENT` remains process-local; lane availability is not fleet-wide backend admission and does not by itself prove physically simultaneous GPU generation;
-- authenticated `GET /jack/runtime/status` is observability only and is never model context or cognition/commit authority;
-- degraded telemetry reports unknown rather than fabricating idle or another known state;
-- client transport disconnect is not cognition-cancellation authority;
-- wrong identity, credentials, run/epoch authority, hard security/DLP violations, unauthorized irreversible effects, and unrecoverable integrity failures remain deterministic authority failures.
-
-Earlier wording that speaks of concurrent/simultaneous local requests should be read as evidence that requests can coexist through shared Jack/backend infrastructure unless a backend-specific test separately proves physical parallel generation. This clarification narrows the evidence claim without deleting the historical wording.
+For exact validation evidence and phase-by-phase nonclaims, use [`CURRENT_SECURITY_STATUS.md`](CURRENT_SECURITY_STATUS.md) and the detailed checkpoint records under [`docs/security/`](docs/security/).
 
 ## Run on Windows
 
-1. Install Python 3. The current validated development/release baseline is **Python 3.14.6**.
-2. From this folder, install the pinned runtime dependencies once:
+The current validated development/release baseline is **Python 3.14.6**. Repository validation additionally uses **Node.js 24.16.0** for the Pi bridge harnesses.
 
-   `py -3 -m pip install -r requirements.txt`
+Install runtime dependencies:
 
-   Repository validation additionally uses `requirements-test.txt` and the pinned **Node.js 24.16.0** baseline for the Pi bridge harnesses.
+```powershell
+py -3 -m pip install -r requirements.txt
+```
 
-3. Start Jack with:
+Start Jack:
 
-   `start.bat`
+```powershell
+.\start.bat
+```
 
-The launcher opens Jack's configuration interface and starts the local OpenAI-compatible server when requested.
+Default agent-facing endpoint:
 
-## Backends
+```text
+http://127.0.0.1:8001/v1
+```
 
 LM Studio is the default backend at `http://127.0.0.1:1234/v1`. Jack also supports Ollama, Jan.ai, raw llama.cpp `llama-server`, and custom OpenAI-compatible endpoints.
 
-Jack's default **agent-facing** listener is `http://127.0.0.1:8001/v1`. Port 8001 is intentionally used so Jack does not collide with a stock vLLM OpenAI-compatible server on port 8000. The Custom OpenAI-compatible backend preset remains `http://127.0.0.1:8000/v1`, allowing the common topology `agent -> Jack :8001 -> vLLM :8000` with no manual port changes.
+Port `8001` is Jack's default agent-facing listener. Port `8000` remains available for the common custom OpenAI-compatible/vLLM backend topology:
 
-Jack keeps the caller-facing virtual model separate from the actually configured backend model. Reasoning and sampling controls are rebuilt from the active Jack profile rather than delegated to caller overrides.
+```text
+agent -> Jack :8001 -> backend :8000
+```
 
-## Reasoning modes
+For complete startup, Pi, lane, security-policy, and regression instructions, see [`GETTING_STARTED.md`](GETTING_STARTED.md).
+
+## Cognition programs
 
 ### Off / Medium / X-High
 
@@ -209,15 +152,15 @@ Direct native backend reasoning modes. They do not run a Jack cognitive stage gr
 
 ### Deep Research
 
-Deep Research is Jack's three-stage Preserve-Thinking reference program for deeply studying difficult and complicated tasks. It deliberately extends one task across Thesis, Antithesis, and Synthesis so the same model can develop a rigorous first-principles plan, challenge that work adversarially, and then authoritatively synthesize and execute the final response with access to the full active reasoning trajectory. Its purpose is to increase the depth, scrutiny, and rigor with which a complicated task is examined before commitment. It does not claim that staging increases the model's latent intelligence; it changes the cognitive process and inference topology around the task.
+Deep Research is Jack's three-stage Preserve-Thinking reference program for difficult and complicated tasks.
 
-- **Stage 1 — Thesis:** X-High @ **0.85**, Preserve Thinking ON, tools physically absent. Thesis reasons from First Principles and produces a concentrated plan for Synthesis.
-- **Stage 2 — Antithesis:** Medium @ **0.70**, Preserve Thinking ON, tools OFF. It challenges the Thesis and original request adversarially and has no answer authority.
+- **Stage 1 — Thesis:** X-High @ **0.85**, Preserve Thinking ON, tools physically absent. Thesis develops a concentrated first-principles plan.
+- **Stage 2 — Antithesis:** Medium @ **0.70**, Preserve Thinking ON, tools OFF. It adversarially challenges Thesis and has no answer authority.
 - **Stage 3 — Synthesis:** X-High @ **0.70**, Preserve Thinking ON, caller tools available when supplied. Synthesis is the sole authoritative reasoning, execution, and final-answer stage.
 
 Only actual host-returned tool results establish tool execution. Jack preserves the active Thesis→Antithesis→Synthesis cognitive trajectory through authoritative Synthesis and later retires transient upstream native reasoning according to the program's retention rules.
 
-Deep Research uses host-side `max_tokens` runaway-loop failsafes of **100000 / 20000 / 100000** for Thesis / Antithesis / Synthesis. They are ceilings, not target lengths.
+Deep Research uses host-side `max_tokens` runaway-loop ceilings of **100000 / 20000 / 100000** for Thesis / Antithesis / Synthesis.
 
 ### Agentic
 
@@ -247,13 +190,11 @@ Preserve Thinking is a short-lived high-bandwidth bridge across the immediate St
 
 **New user? Start with [`Debugging/User_Instructions.md`](Debugging/User_Instructions.md).**
 
-The two debugging modes are intentionally identical in topology, prompts, tool policy, context isolation, temperature cascade, durable reporting, and final synthesis. **Code Debugging** runs every debugging inference at **Medium** reasoning. **Code Debugging (Deep)** runs the same program at **X-High** reasoning.
+The two debugging modes are identical in topology, prompts, tool policy, context isolation, temperature cascade, durable reporting, and final synthesis. **Code Debugging** uses **Medium** reasoning and **Code Debugging (Deep)** uses **X-High** reasoning.
 
-Code Debugging begins with a non-blocking tools-off diagnostic intake, freezes user-origin intake as Pass 0, then runs five fresh report-only single-problem forensic passes against the unchanged target. Each pass searches the same professional review space under the temperature cascade **1.00 → 0.80 → 0.70 → 0.60 → 0.50**.
+Code Debugging begins with a non-blocking tools-off diagnostic intake, freezes user-origin intake as Pass 0, then runs five fresh report-only single-problem forensic passes against the unchanged target. Each pass searches the same review space under the temperature cascade **1.00 → 0.80 → 0.70 → 0.60 → 0.50**.
 
-Every real primary finding is evidence-bound and classified LOW, MEDIUM, HIGH, or CRITICAL. Useful non-empty completed handoffs are preserved rather than rejected by brittle formatting requirements.
-
-Code Debugging remains report-only. It produces repair-ready specifications for a separate work agent and creates a unique durable report under `Debugging/Reports/` for each invocation.
+Every primary finding is evidence-bound and classified LOW, MEDIUM, HIGH, or CRITICAL. The program remains report-only and creates a unique durable report under `Debugging/Reports/` for each invocation.
 
 ## Tool and authority boundaries
 
@@ -261,13 +202,11 @@ Caller tools remain standard OpenAI tool definitions. Jack decides which stage c
 
 In Deep Research, Thesis and Antithesis have no tool authority; Synthesis receives the caller-authorized tool surface. In Agentic, Stage 1 may use supplied tools while Stage 2 has tools disabled and zero answer authority. Model-authored claims do not substitute for host execution evidence.
 
-Caller system/developer messages are blocked before backend cognition. The caller-facing model name is virtual and does not control the actual backend model. Jack owns the active mode, stage prompts, reasoning/sampling controls, context preparation, tool-resume routing, retention, and authority boundaries.
-
-For supervisory orchestration, Jack owns the public supervisor-to-worker gateway boundary. The supervisor may request worker status, observe events, submit/cancel work, or replace the worker session through Jack, while the downstream bridge credential remains private to Jack.
+Caller `system` / `developer` messages are blocked before backend cognition. The caller-facing model name is virtual and does not control the actual backend model. Jack owns the active mode, stage prompts, reasoning/sampling controls, context preparation, tool-resume routing, retention, and authority boundaries.
 
 ## State, memory, and evidence
 
-Jack deliberately uses different memory lifetimes for different programs instead of treating all reasoning as permanent context.
+Jack deliberately uses different memory lifetimes for different programs rather than treating all reasoning as permanent context.
 
 - **Deep Research:** preserve the complete active Thesis→Antithesis→Synthesis cognition surface through Synthesis; later retire upstream transient native reasoning while retaining the durable authoritative trajectory required by the program.
 - **Agentic:** use Preserve Thinking at the immediate Stage-1→Stage-2 boundary, distill native cognition into exact user + semantic Jack XML + frozen A1, then retire completed raw native cognition/tool protocol before later turns.
@@ -275,25 +214,71 @@ Jack deliberately uses different memory lifetimes for different programs instead
 
 Jack XML is semantic attention state, not independent truth. Deterministic verification is represented as verified only when actual tool evidence establishes it.
 
-## Host-side policy and safety layers
+## Supervisory orchestration — Orchestration Gateway v2
 
-Because Jack sits between caller and backend and owns stage, tool, validation, and commit boundaries, deployments can add code-defined request, tool, validator, approval, output, or release gates whose authority does not depend on agent intent or model compliance.
+Jack's host-authoritative boundary extends beyond agent-to-model inference to a supervisor-to-worker control path.
 
-Jack does **not** claim that this release ships a universal safety suite or filesystem sandbox. Those are programmable host-side layers deployments may add to the kernel control plane.
+Current orchestration documentation:
 
-### Current security implementation status
+- [`Documentation/Orchestration/ORCHESTRATION_GATEWAY_V2_TECHNICAL_SPEC.md`](Documentation/Orchestration/ORCHESTRATION_GATEWAY_V2_TECHNICAL_SPEC.md) — canonical protocol, lifecycle, authority, and supervisor compatibility contract.
+- [`Documentation/Orchestration/ORCHESTRATOR_INSTRUCTIONS.md`](Documentation/Orchestration/ORCHESTRATOR_INSTRUCTIONS.md) — canonical operating instructions for supervisory agents.
+- [`Documentation/Orchestration/Historical/`](Documentation/Orchestration/Historical/) — dated acceptance evidence, not current runtime identity authority.
 
-The statement above remains true and is intentionally preserved: Jack still does not claim a universal safety suite or filesystem sandbox. The current runtime now additionally ships the validated **Phases 0–3 security substrate** described above. Those protections are concrete Kernel behavior, while Restricted Paths, Workspace Lock, Consequence Gate, credential DLP, later integrity layers, and controlled dynamic Tier C mutation remain separate future boundaries.
+Gateway v2 provides positive run-bound `task_id` / `run_id` / `run_epoch` attribution, replayable SSE, readiness/session replacement state, cancellation/settlement separation, deterministic worker-unavailable failure, retry epochs, and structured tool-failure diagnostics.
+
+Public routes:
+
+```text
+GET  /jack/orchestration/status
+GET  /jack/orchestration/events
+POST /jack/orchestration/tasks
+POST /jack/orchestration/tasks/cancel
+POST /jack/orchestration/session/new
+```
+
+The gateway governs supervisor-to-worker control. It does not claim Jack intercepts every filesystem/shell/process consequence inside privileged Primary Pi.
+
+## Multi-endpoint runtime lanes
+
+The multi-endpoint runtime substrate allows multiple independently addressable Jack OS processes to remain hot at once while sharing one configured backend model.
+
+Examples:
+
+```powershell
+.\start-lane.ps1 -RuntimeId jack-agentic-01 -Mode agentic -Port 8101
+.\start-lane.ps1 -RuntimeId jack-debug-01 -Mode code-debugging -Port 8102
+.\start-lane.ps1 -RuntimeId jack-research-01 -Mode deep-research -Port 8103
+```
+
+The configured port is a preference, not identity. A runtime may move to a validated fallback endpoint without changing `runtime_id`, `lane_id`, mode, task/run ownership, or security ownership.
+
+Runtime manifests are discovery evidence. Positive live `/health.runtime_id` verification establishes the runtime identity actually reached. A stale observational manifest status must not veto a positively verified live runtime; a live identity mismatch remains an identity failure.
+
+`JACK_MAX_CONCURRENT` remains process-local. Lane availability is not fleet-wide backend admission and does not prove physical simultaneous GPU generation.
+
+Authenticated `GET /jack/runtime/status` is observability only. It is not model context, cancellation authority, stage authority, or commit authority. Client transport disconnect is likewise not implicit cognition-cancellation authority.
+
+Privileged effect-capable lanes should use positively named bridge/worker bindings. Shared multi-tenant privileged workers are not part of the first endpoint upgrade.
+
+## Current security architecture
+
+For current security truth, read [`CURRENT_SECURITY_STATUS.md`](CURRENT_SECURITY_STATUS.md).
+
+The current Phase-6 stack preserves the governing rule:
+
+> Contain the violation at the narrowest boundary that preserves the security invariant.
+
+A security outcome applies to the consequential boundary being evaluated; it does not automatically widen to the surrounding cognition, task, run, connection, or process.
+
+The current runtime includes represented-path policy, deterministic consequence disposition, and the process-local Authority & Security Ledger, but still does **not** claim universal filesystem sandboxing or complete host-effect knowledge.
 
 ## Pi context-window synchronization
 
 Jack exposes the context window of the backend instance it actually resolved instead of forcing Pi or another agent to guess. The OpenAI-compatible `GET /v1/models` response includes context metadata aliases, and `GET /health` reports effective context length and source.
 
-For the existing `pi-lmstudio` extension, point its server URL at the **Jack server root** (for example `http://127.0.0.1:8001`, not the `/v1` suffix). It requests `GET /api/v1/models`; Jack returns an LM-Studio-compatible loaded-model record describing the backend instance Jack selected.
+For `pi-lmstudio`, point its server URL at the **Jack server root** (for example `http://127.0.0.1:8001`, not the `/v1` suffix). It requests `GET /api/v1/models`; Jack returns an LM-Studio-compatible loaded-model record describing the backend instance Jack selected.
 
-For the existing `jack-kernel` Pi provider, the package includes `Pi/jack-kernel.ts` plus `Pi/install-jack-kernel-extension.ps1`. The extension registers/refreshes the provider from Jack's live metadata so stale Pi-side context guesses do not remain authoritative after Jack has established the backend's actual loaded context.
-
-Authority chain:
+For the `jack-kernel` Pi provider, the package includes `Pi/jack-kernel.ts` plus `Pi/install-jack-kernel-extension.ps1`. The extension registers/refreshes the provider from Jack's live metadata so stale Pi-side context guesses do not remain authoritative.
 
 ```text
 loaded backend context -> Jack detection -> Jack model metadata -> Pi contextWindow
@@ -303,33 +288,53 @@ loaded backend context -> Jack detection -> Jack model metadata -> Pi contextWin
 
 Jack exposes an OpenAI-compatible `/v1/chat/completions` endpoint, root status, `/health`, and the public orchestration surface under `/jack/orchestration/*`. The downstream Primary-Pi bridge remains private and authenticated separately.
 
-Release builds do not inject runtime identity, stage token counts, context-size telemetry, or similar diagnostic telemetry into model reasoning streams. Optional forensic archives remain out-of-band records for failure analysis and are not automatically rehydrated into model cognition.
+Release builds do not inject runtime identity, stage token counts, context-size telemetry, or similar diagnostic telemetry into model reasoning streams. Optional forensic archives remain out-of-band records and are not automatically rehydrated into model cognition.
 
-## Files
+## Documentation map
+
+### Start here
+
+- [`README.md`](README.md) — project front door.
+- [`GETTING_STARTED.md`](GETTING_STARTED.md) — install, run, Pi setup, runtime lanes, and security configuration.
+- [`CURRENT_SECURITY_STATUS.md`](CURRENT_SECURITY_STATUS.md) — current validated security state.
+- [`00_Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx`](00_Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx) — full plain-English architecture and operating guide.
+
+### Governing and research documentation
+
+- [`Documentation/Jack_Kernel_Runtime_Specification_v0.1.1.docx`](Documentation/Jack_Kernel_Runtime_Specification_v0.1.1.docx) — normative runtime specification.
+- [`Documentation/Overview/Jack_Kernel_Preview_Programmable_Cognition_Runtime_v0.1.1.docx`](Documentation/Overview/Jack_Kernel_Preview_Programmable_Cognition_Runtime_v0.1.1.docx) — public overview.
+- [`Documentation/Research/Jack_Kernel_Long_Horizon_Cognition_Technical_Whitepaper_v0.1.1.docx`](Documentation/Research/Jack_Kernel_Long_Horizon_Cognition_Technical_Whitepaper_v0.1.1.docx) — research and architectural treatment.
+- [`Documentation/Security/`](Documentation/Security/) — Security Hardening Architecture and cumulative governing amendments.
+- [`docs/security/`](docs/security/) — detailed immutable phase checkpoint records.
+
+### Historical engineering evidence
+
+- [`Documentation/Historical-Build-Record/`](Documentation/Historical-Build-Record/) — dated demonstrations, superseded root checkpoint summaries, and preserved build evidence.
+- [`Documentation/Orchestration/Historical/`](Documentation/Orchestration/Historical/) — orchestration acceptance history.
+
+## Key files
 
 - `jack_kernel.py` — Jack Kernel runtime and configuration interface.
-- `Pi/jack-kernel.ts` — optional Pi provider extension that registers `jack-kernel` from Jack's live context metadata.
-- `Pi/install-jack-kernel-extension.ps1` — Windows installer for the Pi context-sync extension.
-- `Pi/pi-control-bridge.ts` — current validated run-bound Primary-Pi control bridge for Orchestration Gateway v2.
-- `Pi/install-pi-control-bridge-v2.ps1` — installer/backup helper for the Primary-Pi bridge.
-- `Documentation/Orchestration/ORCHESTRATION_GATEWAY_V2_TECHNICAL_SPEC.md` — canonical orchestration protocol, lifecycle, authority, and supervisor compatibility contract.
-- `Documentation/Orchestration/ORCHESTRATOR_INSTRUCTIONS.md` — canonical supervisor operating instructions, including Codex Desktop quickstart guidance.
-- `Documentation/Orchestration/Historical/` — dated acceptance evidence; not current runtime identity authority.
+- `jack_path_policy.py` — represented-path policy and deterministic path facts.
+- `jack_consequence_gate.py` — Phase-5 deterministic consequence disposition.
+- `jack_authority_ledger.py` — Phase-6 runtime-scoped Authority & Security Ledger.
+- `Pi/jack-kernel.ts` — optional Pi provider extension using Jack's live context metadata.
+- `Pi/pi-control-bridge.ts` — current validated run-bound Primary-Pi control bridge.
 - `Debugging/User_Instructions.md` — user-facing debugging quick start.
 - `Debugging/Instructions.md` — Code Debugging intake/pass instructions.
-- `Debugging/Debugging_Report.md` — bundled report template/reference.
 - `Debugging/Reports/` — one unique durable report per debugging invocation.
 - `start.bat` — Windows launcher.
 - `requirements.txt` — runtime Python dependencies.
-- `LICENSE` — PolyForm Noncommercial License 1.0.0 reference and official terms URL.
-- `NOTICE` — required copyright notice and licensor contact.
-- `COMMERCIAL_LICENSE.md` — separate commercial-licensing notice and contact.
-- `README.md` — repository front door and release documentation.
-- `GETTING_STARTED.md` — concise installation, startup, Pi setup, and regression-check guide.
-- `00_Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx` — front-door copy of the full plain-English architecture and operating guide.
-- `Documentation/Overview/Jack_Kernel_Preview_Programmable_Cognition_Runtime_v0.1.1.docx` — concise public overview of the programmable-cognition runtime.
-- `Documentation/Research/Jack_Kernel_Long_Horizon_Cognition_Technical_Whitepaper_v0.1.1.docx` — research and architectural treatment of long-horizon cognition.
-- `Documentation/Jack_Kernel_Runtime_Specification_v0.1.1.docx` — normative Jack Kernel v0.1.1 runtime specification.
+
+## Historical Build Record
+
+The repository preserves development evidence rather than deleting it as the implementation advances. Large demonstration logs, generated reports, and superseded root checkpoint summaries are organized under [`Documentation/Historical-Build-Record/`](Documentation/Historical-Build-Record/).
+
+Historical records may state what was true at an earlier checkpoint. They are preserved as provenance and should not be mistaken for the current runtime state merely because they remain available.
+
+## A Note from the Creator — JML
+
+Jack Kernel is much more than the custom modes shipped with it. Deep Research, Agentic, and Code Debugging are examples of what becomes possible when a deterministic kernel sits between the agent and the LLM. The larger opportunity is to build your own inference layers: dynamic and adaptive reasoning and parameter control, orchestrated agentic workflows, custom staged reasoning, custom context and memory management, model routing, evidence and verification layers, approval gates, and other host-authoritative programs. Treat the bundled modes as starting points, not limits. Experiment, specialize them, replace them, and build new layers that fit your own models and workloads.
 
 ## License
 

@@ -17,14 +17,12 @@ Supervisor -> Jack :8001/jack/orchestration -> private worker bridge -> worker
 Primary Pi remains the reference local worker. Jack Kernel remains **v0.1.1**; **Orchestration Gateway v2** is the orchestration subsystem/protocol revision.
 
 > **Read first:** `00_Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx`
->
-> **Current security truth:** `CURRENT_SECURITY_STATUS.md`
 
 For the current orchestration protocol and compatibility contract, read `Documentation/Orchestration/ORCHESTRATION_GATEWAY_V2_TECHNICAL_SPEC.md`.
 
 For supervisor operating behavior, including Codex Desktop as a reference cloud supervisor, read `Documentation/Orchestration/ORCHESTRATOR_INSTRUCTIONS.md`.
 
-Historical acceptance/build evidence is preserved under `Documentation/Orchestration/Historical/` and `Documentation/Historical-Build-Record/`. Historical material is not current runtime identity or security authority merely because it remains available.
+Historical acceptance evidence is preserved under `Documentation/Orchestration/Historical/` and is not the current runtime identity authority.
 
 ## 1. Requirements
 
@@ -84,8 +82,6 @@ Port 8000 remains available for a custom OpenAI-compatible/vLLM backend. Do not 
 - **Code Debugging** — five-pass report-only forensic audit at Medium reasoning.
 - **Code Debugging (Deep)** — the same forensic topology at X-High reasoning.
 
-The cognition programs are examples built on Jack Kernel. They are not the Kernel itself.
-
 ## 4. Optional Pi provider/context synchronization
 
 ```powershell
@@ -117,7 +113,7 @@ Retry/continuation epochs retain one stable `run_id` while incrementing `run_epo
 
 ## 6. Concurrent supervisor and worker inference
 
-Jack's inference semaphore is configurable.
+Jack's inference semaphore is configurable. Full-topology live acceptance proved that Jack Orchestrator and Primary Pi can perform backend inference simultaneously when the saved launcher configuration allows two concurrent requests.
 
 Use Jack's launcher:
 
@@ -127,8 +123,6 @@ Use Jack's launcher:
 4. Start Jack.
 
 The saved launcher configuration is authoritative for the child server process. Setting only a parent-shell `JACK_MAX_CONCURRENT` variable is not sufficient when the launcher configuration still says `1`.
-
-Validated evidence establishes request-level coexistence through shared Jack/backend infrastructure. It does not by itself prove physically simultaneous GPU generation when the backend exposes fewer physical generation slots.
 
 ## 7. Public orchestration routes
 
@@ -160,11 +154,10 @@ The private Primary-Pi bridge remains separately authenticated. Supervisory clie
 - A retry/continuation keeps the controlled `run_id` and advances `run_epoch`.
 - Structured tool failures remain diagnostic and can be recovered from by later successful worker execution.
 - If Primary Pi is unavailable while Jack remains alive, Pi-dependent gateway operations fail deterministically. There is no direct-Pi or backend-control fallback.
-- A lost HTTP/SSE client transport connection is not implicit cognition-cancellation authority.
 
 ## 9. Regression checks
 
-Representative checks include:
+Representative regression checks include:
 
 ```powershell
 py -3 -m py_compile jack_kernel.py
@@ -173,16 +166,6 @@ py -3 -m pytest -q tests\test_surgical_regressions.py
 ```
 
 Additional project regression tests remain under `tests/`.
-
-The current frozen Phase-6 validation baseline reached:
-
-- Phase-5 targeted regression: **37/37 PASS**;
-- Phase-6 targeted regression: **18/18 PASS**;
-- complete Python regression suite: **431/431 PASS**;
-- Pi harnesses: **7/7 PASS**;
-- runtime compilation: **PASS**.
-
-See `CURRENT_SECURITY_STATUS.md` for exact checkpoint identities.
 
 ## 10. Multi-endpoint runtime lanes
 
@@ -196,9 +179,9 @@ Example:
 .\start-lane.ps1 -RuntimeId jack-research-01 -Mode deep-research -Port 8103
 ```
 
-Each lane is a separate Jack process. All may point to the same backend and loaded model. The local `JACK_MAX_CONCURRENT` semaphore limits only one Jack process; it is not a cross-process GPU scheduler.
+Each lane is a separate Jack process. All three may point to the same LM Studio backend and loaded model. The local `JACK_MAX_CONCURRENT` semaphore limits only one Jack process; it is not a cross-process GPU scheduler.
 
-If a preferred loopback port is occupied and fallback is enabled, Jack binds an OS-assigned free loopback port. Discover runtime addresses with:
+If a preferred loopback port is occupied and fallback is enabled, Jack binds an OS-assigned free loopback port. Discover the actual addresses with:
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8101/jack/runtimes | ConvertTo-Json -Depth 8
@@ -216,48 +199,87 @@ Then launch the owning Jack lane with the same worker identity/token:
 .\start-lane.ps1 -RuntimeId jack-agentic-01 -Mode agentic -Port 8101 -WorkerBridgeId agentic-worker-01 -WorkerControlToken "<lane-specific-secret>"
 ```
 
-Named workers publish their actual control endpoint after binding. Endpoint movement does not change worker identity. Jack resolves the named worker from the local bridge registry and rejects bridge-identity mismatches. The worker's Pi provider separately resolves its owning Jack runtime by `JackRuntimeId` and verifies live runtime identity before provider registration.
+Named workers publish their actual control endpoint after binding. If the preferred worker port is occupied, the bridge can fall back to an OS-assigned port without changing worker identity. Jack resolves the named worker from the local bridge registry and rejects bridge-identity mismatches. The worker's Pi provider separately resolves its owning Jack runtime by `JackRuntimeId` from Jack's runtime registry and verifies that runtime identity before registering the provider; this prevents a named worker from falling back to the legacy global Jack endpoint for inference.
 
-Do not treat available lane count as inference-slot count. Before declaring a shared backend qualified for many concurrent lanes, verify backend-side admission/queueing behavior under N>K load.
+Do not treat an available lane count as an inference-slot count. Before declaring a shared backend qualified for many concurrent lanes, verify its backend-side admission/queueing behavior under N>K load.
 
 ### Multi-endpoint governance clarification
 
-- ports/sockets/URLs are transport locators, not runtime identity;
-- runtime manifests provide discovery evidence;
-- positive live `/health.runtime_id` verification establishes the identity actually reached;
-- a stale manifest status must not veto positively verified live identity;
-- live identity mismatch remains an identity failure;
-- named privileged workers remain two-sided bindings: Jack lane -> named Pi worker/bridge and Pi provider -> owning Jack `runtime_id`;
-- `JACK_MAX_CONCURRENT` remains process-local;
-- authenticated `GET /jack/runtime/status` is best-effort observability, not cognition, stage, cancellation, or commit authority;
-- degraded telemetry reports unknown rather than inventing state;
-- client transport disconnect does not authorize cognition cancellation.
+The setup examples above remain valid, but their port numbers are preferences/transport locations rather than permanent identities. A runtime or worker that moves to a validated fallback endpoint retains the same logical identity and ownership.
 
-## 11. Current security configuration
+Runtime manifests are discovery evidence. A named Pi provider resolves the expected owning `runtime_id`, reaches the candidate endpoint, and verifies live `/health.runtime_id` before provider registration. A stale manifest status must not veto a positively verified live runtime, while a live identity mismatch remains a hard identity failure.
 
-The current validated security checkpoint is **Phase 6**. The operational controls below build cumulatively; later phases do not erase earlier configuration.
+Authenticated process-local activity is available at `GET /jack/runtime/status`. That surface is best-effort observability, not cognition, stage, cancellation, or commit authority. If activity telemetry becomes unreliable, Jack reports degraded/unknown state rather than inventing a known state.
 
-For exact current claims, checkpoint identities, validation results, and nonclaims, read:
+A disconnected HTTP client likewise does not, by itself, authorize cancellation of valid cognition. Explicit authorized cancellation remains separate.
 
-`CURRENT_SECURITY_STATUS.md`
+The earlier statement that two configured Jack requests may infer concurrently is retained as historical setup guidance. Normatively, the acceptance evidence proves request-level coexistence through shared infrastructure; it does not by itself prove physically simultaneous GPU generation when the backend provides fewer physical generation slots.
 
-### 11.1 Canary protection — Phases 0–3
+## 11. Documentation authority
 
-Static Canary policy is optional and is supplied at startup through `JACK_CANARY_POLICY_JSON`. An absent or blank policy preserves empty-policy behavior. Static startup policy accepts Tier A and Tier B patterns; live Tier C mutation remains deferred.
+Active orchestration documentation is intentionally small:
 
-Example:
+- `Documentation/Orchestration/ORCHESTRATION_GATEWAY_V2_TECHNICAL_SPEC.md` — canonical protocol, lifecycle, authority, and supervisor compatibility contract.
+- `Documentation/Orchestration/ORCHESTRATOR_INSTRUCTIONS.md` — canonical operating instructions for supervisory agents, including the Codex cloud-supervisor quickstart.
+- `Documentation/Orchestration/Historical/` — dated acceptance evidence and historical records; not current runtime identity authority.
+
+Current Primary-Pi bridge identity is also published in `Pi/README.md`.
+
+## Validated security layer (Phases 0–3)
+
+The current security-hardening checkpoint adds deterministic host-side protection without changing Jack's core installation model.
+
+The implemented boundary includes deterministic security outcomes, bounded StreamingIRQ pre-release quarantine, malformed-SSE release protection, and exact-match Canary enforcement. It follows the rule:
+
+> Fail closed on authority. Fail soft on recoverable cognition.
+
+Static Canary policy is optional and is transported at startup through `JACK_CANARY_POLICY_JSON`. An absent or blank policy preserves the empty-policy behavior. Static startup policy currently accepts Tier A and Tier B patterns only; live Tier C mutation remains deferred.
+
+Example PowerShell startup value:
 
 ```powershell
 $env:JACK_CANARY_POLICY_JSON='{"version":1,"patterns":[{"id":"operator.marker","tier":"B","value":"LONG_SECRET_MARKER"}]}'
 ```
 
-Current static-policy constraints include schema version 1, a maximum of 128 patterns, a maximum deterministic look-behind window of 256 characters, and a minimum static Canary value length of 8 characters. Explicit malformed policy is a startup configuration error rather than something Jack silently weakens.
+Current static-policy constraints include schema version 1, a maximum of 128 patterns, a maximum deterministic look-behind window of 256 characters, and a minimum static Canary value length of 8 characters. Explicit malformed policy is a configuration error rather than something the runtime silently weakens.
 
-A malformed non-DONE SSE `data:` frame is withheld and raises `StreamingIRQProtocolError`. This is ordinary protocol failure, not `HARD_INTERRUPT`; previously proven-safe held cognition is preserved.
+A malformed non-DONE SSE `data:` frame is not passed through raw. Jack withholds that frame and raises `StreamingIRQProtocolError`. This is an ordinary protocol failure, not `HARD_INTERRUPT`; previously proven-safe held cognition is preserved.
 
-### 11.2 Restricted Paths + Workspace Lock — Phase 4
+For the exact validated checkpoint and current scope boundaries, read:
 
-Path policy is supplied at startup through `JACK_PATH_POLICY_JSON`. Jack snapshots that configuration into immutable runtime/lane policy. Model output, caller content, tool results, retries, and later environment changes do not redefine the active policy.
+- `docs/security/SECURITY_LAYER_PHASE0_3_VALIDATED_2026-09-27.md`
+- `Documentation/Security/GOVERNING_DOCUMENT_SECURITY_AMENDMENT_PHASES_0_3_2026-09-27.md`
+
+Jack still does not claim a universal filesystem sandbox or complete consequence-control system. **Restricted Paths + Workspace Lock begins in Phase 4 and is not part of the Phase 0–3 checkpoint.**
+
+<!-- PHASE4_GETTING_STARTED_STATUS_2026-09-30 -->
+
+## Current Phase-4 security checkpoint
+
+Phase 4 — **Restricted Paths + Workspace Lock** — is now validated.
+
+Implementation freeze: `0e897b801d5b5da8d604cf21556b40da769c26fe`.
+
+Checkpoint release: `security-layer-phase4-validated-2026-09-30` at merge commit `0c15331d4673412befc626b64d7c4e52f7018fb4`.
+
+Validation:
+
+- **201/201** targeted Phase-4 tests;
+- **376/376** full Python tests;
+- **7/7** Pi harnesses;
+- clean `git diff --check`.
+
+Current references:
+
+- `docs/security/SECURITY_LAYER_PHASE4_VALIDATED_2026-09-30.md`
+- `Documentation/Security/GOVERNING_DOCUMENT_SECURITY_AMENDMENT_PHASE_4_2026-09-30.md`
+- `Documentation/Security/Jack_Kernel_Security_Hardening_Architecture_2026-09-26.md`
+
+The older Phase 0-3 section remains historical checkpoint documentation. Its statement that Restricted Paths and Workspace Lock were future work is no longer the current implementation state.
+
+### Configure Phase 4 path policy
+
+Phase 4 path policy is supplied at startup through `JACK_PATH_POLICY_JSON`. Jack snapshots that configuration into immutable runtime/lane policy. Model output, caller content, tool results, retries, and later environment changes do not redefine the active policy.
 
 The JSON object uses exactly these three keys:
 
@@ -274,71 +296,27 @@ The JSON object uses exactly these three keys:
 - `version` must be integer `1`.
 - `workspace_root` must be an absolute Windows path string or `null`.
 - `never_paths` must be a list of path strings.
-- user-supplied `never_paths` are cumulative with Jack's host-derived default NEVER roots;
-- `workspace_root: null` disables Workspace Lock but does not disable NEVER protection;
-- if `JACK_PATH_POLICY_JSON` is absent or blank, Jack creates no Workspace Lock and adds no user NEVER paths; host-derived defaults remain active;
-- malformed JSON, unsupported schema versions, missing/extra keys, and invalid field types are startup errors.
+- User-supplied `never_paths` are cumulative with Jack's host-derived default NEVER roots. They do not replace or weaken those defaults.
+- `workspace_root: null` disables Workspace Lock. It does not disable NEVER protection.
+- If `JACK_PATH_POLICY_JSON` is absent or blank, Jack creates no Workspace Lock and adds no user NEVER paths; host-derived default NEVER roots still remain active.
+- Explicit malformed JSON, unsupported schema versions, missing or extra keys, and invalid field types are startup configuration errors rather than conditions Jack silently weakens.
 
-Workspace Lock example:
+PowerShell example with Workspace Lock enabled:
 
 ```powershell
 $env:JACK_PATH_POLICY_JSON='{"version":1,"workspace_root":"D:\\Projects\\Jack","never_paths":["D:\\Sensitive"]}'
 .\start.bat
 ```
 
-No Workspace Lock plus one additional NEVER path:
+PowerShell example with no Workspace Lock and one additional NEVER path:
 
 ```powershell
 $env:JACK_PATH_POLICY_JSON='{"version":1,"workspace_root":null,"never_paths":["D:\\Sensitive"]}'
 .\start.bat
 ```
 
-Set the environment value before starting the Jack runtime or lane. Restart the runtime to change active path policy.
+Set the environment value before starting the Jack runtime or lane. To change the active path policy, restart that runtime with the new startup configuration.
 
 Phase 4 authorizes represented filesystem targets Jack can deterministically observe. It does not claim final-object or descriptor-level confinement across symlinks, junctions, reparse points, mounts, or hard-link relationships.
 
-### 11.3 Deterministic Consequence Gate — Phase 5
-
-Phase 5 is automatic Kernel-owned runtime behavior. It does not require a separate user configuration variable.
-
-The Gate consumes typed facts produced by the subsystems that actually own them and selects a deterministic `SecurityOutcome` plus containment scope. It does not infer arbitrary shell/filesystem semantics and does not turn observability into authority.
-
-Its governing rule is minimum justified containment: deny or interrupt only the boundary required to preserve the violated invariant while preserving independently valid cognition and state.
-
-### 11.4 Authority & Security Ledger — Phase 6
-
-Phase 6 is also Kernel-owned runtime behavior. It adds a process-local Authority & Security Ledger for a deliberately closed set of established decisions/events:
-
-- represented-path decisions;
-- executor runtime/lane admission decisions;
-- exact Canary matches;
-- exact reserved-evidence-namespace blocks.
-
-The ledger does not become the source of those facts. It does not record Pi lifecycle in Phase 6, does not promote persisted historical state into new process authority, and does not turn durable forensic projection into active authority.
-
-For full Phase-6 semantics and validation evidence, read:
-
-- `docs/security/SECURITY_LAYER_PHASE6_VALIDATED_2026-10-02.md`
-- `Documentation/Security/GOVERNING_DOCUMENT_SECURITY_AMENDMENT_PHASE_6_2026-10-02.md`
-
-## 12. Documentation authority
-
-Current user-facing documentation:
-
-- `README.md` — project front door and architecture map.
-- `GETTING_STARTED.md` — installation and operation.
-- `CURRENT_SECURITY_STATUS.md` — current validated security state.
-- `00_Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx` — full plain-English guide.
-
-Active orchestration documentation:
-
-- `Documentation/Orchestration/ORCHESTRATION_GATEWAY_V2_TECHNICAL_SPEC.md` — canonical protocol, lifecycle, authority, and supervisor compatibility contract.
-- `Documentation/Orchestration/ORCHESTRATOR_INSTRUCTIONS.md` — canonical supervisory-agent operating instructions.
-
-Historical evidence:
-
-- `Documentation/Historical-Build-Record/` — dated demonstrations, superseded root checkpoint summaries, and build evidence.
-- `Documentation/Orchestration/Historical/` — orchestration acceptance history.
-- `docs/security/` — detailed immutable security phase checkpoint records.
-
-Historical statements remain preserved as evidence of what was true at their checkpoint. They must not be substituted for current-state documentation when determining present behavior.
+Jack still does not claim universal filesystem-object attestation.
