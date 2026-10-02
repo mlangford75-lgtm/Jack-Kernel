@@ -10900,6 +10900,7 @@ def _install_bundled_runtime_extensions() -> None:
         "jack_evidence_guard.py": Path(jack_evidence_guard.__file__).resolve(),
         "jack_path_policy.py": Path(jack_path_policy.__file__).resolve(),
         "jack_consequence_gate.py": Path(jack_consequence_gate.__file__).resolve(),
+        "jack_authority_ledger.py": root / "jack_authority_ledger.py",
         "jack_responses_compat.py": Path(jack_responses_compat.__file__).resolve(),
     })
 
