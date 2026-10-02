@@ -2288,8 +2288,8 @@ def _content_to_text(content: Any) -> str:
         return ""
     if isinstance(content, str):
         return content
-    # Preserve structured/multimodal content exactly enough for secondary
-    # prompt representation rather than silently dropping it.
+    # Preserve structured/multimodal content exactly enough for caller-system
+    # contract representation rather than silently dropping it.
     return json.dumps(content, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -3317,53 +3317,24 @@ def normalize_tool_calls_for_distribution(calls: Any) -> Any:
     return out
 
 
-def extract_secondary_system_prompt(messages: List[Dict[str, Any]]) -> str:
-    pieces: List[str] = []
-    for msg in messages:
-        if msg.get("role") in {"system", "developer"}:
-            text = _content_to_text(msg.get("content"))
-            if text:
-                pieces.append(text)
-    return "\n\n".join(pieces).strip()
-
-
-def configured_secondary_system_prompt() -> str:
-    """Load the CLI-configured persistent secondary system prompt."""
-    path = os.getenv("JACK_SECONDARY_SYSTEM_PROMPT_FILE", "").strip()
-    if not path:
-        return ""
-    try:
-        return Path(path).read_text(encoding="utf-8").strip()
-    except FileNotFoundError:
-        LOG.warning("Configured secondary system prompt file does not exist: %s", path)
-        return ""
-    except Exception as exc:
-        LOG.warning("Could not read secondary system prompt file %s: %s", path, exc)
-        return ""
-
-
 def merged_secondary_system_prompt(messages: List[Dict[str, Any]]) -> str:
-    """Return only the user-configured persistent secondary prompt.
+    """Return only the leading caller-owned system contract.
 
-    Calling-agent ``system`` and ``developer`` messages are deliberately blocked
-    at the Jack boundary. They may be present in the outer request for harness
-    bookkeeping, but their text is never reinjected into any backend model stage.
-    Tool schemas remain a separate request surface and are unaffected.
+    Pi projects the rendered caller/agent system contract as the first provider-
+    facing ``system`` message. Jack does not promote caller ``developer`` material
+    or later system messages into that contract. The bundled Responses
+    compatibility extension composes this stable caller prefix ahead of Jack's
+    unchanged stage-local contract.
     """
-    request_prompt = extract_secondary_system_prompt(messages)
-    if request_prompt:
-        LOG.info(
-            "Blocked calling-agent system/developer context from backend model stages (chars=%d)",
-            len(request_prompt),
-        )
-    persistent = configured_secondary_system_prompt()
-    if not persistent:
+    if not isinstance(messages, list) or not messages:
         return ""
-    return (
-        "--- USER PERSISTENT SECONDARY SYSTEM PROMPT ---\n"
-        + persistent
-        + "\n--- END USER PERSISTENT SECONDARY SYSTEM PROMPT ---"
-    )
+    first = messages[0]
+    if not isinstance(first, dict) or first.get("role") != "system":
+        return ""
+    content = first.get("content")
+    if isinstance(content, str):
+        return content
+    return _content_to_text(content)
 
 
 def strip_secondary_system_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -4314,10 +4285,12 @@ def sanitize_agent_request(request_body: Dict[str, Any]) -> Dict[str, Any]:
     """Rebuild an agent request from Jack's explicit authority allowlist.
 
     The calling agent owns ordinary conversation content, tool definitions, bounded
-    tool choice, multimodal user/assistant/tool message content, and the decision
-    to request SSE streaming. Incoming calling-agent system/developer messages are
-    blocked at the Jack boundary and are never forwarded to backend model stages.
-    Jack owns reasoning profiles, native
+    tool choice, multimodal user/assistant/tool message content, the leading caller
+    system cognitive contract, and the decision to request SSE streaming. Only the
+    leading caller ``system`` message is promoted as that contract; caller
+    ``developer`` material and later system messages are not promoted. Stage history
+    still strips system/developer transport messages after the caller contract is
+    captured. Jack owns reasoning profiles, native
     thinking, sampling, completion limits, backend/model selection, stage
     topology, preserve_thinking, and Jack XML behavior.
     """
@@ -9883,41 +9856,44 @@ def _load_cli_config() -> Dict[str, Any]:
     # be made for the current session and is verified before inference.
     if _normalize_backend_profile(str(cfg.get("backend_profile") or "lmstudio")) == "lmstudio":
         cfg["backend_model"] = ""
+
+    legacy_prompt = _legacy_secondary_prompt_path()
+    if legacy_prompt is not None:
+        print(
+            "Note: legacy Jack secondary prompt file is preserved but ignored: "
+            f"{legacy_prompt}. Configure the agent system contract in Pi/the caller."
+        )
     return cfg
 
 
 def _save_cli_config(cfg: Dict[str, Any]) -> None:
-    config_path, prompt_path = _config_paths()
+    config_path, _ = _config_paths()
     config_path.parent.mkdir(parents=True, exist_ok=True)
     safe = {k: cfg[k] for k in CLI_DEFAULTS if k in cfg}
     config_path.write_text(
         json.dumps(safe, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
-    if not prompt_path.exists():
-        prompt_path.write_text("", encoding="utf-8")
 
 
-def _load_cli_secondary_prompt() -> str:
-    _, prompt_path = _config_paths()
-    source = prompt_path
-    if not source.exists():
-        legacy = _legacy_config_dir() / "secondary_system_prompt.txt"
-        if legacy.exists():
-            source = legacy
-    try:
-        return source.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return ""
-    except Exception as exc:
-        print(f"Warning: could not read {source}: {exc}")
-        return ""
+def _legacy_secondary_prompt_path() -> Optional[Path]:
+    """Locate a pre-caller-contract prompt artifact without consuming it.
 
-
-def _save_cli_secondary_prompt(text: str) -> None:
-    _, prompt_path = _config_paths()
-    prompt_path.parent.mkdir(parents=True, exist_ok=True)
-    prompt_path.write_text(text.rstrip() + ("\n" if text.strip() else ""), encoding="utf-8")
+    Existing files are preserved as user-owned migration artifacts. Jack no
+    longer creates, reads, edits, deletes, or exports them into model context.
+    """
+    _, current = _config_paths()
+    candidates = (
+        current,
+        _legacy_config_dir() / "secondary_system_prompt.txt",
+    )
+    for candidate in candidates:
+        try:
+            if candidate.is_file() and candidate.stat().st_size > 0:
+                return candidate
+        except OSError:
+            continue
+    return None
 
 
 class _ReturnToMainMenu(Exception):
@@ -10181,7 +10157,6 @@ def _effective_agent_base_url(cfg: Dict[str, Any]) -> str:
 def _print_header(
     cfg: Dict[str, Any], *, clear_screen: bool = True, include_brand: bool = True
 ) -> None:
-    prompt = _load_cli_secondary_prompt()
     model = _backend_model_status(cfg)
     if clear_screen:
         _clear_cli()
@@ -10212,44 +10187,10 @@ def _print_header(
     level_key = _REASONING_LEVEL_ALIASES.get(str(cfg.get("reasoning_level", "x-high")).lower(), str(cfg.get("reasoning_level", "x-high")).lower())
     level_profile = REASONING_PROFILES.get(level_key, REASONING_PROFILES["x-high"])
     print(_status_value("Reasoning level", level_profile["label"]))
-    prompt_state = f"SET  [{len(prompt)} chars]" if prompt.strip() else "NOT SET"
-    print(_status_value("Secondary prompt", prompt_state))
+    print(_status_value("Caller system contract", "AGENT / PI OWNED"))
     print(_ansi_rgb("━" * width, _JACK_BLUE))
     print(_ansi_rgb(DONATION_MESSAGE, _JACK_MUTED))
     print(_ansi_rgb("━" * width, _JACK_BLUE))
-
-
-def _edit_secondary_prompt() -> None:
-    _print_back_hint()
-    existing = _load_cli_secondary_prompt()
-    print()
-    if existing.strip():
-        print(f"A persistent secondary system prompt is currently set ({len(existing)} chars).")
-    else:
-        print("No persistent secondary system prompt is currently set.")
-    print("Paste the complete prompt below.")
-    print("Enter a line containing only .end to save.")
-    print("Enter a line containing only .clear to erase the prompt.")
-    print("Press Esc at any time to cancel and return to the main menu.")
-    lines: List[str] = []
-    while True:
-        try:
-            line = _cli_input()
-        except EOFError:
-            break
-        if line == ".end":
-            break
-        if line == ".clear":
-            _save_cli_secondary_prompt("")
-            print("Secondary system prompt cleared.")
-            return
-        lines.append(line)
-    text = "\n".join(lines)
-    if text.strip():
-        _save_cli_secondary_prompt(text)
-        print(f"Saved secondary system prompt ({len(text)} chars).")
-    else:
-        print("No text entered; existing prompt was left unchanged.")
 
 
 def _edit_reasoning(cfg: Dict[str, Any]) -> None:
@@ -10573,7 +10514,7 @@ def _test_backend(cfg: Dict[str, Any]) -> None:
             r = client.get(url, headers=_backend_headers_from_cli(cfg))
             if r.status_code in {401, 403}:
                 print(f"FAILED: {name} rejected the configured credential.")
-                print("Open option 3 and verify the backend authentication setting and secret.")
+                print("Open option 2 and verify the backend authentication setting and secret.")
                 return
             r.raise_for_status()
             payload = r.json()
@@ -10597,7 +10538,7 @@ def _test_backend(cfg: Dict[str, Any]) -> None:
 
     if not data:
         print(f"{name} is reachable, but /v1/models returned no model IDs.")
-        print("Load/pull/serve a model, or enter the exact model ID manually in option 3.")
+        print("Load/pull/serve a model, or enter the exact model ID manually in option 2.")
         return
 
     ids = [str(item.get("id", "")) for item in data if isinstance(item, dict) and item.get("id")]
@@ -10610,8 +10551,10 @@ def _test_backend(cfg: Dict[str, Any]) -> None:
         print(f"AUTO-DETECT would select: {selected}")
 
 def _config_to_env(cfg: Dict[str, Any]) -> Dict[str, str]:
-    _, prompt_path = _config_paths()
     env = os.environ.copy()
+    # A stale parent-process value from an older Jack launcher must not leak into
+    # the server child. The legacy secondary-prompt channel is retired.
+    env.pop("JACK_SECONDARY_SYSTEM_PROMPT_FILE", None)
     values = {
         "JACK_HOST": cfg["host"],
         "JACK_PORT": cfg["port"],
@@ -10641,7 +10584,6 @@ def _config_to_env(cfg: Dict[str, Any]) -> Dict[str, str]:
         "JACK_LOG_REASONING": "1" if cfg["log_reasoning"] else "0",
         "JACK_FORENSIC_ARCHIVE_MODE": cfg.get("forensic_archive_mode", "stage"),
         "JACK_FORENSIC_ARCHIVE_DIR": cfg.get("forensic_archive_dir", ""),
-        "JACK_SECONDARY_SYSTEM_PROMPT_FILE": str(prompt_path),
         "JACK_THINKING_TEMPERATURE": cfg["thinking_temperature"],
         "JACK_THINKING_TOP_P": cfg["thinking_top_p"],
         "JACK_THINKING_TOP_K": cfg["thinking_top_k"],
@@ -10669,7 +10611,7 @@ def _server_command() -> List[str]:
 def _start_server_from_cli(cfg: Dict[str, Any]) -> None:
     if not str(cfg.get("backend_base_url") or "").strip():
         print()
-        print("Backend endpoint is not configured. Use option 3 first.")
+        print("Backend endpoint is not configured. Use option 2 first.")
         return
     _save_cli_config(cfg)
     env = _config_to_env(cfg)
@@ -10700,14 +10642,13 @@ def _start_server_from_cli(cfg: Dict[str, Any]) -> None:
 
 def _print_main_menu_options() -> None:
     print(_ansi_rgb("  1", _JACK_ICE, bold=True) + "  Start Kernel")
-    print(_ansi_rgb("  2", _JACK_STEEL, bold=True) + "  Persistent secondary system prompt")
-    print(_ansi_rgb("  3", _JACK_STEEL, bold=True) + "  Model Selection")
-    print(_ansi_rgb("  4", _JACK_STEEL, bold=True) + "  Reasoning level")
-    print(_ansi_rgb("  5", _JACK_STEEL, bold=True) + "  Sampling settings")
-    print(_ansi_rgb("  6", _JACK_STEEL, bold=True) + "  Server / agent endpoint")
-    print(_ansi_rgb("  7", _JACK_STEEL, bold=True) + "  Advanced settings")
-    print(_ansi_rgb("  8", _JACK_STEEL, bold=True) + "  Test backend connection")
-    print(_ansi_rgb("  9", _JACK_STEEL, bold=True) + "  Reset Jack defaults")
+    print(_ansi_rgb("  2", _JACK_STEEL, bold=True) + "  Model Selection")
+    print(_ansi_rgb("  3", _JACK_STEEL, bold=True) + "  Reasoning level")
+    print(_ansi_rgb("  4", _JACK_STEEL, bold=True) + "  Sampling settings")
+    print(_ansi_rgb("  5", _JACK_STEEL, bold=True) + "  Server / agent endpoint")
+    print(_ansi_rgb("  6", _JACK_STEEL, bold=True) + "  Advanced settings")
+    print(_ansi_rgb("  7", _JACK_STEEL, bold=True) + "  Test backend connection")
+    print(_ansi_rgb("  8", _JACK_STEEL, bold=True) + "  Reset Jack defaults")
     print(_ansi_rgb("  P", _JACK_STEEL, bold=True) + "  Preserve thinking")
     print(_ansi_rgb("  F", _JACK_STEEL, bold=True) + "  Forensic archive")
     print(_ansi_rgb("  S", _JACK_STEEL, bold=True) + "  Save settings")
@@ -10720,8 +10661,8 @@ def _print_compact_main_commands() -> None:
     """Return control without repainting the branded screen."""
     print()
     print(_ansi_rgb("Main:", _JACK_MUTED) +
-          " 1 Start  2 Prompt  3 Models  4 Reasoning  5 Sampling  6 Endpoint")
-    print("      7 Advanced  8 Test  9 Reset  P Thinking  F Forensic  S Save  M Main screen  Q Quit")
+          " 1 Start  2 Models  3 Reasoning  4 Sampling  5 Endpoint  6 Advanced")
+    print("      7 Test  8 Reset  P Thinking  F Forensic  S Save  M Main screen  Q Quit")
     print(_ansi_rgb("Use M only when you want the full status screen redrawn.", _JACK_MUTED))
     print()
 
@@ -10754,24 +10695,22 @@ def run_cli() -> None:
             if choice == "1":
                 _start_server_from_cli(cfg)
             elif choice == "2":
-                _edit_secondary_prompt()
-            elif choice == "3":
                 _run_transactional_editor(_edit_model_selection, cfg)
-            elif choice == "4":
+            elif choice == "3":
                 _run_transactional_editor(_edit_reasoning, cfg)
-            elif choice == "5":
+            elif choice == "4":
                 _run_transactional_editor(_edit_sampling, cfg)
-            elif choice == "6":
+            elif choice == "5":
                 _run_transactional_editor(_edit_network, cfg)
-            elif choice == "7":
+            elif choice == "6":
                 _run_transactional_editor(_edit_advanced, cfg)
-            elif choice == "8":
+            elif choice == "7":
                 _test_backend(cfg)
-            elif choice == "9":
+            elif choice == "8":
                 confirm = _cli_input("Reset all settings to Jack defaults? [y/N]: ").strip().lower()
                 if confirm in {"y", "yes"}:
                     cfg = copy.deepcopy(CLI_DEFAULTS)
-                    print("Defaults restored. Secondary system prompt was preserved.")
+                    print("Defaults restored.")
             elif choice == "p":
                 _run_transactional_editor(_edit_preserve_thinking, cfg)
             elif choice == "f":
