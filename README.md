@@ -4,8 +4,6 @@
 
 **Probabilistic cognition may propose, but deterministic software must dispose.**
 
-**Be strict about truth, identity, authority, and irreversible consequences; be resilient about useful work.**
-
 Jack Kernel is a **local-first, host-authoritative inference mediation and control runtime** that sits between an application or agent and an OpenAI-compatible model backend.
 
 Jack is **not the agent and not the LLM**. The agent chooses the task and workflow. The model supplies probabilistic cognition. Jack owns deterministic boundaries around that cognition: stage topology, reasoning and sampling controls, tool exposure, context projection, answer/commit authority, retention, evidence handling, runtime identity, consequence disposition, and selected security controls.
