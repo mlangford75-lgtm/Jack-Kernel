@@ -15,6 +15,7 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from functools import wraps
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Dict, Iterator, Mapping, Optional, Tuple
 
 
@@ -124,6 +125,13 @@ class AuthorityRecord:
     payload: Mapping[str, Any]
     previous_record_digest: Optional[str]
     record_digest: str
+
+
+@dataclass(frozen=True)
+class ProjectionRequest:
+    sequence: int
+    record_digest: str
+    encoded: bytes
 
 
 @dataclass(frozen=True)
@@ -264,7 +272,7 @@ class AuthorityLedger:
         self._authority_frozen = False
         self._authority_frozen_reason: Optional[str] = None
 
-        self._projection_queue: queue.Queue[Optional[AuthorityRecord]] = queue.Queue(
+        self._projection_queue: queue.Queue[Optional[ProjectionRequest]] = queue.Queue(
             maxsize=self.queue_capacity
         )
         self._durability_lock = threading.Lock()
@@ -416,14 +424,29 @@ class AuthorityLedger:
                 payload=payload,
             )
             digest = _digest_record_material(material)
-            record = AuthorityRecord(**material, record_digest=digest)
+
+            # Freeze both caller-visible payload state and the exact durable
+            # representation while the authority transition is serialized.
+            # The background writer receives immutable bytes and never
+            # re-serializes caller-visible state after the head commits.
+            persistent_record = dict(material)
+            persistent_record["record_digest"] = digest
+            projection = ProjectionRequest(
+                sequence=sequence,
+                record_digest=digest,
+                encoded=_canonical_bytes(persistent_record) + b"\n",
+            )
+            record_material = dict(material)
+            record_material["payload"] = MappingProxyType(dict(material["payload"]))
+            record = AuthorityRecord(**record_material, record_digest=digest)
+
             self._head = LedgerHead(sequence=sequence, record_digest=digest)
             self._head_guard = self._head_guard_digest(self._head)
 
             # Queue insertion is an in-memory part of the serialized authority
             # transition so concurrent writers cannot reorder sequence N/N+1.
             # It performs no filesystem I/O. Writer startup remains outside.
-            projection_queued = self._enqueue_projection_locked(record)
+            projection_queued = self._enqueue_projection_locked(projection)
 
         if projection_queued:
             self._ensure_writer()
@@ -547,19 +570,19 @@ class AuthorityLedger:
             )
             self._writer.start()
 
-    def _enqueue_projection_locked(self, record: AuthorityRecord) -> bool:
+    def _enqueue_projection_locked(self, projection: ProjectionRequest) -> bool:
         """Queue one immutable projection while the authority transition is serialized.
 
         This method performs memory-only bounded queue operations. It never starts
         the writer and never performs filesystem I/O.
         """
         if self._closed:
-            self._mark_projection_lost(record.sequence)
+            self._mark_projection_lost(projection.sequence)
             return False
         try:
-            self._projection_queue.put_nowait(record)
+            self._projection_queue.put_nowait(projection)
         except queue.Full:
-            self._mark_projection_lost(record.sequence)
+            self._mark_projection_lost(projection.sequence)
             return False
         return True
 
@@ -618,16 +641,14 @@ class AuthorityLedger:
                 "projection_metadata_degraded": self._projection_metadata_degraded,
             }
 
-    def _project_one(self, record: AuthorityRecord) -> None:
-        record_data = asdict(record)
-        file_name = f"{record.sequence:012d}_{record.record_digest}.json"
+    def _project_one(self, projection: ProjectionRequest) -> None:
+        file_name = f"{projection.sequence:012d}_{projection.record_digest}.json"
         target = self.records_dir / file_name
-        encoded = _canonical_bytes(record_data) + b"\n"
 
         try:
-            self._atomic_write(target, encoded)
+            self._atomic_write(target, projection.encoded)
         except Exception:
-            self._mark_projection_lost(record.sequence)
+            self._mark_projection_lost(projection.sequence)
             LOG.exception("Phase-6 authority-ledger record projection failed; Jack authority remains active")
             # A record-file failure may still permit projection metadata to be
             # written. Attempt it so durable history can truthfully advertise
@@ -636,15 +657,15 @@ class AuthorityLedger:
             return
 
         with self._durability_lock:
-            self._last_projected_sequence = record.sequence
-            self._last_projected_digest = record.record_digest
+            self._last_projected_sequence = projection.sequence
+            self._last_projected_digest = projection.record_digest
             if self._first_lost_sequence is None:
-                self._complete_through_sequence = record.sequence
+                self._complete_through_sequence = projection.sequence
             elif (
-                record.sequence < self._first_lost_sequence
-                and record.sequence == self._complete_through_sequence + 1
+                projection.sequence < self._first_lost_sequence
+                and projection.sequence == self._complete_through_sequence + 1
             ):
-                self._complete_through_sequence = record.sequence
+                self._complete_through_sequence = projection.sequence
             # Once any record is lost, completeness stays false for this process projection.
             self._projection_complete = self._first_lost_sequence is None
             # The head document being attempted below describes the result of this
