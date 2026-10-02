@@ -1,0 +1,50 @@
+name: One-shot secondary prompt cleanup
+
+on:
+  push:
+    branches:
+      - retire-secondary-prompt-launcher-surface
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: retire-secondary-prompt-launcher-surface
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14.6'
+
+      - name: Apply exact cleanup
+        shell: pwsh
+        run: python tools/_apply_secondary_prompt_cleanup.py
+
+      - name: Compile patched runtime
+        shell: pwsh
+        run: python -m py_compile jack_kernel.py jack_responses_compat.py
+
+      - name: Validate patch shape
+        shell: pwsh
+        run: |
+          git diff --check
+          git diff -- jack_kernel.py
+          if (git status --porcelain | Where-Object { $_ -notmatch '^ M jack_kernel.py$' }) {
+            Write-Error 'Unexpected files changed by cleanup generator.'
+            exit 1
+          }
+
+      - name: Commit generated source cleanup
+        shell: pwsh
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add jack_kernel.py
+          git commit -m 'Retire obsolete secondary prompt launcher surface'
+          git push origin HEAD:retire-secondary-prompt-launcher-surface
