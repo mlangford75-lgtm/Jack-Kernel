@@ -18,6 +18,13 @@ For current governing documentation, see [`/Documentation/`](../).
 
 ## Contents
 
+### Exact pre-cleanup user-facing documents
+
+- [`Pre-Cleanup/README_PHASE6_FROZEN_PRE_CLEANUP_2026-10-02.md`](Pre-Cleanup/README_PHASE6_FROZEN_PRE_CLEANUP_2026-10-02.md) — exact README as it existed at the frozen Phase-6 checkpoint before repository cleanup.
+- [`Pre-Cleanup/GETTING_STARTED_PHASE6_FROZEN_PRE_CLEANUP_2026-10-02.md`](Pre-Cleanup/GETTING_STARTED_PHASE6_FROZEN_PRE_CLEANUP_2026-10-02.md) — exact Getting Started guide from the same pre-cleanup tree.
+
+These copies preserve every word of the previous GitHub presentation while allowing the active documents to become clearer and current.
+
 ### Demonstrations
 
 - [`Demonstrations/Agentic/`](Demonstrations/Agentic/) — preserved Agentic run logs and the Jack XML five-turn case study.
