@@ -1,4 +1,4 @@
-# Jack Kernel
+# Jack Kernel — The Harness for the Harness
 
 **v0.1.1**
 
