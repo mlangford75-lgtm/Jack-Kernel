@@ -350,6 +350,8 @@ def _find_canary_in_nonstream_result(
     for field in (
         "content",
         "reasoning_content",
+        "reasoning",
+        "thinking",
         "tool_calls",
     ):
         match = _find_canary_in_release_value(
@@ -1909,6 +1911,17 @@ def install(
             "Jack lane identity is unavailable"
         )
 
+    credential_guard = None
+    credential_policy = None
+    backend = getattr(jk, "BACKEND", None)
+    if (
+        callable(getattr(jk, "_install_bundled_runtime_extensions", None))
+        and getattr(backend, "_client", None) is not None
+    ):
+        import jack_credential_guard as credential_guard
+
+        credential_policy = credential_guard.install(jk)
+
     if canary_policy is None:
         canary_policy = RuntimeCanaryPolicy(
             runtime_id=runtime_id,
@@ -1934,6 +1947,12 @@ def install(
     if canary_policy.lane_id != lane_id:
         raise RuntimeError(
             "Canary policy lane ownership mismatch"
+        )
+
+    if credential_policy is not None:
+        canary_policy = credential_guard.merge_runtime_canary_policy(
+            canary_policy,
+            credential_policy,
         )
 
     jk._JACK_EVIDENCE_PROVENANCE_GUARD_INSTALLED = True
