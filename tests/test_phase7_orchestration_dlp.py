@@ -78,8 +78,6 @@ def test_orchestration_http_release_blocks_exact_credential_without_worker_side_
             "release_boundary": "orchestration_http_release",
         }
         assert secret not in response.body.decode("utf-8")
-        # The downstream orchestration operation completed once. Release blocking
-        # does not manufacture worker cancellation, failure, or settlement.
         assert calls["count"] == 1
 
     asyncio.run(run())
@@ -175,8 +173,6 @@ def test_orchestration_sse_leak_is_replaced_before_replay_and_later_events_conti
         assert secret.encode("utf-8") not in encoded
         assert secret not in json.dumps(blocked)
 
-        # The worker's next independently safe lifecycle event still enters the
-        # observer stream. The release violation did not cancel or settle it.
         assert later["seq"] == 2
         assert later["type"] == "task"
         assert later["data"]["status"] == "running"
@@ -203,6 +199,79 @@ def test_orchestration_sse_leak_is_replaced_before_replay_and_later_events_conti
             )
         finally:
             await hub.unsubscribe(queue)
+
+    asyncio.run(run())
+    close_ledger(m)
+
+
+def test_orchestration_sse_split_credential_is_stopped_before_completion_event_release(monkeypatch, tmp_path):
+    m = load_module(monkeypatch, tmp_path)
+    install_phase7(m)
+    secret = m.CFG.api_key
+
+    async def run():
+        hub = m.OrchestrationEventHub(replay_limit=8)
+        task_id = str(uuid.uuid4())
+        run_id = str(uuid.uuid4())
+        split = max(1, len(secret) // 2)
+
+        def message_event(delta, at):
+            return {
+                "type": "message",
+                "task_id": task_id,
+                "run_id": run_id,
+                "run_epoch": 1,
+                "attribution": "pi_run_bound",
+                "data": {
+                    "message": {"role": "assistant"},
+                    "assistantMessageEvent": {
+                        "type": "text_delta",
+                        "delta": delta,
+                    },
+                },
+                "at": at,
+            }
+
+        await hub._publish(
+            "message",
+            message_event("safe-prefix-" + secret[:split], "2026-10-04T19:05:03.000Z"),
+        )
+        await hub._publish(
+            "message",
+            message_event(secret[split:] + "-unsafe-tail", "2026-10-04T19:05:03.010Z"),
+        )
+        await hub._publish(
+            "task",
+            {
+                "type": "task",
+                "task_id": task_id,
+                "run_id": run_id,
+                "run_epoch": 1,
+                "attribution": "task_state",
+                "data": {"status": "running", "runOpen": True},
+                "at": "2026-10-04T19:05:03.020Z",
+            },
+        )
+
+        events = list(hub._buffer)
+        assert len(events) == 3
+        first, blocked, later = events
+        assert first["type"] == "message"
+        assert first["data"]["assistantMessageEvent"]["delta"] == "safe-prefix-" + secret[:split]
+        assert blocked["type"] == "orchestration_credential_release_blocked"
+        assert blocked["task_id"] == task_id
+        assert blocked["run_id"] == run_id
+        assert blocked["run_epoch"] == 1
+        assert later["type"] == "task"
+        assert later["data"]["status"] == "running"
+        assert later["data"]["runOpen"] is True
+
+        # The observer can receive the earlier partial prefix, but the event that
+        # would complete the exact protected value is replaced. The full
+        # credential is therefore absent from replay and later work continues.
+        replay_text = b"".join(hub._encode_sse(event) for event in events).decode("utf-8")
+        assert secret not in replay_text
+        assert secret[split:] not in json.dumps(blocked)
 
     asyncio.run(run())
     close_ledger(m)
