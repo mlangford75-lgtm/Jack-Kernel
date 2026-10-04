@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import Any, FrozenSet, Optional, Tuple
 
 
+# Model-input isolation is exact over the configured credential value itself and
+# therefore does not inherit a minimum/maximum length from future streaming DLP.
+# Output scanning has a separate bounded look-behind contract when that later
+# boundary is explicitly activated.
 CREDENTIAL_CANARY_MAX_WINDOW = 4096
 
 BOUNDARY_MODEL_INPUT_DISPATCH = "model_input_dispatch"
@@ -44,6 +48,13 @@ _CREDENTIAL_IDS = {
 
 @dataclass(frozen=True, repr=False)
 class ProtectedCredential:
+    """One exact protected value with safe host-owned structural metadata.
+
+    Multiple logical credential identities may intentionally share one exact
+    protected value. In that case Jack keeps one matcher value and preserves the
+    remaining identities as aliases rather than creating duplicate Canary values.
+    """
+
     credential_id: str
     credential_class: CredentialClass
     source_kind: str
@@ -81,6 +92,8 @@ class ProtectedCredential:
 
 @dataclass(frozen=True)
 class CredentialMatch:
+    """Safe metadata for one exact protected-credential match."""
+
     credential_id: str
     credential_class: CredentialClass
     boundary: str
@@ -90,6 +103,8 @@ class CredentialMatch:
 
 
 class ProtectedCredentialInterrupt(RuntimeError):
+    """Hard Phase-7 boundary that never exposes the protected value."""
+
     def __init__(self, match: CredentialMatch) -> None:
         if not isinstance(match, CredentialMatch):
             raise TypeError("match must be a CredentialMatch")
@@ -99,6 +114,8 @@ class ProtectedCredentialInterrupt(RuntimeError):
 
 @dataclass(frozen=True, repr=False)
 class RuntimeCredentialPolicy:
+    """Immutable credential snapshot owned by one Jack runtime/lane."""
+
     runtime_id: str
     lane_id: str
     credentials: Tuple[ProtectedCredential, ...]
@@ -143,7 +160,20 @@ class RuntimeCredentialPolicy:
             f"protected_resource_count={len(self.protected_resources)})"
         )
 
-    def find(self, value: Any, *, boundary: str, direction: str) -> Optional[CredentialMatch]:
+    def find(
+        self,
+        value: Any,
+        *,
+        boundary: str,
+        direction: str,
+    ) -> Optional[CredentialMatch]:
+        """Find the first exact protected value inside a JSON-like value.
+
+        Protocol/container keys are structural and are not scanned. String
+        values are scanned literally; non-string scalars are not stringified.
+        Traversal order is deterministic and preserves dictionary/list order.
+        """
+
         def scan(node: Any) -> Optional[ProtectedCredential]:
             if isinstance(node, str):
                 best = None
@@ -155,18 +185,21 @@ class RuntimeCredentialPolicy:
                     if best is None or key < best[0]:
                         best = (key, credential)
                 return None if best is None else best[1]
+
             if isinstance(node, dict):
                 for item in node.values():
                     found = scan(item)
                     if found is not None:
                         return found
                 return None
+
             if isinstance(node, (list, tuple)):
                 for item in node:
                     found = scan(item)
                     if found is not None:
                         return found
                 return None
+
             return None
 
         found = scan(value)
@@ -192,6 +225,13 @@ class RuntimeCredentialPolicy:
 
 
 def _validated_secret(value: Any, *, source_kind: str) -> Optional[str]:
+    """Return one active textual credential without pattern-based inference.
+
+    Length is deliberately not a model-input authority criterion. If the host
+    actually configured a non-empty credential, its exact value is protected.
+    Future streamed output DLP applies its own bounded-window requirements.
+    """
+
     if value in (None, ""):
         return None
     if not isinstance(value, str):
@@ -215,6 +255,7 @@ def _credential_resource_paths() -> Tuple[str, ...]:
         jack_config = root / "JackKernelLMStudio" / "config.json"
     else:
         jack_config = home / ".jack-kernel-lm-studio" / "config.json"
+
     pi_config = home / ".pi" / "agent" / "jack-kernel.json"
     return (str(jack_config), str(pi_config))
 
@@ -224,15 +265,36 @@ def _logical_sources(jk: Any) -> Tuple[tuple, ...]:
     if cfg is None:
         raise RuntimeError("Phase-7 credential policy requires Jack CFG")
 
-    jack_api = _validated_secret(getattr(cfg, "api_key", ""), source_kind="CFG.api_key")
-    backend_bearer = _validated_secret(getattr(cfg, "backend_api_key", ""), source_kind="CFG.backend_api_key")
-    backend_header = _validated_secret(getattr(cfg, "backend_header_value", ""), source_kind="CFG.backend_header_value")
-    backend_password = _validated_secret(getattr(cfg, "backend_password", ""), source_kind="CFG.backend_password")
-    backend_authorization = _validated_secret(getattr(cfg, "backend_authorization_value", ""), source_kind="CFG.backend_authorization_value")
+    jack_api = _validated_secret(
+        getattr(cfg, "api_key", ""),
+        source_kind="CFG.api_key",
+    )
+    backend_bearer = _validated_secret(
+        getattr(cfg, "backend_api_key", ""),
+        source_kind="CFG.backend_api_key",
+    )
+    backend_header = _validated_secret(
+        getattr(cfg, "backend_header_value", ""),
+        source_kind="CFG.backend_header_value",
+    )
+    backend_password = _validated_secret(
+        getattr(cfg, "backend_password", ""),
+        source_kind="CFG.backend_password",
+    )
+    backend_authorization = _validated_secret(
+        getattr(cfg, "backend_authorization_value", ""),
+        source_kind="CFG.backend_authorization_value",
+    )
 
-    basic_wire = _basic_wire(getattr(cfg, "backend_username", ""), backend_password)
+    basic_wire = _basic_wire(
+        getattr(cfg, "backend_username", ""),
+        backend_password,
+    )
     if basic_wire is not None:
-        basic_wire = _validated_secret(basic_wire, source_kind="derived_backend_basic_wire")
+        basic_wire = _validated_secret(
+            basic_wire,
+            source_kind="derived_backend_basic_wire",
+        )
 
     pi_control = None
     loader = getattr(jk, "_load_pi_control_bridge", None)
@@ -242,20 +304,60 @@ def _logical_sources(jk: Any) -> Tuple[tuple, ...]:
         except Exception:
             raise RuntimeError("Phase-7 Pi control credential resolution failed") from None
         if isinstance(bridge, dict):
-            pi_control = _validated_secret(bridge.get("token", ""), source_kind="resolved_pi_control_token")
+            pi_control = _validated_secret(
+                bridge.get("token", ""),
+                source_kind="resolved_pi_control_token",
+            )
 
     return (
-        (CredentialClass.JACK_API, "CFG.api_key", jack_api, frozenset({DEST_JACK_PUBLIC_AUTH})),
-        (CredentialClass.BACKEND_BEARER, "CFG.backend_api_key", backend_bearer, frozenset({DEST_BACKEND_AUTH_HEADER})),
-        (CredentialClass.BACKEND_NAMED_HEADER, "CFG.backend_header_value", backend_header, frozenset({DEST_BACKEND_NAMED_AUTH_HEADER})),
-        (CredentialClass.BACKEND_BASIC_PASSWORD, "CFG.backend_password", backend_password, frozenset({DEST_BACKEND_BASIC_DERIVATION})),
-        (CredentialClass.BACKEND_BASIC_WIRE, "derived_backend_basic_wire", basic_wire, frozenset({DEST_BACKEND_AUTHORIZATION_HEADER})),
-        (CredentialClass.BACKEND_AUTHORIZATION, "CFG.backend_authorization_value", backend_authorization, frozenset({DEST_BACKEND_AUTHORIZATION_HEADER})),
-        (CredentialClass.PI_CONTROL, "resolved_pi_control_token", pi_control, frozenset({DEST_PI_CONTROL_AUTH_HEADER})),
+        (
+            CredentialClass.JACK_API,
+            "CFG.api_key",
+            jack_api,
+            frozenset({DEST_JACK_PUBLIC_AUTH}),
+        ),
+        (
+            CredentialClass.BACKEND_BEARER,
+            "CFG.backend_api_key",
+            backend_bearer,
+            frozenset({DEST_BACKEND_AUTH_HEADER}),
+        ),
+        (
+            CredentialClass.BACKEND_NAMED_HEADER,
+            "CFG.backend_header_value",
+            backend_header,
+            frozenset({DEST_BACKEND_NAMED_AUTH_HEADER}),
+        ),
+        (
+            CredentialClass.BACKEND_BASIC_PASSWORD,
+            "CFG.backend_password",
+            backend_password,
+            frozenset({DEST_BACKEND_BASIC_DERIVATION}),
+        ),
+        (
+            CredentialClass.BACKEND_BASIC_WIRE,
+            "derived_backend_basic_wire",
+            basic_wire,
+            frozenset({DEST_BACKEND_AUTHORIZATION_HEADER}),
+        ),
+        (
+            CredentialClass.BACKEND_AUTHORIZATION,
+            "CFG.backend_authorization_value",
+            backend_authorization,
+            frozenset({DEST_BACKEND_AUTHORIZATION_HEADER}),
+        ),
+        (
+            CredentialClass.PI_CONTROL,
+            "resolved_pi_control_token",
+            pi_control,
+            frozenset({DEST_PI_CONTROL_AUTH_HEADER}),
+        ),
     )
 
 
 def build_runtime_credential_policy(jk: Any) -> RuntimeCredentialPolicy:
+    """Build one immutable Phase-7 credential snapshot from closed Jack sources."""
+
     runtime_id = str(getattr(jk, "RUNTIME_ID", "") or "").strip()
     lane_id = str(getattr(jk, "LANE_ID", "") or "").strip()
     if not runtime_id:
@@ -280,11 +382,15 @@ def build_runtime_credential_policy(jk: Any) -> RuntimeCredentialPolicy:
             }
             order.append(value)
             continue
+
         entry = by_value[value]
         entry["authorized_destinations"].update(destinations)
         if credential_id != entry["credential_id"] and credential_id not in entry["aliases"]:
             entry["aliases"].append(credential_id)
-        if credential_class != entry["credential_class"] and credential_class not in entry["alias_classes"]:
+        if (
+            credential_class != entry["credential_class"]
+            and credential_class not in entry["alias_classes"]
+        ):
             entry["alias_classes"].append(credential_class)
 
     credentials = []
@@ -311,7 +417,20 @@ def build_runtime_credential_policy(jk: Any) -> RuntimeCredentialPolicy:
 
 
 def merge_runtime_canary_policy(canary_policy: Any, credential_policy: RuntimeCredentialPolicy):
-    from jack_evidence_guard import CanaryPattern, CanaryTier, DeterministicCanarySet, RuntimeCanaryPolicy
+    """Prepare credential-derived Tier-A values for a later output-DLP boundary.
+
+    This helper does not install output DLP. Its bounded-window requirement lives
+    here rather than in the model-input authority model, so an otherwise valid
+    runtime credential cannot make input isolation brittle merely because it is
+    unsuitable for a future streaming look-behind ceiling.
+    """
+
+    from jack_evidence_guard import (
+        CanaryPattern,
+        CanaryTier,
+        DeterministicCanarySet,
+        RuntimeCanaryPolicy,
+    )
 
     if not isinstance(credential_policy, RuntimeCredentialPolicy):
         raise TypeError("credential_policy must be a RuntimeCredentialPolicy")
@@ -322,19 +441,31 @@ def merge_runtime_canary_policy(canary_policy: Any, credential_policy: RuntimeCr
     if canary_policy.lane_id != credential_policy.lane_id:
         raise RuntimeError("Phase-7 credential/Canary lane ownership mismatch")
     if credential_policy.required_window > CREDENTIAL_CANARY_MAX_WINDOW:
-        raise RuntimeError("Phase-7 credential Canary merge exceeds the bounded output-DLP ceiling")
+        raise RuntimeError(
+            "Phase-7 credential Canary merge exceeds the bounded output-DLP ceiling"
+        )
 
     existing = tuple(getattr(canary_policy.canaries, "_patterns", ()))
     existing_ids = {item.canary_id for item in existing}
     existing_values = {item.value for item in existing}
     additions = []
+
     for credential in credential_policy.credentials:
         if credential.credential_id in existing_ids or credential.value in existing_values:
             raise RuntimeError("Phase-7 credential/Canary policy collision")
-        additions.append(CanaryPattern(canary_id=credential.credential_id, tier=CanaryTier.A, value=credential.value))
+        additions.append(
+            CanaryPattern(
+                canary_id=credential.credential_id,
+                tier=CanaryTier.A,
+                value=credential.value,
+            )
+        )
 
     combined = existing + tuple(additions)
-    max_window = max(int(getattr(canary_policy.canaries, "max_window", 0) or 0), credential_policy.required_window)
+    max_window = max(
+        int(getattr(canary_policy.canaries, "max_window", 0) or 0),
+        credential_policy.required_window,
+    )
     return RuntimeCanaryPolicy(
         runtime_id=credential_policy.runtime_id,
         lane_id=credential_policy.lane_id,
@@ -357,7 +488,11 @@ def _guard_post_call(policy: RuntimeCredentialPolicy, args: tuple, kwargs: dict)
         policy.guard_model_payload(kwargs.get("json"))
 
 
-def _guard_build_request_call(policy: RuntimeCredentialPolicy, args: tuple, kwargs: dict) -> None:
+def _guard_build_request_call(
+    policy: RuntimeCredentialPolicy,
+    args: tuple,
+    kwargs: dict,
+) -> None:
     method = kwargs.get("method")
     url = kwargs.get("url")
     if method is None and args:
@@ -370,7 +505,13 @@ def _guard_build_request_call(policy: RuntimeCredentialPolicy, args: tuple, kwar
         policy.guard_model_payload(kwargs.get("json"))
 
 
-def install(jk: Any, *, credential_policy: Optional[RuntimeCredentialPolicy] = None) -> RuntimeCredentialPolicy:
+def install(
+    jk: Any,
+    *,
+    credential_policy: Optional[RuntimeCredentialPolicy] = None,
+) -> RuntimeCredentialPolicy:
+    """Install exact model-bound credential isolation exactly once."""
+
     existing = getattr(jk, "_JACK_RUNTIME_CREDENTIAL_POLICY", None)
     if getattr(jk, "_JACK_CREDENTIAL_GUARD_INSTALLED", False):
         if not isinstance(existing, RuntimeCredentialPolicy):
