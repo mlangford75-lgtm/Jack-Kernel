@@ -108,6 +108,16 @@ def test_exact_secret_in_model_bound_payload_hard_interrupts_without_echoing_sec
     assert secret not in repr(caught.value.match)
 
 
+def test_short_configured_credential_is_still_protected_at_model_input():
+    jack = _jack(api_key="tiny")
+    policy = guard.build_runtime_credential_policy(jack)
+    assert any(item.value == "tiny" for item in policy.credentials)
+    with pytest.raises(guard.ProtectedCredentialInterrupt):
+        policy.guard_model_payload(
+            {"messages": [{"role": "user", "content": "prefix-tiny-suffix"}]}
+        )
+
+
 def test_unregistered_secret_looking_text_is_not_blocked():
     policy = guard.build_runtime_credential_policy(_jack())
     policy.guard_model_payload(
@@ -124,7 +134,7 @@ def test_unregistered_secret_looking_text_is_not_blocked():
 
 def test_authorized_transport_headers_are_not_misclassified_as_model_payload():
     jack = _jack()
-    policy = guard.install(jack)
+    guard.install(jack)
     secret = jack.CFG.backend_api_key
 
     async def exercise():
@@ -179,13 +189,19 @@ def test_install_is_exact_once_and_environment_or_cfg_mutation_does_not_replace_
     assert all(item.value != jack.CFG.api_key for item in first.credentials)
 
 
-def test_active_known_credential_outside_exact_match_bounds_fails_policy_installation():
-    with pytest.raises(RuntimeError, match="too short"):
-        guard.build_runtime_credential_policy(_jack(api_key="short"))
+def test_future_canary_window_limit_does_not_make_input_policy_installation_brittle():
+    oversized = "x" * (guard.CREDENTIAL_CANARY_MAX_WINDOW + 2)
+    jack = _jack(api_key=oversized)
+    credentials = guard.build_runtime_credential_policy(jack)
+    credentials.guard_model_payload({"messages": [{"role": "user", "content": "safe"}]})
 
-    too_long = "x" * (guard.CREDENTIAL_MAX_VALUE_LENGTH + 1)
-    with pytest.raises(RuntimeError, match="bounded exact-match ceiling"):
-        guard.build_runtime_credential_policy(_jack(api_key=too_long))
+    existing = evidence.RuntimeCanaryPolicy(
+        runtime_id=jack.RUNTIME_ID,
+        lane_id=jack.LANE_ID,
+        canaries=evidence.DeterministicCanarySet((), max_window=0),
+    )
+    with pytest.raises(RuntimeError, match="output-DLP ceiling"):
+        guard.merge_runtime_canary_policy(existing, credentials)
 
 
 def test_credential_policy_merges_into_existing_canaries_without_replacing_them():
