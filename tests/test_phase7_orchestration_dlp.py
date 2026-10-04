@@ -7,7 +7,6 @@ import os
 import sys
 import uuid
 from pathlib import Path
-from types import SimpleNamespace
 
 SRC = Path(__file__).resolve().parents[1] / "jack_kernel.py"
 
@@ -187,8 +186,21 @@ def test_orchestration_sse_leak_is_replaced_before_replay_and_later_events_conti
         try:
             replay_bytes = b"".join(replay)
             assert secret.encode("utf-8") not in replay_bytes
-            assert b"orchestration_credential_release_blocked" in replay_bytes
-            assert b'"status": "running"' in replay_bytes
+            payloads = [
+                json.loads(line[6:])
+                for line in replay_bytes.decode("utf-8").splitlines()
+                if line.startswith("data: ")
+            ]
+            assert any(
+                payload.get("type") == "orchestration_credential_release_blocked"
+                for payload in payloads
+            )
+            assert any(
+                isinstance(payload.get("data"), dict)
+                and payload["data"].get("status") == "running"
+                and payload["data"].get("runOpen") is True
+                for payload in payloads
+            )
         finally:
             await hub.unsubscribe(queue)
 
