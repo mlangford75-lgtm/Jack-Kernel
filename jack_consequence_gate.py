@@ -337,11 +337,14 @@ def install(jk: Any) -> None:
     outcome_type = getattr(jk, "SecurityOutcome", None)
     _require_compatible_outcome_type(outcome_type)
 
-    # Phase 6 is installed only for the real Kernel-owned convergence path.
-    # Lightweight policy-test fakes remain valid Phase-5 evaluator hosts without
-    # acquiring runtime/process authority they do not possess.
+    # Phase 6 and Phase 7B live model-input isolation are installed only for the
+    # real Kernel-owned convergence path. Lightweight policy-test fakes retain
+    # their narrow evaluator role without acquiring process/runtime authority.
     ledger = None
     if callable(getattr(jk, "_install_bundled_runtime_extensions", None)):
+        import jack_credential_guard
+
+        jack_credential_guard.install(jk)
         ledger = authority_ledger.install(jk)
 
     evaluator = _bound_evaluator(outcome_type)
