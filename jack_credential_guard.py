@@ -59,7 +59,7 @@ class ProtectedCredential:
 
     Multiple logical credential identities may intentionally share one exact
     protected value. In that case Jack keeps one matcher value and preserves the
-    remaining identities as aliases rather than creating duplicate Canary values.
+    remaining identities as aliases instead of creating duplicate exact-match entries.
     """
 
     credential_id: str
@@ -176,9 +176,8 @@ class RuntimeCredentialPolicy:
     ) -> Optional[CredentialMatch]:
         """Find the first exact protected value inside a JSON-like value.
 
-        Protocol/container keys are structural and are not scanned. String
-        values are scanned literally; non-string scalars are not stringified.
-        Traversal order is deterministic and preserves dictionary/list order.
+        Container keys are protocol structure and are not scanned. String values
+        are scanned literally; non-string scalars are never stringified.
         """
 
         def scan(node: Any) -> Optional[ProtectedCredential]:
@@ -424,12 +423,12 @@ def build_runtime_credential_policy(jk: Any) -> RuntimeCredentialPolicy:
 
 
 def merge_runtime_canary_policy(canary_policy: Any, credential_policy: RuntimeCredentialPolicy):
-    """Prepare credential-derived Tier-A values for a later output-DLP boundary.
+    """Prepare credential-derived Tier-A values for the later output-DLP boundary.
 
     This helper does not install output DLP. Its bounded-window requirement lives
-    here rather than in the model-input authority model, so an otherwise valid
+    here, rather than in the model-input authority model, so an otherwise valid
     runtime credential cannot make input isolation brittle merely because it is
-    unsuitable for a future streaming look-behind ceiling.
+    unsuitable for the streaming look-behind ceiling.
     """
 
     from jack_evidence_guard import (
@@ -540,6 +539,96 @@ def _release_match(
     )
 
 
+def _orchestration_delta_fragments(source_event: Any) -> Tuple[Tuple[str, str], ...]:
+    """Return known Pi streaming textual channels without guessing new schemas."""
+    if not isinstance(source_event, dict):
+        return ()
+    data = source_event.get("data")
+    if not isinstance(data, dict):
+        return ()
+
+    fragments = []
+    direct = data.get("delta")
+    if isinstance(direct, str):
+        fragments.append(("data.delta", direct))
+
+    assistant_event = data.get("assistantMessageEvent")
+    if isinstance(assistant_event, dict):
+        delta = assistant_event.get("delta")
+        if isinstance(delta, str):
+            fragments.append(("data.assistantMessageEvent.delta", delta))
+
+    return tuple(fragments)
+
+
+def _orchestration_stream_key(source_event: dict[str, Any], channel: str) -> tuple[str, str, str, str]:
+    return (
+        str(source_event.get("task_id") or ""),
+        str(source_event.get("run_id") or ""),
+        str(source_event.get("run_epoch") or ""),
+        channel,
+    )
+
+
+def _credential_prefix_carry(policy: RuntimeCredentialPolicy, text: str) -> str:
+    """Keep only the suffix that can still complete an exact credential later."""
+    best = ""
+    for credential in policy.credentials:
+        maximum = min(len(text), len(credential.value) - 1)
+        for length in range(maximum, 0, -1):
+            candidate = text[-length:]
+            if credential.value.startswith(candidate):
+                if len(candidate) > len(best):
+                    best = candidate
+                break
+    return best
+
+
+def _orchestration_stream_match(
+    policy: RuntimeCredentialPolicy,
+    state: dict[tuple[str, str, str, str], str],
+    source_event: Any,
+) -> Optional[CredentialMatch]:
+    if not isinstance(source_event, dict):
+        return None
+
+    for channel, fragment in _orchestration_delta_fragments(source_event):
+        key = _orchestration_stream_key(source_event, channel)
+        combined = state.get(key, "") + fragment
+        match = policy.find(
+            combined,
+            boundary=BOUNDARY_ORCHESTRATION_EVENT_RELEASE,
+            direction=DIRECTION_CALLER_BOUND,
+        )
+        if match is not None:
+            state.pop(key, None)
+            return match
+
+        carry = _credential_prefix_carry(policy, combined)
+        if carry:
+            state[key] = carry
+        else:
+            state.pop(key, None)
+
+    return None
+
+
+def _clear_orchestration_stream_state(
+    state: dict[tuple[str, str, str, str], str],
+    source_event: Any,
+) -> None:
+    if not isinstance(source_event, dict):
+        return
+    identity = (
+        str(source_event.get("task_id") or ""),
+        str(source_event.get("run_id") or ""),
+        str(source_event.get("run_epoch") or ""),
+    )
+    for key in tuple(state):
+        if key[:3] == identity:
+            state.pop(key, None)
+
+
 def _orchestration_block_payload(boundary: str) -> dict[str, Any]:
     return {
         "error": ORCHESTRATION_RELEASE_BLOCK_ERROR,
@@ -603,15 +692,38 @@ def _install_orchestration_release_guard(
         )
 
     async def guarded_publish(self: Any, event_type: str, source_event: Any) -> None:
-        match = _release_match(
+        stream_state = getattr(
+            self,
+            "_jack_phase7_orchestration_credential_carry",
+            None,
+        )
+        if not isinstance(stream_state, dict):
+            stream_state = {}
+            setattr(
+                self,
+                "_jack_phase7_orchestration_credential_carry",
+                stream_state,
+            )
+
+        match = _orchestration_stream_match(
             policy,
+            stream_state,
             source_event,
-            boundary=BOUNDARY_ORCHESTRATION_EVENT_RELEASE,
         )
         if match is None:
+            match = _release_match(
+                policy,
+                source_event,
+                boundary=BOUNDARY_ORCHESTRATION_EVENT_RELEASE,
+            )
+
+        if match is None:
             await original_publish(self, event_type, source_event)
+            if event_type in {"message_end", "agent_end", "agent_settled"}:
+                _clear_orchestration_stream_state(stream_state, source_event)
             return
 
+        _clear_orchestration_stream_state(stream_state, source_event)
         safe_source = {
             "type": ORCHESTRATION_RELEASE_BLOCK_ERROR,
             "data": _orchestration_block_payload(
