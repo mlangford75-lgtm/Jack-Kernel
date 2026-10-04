@@ -404,6 +404,7 @@ def test_direct_kernel_entrypoint_installs_bundled_security_and_compatibility():
         "jack_kernel.py",
         "jack_secure_entrypoint.py",
         "jack_evidence_guard.py",
+        "jack_credential_guard.py",
         "jack_path_policy.py",
         "jack_consequence_gate.py",
         "jack_authority_ledger.py",
