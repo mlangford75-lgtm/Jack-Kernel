@@ -65,9 +65,9 @@ jobs:
         shell: pwsh
         run: python -m pytest -q tests/test_phase6_authority_ledger.py tests/test_phase6_consequence_ledger_integration.py tests/test_phase6_security_event_ledger.py tests/test_phase6_runtime_installation.py
 
-      - name: Run Phase-7 credential policy tests
+      - name: Run Phase-7 credential policy and live integration tests
         shell: pwsh
-        run: python -m pytest -q tests/test_phase7_credential_policy.py
+        run: python -m pytest -q tests/test_phase7_credential_policy.py tests/test_phase7_live_integration.py
 
       - name: Run Python regression suite
         shell: pwsh
