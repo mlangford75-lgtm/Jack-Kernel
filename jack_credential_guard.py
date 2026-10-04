@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 from dataclasses import dataclass, field
 from enum import Enum
@@ -15,7 +16,13 @@ from typing import Any, FrozenSet, Optional, Tuple
 CREDENTIAL_CANARY_MAX_WINDOW = 4096
 
 BOUNDARY_MODEL_INPUT_DISPATCH = "model_input_dispatch"
+BOUNDARY_ORCHESTRATION_HTTP_RELEASE = "orchestration_http_release"
+BOUNDARY_ORCHESTRATION_EVENT_RELEASE = "orchestration_event_release"
 DIRECTION_MODEL_BOUND = "model_bound"
+DIRECTION_CALLER_BOUND = "caller_bound"
+
+ORCHESTRATION_RELEASE_BLOCK_ERROR = "orchestration_credential_release_blocked"
+ORCHESTRATION_RELEASE_BLOCK_STATUS = 502
 
 DEST_JACK_PUBLIC_AUTH = "jack_public_auth"
 DEST_BACKEND_AUTH_HEADER = "backend_auth_header"
@@ -505,6 +512,128 @@ def _guard_build_request_call(
         policy.guard_model_payload(kwargs.get("json"))
 
 
+def _release_match(
+    policy: RuntimeCredentialPolicy,
+    value: Any,
+    *,
+    boundary: str,
+) -> Optional[CredentialMatch]:
+    if isinstance(value, (bytes, bytearray)):
+        text = bytes(value).decode("utf-8", "replace")
+        try:
+            decoded = json.loads(text)
+        except Exception:
+            decoded = None
+        if decoded is not None:
+            match = policy.find(
+                decoded,
+                boundary=boundary,
+                direction=DIRECTION_CALLER_BOUND,
+            )
+            if match is not None:
+                return match
+        value = text
+    return policy.find(
+        value,
+        boundary=boundary,
+        direction=DIRECTION_CALLER_BOUND,
+    )
+
+
+def _orchestration_block_payload(boundary: str) -> dict[str, Any]:
+    return {
+        "error": ORCHESTRATION_RELEASE_BLOCK_ERROR,
+        "security_outcome": "HARD_INTERRUPT",
+        "release_boundary": boundary,
+    }
+
+
+def _safe_orchestration_identity(
+    policy: RuntimeCredentialPolicy,
+    source_event: Any,
+) -> dict[str, Any]:
+    if not isinstance(source_event, dict):
+        return {}
+    safe = {}
+    for key in ("task_id", "run_id", "run_epoch", "attribution", "at"):
+        if key not in source_event:
+            continue
+        value = source_event.get(key)
+        if _release_match(
+            policy,
+            value,
+            boundary=BOUNDARY_ORCHESTRATION_EVENT_RELEASE,
+        ) is None:
+            safe[key] = value
+    return safe
+
+
+def _install_orchestration_release_guard(
+    jk: Any,
+    policy: RuntimeCredentialPolicy,
+) -> None:
+    if getattr(jk, "_JACK_ORCHESTRATION_CREDENTIAL_DLP_INSTALLED", False):
+        return
+
+    original_proxy = getattr(jk, "_proxy_pi_control_request", None)
+    hub_type = getattr(jk, "OrchestrationEventHub", None)
+    original_publish = getattr(hub_type, "_publish", None) if hub_type is not None else None
+    json_response = getattr(jk, "JSONResponse", None)
+
+    # Lightweight policy-test hosts deliberately do not expose orchestration.
+    if not callable(original_proxy) or not callable(original_publish):
+        return
+    if not callable(json_response):
+        raise RuntimeError("Phase-7 orchestration release guard requires JSONResponse")
+
+    async def guarded_proxy(*args: Any, **kwargs: Any):
+        response = await original_proxy(*args, **kwargs)
+        match = _release_match(
+            policy,
+            getattr(response, "body", b""),
+            boundary=BOUNDARY_ORCHESTRATION_HTTP_RELEASE,
+        )
+        if match is None:
+            return response
+        return json_response(
+            status_code=ORCHESTRATION_RELEASE_BLOCK_STATUS,
+            content=_orchestration_block_payload(
+                BOUNDARY_ORCHESTRATION_HTTP_RELEASE
+            ),
+        )
+
+    async def guarded_publish(self: Any, event_type: str, source_event: Any) -> None:
+        match = _release_match(
+            policy,
+            source_event,
+            boundary=BOUNDARY_ORCHESTRATION_EVENT_RELEASE,
+        )
+        if match is None:
+            await original_publish(self, event_type, source_event)
+            return
+
+        safe_source = {
+            "type": ORCHESTRATION_RELEASE_BLOCK_ERROR,
+            "data": _orchestration_block_payload(
+                BOUNDARY_ORCHESTRATION_EVENT_RELEASE
+            ),
+            **_safe_orchestration_identity(policy, source_event),
+        }
+        await original_publish(
+            self,
+            ORCHESTRATION_RELEASE_BLOCK_ERROR,
+            safe_source,
+        )
+
+    guarded_proxy._jack_phase7_orchestration_credential_dlp = True
+    guarded_publish._jack_phase7_orchestration_credential_dlp = True
+    guarded_publish._jack_phase7_original_publish = original_publish
+
+    jk._proxy_pi_control_request = guarded_proxy
+    hub_type._publish = guarded_publish
+    jk._JACK_ORCHESTRATION_CREDENTIAL_DLP_INSTALLED = True
+
+
 def install(
     jk: Any,
     *,
@@ -552,6 +681,8 @@ def install(
     guarded_build_request._jack_phase7_credential_guard = True
     client.post = guarded_post
     client.build_request = guarded_build_request
+
+    _install_orchestration_release_guard(jk, credential_policy)
 
     jk._JACK_RUNTIME_CREDENTIAL_POLICY = credential_policy
     jk._JACK_CREDENTIAL_GUARD_INSTALLED = True
