@@ -19,6 +19,11 @@ def test_secure_entrypoint_launcher_uses_predecessor_extensions_without_source_a
         lambda jk, *, launch_entrypoint_path=None: events.append("source-baseline"),
     )
     monkeypatch.setattr(
+        source_guard,
+        "activate_runtime_enforcement",
+        lambda jk, authority: events.append("source-enforcement"),
+    )
+    monkeypatch.setattr(
         entrypoint.jk,
         "main",
         lambda: events.append("kernel-main"),
@@ -29,8 +34,9 @@ def test_secure_entrypoint_launcher_uses_predecessor_extensions_without_source_a
     assert events == ["bundled", "kernel-main"]
 
 
-def test_secure_entrypoint_serving_process_seals_source_before_kernel_main(monkeypatch):
+def test_secure_entrypoint_serving_process_seals_then_activates_source_authority_before_kernel_main(monkeypatch):
     events = []
+    authority = object()
 
     monkeypatch.setattr(entrypoint.sys, "argv", ["jack_secure_entrypoint.py", "--serve"])
     monkeypatch.setattr(
@@ -38,11 +44,18 @@ def test_secure_entrypoint_serving_process_seals_source_before_kernel_main(monke
         "_install_bundled_runtime_extensions",
         lambda: events.append("bundled"),
     )
-    monkeypatch.setattr(
-        source_guard,
-        "install",
-        lambda jk, *, launch_entrypoint_path=None: events.append("source-baseline"),
-    )
+
+    def install(jk, *, launch_entrypoint_path=None):
+        events.append("source-baseline")
+        return authority
+
+    def activate(jk, received):
+        assert received is authority
+        events.append("source-enforcement")
+        return received
+
+    monkeypatch.setattr(source_guard, "install", install)
+    monkeypatch.setattr(source_guard, "activate_runtime_enforcement", activate)
     monkeypatch.setattr(
         entrypoint.jk,
         "main",
@@ -51,4 +64,9 @@ def test_secure_entrypoint_serving_process_seals_source_before_kernel_main(monke
 
     entrypoint.main()
 
-    assert events == ["bundled", "source-baseline", "kernel-main"]
+    assert events == [
+        "bundled",
+        "source-baseline",
+        "source-enforcement",
+        "kernel-main",
+    ]
