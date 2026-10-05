@@ -117,6 +117,21 @@ def test_suspended_runtime_blocks_new_cognition_and_exact_reverification_restore
     assert authority.state is source_guard.SourceAuthorityState.ACTIVE
 
 
+def test_unexpected_required_verifier_failure_suspends_instead_of_leaving_active(
+    tmp_path,
+    monkeypatch,
+):
+    authority, _target = _authority_for(tmp_path)
+
+    def verifier_bug(_path):
+        raise ValueError("synthetic verifier failure")
+
+    monkeypatch.setattr(source_guard, "_measure_regular_file", verifier_bug)
+    with pytest.raises(source_guard.SourceAuthorityUnavailable):
+        authority.verify_for_authority_boundary()
+    assert authority.state is source_guard.SourceAuthorityState.SUSPENDED_UNVERIFIED
+
+
 def test_executor_and_mutating_orchestration_are_blocked_but_read_only_status_survives(
     tmp_path,
 ):
