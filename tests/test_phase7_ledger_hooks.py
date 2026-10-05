@@ -57,6 +57,15 @@ async def secret_result(*args, **kwargs):
     )
 
 
+async def secret_stream(*args, **kwargs):
+    if False:
+        yield b""
+    raise kernel.HTTPException(
+        status_code=502,
+        detail="stream-diagnostic-" + SECRET,
+    )
+
+
 async def leaking_proxy(*args, **kwargs):
     return kernel.Response(
         content=json.dumps({"status": "running", "message": "observer-" + SECRET}),
@@ -69,6 +78,7 @@ kernel.BACKEND._client = FakeClient()
 kernel.BACKEND._resolved_model = "test-model"
 kernel.BACKEND._model_metadata_checked = True
 kernel.KERNEL.run = secret_result
+kernel.KERNEL.stream = secret_stream
 kernel._proxy_pi_control_request = leaking_proxy
 kernel._install_bundled_runtime_extensions()
 
@@ -85,6 +95,18 @@ async def exercise():
         pass
     else:
         raise AssertionError("expected credential-derived output release interrupt")
+
+    # Secret-bearing streamed diagnostic truth is replaced by the diagnostic
+    # guard before public rendering; the Phase-7 ledger observes that safe
+    # structural interruption rather than the original secret text.
+    try:
+        async for _ in kernel.KERNEL.stream({"messages": []}):
+            pass
+    except kernel.HTTPException as exc:
+        assert SECRET not in str(exc.detail)
+        assert exc.detail["error"] == "protected_credential_diagnostic_withheld"
+    else:
+        raise AssertionError("expected sanitized streamed diagnostic failure")
 
     # Public orchestration HTTP release.
     response = await kernel._proxy_pi_control_request(None, "GET", "/v1/status")
@@ -144,6 +166,7 @@ required = {
     "orchestration_http_release",
     "orchestration_event_release",
     "diagnostic_http_exception_release",
+    "diagnostic_stream_exception_release",
     "diagnostic_log_release",
     "diagnostic_internal_state",
 }
