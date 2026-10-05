@@ -13,11 +13,9 @@ def test_phase7_live_ledger_and_exact_credential_resource_containment(tmp_path):
 import asyncio
 import json
 import ntpath
-from pathlib import Path
 
 import httpx
 import jack_authority_ledger as authority_ledger
-import jack_credential_guard as credential_guard
 import jack_path_policy as path_policy
 import jack_kernel as kernel
 
@@ -112,8 +110,9 @@ assert "exact protected credential resource" in protected_decision.reason
 assert parent_decision.outcome.value == "ALLOW"
 assert adjacent_decision.outcome.value == "ALLOW"
 
-# Model-input isolation still owns disposition. Phase-7 ledger observation must
-# record the event without becoming the reason dispatch was withheld.
+# Model-input isolation owns disposition at the client transport seam. The
+# backend intentionally translates that internal interrupt into a generic
+# HTTPException, while the Phase-7 ledger records the original transport fact.
 secret = kernel.CFG.api_key
 before_posts = len(fake.posts)
 
@@ -127,9 +126,10 @@ async def blocked_model_input():
                 "stream": False,
             }
         )
-    except credential_guard.ProtectedCredentialInterrupt:
+    except kernel.HTTPException as exc:
+        assert secret not in str(exc.detail)
         return
-    raise AssertionError("expected Phase-7 model-input credential interrupt")
+    raise AssertionError("expected backend translation of Phase-7 input interrupt")
 
 asyncio.run(blocked_model_input())
 assert len(fake.posts) == before_posts
