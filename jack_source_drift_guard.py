@@ -108,11 +108,12 @@ def _sha256_stream(handle: Any) -> str:
 
 
 def _measure_regular_file(path: Path) -> _MeasuredSource:
-    """Measure one source file without inferring anything from timestamps/size.
+    """Measure one source file from exact bytes and explicit object kind.
 
-    Missing paths and deterministic kind transitions are source mismatches.
+    Missing paths and deterministic file-kind transitions are source mismatches.
     Other OS read failures are epistemically different: Jack cannot establish
     current identity and Phase 8 must suspend rather than falsely claim drift.
+    Metadata such as mtime and size is never used as source identity.
     """
 
     raw = Path(path).expanduser()
@@ -123,16 +124,28 @@ def _measure_regular_file(path: Path) -> _MeasuredSource:
     except OSError as exc:
         raise SourceMeasurementUnavailable(type(exc).__name__) from exc
 
+    # Classify path kind before opening. On Windows, opening a directory can
+    # surface as PermissionError rather than IsADirectoryError; object kind is
+    # nevertheless a deterministic fact and must not be mislabeled unavailable.
+    try:
+        path_mode = canonical.stat().st_mode
+    except FileNotFoundError as exc:
+        raise _SourceComponentMissing(str(canonical)) from exc
+    except OSError as exc:
+        raise SourceMeasurementUnavailable(type(exc).__name__) from exc
+    if not stat.S_ISREG(path_mode):
+        raise _SourceComponentKindChanged(str(canonical))
+
     try:
         with canonical.open("rb") as handle:
-            mode = os.fstat(handle.fileno()).st_mode
-            if not stat.S_ISREG(mode):
+            handle_mode = os.fstat(handle.fileno()).st_mode
+            if not stat.S_ISREG(handle_mode):
                 raise _SourceComponentKindChanged(str(canonical))
             digest = _sha256_stream(handle)
     except FileNotFoundError as exc:
         raise _SourceComponentMissing(str(canonical)) from exc
-    except (IsADirectoryError, _SourceComponentKindChanged):
-        raise _SourceComponentKindChanged(str(canonical))
+    except _SourceComponentKindChanged:
+        raise
     except OSError as exc:
         raise SourceMeasurementUnavailable(type(exc).__name__) from exc
 
@@ -207,12 +220,7 @@ class RuntimeSourceAuthority:
             return self._baseline
 
     def register_component(self, component_id: str, path: Path) -> None:
-        """Register authority source only while INITIALIZING.
-
-        Once ACTIVE, the protected component set is closed. A new authority
-        component therefore requires runtime re-establishment rather than live
-        re-baselining.
-        """
+        """Register authority source only while INITIALIZING."""
 
         cid = str(component_id or "").strip()
         if _COMPONENT_ID_RE.fullmatch(cid) is None:
@@ -292,12 +300,7 @@ class RuntimeSourceAuthority:
 
     @contextmanager
     def admit(self) -> Iterator[RuntimeSourceBaseline]:
-        """Serialize final authority admission against suspension/invalidation.
-
-        Phase 8C should use this only around the actual consequence/release
-        transition. It must not be held across long-running probabilistic
-        cognition.
-        """
+        """Serialize final authority admission against suspension/invalidation."""
 
         self._lock.acquire()
         try:
@@ -429,10 +432,20 @@ def install(
 ) -> RuntimeSourceAuthority:
     """Seal one process-local Phase-8B active-source baseline exactly once."""
 
+    requested = _default_component_paths(
+        jk,
+        launch_entrypoint_path=launch_entrypoint_path,
+    )
+    requested_ids = frozenset(component_id for component_id, _path in requested)
+
     existing = getattr(jk, "_JACK_SOURCE_AUTHORITY", None)
     if getattr(jk, "_JACK_SOURCE_AUTHORITY_INSTALLED", False):
         if not isinstance(existing, RuntimeSourceAuthority):
             raise RuntimeError("Phase-8 source-authority marker exists without valid state")
+        if frozenset(existing.baseline.component_ids) != requested_ids:
+            raise SourceComponentSetSealed(
+                "Phase-8 protected source set is sealed; restart is required"
+            )
         return existing
 
     missing = [
@@ -449,10 +462,7 @@ def install(
     lane_id = str(getattr(jk, "LANE_ID", "") or "").strip()
     authority = RuntimeSourceAuthority(runtime_id=runtime_id, lane_id=lane_id)
 
-    for component_id, path in _default_component_paths(
-        jk,
-        launch_entrypoint_path=launch_entrypoint_path,
-    ):
+    for component_id, path in requested:
         authority.register_component(component_id, path)
 
     baseline = authority.seal()
