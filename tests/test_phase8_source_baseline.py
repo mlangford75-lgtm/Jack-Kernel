@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-import threading
+import os
 from pathlib import Path
+import subprocess
+import sys
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -167,3 +170,59 @@ def test_invalidated_state_is_not_reactivated_by_register_or_seal(tmp_path):
         authority.register_component("new.py", tmp_path / "new.py")
     assert authority.seal() is baseline
     assert authority.state is source_guard.SourceAuthorityState.INVALIDATED
+
+
+def test_live_kernel_installs_phase8_only_after_predecessors_and_seals_real_source_set(tmp_path):
+    code = r'''
+from pathlib import Path
+import jack_kernel as kernel
+import jack_source_drift_guard as source_guard
+
+kernel._install_bundled_runtime_extensions()
+authority = source_guard.install(
+    kernel,
+    launch_entrypoint_path=Path("jack_secure_entrypoint.py").resolve(),
+)
+expected = {
+    "jack_kernel.py",
+    "jack_evidence_guard.py",
+    "jack_path_policy.py",
+    "jack_consequence_gate.py",
+    "jack_authority_ledger.py",
+    "jack_responses_compat.py",
+    "jack_credential_guard.py",
+    "jack_diagnostic_guard.py",
+    "jack_credential_resource_guard.py",
+    "jack_phase7_ledger.py",
+    "jack_source_drift_guard.py",
+    "jack_secure_entrypoint.py",
+}
+assert authority.state is source_guard.SourceAuthorityState.ACTIVE
+assert set(authority.baseline.component_ids) == expected
+assert kernel._JACK_SOURCE_AUTHORITY is authority
+assert kernel._JACK_SOURCE_AUTHORITY_INSTALLED is True
+assert kernel.RUNTIME_SOURCE_BASELINE_SHA256 == authority.baseline.aggregate_sha256
+assert set(kernel.RUNTIME_SOURCE_BASELINE_COMPONENTS) == expected
+assert kernel.RUNTIME_MANIFEST_COMPONENTS["jack_source_drift_guard.py"] != "UNAVAILABLE"
+assert authority.verify_now().verified is True
+kernel._JACK_AUTHORITY_LEDGER.close()
+'''
+    env = dict(os.environ)
+    env.update(
+        {
+            "JACK_AUTHORITY_LEDGER_DIR": str(tmp_path / "ledger"),
+            "JACK_FORENSIC_ARCHIVE_MODE": "off",
+            "JACK_BACKEND_MODEL": "test-model",
+            "JACK_BACKEND_PROFILE": "lmstudio",
+        }
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
