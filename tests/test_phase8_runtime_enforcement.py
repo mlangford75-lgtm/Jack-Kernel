@@ -180,7 +180,7 @@ def test_already_admitted_control_action_may_settle_without_new_jack_admission(t
     asyncio.run(exercise())
 
 
-def test_tool_release_and_debugging_durable_commit_are_withdrawn_after_invalidation(tmp_path):
+def test_tool_release_is_withdrawn_after_invalidation(tmp_path):
     authority, target = _authority_for(tmp_path)
     calls = []
     jk = _runtime_host(authority)
@@ -189,12 +189,7 @@ def test_tool_release_and_debugging_durable_commit_are_withdrawn_after_invalidat
         calls.append(("tool-release", calls_in))
         return calls_in, []
 
-    def durable_commit(*args, **kwargs):
-        calls.append(("durable-commit", args, kwargs))
-        return "committed"
-
     jk._phase4_partition_structured_tool_calls = tool_release
-    jk._debugging_commit_pass_summary = durable_commit
     source_guard.activate_runtime_enforcement(jk, authority, start_periodic=False)
 
     target.write_bytes(b"changed")
@@ -202,10 +197,35 @@ def test_tool_release_and_debugging_durable_commit_are_withdrawn_after_invalidat
 
     with pytest.raises(source_guard.SourceAuthorityInvalidated):
         jk._phase4_partition_structured_tool_calls([{"id": "call-1"}])
-    with pytest.raises(source_guard.SourceAuthorityInvalidated):
-        jk._debugging_commit_pass_summary("run", 1, {"choices": []})
 
     assert calls == []
+
+
+def test_debugging_pending_cognition_survives_when_durable_write_is_withdrawn(tmp_path):
+    authority, target = _authority_for(tmp_path)
+    pending = []
+    writes = []
+    jk = _runtime_host(authority)
+
+    def atomic_write(*args, **kwargs):
+        writes.append((args, kwargs))
+        return "durable"
+
+    jk._debugging_atomic_replace_report = atomic_write
+    source_guard.activate_runtime_enforcement(jk, authority, start_periodic=False)
+
+    target.write_bytes(b"changed")
+    assert authority.verify_now().state is source_guard.SourceAuthorityState.INVALIDATED
+
+    def completed_cognition_then_durability():
+        pending.append("completed-summary")
+        return jk._debugging_atomic_replace_report("report", "summary")
+
+    with pytest.raises(source_guard.SourceAuthorityInvalidated):
+        completed_cognition_then_durability()
+
+    assert pending == ["completed-summary"]
+    assert writes == []
 
 
 def test_periodic_verifier_detects_confirmed_drift_without_claiming_continuous_attestation(tmp_path):
@@ -261,14 +281,16 @@ assert getattr(kernel._phase4_partition_structured_tool_calls, "_jack_phase8_sou
 assert getattr(kernel._phase4_executor_admission_decision, "_jack_phase8_source_authority", False)
 assert getattr(kernel._proxy_pi_control_request, "_jack_phase8_source_authority", False)
 for name in (
-    "_debugging_create_run",
+    "_debugging_write_open_intake_report",
     "_debugging_freeze_intake",
-    "_debugging_commit_pass_summary",
-    "_debugging_retry_pending_pass_summary",
-    "_debugging_commit_final_report",
-    "_debugging_retry_pending_final_report",
+    "_debugging_atomic_replace_report",
 ):
     assert getattr(getattr(kernel, name), "_jack_phase8_source_authority", False), name
+for name in (
+    "_debugging_commit_pass_summary",
+    "_debugging_commit_final_report",
+):
+    assert not getattr(getattr(kernel, name), "_jack_phase8_source_authority", False), name
 
 # Worker event publication remains predecessor-owned observation/settlement truth.
 assert not getattr(type(kernel.ORCHESTRATION_EVENTS)._publish, "_jack_phase8_source_authority", False)
