@@ -2,7 +2,7 @@ name: Phase 7 validation tag once
 
 on:
   push:
-    branches: [main]
+    branches: [ops/phase7-validation-tag-once]
     paths:
       - .github/workflows/phase7-validation-tag-once.yml
 
