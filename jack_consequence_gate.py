@@ -344,8 +344,13 @@ def install(jk: Any) -> None:
     if callable(getattr(jk, "_install_bundled_runtime_extensions", None)):
         if getattr(jk, "BACKEND", None) is not None:
             import jack_credential_guard
+            import jack_diagnostic_guard
 
-            jack_credential_guard.install(jk)
+            credential_policy = jack_credential_guard.install(jk)
+            jack_diagnostic_guard.install(
+                jk,
+                credential_policy=credential_policy,
+            )
         ledger = authority_ledger.install(jk)
 
     evaluator = _bound_evaluator(outcome_type)
