@@ -134,6 +134,8 @@ def _measure_regular_file(path: Path) -> _MeasuredSource:
         raise _SourceComponentMissing(str(raw)) from exc
     except OSError as exc:
         raise SourceMeasurementUnavailable(type(exc).__name__) from exc
+    except RuntimeError as exc:
+        raise SourceMeasurementUnavailable(type(exc).__name__) from exc
 
     # Classify path kind before opening. On Windows, opening a directory can
     # surface as PermissionError rather than IsADirectoryError; object kind is
@@ -416,7 +418,13 @@ class RuntimeSourceAuthority:
     def verify_for_authority_boundary(self) -> None:
         """Remeasure at a required authority boundary, then atomically admit it."""
 
-        self.verify_now()
+        try:
+            self.verify_now()
+        except Exception as exc:
+            self._suspend_unverified()
+            raise SourceAuthorityUnavailable(
+                "Phase-8 source identity could not be verified at authority boundary"
+            ) from exc
         with self.admit():
             pass
 
@@ -752,6 +760,10 @@ def activate_runtime_enforcement(
         raise RuntimeError("Phase-8C authority does not own this Jack runtime")
     if not getattr(jk, "_JACK_SOURCE_AUTHORITY_INSTALLED", False):
         raise RuntimeError("Phase-8C requires an installed Phase-8B baseline")
+
+    # Separate activation verification preserves the Phase-8A ordering:
+    # sealed baseline -> exact pre-ready verification -> live enforcement -> ready.
+    authority.verify_for_authority_boundary()
 
     if not getattr(jk, "_JACK_SOURCE_RUNTIME_ENFORCEMENT_INSTALLED", False):
         _install_kernel_release_enforcement(jk, authority)
