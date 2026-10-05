@@ -531,12 +531,26 @@ def _install_kernel_release_enforcement(jk: Any, authority: RuntimeSourceAuthori
         @wraps(original_stream)
         async def source_governed_stream(*args: Any, **kwargs: Any):
             authority.verify_for_authority_boundary()
-            async for chunk in original_stream(*args, **kwargs):
-                # Periodic verification owns bounded remeasurement during long
-                # streams. This lock is the final admission point for this chunk.
-                with authority.admit():
-                    pass
-                yield chunk
+            blocked: Optional[SourceAuthorityUnavailable] = None
+            try:
+                async for chunk in original_stream(*args, **kwargs):
+                    if blocked is not None:
+                        # Cognition continues internally, but this transaction
+                        # permanently loses caller-release authority once blocked.
+                        continue
+                    try:
+                        with authority.admit():
+                            pass
+                    except SourceAuthorityUnavailable as exc:
+                        blocked = exc
+                        continue
+                    yield chunk
+            except Exception:
+                if blocked is not None:
+                    raise blocked
+                raise
+            if blocked is not None:
+                raise blocked
 
         source_governed_stream._jack_phase8_source_authority = True
         source_governed_stream._jack_phase8_original = original_stream
