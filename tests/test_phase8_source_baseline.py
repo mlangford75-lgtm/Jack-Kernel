@@ -107,8 +107,6 @@ def test_invalidation_and_final_admission_share_one_serialization_boundary(tmp_p
     verifier_thread = threading.Thread(target=verifier)
     verifier_thread.start()
 
-    # verify_now() must not transition authority while an admitted final
-    # consequence owns the same narrow synchronization boundary.
     assert verification_finished.wait(timeout=0.1) is False
 
     release.set()
@@ -170,6 +168,49 @@ def test_invalidated_state_is_not_reactivated_by_register_or_seal(tmp_path):
         authority.register_component("new.py", tmp_path / "new.py")
     assert authority.seal() is baseline
     assert authority.state is source_guard.SourceAuthorityState.INVALIDATED
+
+
+def test_repeat_install_same_component_ids_and_same_canonical_paths_returns_existing(monkeypatch, tmp_path):
+    path_a = tmp_path / "a.py"
+    path_a.write_bytes(b"a")
+    authority = source_guard.RuntimeSourceAuthority(runtime_id="runtime-a", lane_id="lane-a")
+    authority.register_component("X", path_a)
+    authority.seal()
+
+    jk = SimpleNamespace(
+        _JACK_SOURCE_AUTHORITY=authority,
+        _JACK_SOURCE_AUTHORITY_INSTALLED=True,
+    )
+    monkeypatch.setattr(
+        source_guard,
+        "_default_component_paths",
+        lambda _jk, *, launch_entrypoint_path=None: (("X", path_a),),
+    )
+
+    assert source_guard.install(jk) is authority
+
+
+def test_repeat_install_same_component_id_but_different_canonical_path_is_rejected(monkeypatch, tmp_path):
+    path_a = tmp_path / "a.py"
+    path_b = tmp_path / "b.py"
+    path_a.write_bytes(b"a")
+    path_b.write_bytes(b"b")
+    authority = source_guard.RuntimeSourceAuthority(runtime_id="runtime-a", lane_id="lane-a")
+    authority.register_component("X", path_a)
+    authority.seal()
+
+    jk = SimpleNamespace(
+        _JACK_SOURCE_AUTHORITY=authority,
+        _JACK_SOURCE_AUTHORITY_INSTALLED=True,
+    )
+    monkeypatch.setattr(
+        source_guard,
+        "_default_component_paths",
+        lambda _jk, *, launch_entrypoint_path=None: (("X", path_b),),
+    )
+
+    with pytest.raises(source_guard.SourceComponentSetSealed):
+        source_guard.install(jk)
 
 
 def test_live_kernel_installs_phase8_only_after_predecessors_and_seals_real_source_set(tmp_path):
