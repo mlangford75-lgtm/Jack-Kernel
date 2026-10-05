@@ -68,12 +68,14 @@ def test_nonstream_result_is_withheld_when_source_drifts_during_cognition(tmp_pa
     assert authority.state is source_guard.SourceAuthorityState.INVALIDATED
 
 
-def test_stream_preserves_released_prefix_but_blocks_future_chunks_after_invalidation(tmp_path):
+def test_stream_preserves_released_prefix_and_drains_safe_cognition_after_invalidation(tmp_path):
     authority, target = _authority_for(tmp_path)
+    drained = []
 
     async def raw_stream(*_args, **_kwargs):
         yield b"first"
         yield b"second"
+        drained.append("completed")
 
     jk = _runtime_host(authority, stream=raw_stream)
     source_guard.activate_runtime_enforcement(jk, authority, start_periodic=False)
@@ -90,6 +92,7 @@ def test_stream_preserves_released_prefix_but_blocks_future_chunks_after_invalid
             await stream.__anext__()
 
     asyncio.run(exercise())
+    assert drained == ["completed"]
 
 
 def test_suspended_runtime_blocks_new_cognition_and_exact_reverification_restores_it(
