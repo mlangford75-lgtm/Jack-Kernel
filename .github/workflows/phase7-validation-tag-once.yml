@@ -1,0 +1,52 @@
+name: Phase 7 validation tag once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/phase7-validation-tag-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  create-validated-tag:
+    runs-on: ubuntu-latest
+    env:
+      TAG_NAME: security-layer-phase7-validated-2026-10-05
+      TARGET_SHA: 59aef730e11031b23f67c735e35f1e68c9ecc394
+    steps:
+      - name: Check out repository history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      - name: Create exact annotated Phase-7 validation tag
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git fetch --force --tags origin
+          git cat-file -e "$env:TARGET_SHA^{commit}"
+
+          $Existing = git tag --list $env:TAG_NAME
+          if ($Existing) {
+            $Peeled = (git rev-parse "$env:TAG_NAME^{}").Trim()
+            if ($Peeled -ne $env:TARGET_SHA) {
+              throw "Existing Phase-7 validation tag points to $Peeled instead of $env:TARGET_SHA"
+            }
+            Write-Host "Validated tag already exists at exact target: $Peeled"
+            exit 0
+          }
+
+          git config user.name "Jack Kernel Security Closure"
+          git config user.email "actions@users.noreply.github.com"
+          git tag -a $env:TAG_NAME $env:TARGET_SHA -m "Jack Kernel Security Layer Phase 7 validated closure. Target 59aef730e11031b23f67c735e35f1e68c9ecc394; implementation PR #35; closure PR #36; acceptance CI #182; closure-complete main CI #186."
+          git push origin "refs/tags/$env:TAG_NAME:refs/tags/$env:TAG_NAME"
+
+          git fetch --force --tags origin
+          $Peeled = (git rev-parse "$env:TAG_NAME^{}").Trim()
+          if ($Peeled -ne $env:TARGET_SHA) {
+            throw "Created Phase-7 tag peeled to $Peeled instead of $env:TARGET_SHA"
+          }
+          Write-Host "PHASE7_VALIDATED_TAG=$env:TAG_NAME"
+          Write-Host "PHASE7_VALIDATED_TARGET=$Peeled"
