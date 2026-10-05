@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import time
+import os
 from pathlib import Path
+import subprocess
+import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -174,6 +177,34 @@ def test_already_admitted_control_action_may_settle_without_new_jack_admission(t
     asyncio.run(exercise())
 
 
+def test_tool_release_and_debugging_durable_commit_are_withdrawn_after_invalidation(tmp_path):
+    authority, target = _authority_for(tmp_path)
+    calls = []
+    jk = _runtime_host(authority)
+
+    def tool_release(calls_in):
+        calls.append(("tool-release", calls_in))
+        return calls_in, []
+
+    def durable_commit(*args, **kwargs):
+        calls.append(("durable-commit", args, kwargs))
+        return "committed"
+
+    jk._phase4_partition_structured_tool_calls = tool_release
+    jk._debugging_commit_pass_summary = durable_commit
+    source_guard.activate_runtime_enforcement(jk, authority, start_periodic=False)
+
+    target.write_bytes(b"changed")
+    assert authority.verify_now().state is source_guard.SourceAuthorityState.INVALIDATED
+
+    with pytest.raises(source_guard.SourceAuthorityInvalidated):
+        jk._phase4_partition_structured_tool_calls([{"id": "call-1"}])
+    with pytest.raises(source_guard.SourceAuthorityInvalidated):
+        jk._debugging_commit_pass_summary("run", 1, {"choices": []})
+
+    assert calls == []
+
+
 def test_periodic_verifier_detects_confirmed_drift_without_claiming_continuous_attestation(tmp_path):
     authority, target = _authority_for(tmp_path)
     authority.start_periodic_verification(interval_seconds=0.05)
@@ -206,3 +237,58 @@ def test_runtime_enforcement_activation_is_idempotent_and_does_not_rewrap_seams(
     assert jk.KERNEL.stream is stream
     assert jk._phase4_executor_admission_decision is executor
     assert jk._proxy_pi_control_request is proxy
+
+
+def test_live_kernel_activation_wraps_real_authority_seams_without_wrapping_worker_events(tmp_path):
+    code = r'''
+from pathlib import Path
+import jack_kernel as kernel
+import jack_source_drift_guard as source_guard
+
+kernel._install_bundled_runtime_extensions()
+authority = source_guard.install(
+    kernel,
+    launch_entrypoint_path=Path("jack_secure_entrypoint.py").resolve(),
+)
+source_guard.activate_runtime_enforcement(kernel, authority, start_periodic=False)
+
+assert getattr(kernel.KERNEL.run, "_jack_phase8_source_authority", False)
+assert getattr(kernel.KERNEL.stream, "_jack_phase8_source_authority", False)
+assert getattr(kernel._phase4_partition_structured_tool_calls, "_jack_phase8_source_authority", False)
+assert getattr(kernel._phase4_executor_admission_decision, "_jack_phase8_source_authority", False)
+assert getattr(kernel._proxy_pi_control_request, "_jack_phase8_source_authority", False)
+for name in (
+    "_debugging_create_run",
+    "_debugging_freeze_intake",
+    "_debugging_commit_pass_summary",
+    "_debugging_retry_pending_pass_summary",
+    "_debugging_commit_final_report",
+    "_debugging_retry_pending_final_report",
+):
+    assert getattr(getattr(kernel, name), "_jack_phase8_source_authority", False), name
+
+# Worker event publication remains predecessor-owned observation/settlement truth.
+assert not getattr(type(kernel.ORCHESTRATION_EVENTS)._publish, "_jack_phase8_source_authority", False)
+assert kernel._JACK_SOURCE_RUNTIME_ENFORCEMENT_INSTALLED is True
+assert authority.state is source_guard.SourceAuthorityState.ACTIVE
+kernel._JACK_AUTHORITY_LEDGER.close()
+'''
+    env = dict(os.environ)
+    env.update(
+        {
+            "JACK_AUTHORITY_LEDGER_DIR": str(tmp_path / "ledger"),
+            "JACK_FORENSIC_ARCHIVE_MODE": "off",
+            "JACK_BACKEND_MODEL": "test-model",
+            "JACK_BACKEND_PROFILE": "lmstudio",
+        }
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
