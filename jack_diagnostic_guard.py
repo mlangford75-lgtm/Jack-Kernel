@@ -84,6 +84,41 @@ def _blocked_payload(boundary: str) -> dict[str, str]:
     }
 
 
+def _safe_headers(
+    policy: Any,
+    headers: Any,
+    *,
+    boundary: str,
+    direction: str,
+) -> tuple[Optional[dict[str, str]], bool]:
+    """Preserve clean exception headers and omit only proven credential carriers."""
+    if headers is None:
+        return None, False
+    if not isinstance(headers, dict):
+        match = _policy_match(
+            policy,
+            headers,
+            boundary=boundary,
+            direction=direction,
+        )
+        return (None, match is not None)
+
+    safe: dict[str, str] = {}
+    violated = False
+    for key, value in headers.items():
+        pair = {str(key): str(value)}
+        if _policy_match(
+            policy,
+            pair,
+            boundary=boundary,
+            direction=direction,
+        ) is not None:
+            violated = True
+            continue
+        safe[str(key)] = str(value)
+    return (safe or None), violated
+
+
 def _exception_material(exc: BaseException) -> str:
     """Collect exception-chain text without traceback locals or object repr dumps."""
     parts = []
@@ -122,6 +157,14 @@ def _exception_has_credential(
         direction=direction,
     ) is not None:
         return True
+    headers = getattr(exc, "headers", None)
+    if headers is not None and _policy_match(
+        policy,
+        headers,
+        boundary=boundary,
+        direction=direction,
+    ) is not None:
+        return True
     return _policy_match(
         policy,
         _exception_material(exc),
@@ -153,7 +196,6 @@ class _CredentialDiagnosticLogFilter(logging.Filter):
         )
 
     def add_policy(self, policy: Any) -> None:
-        # Validate before publishing into the process-wide observer policy set.
         if not callable(getattr(policy, "find", None)):
             raise TypeError("diagnostic log guard requires a runtime credential policy")
         identity = self._identity(policy)
@@ -194,10 +236,6 @@ class _CredentialDiagnosticLogFilter(logging.Filter):
             )
             if match is None:
                 continue
-
-            # Do not partially redact a proven credential-bearing diagnostic.
-            # Replace the whole record and discard traceback material whose
-            # exception chain may contain the same credential.
             record.msg = DIAGNOSTIC_LOG_MESSAGE
             record.args = ()
             record.exc_info = None
@@ -222,17 +260,23 @@ def _install_http_exception_guard(jk: Any, policy: Any) -> bool:
 
     async def guarded_http_exception(request: Any, exc: Any):
         detail = getattr(exc, "detail", None)
-        match = _policy_match(
+        detail_match = _policy_match(
             policy,
             detail,
             boundary=BOUNDARY_HTTP_EXCEPTION_RELEASE,
             direction=DIRECTION_CALLER_BOUND,
         )
-        if match is not None:
+        safe_headers, header_violation = _safe_headers(
+            policy,
+            getattr(exc, "headers", None),
+            boundary=BOUNDARY_HTTP_EXCEPTION_RELEASE,
+            direction=DIRECTION_CALLER_BOUND,
+        )
+        if detail_match is not None or header_violation:
             return JSONResponse(
                 status_code=int(getattr(exc, "status_code", 500) or 500),
                 content={"detail": _blocked_payload(BOUNDARY_HTTP_EXCEPTION_RELEASE)},
-                headers=getattr(exc, "headers", None),
+                headers=safe_headers,
             )
         if previous is not None:
             return await previous(request, exc)
@@ -270,18 +314,16 @@ def _install_stream_exception_guard(jk: Any, policy: Any) -> bool:
                 if isinstance(exc, http_exception_type)
                 else 502
             )
-            headers = (
-                getattr(exc, "headers", None)
-                if isinstance(exc, http_exception_type)
-                else None
+            safe_headers, _ = _safe_headers(
+                policy,
+                getattr(exc, "headers", None) if isinstance(exc, http_exception_type) else None,
+                boundary=BOUNDARY_STREAM_EXCEPTION_RELEASE,
+                direction=DIRECTION_CALLER_BOUND,
             )
-            # Drop the original exception chain at this release boundary. The
-            # exact secret-bearing diagnostic is not caller-visible and will also
-            # be suppressed by Jack's log filter if an outer layer logs failure.
             raise http_exception_type(
                 status_code=status_code,
                 detail=_blocked_payload(BOUNDARY_STREAM_EXCEPTION_RELEASE),
-                headers=headers,
+                headers=safe_headers,
             ) from None
 
     guarded_stream._jack_phase7_diagnostic_stream_guard = True
@@ -335,8 +377,6 @@ def _install_internal_state_guard(jk: Any, policy: Any) -> bool:
     guarded_setattr._jack_phase7_original_setattr = original_setattr
     hub_type.__setattr__ = guarded_setattr
 
-    # The live singleton is normally still clean when Phase 7 installs, but do
-    # not retain a pre-existing protected value if startup ordering ever changes.
     instance = getattr(jk, "ORCHESTRATION_EVENTS", None)
     if instance is not None:
         current = getattr(instance, "_last_error", None)
@@ -356,9 +396,6 @@ def install(jk: Any, *, credential_policy: Any) -> None:
     if getattr(jk, "_JACK_DIAGNOSTIC_CREDENTIAL_DLP_INSTALLED", False):
         return
 
-    # Lightweight isolated policy-test hosts intentionally omit runtime release
-    # surfaces. Only the real Kernel convergence path is required to install all
-    # four diagnostic guards.
     live_runtime = (
         callable(getattr(jk, "_install_bundled_runtime_extensions", None))
         and getattr(jk, "APP", None) is not None
