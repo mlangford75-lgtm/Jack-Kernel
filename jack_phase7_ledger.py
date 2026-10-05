@@ -50,7 +50,11 @@ class ProtectedCredentialResourceBlockedPayload:
     resource_id: str
 
 
-_LEDGER_BY_IDENTITY: dict[tuple[str, str], authority_ledger.AuthorityLedger] = {}
+# Process-global logging is the only Phase-7 observer that needs cross-runtime
+# lookup. Key by the exact immutable credential-policy object, not merely the
+# configured runtime/lane strings: isolated runtime instances may legitimately
+# reuse the same configured identity in one embedding/test process.
+_LEDGER_BY_POLICY_OBJECT: dict[int, authority_ledger.AuthorityLedger] = {}
 _REGISTRY_LOCK = threading.Lock()
 _LOG_HOOK_LOCK = threading.Lock()
 
@@ -194,11 +198,69 @@ def _response_is_orchestration_block(response: Any) -> bool:
     return isinstance(payload, dict) and payload.get("error") == "orchestration_credential_release_blocked"
 
 
+def _install_transport_hooks(
+    jk: Any,
+    ledger: authority_ledger.AuthorityLedger,
+) -> None:
+    """Observe model-input violations at the transport seam that owns the fact."""
+    import jack_credential_guard as credential_guard
+
+    backend = getattr(jk, "BACKEND", None)
+    client = getattr(backend, "_client", None)
+    if client is None:
+        return
+
+    current_post = getattr(client, "post", None)
+    if callable(current_post) and not getattr(current_post, "_jack_phase7_ledger", False):
+        original_post = current_post
+
+        @wraps(original_post)
+        async def recorded_post(*args: Any, **kwargs: Any):
+            try:
+                return await original_post(*args, **kwargs)
+            except credential_guard.ProtectedCredentialInterrupt as exc:
+                record_credential_match_failsoft(
+                    ledger,
+                    boundary=exc.match.boundary,
+                    direction=exc.match.direction,
+                    credential_id=exc.match.credential_id,
+                    credential_class=exc.match.credential_class,
+                    producer_code="phase7.model_input",
+                )
+                raise
+
+        recorded_post._jack_phase7_ledger = True
+        recorded_post._jack_phase7_original = original_post
+        client.post = recorded_post
+
+    current_build = getattr(client, "build_request", None)
+    if callable(current_build) and not getattr(current_build, "_jack_phase7_ledger", False):
+        original_build = current_build
+
+        @wraps(original_build)
+        def recorded_build_request(*args: Any, **kwargs: Any):
+            try:
+                return original_build(*args, **kwargs)
+            except credential_guard.ProtectedCredentialInterrupt as exc:
+                record_credential_match_failsoft(
+                    ledger,
+                    boundary=exc.match.boundary,
+                    direction=exc.match.direction,
+                    credential_id=exc.match.credential_id,
+                    credential_class=exc.match.credential_class,
+                    producer_code="phase7.model_input",
+                )
+                raise
+
+        recorded_build_request._jack_phase7_ledger = True
+        recorded_build_request._jack_phase7_original = original_build
+        client.build_request = recorded_build_request
+
+
 def _install_kernel_exception_hooks(
     jk: Any,
     ledger: authority_ledger.AuthorityLedger,
 ) -> None:
-    import jack_credential_guard as credential_guard
     import jack_evidence_guard as evidence_guard
 
     kernel = getattr(jk, "KERNEL", None)
@@ -217,16 +279,6 @@ def _install_kernel_exception_hooks(
         async def phase7_run(*args: Any, **kwargs: Any):
             try:
                 return await original_run(*args, **kwargs)
-            except credential_guard.ProtectedCredentialInterrupt as exc:
-                record_credential_match_failsoft(
-                    ledger,
-                    boundary=exc.match.boundary,
-                    direction=exc.match.direction,
-                    credential_id=exc.match.credential_id,
-                    credential_class=exc.match.credential_class,
-                    producer_code="phase7.model_input",
-                )
-                raise
             except evidence_guard.StreamingIRQCanaryInterrupt as exc:
                 canary_id = str(getattr(exc.match, "canary_id", "") or "")
                 if canary_id.startswith("credential:"):
@@ -251,16 +303,6 @@ def _install_kernel_exception_hooks(
             try:
                 async for chunk in original_stream(*args, **kwargs):
                     yield chunk
-            except credential_guard.ProtectedCredentialInterrupt as exc:
-                record_credential_match_failsoft(
-                    ledger,
-                    boundary=exc.match.boundary,
-                    direction=exc.match.direction,
-                    credential_id=exc.match.credential_id,
-                    credential_class=exc.match.credential_class,
-                    producer_code="phase7.model_input",
-                )
-                raise
             except evidence_guard.StreamingIRQCanaryInterrupt as exc:
                 canary_id = str(getattr(exc.match, "canary_id", "") or "")
                 if canary_id.startswith("credential:"):
@@ -415,7 +457,7 @@ def _install_retained_diagnostic_hook(
 
 
 def _install_log_hook(jk: Any) -> None:
-    """Augment the process-global diagnostic filter with identity-correct recording."""
+    """Augment the process-global diagnostic filter with exact-policy recording."""
     import jack_diagnostic_guard as diagnostic_guard
 
     filter_type = diagnostic_guard._CredentialDiagnosticLogFilter
@@ -449,7 +491,7 @@ def _install_log_hook(jk: Any) -> None:
             result = original(self, record)
             if matched_policy is not None:
                 with _REGISTRY_LOCK:
-                    ledger = _LEDGER_BY_IDENTITY.get(_identity(matched_policy))
+                    ledger = _LEDGER_BY_POLICY_OBJECT.get(id(matched_policy))
                 if ledger is not None:
                     record_credential_match_failsoft(
                         ledger,
@@ -478,12 +520,13 @@ def install(
         raise RuntimeError("Phase-7 ledger/credential policy ownership mismatch")
 
     with _REGISTRY_LOCK:
-        key = _identity(ledger)
-        prior = _LEDGER_BY_IDENTITY.get(key)
+        policy_key = id(credential_policy)
+        prior = _LEDGER_BY_POLICY_OBJECT.get(policy_key)
         if prior is not None and prior is not ledger:
-            raise RuntimeError("Phase-7 ledger identity cannot be rebound")
-        _LEDGER_BY_IDENTITY[key] = ledger
+            raise RuntimeError("Phase-7 credential policy cannot bind two ledgers")
+        _LEDGER_BY_POLICY_OBJECT[policy_key] = ledger
 
+    _install_transport_hooks(jk, ledger)
     _install_kernel_exception_hooks(jk, ledger)
     _install_http_diagnostic_hook(jk, ledger)
     _install_orchestration_hooks(jk, ledger)
