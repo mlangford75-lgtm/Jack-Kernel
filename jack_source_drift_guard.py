@@ -25,12 +25,9 @@ _MUTATING_ORCHESTRATION_PATHS = frozenset(
     {"/v1/tasks", "/v1/tasks/cancel", "/v1/session/new"}
 )
 _DEBUGGING_DURABLE_COMMIT_NAMES = (
-    "_debugging_create_run",
+    "_debugging_write_open_intake_report",
     "_debugging_freeze_intake",
-    "_debugging_commit_pass_summary",
-    "_debugging_retry_pending_pass_summary",
-    "_debugging_commit_final_report",
-    "_debugging_retry_pending_final_report",
+    "_debugging_atomic_replace_report",
 )
 
 
@@ -649,7 +646,7 @@ def _install_debugging_durable_commit_enforcement(
     jk: Any,
     authority: RuntimeSourceAuthority,
 ) -> None:
-    """Gate only Jack-owned debugging durability mutations, never read/validation."""
+    """Gate Jack-owned disk mutations without blocking safe pending cognition."""
 
     for name in _DEBUGGING_DURABLE_COMMIT_NAMES:
         current = getattr(jk, name, None)
