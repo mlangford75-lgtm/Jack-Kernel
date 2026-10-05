@@ -8,19 +8,19 @@ Start with [`../../CURRENT_SECURITY_STATUS.md`](../../CURRENT_SECURITY_STATUS.md
 
 Current checkpoint:
 
-- **Phase 6 — Runtime-Scoped Authority & Security Ledger**
-- validated tag: `security-layer-phase6-validated-2026-10-02`
-- annotated tag object: `1e46b9872db66cc3944b79550aa30509b4c84296`
-- validated closure target: `51e29b197ab62db410e6b4b43c92688ba613826f`
+- **Phase 7 — Credential Isolation and Integrated DLP**
+- validated tag: `security-layer-phase7-validated-2026-10-05`
+- annotated tag object: `ffde3865178ac14c44d6222a39e0e59e6d8518a9`
+- validated closure target: `59aef730e11031b23f67c735e35f1e68c9ecc394`
 - status: **VALIDATED / MERGED / DOCUMENTED / TAGGED / FROZEN**
 
-Phase 7 and Phases 8–11 have not started.
+Phases 8–11 have not started.
 
 ## Governing security architecture
 
 [`Jack_Kernel_Security_Hardening_Architecture_2026-09-26.md`](Jack_Kernel_Security_Hardening_Architecture_2026-09-26.md) preserves the complete hardening design and its dated implementation-status updates.
 
-Some status notes near the top of that paper describe earlier checkpoints, such as implementation through Phase 4. Those notes are historical implementation records, not the current repository checkpoint. Use `CURRENT_SECURITY_STATUS.md` for present truth.
+Some status notes inside that paper describe earlier checkpoints. Those notes are historical implementation records, not the current repository checkpoint. Use `CURRENT_SECURITY_STATUS.md` for present truth.
 
 ## Cumulative governing amendments
 
@@ -29,7 +29,7 @@ Some status notes near the top of that paper describe earlier checkpoints, such 
 - [`GOVERNING_DOCUMENT_SECURITY_AMENDMENT_PHASE_5_2026-10-01.md`](GOVERNING_DOCUMENT_SECURITY_AMENDMENT_PHASE_5_2026-10-01.md)
 - [`GOVERNING_DOCUMENT_SECURITY_AMENDMENT_PHASE_6_2026-10-02.md`](GOVERNING_DOCUMENT_SECURITY_AMENDMENT_PHASE_6_2026-10-02.md)
 
-These amendments preserve the state and claims accepted at their respective phase boundaries. Later phases add current implementation reality without silently rewriting the earlier records.
+These amendments preserve the state and claims accepted at their respective phase boundaries. Later validated phases add current implementation reality without silently rewriting earlier records.
 
 ## Detailed checkpoint archive
 
@@ -40,9 +40,10 @@ The archive contains:
 - Phases 0–3 validated checkpoint
 - Phase 4 validated checkpoint
 - Phase 5 validated checkpoint
-- Phase 6 validated checkpoint candidate / closure record
+- Phase 6 validated checkpoint / closure record
+- Phase 7 validated closure record
 
-The Phase-6 detailed record was authored before the final annotated tag existed. Its pre-tag candidate language is therefore historical process-state evidence. The completed checkpoint identity is recorded in `CURRENT_SECURITY_STATUS.md`.
+The Phase-7 detailed closure record was authored before the final annotated tag existed. Its pre-tag freeze wording is historical process-state evidence. The completed Phase-7 tag identity is recorded in `CURRENT_SECURITY_STATUS.md`.
 
 ## Governing interpretation
 
@@ -51,6 +52,7 @@ Current security behavior must be interpreted cumulatively:
 - Phases 0–3 own the validated release-boundary security substrate and Canary behavior;
 - Phase 4 owns represented-path fact production and path-policy semantics;
 - Phase 5 owns deterministic consequence disposition;
-- Phase 6 records selected established authority/security events without becoming the source of those facts.
+- Phase 6 owns the process-local authority/security chain and bounded forensic projection semantics;
+- Phase 7 adds closed known-credential authority, exact model ingress/egress DLP, orchestration and diagnostic release protection, exact credential-resource containment, and safe Phase-7 observations in the existing Phase-6 chain.
 
-Later phase implementation must not be inferred from design sections alone. Phase 7 and Phases 8–11 remain unimplemented until separately built, tested, documented, and checkpointed.
+No Phase 8–11 implementation should be inferred from design sections alone. Those later phases remain unimplemented until separately built, tested, documented, and checkpointed.
