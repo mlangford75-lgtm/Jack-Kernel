@@ -14,15 +14,25 @@ import httpx
 SRC = Path(__file__).resolve().parents[1] / "jack_kernel.py"
 
 
-def load_module(monkeypatch, tmp_path):
+def load_module(
+    monkeypatch,
+    tmp_path,
+    *,
+    runtime_id="phase7-diagnostic-runtime-default",
+    lane_id="phase7-diagnostic-lane-default",
+    jack_secret="phase7-diagnostic-jack-secret-12345",
+    backend_secret="phase7-diagnostic-backend-secret-67890",
+):
     monkeypatch.setenv("JACK_FORENSIC_ARCHIVE_MODE", "off")
     monkeypatch.setenv("JACK_BACKEND_MODEL", "test-model")
-    monkeypatch.setenv("JACK_API_KEY", "phase7-diagnostic-jack-secret-12345")
-    monkeypatch.setenv("JACK_BACKEND_API_KEY", "phase7-diagnostic-backend-secret-67890")
+    monkeypatch.setenv("JACK_RUNTIME_ID", runtime_id)
+    monkeypatch.setenv("JACK_LANE_ID", lane_id)
+    monkeypatch.setenv("JACK_API_KEY", jack_secret)
+    monkeypatch.setenv("JACK_BACKEND_API_KEY", backend_secret)
     monkeypatch.setenv("JACK_BACKEND_AUTH_MODE", "bearer")
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "custom")
     monkeypatch.setenv("JACK_CANARY_POLICY_JSON", "")
-    monkeypatch.setenv("JACK_AUTHORITY_LEDGER_DIR", str(tmp_path / "ledger"))
+    monkeypatch.setenv("JACK_AUTHORITY_LEDGER_DIR", str(tmp_path / runtime_id / "ledger"))
     name = f"jack_phase7_diag_{uuid.uuid4().hex}"
     spec = importlib.util.spec_from_file_location(name, SRC)
     mod = importlib.util.module_from_spec(spec)
@@ -210,6 +220,53 @@ def test_log_guard_discards_secret_bearing_exception_traceback(monkeypatch, tmp_
     close_ledger(m)
 
 
+def test_process_global_logger_aggregates_distinct_runtime_policies(monkeypatch, tmp_path):
+    runtime_a = load_module(
+        monkeypatch,
+        tmp_path,
+        runtime_id="phase7-diagnostic-runtime-a",
+        lane_id="phase7-diagnostic-lane-a",
+        jack_secret="phase7-runtime-a-secret-11111",
+        backend_secret="phase7-runtime-a-backend-11111",
+    )
+    install_phase7(runtime_a)
+
+    runtime_b = load_module(
+        monkeypatch,
+        tmp_path,
+        runtime_id="phase7-diagnostic-runtime-b",
+        lane_id="phase7-diagnostic-lane-b",
+        jack_secret="phase7-runtime-b-secret-22222",
+        backend_secret="phase7-runtime-b-backend-22222",
+    )
+    install_phase7(runtime_b)
+
+    # Both modules resolve the same process-global named logger. Its observer DLP
+    # must protect both immutable runtime policies without letting either runtime
+    # replace or veto the other.
+    assert runtime_a.LOG is runtime_b.LOG
+    buf = io.StringIO()
+    handler = logging.StreamHandler(buf)
+    runtime_a.LOG.addHandler(handler)
+    old_level = runtime_a.LOG.level
+    runtime_a.LOG.setLevel(logging.INFO)
+    try:
+        runtime_a.LOG.error("A diagnostic %s", runtime_a.CFG.api_key)
+        runtime_b.LOG.error("B diagnostic %s", runtime_b.CFG.api_key)
+        output = buf.getvalue()
+        assert runtime_a.CFG.api_key not in output
+        assert runtime_b.CFG.api_key not in output
+        assert output.count(
+            "Jack diagnostic withheld because it contained a protected runtime credential"
+        ) == 2
+    finally:
+        runtime_a.LOG.removeHandler(handler)
+        runtime_a.LOG.setLevel(old_level)
+
+    close_ledger(runtime_a)
+    close_ledger(runtime_b)
+
+
 def test_retained_orchestration_error_state_never_keeps_registered_credential(monkeypatch, tmp_path):
     m = load_module(monkeypatch, tmp_path)
     install_phase7(m)
@@ -239,6 +296,32 @@ def test_safe_http_exception_detail_is_preserved_exactly(monkeypatch, tmp_path):
         released = await handler(None, exc)
         assert released.status_code == 503
         assert json.loads(released.body.decode("utf-8")) == {"detail": detail}
+
+    asyncio.run(run())
+    close_ledger(m)
+
+
+def test_http_exception_diagnostic_key_containing_credential_is_withheld(monkeypatch, tmp_path):
+    m = load_module(monkeypatch, tmp_path)
+    install_phase7(m)
+    secret = m.CFG.api_key
+
+    async def run():
+        handler = m.APP.exception_handlers[m.HTTPException]
+        exc = m.HTTPException(
+            status_code=502,
+            detail={"diagnostic-" + secret: "ordinary-value"},
+        )
+        released = await handler(None, exc)
+        text = released.body.decode("utf-8")
+        assert secret not in text
+        assert json.loads(text) == {
+            "detail": {
+                "error": "protected_credential_diagnostic_withheld",
+                "security_outcome": "HARD_INTERRUPT",
+                "release_boundary": "diagnostic_http_exception_release",
+            }
+        }
 
     asyncio.run(run())
     close_ledger(m)
