@@ -8,7 +8,6 @@ import re
 import stat
 import sys
 import threading
-import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -24,6 +23,14 @@ DEFAULT_PERIODIC_VERIFY_SECONDS = 1.0
 _COMPONENT_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _MUTATING_ORCHESTRATION_PATHS = frozenset(
     {"/v1/tasks", "/v1/tasks/cancel", "/v1/session/new"}
+)
+_DEBUGGING_DURABLE_COMMIT_NAMES = (
+    "_debugging_create_run",
+    "_debugging_freeze_intake",
+    "_debugging_commit_pass_summary",
+    "_debugging_retry_pending_pass_summary",
+    "_debugging_commit_final_report",
+    "_debugging_retry_pending_final_report",
 )
 
 
@@ -115,6 +122,8 @@ def _sha256_stream(handle: Any) -> str:
 
 
 def _measure_regular_file(path: Path) -> _MeasuredSource:
+    """Measure exact regular-file bytes without inferring identity from metadata."""
+
     raw = Path(path).expanduser()
     try:
         canonical = raw.resolve(strict=True)
@@ -179,6 +188,8 @@ def _baseline_digest(
 
 
 class RuntimeSourceAuthority:
+    """Process-local bounded source identity and authority lifecycle."""
+
     def __init__(self, *, runtime_id: str, lane_id: str) -> None:
         self.runtime_id = str(runtime_id or "").strip()
         self.lane_id = str(lane_id or "").strip()
@@ -297,6 +308,8 @@ class RuntimeSourceAuthority:
 
     @contextmanager
     def admit(self) -> Iterator[RuntimeSourceBaseline]:
+        """Atomic source-authority admission boundary; never hold across cognition."""
+
         self._lock.acquire()
         try:
             if self._state is SourceAuthorityState.INVALIDATED:
@@ -319,6 +332,8 @@ class RuntimeSourceAuthority:
                 self._state = SourceAuthorityState.SUSPENDED_UNVERIFIED
 
     def verify_now(self) -> SourceVerificationResult:
+        """One bounded exact measurement; this is not continuous attestation."""
+
         with self._lock:
             baseline = self._baseline
             if baseline is None:
@@ -363,6 +378,8 @@ class RuntimeSourceAuthority:
             )
 
     def verify_for_authority_boundary(self) -> None:
+        """Full remeasurement followed by atomic final source-authority admission."""
+
         self.verify_now()
         with self.admit():
             pass
@@ -372,6 +389,8 @@ class RuntimeSourceAuthority:
         *,
         interval_seconds: float = DEFAULT_PERIODIC_VERIFY_SECONDS,
     ) -> None:
+        """Run bounded periodic measurements; events/watchers are not authority."""
+
         interval = float(interval_seconds)
         if not (0.05 <= interval <= 60.0):
             raise ValueError("Phase-8 verification interval must be between 0.05 and 60 seconds")
@@ -462,6 +481,8 @@ def _default_component_paths(
 def _canonical_requested_identity(
     requested: Tuple[Tuple[str, Path], ...],
 ) -> Dict[str, str]:
+    """Resolve repeat-install component IDs/paths without stealing byte verification."""
+
     identity: Dict[str, str] = {}
     for component_id, path in requested:
         try:
@@ -511,6 +532,8 @@ def _install_kernel_release_enforcement(jk: Any, authority: RuntimeSourceAuthori
         async def source_governed_stream(*args: Any, **kwargs: Any):
             authority.verify_for_authority_boundary()
             async for chunk in original_stream(*args, **kwargs):
+                # Periodic verification owns bounded remeasurement during long
+                # streams. This lock is the final admission point for this chunk.
                 with authority.admit():
                     pass
                 yield chunk
@@ -518,6 +541,22 @@ def _install_kernel_release_enforcement(jk: Any, authority: RuntimeSourceAuthori
         source_governed_stream._jack_phase8_source_authority = True
         source_governed_stream._jack_phase8_original = original_stream
         kernel.stream = source_governed_stream
+
+
+def _install_tool_release_enforcement(jk: Any, authority: RuntimeSourceAuthority) -> None:
+    current = getattr(jk, "_phase4_partition_structured_tool_calls", None)
+    if not callable(current) or getattr(current, "_jack_phase8_source_authority", False):
+        return
+    original = current
+
+    @wraps(original)
+    def source_governed_tool_release(*args: Any, **kwargs: Any):
+        authority.verify_for_authority_boundary()
+        return original(*args, **kwargs)
+
+    source_governed_tool_release._jack_phase8_source_authority = True
+    source_governed_tool_release._jack_phase8_original = original
+    jk._phase4_partition_structured_tool_calls = source_governed_tool_release
 
 
 def _install_executor_admission_enforcement(jk: Any, authority: RuntimeSourceAuthority) -> None:
@@ -538,6 +577,28 @@ def _install_executor_admission_enforcement(jk: Any, authority: RuntimeSourceAut
     jk._phase4_executor_admission_decision = source_governed_executor_admission
 
 
+def _install_debugging_durable_commit_enforcement(
+    jk: Any,
+    authority: RuntimeSourceAuthority,
+) -> None:
+    """Gate only Jack-owned debugging durability mutations, never read/validation."""
+
+    for name in _DEBUGGING_DURABLE_COMMIT_NAMES:
+        current = getattr(jk, name, None)
+        if not callable(current) or getattr(current, "_jack_phase8_source_authority", False):
+            continue
+        original = current
+
+        @wraps(original)
+        def source_governed_commit(*args: Any, __original=original, **kwargs: Any):
+            authority.verify_for_authority_boundary()
+            return __original(*args, **kwargs)
+
+        source_governed_commit._jack_phase8_source_authority = True
+        source_governed_commit._jack_phase8_original = original
+        setattr(jk, name, source_governed_commit)
+
+
 def _install_orchestration_enforcement(jk: Any, authority: RuntimeSourceAuthority) -> None:
     current = getattr(jk, "_proxy_pi_control_request", None)
     if not callable(current):
@@ -554,7 +615,12 @@ def _install_orchestration_enforcement(jk: Any, authority: RuntimeSourceAuthorit
         *args: Any,
         **kwargs: Any,
     ):
-        if str(method or "").upper() == "POST" and str(path or "") in _MUTATING_ORCHESTRATION_PATHS:
+        if (
+            str(method or "").upper() == "POST"
+            and str(path or "") in _MUTATING_ORCHESTRATION_PATHS
+        ):
+            # Source-authority admission occurs before external I/O. Once admitted,
+            # that worker action may settle; later invalidation cannot rewrite truth.
             authority.verify_for_authority_boundary()
         return await original(request, method, path, *args, **kwargs)
 
@@ -618,7 +684,9 @@ def activate_runtime_enforcement(
 
     if not getattr(jk, "_JACK_SOURCE_RUNTIME_ENFORCEMENT_INSTALLED", False):
         _install_kernel_release_enforcement(jk, authority)
+        _install_tool_release_enforcement(jk, authority)
         _install_executor_admission_enforcement(jk, authority)
+        _install_debugging_durable_commit_enforcement(jk, authority)
         _install_orchestration_enforcement(jk, authority)
         _install_http_observability(jk, authority)
         jk._JACK_SOURCE_RUNTIME_ENFORCEMENT_INSTALLED = True
