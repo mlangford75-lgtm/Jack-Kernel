@@ -7,6 +7,7 @@ from functools import wraps
 from typing import Any, Callable, Iterable, Optional, Tuple, Union
 
 import jack_authority_ledger as authority_ledger
+import jack_credential_resource_guard as credential_resource_guard
 import jack_path_policy as path_policy
 
 
@@ -101,6 +102,7 @@ AuthorityFact = Union[
     StageToolAuthorityFact,
     ToolSchemaFact,
     path_policy.RepresentedPathAuthorityFacts,
+    credential_resource_guard.CredentialResourceAuthorityFact,
     ExecutorAdmissionIdentityFact,
     SettlementFact,
     ReservedEvidenceNamespaceFact,
@@ -112,6 +114,7 @@ _AUTHORITY_FACT_TYPES = (
     StageToolAuthorityFact,
     ToolSchemaFact,
     path_policy.RepresentedPathAuthorityFacts,
+    credential_resource_guard.CredentialResourceAuthorityFact,
     ExecutorAdmissionIdentityFact,
     SettlementFact,
     ReservedEvidenceNamespaceFact,
@@ -189,6 +192,15 @@ def _decision_for_fact(fact: AuthorityFact, *, boundary: ConsequenceBoundary, ou
             fact.workspace_configured
             and (not fact.deterministic or fact.inside_workspace is False)
         )
+        return _single(
+            fact,
+            deny if denied else allow,
+            _path_scope(boundary, hard=False) if denied else ContainmentScope.NONE,
+            denied,
+        )
+
+    if isinstance(fact, credential_resource_guard.CredentialResourceAuthorityFact):
+        denied = fact.protected
         return _single(
             fact,
             deny if denied else allow,
@@ -287,10 +299,20 @@ def _legacy_path_decision(decision: ConsequenceDecision, raw: path_policy.Repres
         legacy = path_policy.PathAuthorizationOutcome(decision.outcome.value)
     except ValueError as exc:
         raise AssertionError("Phase-5 path decision cannot be represented by Phase-4 release machinery") from exc
-    return path_policy.PathAuthorizationDecision(legacy, raw.reason, raw.canonical_target)
+    reason = raw.reason
+    if isinstance(
+        decision.decisive_fact,
+        credential_resource_guard.CredentialResourceAuthorityFact,
+    ):
+        reason = "represented target is an exact protected credential resource"
+    return path_policy.PathAuthorizationDecision(legacy, reason, raw.canonical_target)
 
 
-def _install_represented_path_gate(evaluator: Callable[..., ConsequenceDecision]) -> None:
+def _install_represented_path_gate(
+    evaluator: Callable[..., ConsequenceDecision],
+    *,
+    ledger: Optional[authority_ledger.AuthorityLedger] = None,
+) -> None:
     original = path_policy.authorize_represented_path
     if getattr(original, "_jack_phase5_consequence_gate", False):
         return
@@ -309,7 +331,11 @@ def _install_represented_path_gate(evaluator: Callable[..., ConsequenceDecision]
             executor_cwd=executor_cwd,
             defer_relative_without_executor=defer_relative_without_executor,
         )
-        decision = evaluator((raw,))
+
+        # Preserve the meaning of the frozen Phase-6 path record: it continues to
+        # reflect only predecessor represented-path facts. Phase 7 resource
+        # authority is evaluated and recorded separately below.
+        path_decision = evaluator((raw,))
         authority_ledger.record_represented_path_decision_failsoft(
             deterministic=raw.deterministic,
             never_match=raw.never_match,
@@ -317,11 +343,31 @@ def _install_represented_path_gate(evaluator: Callable[..., ConsequenceDecision]
             inside_workspace=raw.inside_workspace,
             invalid=raw.invalid,
             deferred_to_executor=raw.deferred_to_executor,
-            outcome=decision.outcome,
-            containment_scope=decision.containment_scope,
+            outcome=path_decision.outcome,
+            containment_scope=path_decision.containment_scope,
             boundary=_CURRENT_CONSEQUENCE_BOUNDARY.get(),
         )
-        return _legacy_path_decision(decision, raw)
+
+        resource_fact = credential_resource_guard.fact_for_canonical_target(
+            policy,
+            raw.canonical_target,
+        )
+        if resource_fact is None or not resource_fact.protected:
+            return _legacy_path_decision(path_decision, raw)
+
+        final_decision = evaluator((raw, resource_fact))
+        if (
+            ledger is not None
+            and final_decision.outcome.value == "DENY_AND_CONTINUE"
+        ):
+            import jack_phase7_ledger
+
+            jack_phase7_ledger.record_resource_block_failsoft(
+                ledger,
+                resource_id=str(resource_fact.resource_id or ""),
+                containment_scope=final_decision.containment_scope.value,
+            )
+        return _legacy_path_decision(final_decision, raw)
 
     governed._jack_phase5_consequence_gate = True
     governed._jack_phase5_legacy_authorizer = original
@@ -337,12 +383,31 @@ def install(jk: Any) -> None:
     outcome_type = getattr(jk, "SecurityOutcome", None)
     _require_compatible_outcome_type(outcome_type)
 
-    # Phase 6 is installed only for the real Kernel-owned convergence path.
-    # Lightweight policy-test fakes remain valid Phase-5 evaluator hosts without
-    # acquiring runtime/process authority they do not possess.
     ledger = None
+    credential_policy = None
     if callable(getattr(jk, "_install_bundled_runtime_extensions", None)):
+        if getattr(jk, "BACKEND", None) is not None:
+            import jack_credential_guard
+            import jack_diagnostic_guard
+
+            credential_policy = jack_credential_guard.install(jk)
+            jack_diagnostic_guard.install(
+                jk,
+                credential_policy=credential_policy,
+            )
         ledger = authority_ledger.install(jk)
+        if credential_policy is not None:
+            import jack_phase7_ledger
+
+            credential_resource_guard.install(
+                jk,
+                credential_policy=credential_policy,
+            )
+            jack_phase7_ledger.install(
+                jk,
+                ledger=ledger,
+                credential_policy=credential_policy,
+            )
 
     evaluator = _bound_evaluator(outcome_type)
 
@@ -352,6 +417,7 @@ def install(jk: Any) -> None:
     jk.StageToolAuthorityFact = StageToolAuthorityFact
     jk.ToolSchemaFact = ToolSchemaFact
     jk.RepresentedPathAuthorityFacts = path_policy.RepresentedPathAuthorityFacts
+    jk.CredentialResourceAuthorityFact = credential_resource_guard.CredentialResourceAuthorityFact
     jk.ExecutorAdmissionIdentityFact = ExecutorAdmissionIdentityFact
     jk.SettlementFact = SettlementFact
     jk.ReservedEvidenceNamespaceFact = ReservedEvidenceNamespaceFact
@@ -360,7 +426,7 @@ def install(jk: Any) -> None:
     jk.ConsequenceDecision = ConsequenceDecision
     jk.evaluate_consequence = evaluator
 
-    _install_represented_path_gate(evaluator)
+    _install_represented_path_gate(evaluator, ledger=ledger)
 
     original_partition = getattr(jk, "_phase4_partition_structured_tool_calls", None)
     if callable(original_partition):

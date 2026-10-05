@@ -31,7 +31,7 @@ jobs:
       - name: Set up Node 24.16.0
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: "24.16.0"
+          node-version: 24.16.0
 
       - name: Install validated Python test environment
         shell: pwsh
@@ -50,7 +50,7 @@ jobs:
       - name: Compile runtime modules
         shell: pwsh
         run: |
-          python -m py_compile jack_kernel.py jack_secure_entrypoint.py jack_evidence_guard.py jack_path_policy.py jack_responses_compat.py jack_consequence_gate.py jack_authority_ledger.py
+          python -m py_compile jack_kernel.py jack_secure_entrypoint.py jack_evidence_guard.py jack_credential_guard.py jack_diagnostic_guard.py jack_credential_resource_guard.py jack_phase7_ledger.py jack_path_policy.py jack_responses_compat.py jack_consequence_gate.py jack_authority_ledger.py
 
       - name: Report Pi bridge identities
         shell: pwsh
@@ -64,6 +64,10 @@ jobs:
       - name: Run Phase-6 targeted tests
         shell: pwsh
         run: python -m pytest -q tests/test_phase6_authority_ledger.py tests/test_phase6_consequence_ledger_integration.py tests/test_phase6_security_event_ledger.py tests/test_phase6_runtime_installation.py
+
+      - name: Run Phase-7 credential isolation and DLP tests
+        shell: pwsh
+        run: python -m pytest -q tests/test_phase7_credential_policy.py tests/test_phase7_live_integration.py tests/test_phase7_output_dlp.py tests/test_phase7_orchestration_dlp.py tests/test_phase7_diagnostic_dlp.py tests/test_phase7_diagnostic_headers.py tests/test_phase7_diagnostic_outer_release.py tests/test_phase7_ledger_resources.py tests/test_phase7_ledger_hooks.py
 
       - name: Run Python regression suite
         shell: pwsh

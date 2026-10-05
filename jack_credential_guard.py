@@ -1,0 +1,806 @@
+from __future__ import annotations
+
+import base64
+import json
+import os
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+from typing import Any, FrozenSet, Optional, Tuple
+
+
+# Model-input isolation is exact over the configured credential value itself and
+# therefore does not inherit a minimum/maximum length from future streaming DLP.
+# Output scanning has a separate bounded look-behind contract when that later
+# boundary is explicitly activated.
+CREDENTIAL_CANARY_MAX_WINDOW = 4096
+
+BOUNDARY_MODEL_INPUT_DISPATCH = "model_input_dispatch"
+BOUNDARY_ORCHESTRATION_HTTP_RELEASE = "orchestration_http_release"
+BOUNDARY_ORCHESTRATION_EVENT_RELEASE = "orchestration_event_release"
+DIRECTION_MODEL_BOUND = "model_bound"
+DIRECTION_CALLER_BOUND = "caller_bound"
+
+ORCHESTRATION_RELEASE_BLOCK_ERROR = "orchestration_credential_release_blocked"
+ORCHESTRATION_RELEASE_BLOCK_STATUS = 502
+
+DEST_JACK_PUBLIC_AUTH = "jack_public_auth"
+DEST_BACKEND_AUTH_HEADER = "backend_auth_header"
+DEST_BACKEND_NAMED_AUTH_HEADER = "backend_named_auth_header"
+DEST_BACKEND_BASIC_DERIVATION = "backend_basic_derivation"
+DEST_BACKEND_AUTHORIZATION_HEADER = "backend_authorization_header"
+DEST_PI_CONTROL_AUTH_HEADER = "pi_control_authorization_header"
+
+
+class CredentialClass(str, Enum):
+    JACK_API = "JACK_API"
+    BACKEND_BEARER = "BACKEND_BEARER"
+    BACKEND_NAMED_HEADER = "BACKEND_NAMED_HEADER"
+    BACKEND_BASIC_PASSWORD = "BACKEND_BASIC_PASSWORD"
+    BACKEND_BASIC_WIRE = "BACKEND_BASIC_WIRE"
+    BACKEND_AUTHORIZATION = "BACKEND_AUTHORIZATION"
+    PI_CONTROL = "PI_CONTROL"
+
+
+_CREDENTIAL_IDS = {
+    CredentialClass.JACK_API: "credential:jack-api",
+    CredentialClass.BACKEND_BEARER: "credential:backend-bearer",
+    CredentialClass.BACKEND_NAMED_HEADER: "credential:backend-header",
+    CredentialClass.BACKEND_BASIC_PASSWORD: "credential:backend-basic-password",
+    CredentialClass.BACKEND_BASIC_WIRE: "credential:backend-basic-wire",
+    CredentialClass.BACKEND_AUTHORIZATION: "credential:backend-authorization",
+    CredentialClass.PI_CONTROL: "credential:pi-control",
+}
+
+
+@dataclass(frozen=True, repr=False)
+class ProtectedCredential:
+    """One exact protected value with safe host-owned structural metadata.
+
+    Multiple logical credential identities may intentionally share one exact
+    protected value. In that case Jack keeps one matcher value and preserves the
+    remaining identities as aliases instead of creating duplicate exact-match entries.
+    """
+
+    credential_id: str
+    credential_class: CredentialClass
+    source_kind: str
+    authorized_destinations: FrozenSet[str]
+    aliases: Tuple[str, ...] = ()
+    alias_classes: Tuple[CredentialClass, ...] = ()
+    value: str = field(default="", repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.credential_id, str) or not self.credential_id:
+            raise TypeError("credential_id must be a non-empty string")
+        if not isinstance(self.credential_class, CredentialClass):
+            raise TypeError("credential_class must be a CredentialClass")
+        if not isinstance(self.source_kind, str) or not self.source_kind:
+            raise TypeError("source_kind must be a non-empty string")
+        if not isinstance(self.authorized_destinations, frozenset):
+            raise TypeError("authorized_destinations must be a frozenset")
+        if not isinstance(self.value, str):
+            raise TypeError("credential value must be a string")
+        if not self.value:
+            raise ValueError("credential value must not be empty")
+
+    def __repr__(self) -> str:
+        return (
+            "ProtectedCredential("
+            f"credential_id={self.credential_id!r}, "
+            f"credential_class={self.credential_class.value!r}, "
+            f"source_kind={self.source_kind!r}, "
+            f"authorized_destinations={sorted(self.authorized_destinations)!r}, "
+            f"aliases={self.aliases!r}, "
+            f"alias_classes={[item.value for item in self.alias_classes]!r}, "
+            "value=<protected>)"
+        )
+
+
+@dataclass(frozen=True)
+class CredentialMatch:
+    """Safe metadata for one exact protected-credential match."""
+
+    credential_id: str
+    credential_class: CredentialClass
+    boundary: str
+    direction: str
+    aliases: Tuple[str, ...] = ()
+    alias_classes: Tuple[CredentialClass, ...] = ()
+
+
+class ProtectedCredentialInterrupt(RuntimeError):
+    """Hard Phase-7 boundary that never exposes the protected value."""
+
+    def __init__(self, match: CredentialMatch) -> None:
+        if not isinstance(match, CredentialMatch):
+            raise TypeError("match must be a CredentialMatch")
+        self.match = match
+        super().__init__("Phase-7 protected credential hard interrupt")
+
+
+@dataclass(frozen=True, repr=False)
+class RuntimeCredentialPolicy:
+    """Immutable credential snapshot owned by one Jack runtime/lane."""
+
+    runtime_id: str
+    lane_id: str
+    credentials: Tuple[ProtectedCredential, ...]
+    protected_resources: Tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.runtime_id, str) or not self.runtime_id:
+            raise ValueError("runtime_id must be a non-empty string")
+        if not isinstance(self.lane_id, str) or not self.lane_id:
+            raise ValueError("lane_id must be a non-empty string")
+        if not isinstance(self.credentials, tuple):
+            raise TypeError("credentials must be a tuple")
+        if not isinstance(self.protected_resources, tuple):
+            raise TypeError("protected_resources must be a tuple")
+
+        ids = set()
+        values = set()
+        for item in self.credentials:
+            if not isinstance(item, ProtectedCredential):
+                raise TypeError("credentials must contain ProtectedCredential instances")
+            if item.credential_id in ids:
+                raise ValueError("duplicate credential_id")
+            if item.value in values:
+                raise ValueError("duplicate credential value")
+            ids.add(item.credential_id)
+            values.add(item.value)
+
+    @property
+    def count(self) -> int:
+        return len(self.credentials)
+
+    @property
+    def required_window(self) -> int:
+        return max((len(item.value) - 1 for item in self.credentials), default=0)
+
+    def __repr__(self) -> str:
+        return (
+            "RuntimeCredentialPolicy("
+            f"runtime_id={self.runtime_id!r}, "
+            f"lane_id={self.lane_id!r}, "
+            f"credential_count={len(self.credentials)}, "
+            f"protected_resource_count={len(self.protected_resources)})"
+        )
+
+    def find(
+        self,
+        value: Any,
+        *,
+        boundary: str,
+        direction: str,
+    ) -> Optional[CredentialMatch]:
+        """Find the first exact protected value inside a JSON-like value.
+
+        Container keys are protocol structure and are not scanned. String values
+        are scanned literally; non-string scalars are never stringified.
+        """
+
+        def scan(node: Any) -> Optional[ProtectedCredential]:
+            if isinstance(node, str):
+                best = None
+                for credential in self.credentials:
+                    index = node.find(credential.value)
+                    if index < 0:
+                        continue
+                    key = (index, len(credential.value), credential.credential_id)
+                    if best is None or key < best[0]:
+                        best = (key, credential)
+                return None if best is None else best[1]
+
+            if isinstance(node, dict):
+                for item in node.values():
+                    found = scan(item)
+                    if found is not None:
+                        return found
+                return None
+
+            if isinstance(node, (list, tuple)):
+                for item in node:
+                    found = scan(item)
+                    if found is not None:
+                        return found
+                return None
+
+            return None
+
+        found = scan(value)
+        if found is None:
+            return None
+        return CredentialMatch(
+            credential_id=found.credential_id,
+            credential_class=found.credential_class,
+            boundary=str(boundary),
+            direction=str(direction),
+            aliases=found.aliases,
+            alias_classes=found.alias_classes,
+        )
+
+    def guard_model_payload(self, payload: Any) -> None:
+        match = self.find(
+            payload,
+            boundary=BOUNDARY_MODEL_INPUT_DISPATCH,
+            direction=DIRECTION_MODEL_BOUND,
+        )
+        if match is not None:
+            raise ProtectedCredentialInterrupt(match)
+
+
+def _validated_secret(value: Any, *, source_kind: str) -> Optional[str]:
+    """Return one active textual credential without pattern-based inference.
+
+    Length is deliberately not a model-input authority criterion. If the host
+    actually configured a non-empty credential, its exact value is protected.
+    Future streamed output DLP applies its own bounded-window requirements.
+    """
+
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise RuntimeError(f"Phase-7 credential source {source_kind} is not textual")
+    return value
+
+
+def _basic_wire(username: Any, password: Optional[str]) -> Optional[str]:
+    if password is None:
+        return None
+    user = "" if username is None else str(username)
+    encoded = base64.b64encode(f"{user}:{password}".encode("utf-8")).decode("ascii")
+    return f"Basic {encoded}"
+
+
+def _credential_resource_paths() -> Tuple[str, ...]:
+    home = Path.home()
+    if os.name == "nt":
+        appdata = os.getenv("APPDATA", "").strip()
+        root = Path(appdata) if appdata else home / "AppData" / "Roaming"
+        jack_config = root / "JackKernelLMStudio" / "config.json"
+    else:
+        jack_config = home / ".jack-kernel-lm-studio" / "config.json"
+
+    pi_config = home / ".pi" / "agent" / "jack-kernel.json"
+    return (str(jack_config), str(pi_config))
+
+
+def _logical_sources(jk: Any) -> Tuple[tuple, ...]:
+    cfg = getattr(jk, "CFG", None)
+    if cfg is None:
+        raise RuntimeError("Phase-7 credential policy requires Jack CFG")
+
+    jack_api = _validated_secret(
+        getattr(cfg, "api_key", ""),
+        source_kind="CFG.api_key",
+    )
+    backend_bearer = _validated_secret(
+        getattr(cfg, "backend_api_key", ""),
+        source_kind="CFG.backend_api_key",
+    )
+    backend_header = _validated_secret(
+        getattr(cfg, "backend_header_value", ""),
+        source_kind="CFG.backend_header_value",
+    )
+    backend_password = _validated_secret(
+        getattr(cfg, "backend_password", ""),
+        source_kind="CFG.backend_password",
+    )
+    backend_authorization = _validated_secret(
+        getattr(cfg, "backend_authorization_value", ""),
+        source_kind="CFG.backend_authorization_value",
+    )
+
+    basic_wire = _basic_wire(
+        getattr(cfg, "backend_username", ""),
+        backend_password,
+    )
+    if basic_wire is not None:
+        basic_wire = _validated_secret(
+            basic_wire,
+            source_kind="derived_backend_basic_wire",
+        )
+
+    pi_control = None
+    loader = getattr(jk, "_load_pi_control_bridge", None)
+    if callable(loader):
+        try:
+            bridge = loader()
+        except Exception:
+            raise RuntimeError("Phase-7 Pi control credential resolution failed") from None
+        if isinstance(bridge, dict):
+            pi_control = _validated_secret(
+                bridge.get("token", ""),
+                source_kind="resolved_pi_control_token",
+            )
+
+    return (
+        (
+            CredentialClass.JACK_API,
+            "CFG.api_key",
+            jack_api,
+            frozenset({DEST_JACK_PUBLIC_AUTH}),
+        ),
+        (
+            CredentialClass.BACKEND_BEARER,
+            "CFG.backend_api_key",
+            backend_bearer,
+            frozenset({DEST_BACKEND_AUTH_HEADER}),
+        ),
+        (
+            CredentialClass.BACKEND_NAMED_HEADER,
+            "CFG.backend_header_value",
+            backend_header,
+            frozenset({DEST_BACKEND_NAMED_AUTH_HEADER}),
+        ),
+        (
+            CredentialClass.BACKEND_BASIC_PASSWORD,
+            "CFG.backend_password",
+            backend_password,
+            frozenset({DEST_BACKEND_BASIC_DERIVATION}),
+        ),
+        (
+            CredentialClass.BACKEND_BASIC_WIRE,
+            "derived_backend_basic_wire",
+            basic_wire,
+            frozenset({DEST_BACKEND_AUTHORIZATION_HEADER}),
+        ),
+        (
+            CredentialClass.BACKEND_AUTHORIZATION,
+            "CFG.backend_authorization_value",
+            backend_authorization,
+            frozenset({DEST_BACKEND_AUTHORIZATION_HEADER}),
+        ),
+        (
+            CredentialClass.PI_CONTROL,
+            "resolved_pi_control_token",
+            pi_control,
+            frozenset({DEST_PI_CONTROL_AUTH_HEADER}),
+        ),
+    )
+
+
+def build_runtime_credential_policy(jk: Any) -> RuntimeCredentialPolicy:
+    """Build one immutable Phase-7 credential snapshot from closed Jack sources."""
+
+    runtime_id = str(getattr(jk, "RUNTIME_ID", "") or "").strip()
+    lane_id = str(getattr(jk, "LANE_ID", "") or "").strip()
+    if not runtime_id:
+        raise RuntimeError("Phase-7 runtime identity is unavailable")
+    if not lane_id:
+        raise RuntimeError("Phase-7 lane identity is unavailable")
+
+    by_value = {}
+    order = []
+    for credential_class, source_kind, value, destinations in _logical_sources(jk):
+        if value is None:
+            continue
+        credential_id = _CREDENTIAL_IDS[credential_class]
+        if value not in by_value:
+            by_value[value] = {
+                "credential_id": credential_id,
+                "credential_class": credential_class,
+                "source_kind": source_kind,
+                "authorized_destinations": set(destinations),
+                "aliases": [],
+                "alias_classes": [],
+            }
+            order.append(value)
+            continue
+
+        entry = by_value[value]
+        entry["authorized_destinations"].update(destinations)
+        if credential_id != entry["credential_id"] and credential_id not in entry["aliases"]:
+            entry["aliases"].append(credential_id)
+        if (
+            credential_class != entry["credential_class"]
+            and credential_class not in entry["alias_classes"]
+        ):
+            entry["alias_classes"].append(credential_class)
+
+    credentials = []
+    for value in order:
+        entry = by_value[value]
+        credentials.append(
+            ProtectedCredential(
+                credential_id=entry["credential_id"],
+                credential_class=entry["credential_class"],
+                source_kind=entry["source_kind"],
+                authorized_destinations=frozenset(entry["authorized_destinations"]),
+                aliases=tuple(entry["aliases"]),
+                alias_classes=tuple(entry["alias_classes"]),
+                value=value,
+            )
+        )
+
+    return RuntimeCredentialPolicy(
+        runtime_id=runtime_id,
+        lane_id=lane_id,
+        credentials=tuple(credentials),
+        protected_resources=_credential_resource_paths(),
+    )
+
+
+def merge_runtime_canary_policy(canary_policy: Any, credential_policy: RuntimeCredentialPolicy):
+    """Prepare credential-derived Tier-A values for the later output-DLP boundary.
+
+    This helper does not install output DLP. Its bounded-window requirement lives
+    here, rather than in the model-input authority model, so an otherwise valid
+    runtime credential cannot make input isolation brittle merely because it is
+    unsuitable for the streaming look-behind ceiling.
+    """
+
+    from jack_evidence_guard import (
+        CanaryPattern,
+        CanaryTier,
+        DeterministicCanarySet,
+        RuntimeCanaryPolicy,
+    )
+
+    if not isinstance(credential_policy, RuntimeCredentialPolicy):
+        raise TypeError("credential_policy must be a RuntimeCredentialPolicy")
+    if not isinstance(canary_policy, RuntimeCanaryPolicy):
+        raise TypeError("canary_policy must be a RuntimeCanaryPolicy")
+    if canary_policy.runtime_id != credential_policy.runtime_id:
+        raise RuntimeError("Phase-7 credential/Canary runtime ownership mismatch")
+    if canary_policy.lane_id != credential_policy.lane_id:
+        raise RuntimeError("Phase-7 credential/Canary lane ownership mismatch")
+    if credential_policy.required_window > CREDENTIAL_CANARY_MAX_WINDOW:
+        raise RuntimeError(
+            "Phase-7 credential Canary merge exceeds the bounded output-DLP ceiling"
+        )
+
+    existing = tuple(getattr(canary_policy.canaries, "_patterns", ()))
+    existing_ids = {item.canary_id for item in existing}
+    existing_values = {item.value for item in existing}
+    additions = []
+
+    for credential in credential_policy.credentials:
+        if credential.credential_id in existing_ids or credential.value in existing_values:
+            raise RuntimeError("Phase-7 credential/Canary policy collision")
+        additions.append(
+            CanaryPattern(
+                canary_id=credential.credential_id,
+                tier=CanaryTier.A,
+                value=credential.value,
+            )
+        )
+
+    combined = existing + tuple(additions)
+    max_window = max(
+        int(getattr(canary_policy.canaries, "max_window", 0) or 0),
+        credential_policy.required_window,
+    )
+    return RuntimeCanaryPolicy(
+        runtime_id=credential_policy.runtime_id,
+        lane_id=credential_policy.lane_id,
+        canaries=DeterministicCanarySet(combined, max_window=max_window),
+    )
+
+
+def _chat_completion_url(value: Any) -> bool:
+    text = str(value or "").split("?", 1)[0].rstrip("/")
+    return text.endswith("/chat/completions")
+
+
+def _guard_post_call(policy: RuntimeCredentialPolicy, args: tuple, kwargs: dict) -> None:
+    url = kwargs.get("url")
+    if url is None and args:
+        url = args[0]
+    if not _chat_completion_url(url):
+        return
+    if "json" in kwargs:
+        policy.guard_model_payload(kwargs.get("json"))
+
+
+def _guard_build_request_call(
+    policy: RuntimeCredentialPolicy,
+    args: tuple,
+    kwargs: dict,
+) -> None:
+    method = kwargs.get("method")
+    url = kwargs.get("url")
+    if method is None and args:
+        method = args[0]
+    if url is None and len(args) > 1:
+        url = args[1]
+    if str(method or "").upper() != "POST" or not _chat_completion_url(url):
+        return
+    if "json" in kwargs:
+        policy.guard_model_payload(kwargs.get("json"))
+
+
+def _release_match(
+    policy: RuntimeCredentialPolicy,
+    value: Any,
+    *,
+    boundary: str,
+) -> Optional[CredentialMatch]:
+    if isinstance(value, (bytes, bytearray)):
+        text = bytes(value).decode("utf-8", "replace")
+        try:
+            decoded = json.loads(text)
+        except Exception:
+            decoded = None
+        if decoded is not None:
+            match = policy.find(
+                decoded,
+                boundary=boundary,
+                direction=DIRECTION_CALLER_BOUND,
+            )
+            if match is not None:
+                return match
+        value = text
+    return policy.find(
+        value,
+        boundary=boundary,
+        direction=DIRECTION_CALLER_BOUND,
+    )
+
+
+def _orchestration_delta_fragments(source_event: Any) -> Tuple[Tuple[str, str], ...]:
+    """Return known Pi streaming textual channels without guessing new schemas."""
+    if not isinstance(source_event, dict):
+        return ()
+    data = source_event.get("data")
+    if not isinstance(data, dict):
+        return ()
+
+    fragments = []
+    direct = data.get("delta")
+    if isinstance(direct, str):
+        fragments.append(("data.delta", direct))
+
+    assistant_event = data.get("assistantMessageEvent")
+    if isinstance(assistant_event, dict):
+        delta = assistant_event.get("delta")
+        if isinstance(delta, str):
+            fragments.append(("data.assistantMessageEvent.delta", delta))
+
+    return tuple(fragments)
+
+
+def _orchestration_stream_key(source_event: dict[str, Any], channel: str) -> tuple[str, str, str, str]:
+    return (
+        str(source_event.get("task_id") or ""),
+        str(source_event.get("run_id") or ""),
+        str(source_event.get("run_epoch") or ""),
+        channel,
+    )
+
+
+def _credential_prefix_carry(policy: RuntimeCredentialPolicy, text: str) -> str:
+    """Keep only the suffix that can still complete an exact credential later."""
+    best = ""
+    for credential in policy.credentials:
+        maximum = min(len(text), len(credential.value) - 1)
+        for length in range(maximum, 0, -1):
+            candidate = text[-length:]
+            if credential.value.startswith(candidate):
+                if len(candidate) > len(best):
+                    best = candidate
+                break
+    return best
+
+
+def _orchestration_stream_match(
+    policy: RuntimeCredentialPolicy,
+    state: dict[tuple[str, str, str, str], str],
+    source_event: Any,
+) -> Optional[CredentialMatch]:
+    if not isinstance(source_event, dict):
+        return None
+
+    for channel, fragment in _orchestration_delta_fragments(source_event):
+        key = _orchestration_stream_key(source_event, channel)
+        combined = state.get(key, "") + fragment
+        match = policy.find(
+            combined,
+            boundary=BOUNDARY_ORCHESTRATION_EVENT_RELEASE,
+            direction=DIRECTION_CALLER_BOUND,
+        )
+        if match is not None:
+            state.pop(key, None)
+            return match
+
+        carry = _credential_prefix_carry(policy, combined)
+        if carry:
+            state[key] = carry
+        else:
+            state.pop(key, None)
+
+    return None
+
+
+def _clear_orchestration_stream_state(
+    state: dict[tuple[str, str, str, str], str],
+    source_event: Any,
+) -> None:
+    if not isinstance(source_event, dict):
+        return
+    identity = (
+        str(source_event.get("task_id") or ""),
+        str(source_event.get("run_id") or ""),
+        str(source_event.get("run_epoch") or ""),
+    )
+    for key in tuple(state):
+        if key[:3] == identity:
+            state.pop(key, None)
+
+
+def _orchestration_block_payload(boundary: str) -> dict[str, Any]:
+    return {
+        "error": ORCHESTRATION_RELEASE_BLOCK_ERROR,
+        "security_outcome": "HARD_INTERRUPT",
+        "release_boundary": boundary,
+    }
+
+
+def _safe_orchestration_identity(
+    policy: RuntimeCredentialPolicy,
+    source_event: Any,
+) -> dict[str, Any]:
+    if not isinstance(source_event, dict):
+        return {}
+    safe = {}
+    for key in ("task_id", "run_id", "run_epoch", "attribution", "at"):
+        if key not in source_event:
+            continue
+        value = source_event.get(key)
+        if _release_match(
+            policy,
+            value,
+            boundary=BOUNDARY_ORCHESTRATION_EVENT_RELEASE,
+        ) is None:
+            safe[key] = value
+    return safe
+
+
+def _install_orchestration_release_guard(
+    jk: Any,
+    policy: RuntimeCredentialPolicy,
+) -> None:
+    if getattr(jk, "_JACK_ORCHESTRATION_CREDENTIAL_DLP_INSTALLED", False):
+        return
+
+    original_proxy = getattr(jk, "_proxy_pi_control_request", None)
+    hub_type = getattr(jk, "OrchestrationEventHub", None)
+    original_publish = getattr(hub_type, "_publish", None) if hub_type is not None else None
+    json_response = getattr(jk, "JSONResponse", None)
+
+    # Lightweight policy-test hosts deliberately do not expose orchestration.
+    if not callable(original_proxy) or not callable(original_publish):
+        return
+    if not callable(json_response):
+        raise RuntimeError("Phase-7 orchestration release guard requires JSONResponse")
+
+    async def guarded_proxy(*args: Any, **kwargs: Any):
+        response = await original_proxy(*args, **kwargs)
+        match = _release_match(
+            policy,
+            getattr(response, "body", b""),
+            boundary=BOUNDARY_ORCHESTRATION_HTTP_RELEASE,
+        )
+        if match is None:
+            return response
+        return json_response(
+            status_code=ORCHESTRATION_RELEASE_BLOCK_STATUS,
+            content=_orchestration_block_payload(
+                BOUNDARY_ORCHESTRATION_HTTP_RELEASE
+            ),
+        )
+
+    async def guarded_publish(self: Any, event_type: str, source_event: Any) -> None:
+        stream_state = getattr(
+            self,
+            "_jack_phase7_orchestration_credential_carry",
+            None,
+        )
+        if not isinstance(stream_state, dict):
+            stream_state = {}
+            setattr(
+                self,
+                "_jack_phase7_orchestration_credential_carry",
+                stream_state,
+            )
+
+        match = _orchestration_stream_match(
+            policy,
+            stream_state,
+            source_event,
+        )
+        if match is None:
+            match = _release_match(
+                policy,
+                source_event,
+                boundary=BOUNDARY_ORCHESTRATION_EVENT_RELEASE,
+            )
+
+        if match is None:
+            await original_publish(self, event_type, source_event)
+            if event_type in {"message_end", "agent_end", "agent_settled"}:
+                _clear_orchestration_stream_state(stream_state, source_event)
+            return
+
+        _clear_orchestration_stream_state(stream_state, source_event)
+        safe_source = {
+            "type": ORCHESTRATION_RELEASE_BLOCK_ERROR,
+            "data": _orchestration_block_payload(
+                BOUNDARY_ORCHESTRATION_EVENT_RELEASE
+            ),
+            **_safe_orchestration_identity(policy, source_event),
+        }
+        await original_publish(
+            self,
+            ORCHESTRATION_RELEASE_BLOCK_ERROR,
+            safe_source,
+        )
+
+    guarded_proxy._jack_phase7_orchestration_credential_dlp = True
+    guarded_publish._jack_phase7_orchestration_credential_dlp = True
+    guarded_publish._jack_phase7_original_publish = original_publish
+
+    jk._proxy_pi_control_request = guarded_proxy
+    hub_type._publish = guarded_publish
+    jk._JACK_ORCHESTRATION_CREDENTIAL_DLP_INSTALLED = True
+
+
+def install(
+    jk: Any,
+    *,
+    credential_policy: Optional[RuntimeCredentialPolicy] = None,
+) -> RuntimeCredentialPolicy:
+    """Install exact model-bound credential isolation exactly once."""
+
+    existing = getattr(jk, "_JACK_RUNTIME_CREDENTIAL_POLICY", None)
+    if getattr(jk, "_JACK_CREDENTIAL_GUARD_INSTALLED", False):
+        if not isinstance(existing, RuntimeCredentialPolicy):
+            raise RuntimeError("Phase-7 installed policy state is invalid")
+        return existing
+
+    if credential_policy is None:
+        credential_policy = build_runtime_credential_policy(jk)
+    elif not isinstance(credential_policy, RuntimeCredentialPolicy):
+        raise TypeError("credential_policy must be a RuntimeCredentialPolicy")
+
+    runtime_id = str(getattr(jk, "RUNTIME_ID", "") or "").strip()
+    lane_id = str(getattr(jk, "LANE_ID", "") or "").strip()
+    if credential_policy.runtime_id != runtime_id:
+        raise RuntimeError("Phase-7 credential policy runtime ownership mismatch")
+    if credential_policy.lane_id != lane_id:
+        raise RuntimeError("Phase-7 credential policy lane ownership mismatch")
+
+    backend = getattr(jk, "BACKEND", None)
+    client = getattr(backend, "_client", None)
+    if client is None:
+        raise RuntimeError("Phase-7 backend transport is unavailable")
+
+    original_post = getattr(client, "post", None)
+    original_build_request = getattr(client, "build_request", None)
+    if not callable(original_post) or not callable(original_build_request):
+        raise RuntimeError("Phase-7 backend transport does not expose required dispatch seams")
+
+    async def guarded_post(*args: Any, **kwargs: Any):
+        _guard_post_call(credential_policy, args, kwargs)
+        return await original_post(*args, **kwargs)
+
+    def guarded_build_request(*args: Any, **kwargs: Any):
+        _guard_build_request_call(credential_policy, args, kwargs)
+        return original_build_request(*args, **kwargs)
+
+    guarded_post._jack_phase7_credential_guard = True
+    guarded_build_request._jack_phase7_credential_guard = True
+    client.post = guarded_post
+    client.build_request = guarded_build_request
+
+    _install_orchestration_release_guard(jk, credential_policy)
+
+    jk._JACK_RUNTIME_CREDENTIAL_POLICY = credential_policy
+    jk._JACK_CREDENTIAL_GUARD_INSTALLED = True
+
+    register = getattr(jk, "_register_runtime_manifest_components", None)
+    if callable(register):
+        register({"jack_credential_guard.py": Path(__file__).resolve()})
+
+    return credential_policy
