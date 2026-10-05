@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any, Optional
 
 
@@ -27,10 +28,52 @@ def _policy_match(
     boundary: str,
     direction: str,
 ) -> Any:
+    """Find exact protected values in complete diagnostic structure.
+
+    RuntimeCredentialPolicy deliberately treats JSON/container keys as protocol
+    structure for model payloads. Diagnostic material is different: arbitrary
+    exception/detail dictionaries can place caller-visible text in either keys or
+    values. This release guard therefore checks both without changing the global
+    credential-policy semantics used by model dispatch.
+    """
     finder = getattr(policy, "find", None)
     if not callable(finder):
         raise TypeError("diagnostic guard requires a runtime credential policy")
-    return finder(value, boundary=boundary, direction=direction)
+
+    if isinstance(value, (bytes, bytearray)):
+        value = bytes(value).decode("utf-8", "replace")
+
+    match = finder(value, boundary=boundary, direction=direction)
+    if match is not None:
+        return match
+
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if isinstance(key, str):
+                match = finder(key, boundary=boundary, direction=direction)
+                if match is not None:
+                    return match
+            match = _policy_match(
+                policy,
+                item,
+                boundary=boundary,
+                direction=direction,
+            )
+            if match is not None:
+                return match
+        return None
+
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            match = _policy_match(
+                policy,
+                item,
+                boundary=boundary,
+                direction=direction,
+            )
+            if match is not None:
+                return match
+    return None
 
 
 def _blocked_payload(boundary: str) -> dict[str, str]:
@@ -88,11 +131,49 @@ def _exception_has_credential(
 
 
 class _CredentialDiagnosticLogFilter(logging.Filter):
-    """Replace only log records proven to contain a registered credential."""
+    """Process-local aggregate of immutable runtime credential policies.
+
+    Jack's named logger is process-global even when tests or an embedding host load
+    more than one runtime instance. No single runtime may monopolize that observer
+    boundary. Registration is copy-on-write under a mutex; log filtering reads the
+    immutable tuple without taking the authority-registration lock.
+    """
 
     def __init__(self, policy: Any) -> None:
         super().__init__()
-        self.policy = policy
+        self._lock = threading.Lock()
+        self._policies = ()
+        self.add_policy(policy)
+
+    @staticmethod
+    def _identity(policy: Any) -> tuple[str, str]:
+        return (
+            str(getattr(policy, "runtime_id", "") or ""),
+            str(getattr(policy, "lane_id", "") or ""),
+        )
+
+    def add_policy(self, policy: Any) -> None:
+        # Validate before publishing into the process-wide observer policy set.
+        if not callable(getattr(policy, "find", None)):
+            raise TypeError("diagnostic log guard requires a runtime credential policy")
+        identity = self._identity(policy)
+        if not all(identity):
+            raise RuntimeError("diagnostic log policy requires runtime/lane identity")
+
+        with self._lock:
+            for existing in self._policies:
+                if self._identity(existing) != identity:
+                    continue
+                if existing is policy:
+                    return
+                existing_credentials = tuple(getattr(existing, "credentials", ()))
+                incoming_credentials = tuple(getattr(policy, "credentials", ()))
+                if existing_credentials != incoming_credentials:
+                    raise RuntimeError(
+                        "diagnostic log policy identity cannot be rebound to different credentials"
+                    )
+                return
+            self._policies = self._policies + (policy,)
 
     def filter(self, record: logging.LogRecord) -> bool:
         try:
@@ -104,23 +185,25 @@ class _CredentialDiagnosticLogFilter(logging.Filter):
         if exc_info and len(exc_info) >= 2 and isinstance(exc_info[1], BaseException):
             material += "\n" + _exception_material(exc_info[1])
 
-        match = _policy_match(
-            self.policy,
-            material,
-            boundary=BOUNDARY_LOG_RELEASE,
-            direction=DIRECTION_OBSERVER_BOUND,
-        )
-        if match is None:
-            return True
+        for policy in self._policies:
+            match = _policy_match(
+                policy,
+                material,
+                boundary=BOUNDARY_LOG_RELEASE,
+                direction=DIRECTION_OBSERVER_BOUND,
+            )
+            if match is None:
+                continue
 
-        # Do not partially redact a proven credential-bearing diagnostic. Replace
-        # the whole record with safe host-owned structure and discard traceback
-        # material whose exception chain may contain the same credential.
-        record.msg = DIAGNOSTIC_LOG_MESSAGE
-        record.args = ()
-        record.exc_info = None
-        record.exc_text = None
-        record.stack_info = None
+            # Do not partially redact a proven credential-bearing diagnostic.
+            # Replace the whole record and discard traceback material whose
+            # exception chain may contain the same credential.
+            record.msg = DIAGNOSTIC_LOG_MESSAGE
+            record.args = ()
+            record.exc_info = None
+            record.exc_text = None
+            record.stack_info = None
+            break
         return True
 
 
@@ -211,7 +294,12 @@ def _install_log_guard(jk: Any, policy: Any) -> bool:
     logger = getattr(jk, "LOG", None)
     if not isinstance(logger, logging.Logger):
         return False
+
+    existing = getattr(logger, "_jack_phase7_diagnostic_log_filter", None)
     if getattr(logger, "_jack_phase7_diagnostic_log_guard", False):
+        if not isinstance(existing, _CredentialDiagnosticLogFilter):
+            raise RuntimeError("installed diagnostic log guard state is invalid")
+        existing.add_policy(policy)
         return True
 
     filt = _CredentialDiagnosticLogFilter(policy)
