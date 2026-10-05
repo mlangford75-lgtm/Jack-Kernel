@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import jack_secure_entrypoint as entrypoint
+import jack_source_drift_guard as source_guard
 
 
 def test_secure_entrypoint_uses_shared_bundled_extension_path(monkeypatch):
@@ -12,6 +13,11 @@ def test_secure_entrypoint_uses_shared_bundled_extension_path(monkeypatch):
         lambda: events.append("bundled"),
     )
     monkeypatch.setattr(
+        source_guard,
+        "install",
+        lambda jk, *, launch_entrypoint_path=None: events.append("source-baseline"),
+    )
+    monkeypatch.setattr(
         entrypoint.jk,
         "main",
         lambda: events.append("kernel-main"),
@@ -19,4 +25,4 @@ def test_secure_entrypoint_uses_shared_bundled_extension_path(monkeypatch):
 
     entrypoint.main()
 
-    assert events == ["bundled", "kernel-main"]
+    assert events == ["bundled", "source-baseline", "kernel-main"]
