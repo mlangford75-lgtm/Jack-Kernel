@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
 import os
@@ -7,17 +8,23 @@ import re
 import stat
 import sys
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
+from functools import wraps
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional, Tuple
 
 
 SOURCE_BASELINE_SCHEMA = "jack.source-authority.baseline.v1"
 SOURCE_BASELINE_VERSION = 1
+DEFAULT_PERIODIC_VERIFY_SECONDS = 1.0
 _COMPONENT_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+_MUTATING_ORCHESTRATION_PATHS = frozenset(
+    {"/v1/tasks", "/v1/tasks/cancel", "/v1/session/new"}
+)
 
 
 class SourceAuthorityState(str, Enum):
@@ -189,9 +196,8 @@ class RuntimeSourceAuthority:
     """Process-local Phase-8 source authority and immutable active baseline.
 
     The lock is the synchronization boundary shared by source-state transition
-    and future final consequence/release admission. Callers must never hold an
-    admission across model cognition; it is intentionally for the narrow final
-    authority transition only.
+    and final consequence/release admission. It is never held across model
+    cognition or external worker/network execution.
     """
 
     def __init__(self, *, runtime_id: str, lane_id: str) -> None:
@@ -206,6 +212,10 @@ class RuntimeSourceAuthority:
         self._state = SourceAuthorityState.INITIALIZING
         self._pending_components: Dict[str, Path] = {}
         self._baseline: Optional[RuntimeSourceBaseline] = None
+        self._periodic_stop = threading.Event()
+        self._periodic_thread: Optional[threading.Thread] = None
+        self._periodic_interval_seconds: Optional[float] = None
+        self._last_verification_monotonic: Optional[float] = None
 
     @property
     def state(self) -> SourceAuthorityState:
@@ -218,6 +228,27 @@ class RuntimeSourceAuthority:
             if self._baseline is None:
                 raise SourceBaselineCreationError("source baseline is not sealed")
             return self._baseline
+
+    def status_snapshot(self) -> Dict[str, Any]:
+        with self._lock:
+            baseline = self._baseline
+            thread = self._periodic_thread
+            return {
+                "state": self._state.value,
+                "runtime_id": self.runtime_id,
+                "lane_id": self.lane_id,
+                "baseline_instance_id": (
+                    baseline.baseline_instance_id if baseline is not None else None
+                ),
+                "baseline_sha256": (
+                    baseline.aggregate_sha256 if baseline is not None else None
+                ),
+                "component_count": len(baseline.components) if baseline is not None else 0,
+                "periodic_verification_running": bool(
+                    thread is not None and thread.is_alive()
+                ),
+                "verification_interval_seconds": self._periodic_interval_seconds,
+            }
 
     def register_component(self, component_id: str, path: Path) -> None:
         """Register authority source only while INITIALIZING."""
@@ -296,6 +327,7 @@ class RuntimeSourceAuthority:
             self._baseline = baseline
             self._pending_components.clear()
             self._state = SourceAuthorityState.ACTIVE
+            self._last_verification_monotonic = time.monotonic()
             return baseline
 
     @contextmanager
@@ -317,6 +349,11 @@ class RuntimeSourceAuthority:
             yield self._baseline
         finally:
             self._lock.release()
+
+    def _suspend_unverified(self) -> None:
+        with self._lock:
+            if self._state is not SourceAuthorityState.INVALIDATED:
+                self._state = SourceAuthorityState.SUSPENDED_UNVERIFIED
 
     def verify_now(self) -> SourceVerificationResult:
         """Perform one bounded deterministic verification against the baseline.
@@ -362,6 +399,7 @@ class RuntimeSourceAuthority:
                 self._state = SourceAuthorityState.SUSPENDED_UNVERIFIED
             else:
                 self._state = SourceAuthorityState.ACTIVE
+            self._last_verification_monotonic = time.monotonic()
 
             return SourceVerificationResult(
                 state=self._state,
@@ -370,6 +408,58 @@ class RuntimeSourceAuthority:
                 mismatched_component_ids=tuple(sorted(mismatched)),
                 unavailable_component_ids=tuple(sorted(unavailable)),
             )
+
+    def verify_for_authority_boundary(self) -> None:
+        """Remeasure at a required low-frequency authority boundary, then admit."""
+
+        self.verify_now()
+        with self.admit():
+            pass
+
+    def start_periodic_verification(
+        self,
+        *,
+        interval_seconds: float = DEFAULT_PERIODIC_VERIFY_SECONDS,
+    ) -> None:
+        """Start bounded background remeasurement without claiming attestation."""
+
+        interval = float(interval_seconds)
+        if not (0.05 <= interval <= 60.0):
+            raise ValueError("Phase-8 verification interval must be between 0.05 and 60 seconds")
+
+        with self._lock:
+            if self._baseline is None:
+                raise SourceBaselineCreationError("source baseline is not sealed")
+            if self._periodic_thread is not None and self._periodic_thread.is_alive():
+                return
+            self._periodic_interval_seconds = interval
+            self._periodic_stop.clear()
+
+            def worker() -> None:
+                while not self._periodic_stop.wait(interval):
+                    try:
+                        result = self.verify_now()
+                    except Exception:
+                        # If the verifier itself cannot establish source truth,
+                        # authority must suspend rather than pretend it remains valid.
+                        self._suspend_unverified()
+                        continue
+                    if result.state is SourceAuthorityState.INVALIDATED:
+                        return
+
+            thread = threading.Thread(
+                target=worker,
+                name=f"jack-source-verify-{self.runtime_id}",
+                daemon=True,
+            )
+            self._periodic_thread = thread
+            thread.start()
+
+    def stop_periodic_verification(self, *, timeout: float = 2.0) -> None:
+        self._periodic_stop.set()
+        thread = self._periodic_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=max(0.0, float(timeout)))
 
 
 _REQUIRED_AUTHORITY_MODULES: Tuple[Tuple[str, str], ...] = (
@@ -450,12 +540,179 @@ def _canonical_requested_identity(
     return identity
 
 
+def _install_kernel_release_enforcement(
+    jk: Any,
+    authority: RuntimeSourceAuthority,
+) -> None:
+    kernel = getattr(jk, "KERNEL", None)
+    if kernel is None:
+        raise RuntimeError("Phase-8C requires Jack KERNEL")
+
+    current_run = getattr(kernel, "run", None)
+    current_stream = getattr(kernel, "stream", None)
+    if not callable(current_run) or not callable(current_stream):
+        raise RuntimeError("Phase-8C requires Kernel run/stream release seams")
+
+    if not getattr(current_run, "_jack_phase8_source_authority", False):
+        original_run = current_run
+
+        @wraps(original_run)
+        async def source_governed_run(*args: Any, **kwargs: Any):
+            # Reject newly admitted cognition if source truth is already absent.
+            authority.verify_for_authority_boundary()
+            result = await original_run(*args, **kwargs)
+            # Cognition may complete independently, but caller-bound release is a
+            # second authority boundary and must be freshly verified.
+            authority.verify_for_authority_boundary()
+            return result
+
+        source_governed_run._jack_phase8_source_authority = True
+        source_governed_run._jack_phase8_original = original_run
+        kernel.run = source_governed_run
+
+    if not getattr(current_stream, "_jack_phase8_source_authority", False):
+        original_stream = current_stream
+
+        @wraps(original_stream)
+        async def source_governed_stream(*args: Any, **kwargs: Any):
+            authority.verify_for_authority_boundary()
+            async for chunk in original_stream(*args, **kwargs):
+                # Periodic verification owns bounded remeasurement during long
+                # streams. Each chunk still needs an atomic final release admission.
+                with authority.admit():
+                    pass
+                yield chunk
+
+        source_governed_stream._jack_phase8_source_authority = True
+        source_governed_stream._jack_phase8_original = original_stream
+        kernel.stream = source_governed_stream
+
+
+def _install_executor_admission_enforcement(
+    jk: Any,
+    authority: RuntimeSourceAuthority,
+) -> None:
+    current = getattr(jk, "_phase4_executor_admission_decision", None)
+    if not callable(current):
+        raise RuntimeError("Phase-8C requires Phase-4 executor admission seam")
+    if getattr(current, "_jack_phase8_source_authority", False):
+        return
+
+    original = current
+
+    @wraps(original)
+    def source_governed_executor_admission(*args: Any, **kwargs: Any):
+        authority.verify_for_authority_boundary()
+        return original(*args, **kwargs)
+
+    source_governed_executor_admission._jack_phase8_source_authority = True
+    source_governed_executor_admission._jack_phase8_original = original
+    jk._phase4_executor_admission_decision = source_governed_executor_admission
+
+
+def _install_orchestration_enforcement(
+    jk: Any,
+    authority: RuntimeSourceAuthority,
+) -> None:
+    current = getattr(jk, "_proxy_pi_control_request", None)
+    if not callable(current):
+        return
+    if getattr(current, "_jack_phase8_source_authority", False):
+        return
+
+    original = current
+
+    @wraps(original)
+    async def source_governed_proxy(
+        request: Any,
+        method: str,
+        path: str,
+        *args: Any,
+        **kwargs: Any,
+    ):
+        method_value = str(method or "").upper()
+        path_value = str(path or "")
+        if method_value == "POST" and path_value in _MUTATING_ORCHESTRATION_PATHS:
+            # Admission is serialized, then released before network I/O. A control
+            # action already admitted may finish; no new action is admitted after
+            # suspension/invalidation. GET status remains pure observation.
+            authority.verify_for_authority_boundary()
+        return await original(request, method, path, *args, **kwargs)
+
+    source_governed_proxy._jack_phase8_source_authority = True
+    source_governed_proxy._jack_phase8_original = original
+    jk._proxy_pi_control_request = source_governed_proxy
+
+
+def _install_http_observability(
+    jk: Any,
+    authority: RuntimeSourceAuthority,
+) -> None:
+    app = getattr(jk, "APP", None)
+    json_response = getattr(jk, "JSONResponse", None)
+    if app is None or not callable(json_response):
+        return
+
+    async def source_authority_unavailable_handler(_request: Any, _exc: Exception):
+        snapshot = authority.status_snapshot()
+        return json_response(
+            status_code=503,
+            content={
+                "error": "jack_source_authority_unavailable",
+                "source_authority_state": snapshot["state"],
+                "runtime_id": authority.runtime_id,
+                "lane_id": authority.lane_id,
+            },
+        )
+
+    add_handler = getattr(app, "add_exception_handler", None)
+    if callable(add_handler):
+        add_handler(SourceAuthorityUnavailable, source_authority_unavailable_handler)
+
+    routes = getattr(app, "routes", ())
+    if any(getattr(route, "path", None) == "/jack/source-authority" for route in routes):
+        return
+
+    get = getattr(app, "get", None)
+    if not callable(get):
+        return
+
+    @get("/jack/source-authority")
+    async def source_authority_status(request: Any):
+        enforce = getattr(jk, "enforce_kernel_auth", None)
+        if callable(enforce):
+            await enforce(request)
+        return authority.status_snapshot()
+
+
+def _install_runtime_enforcement(
+    jk: Any,
+    authority: RuntimeSourceAuthority,
+    *,
+    start_periodic: bool = True,
+    periodic_interval_seconds: float = DEFAULT_PERIODIC_VERIFY_SECONDS,
+) -> None:
+    if getattr(jk, "_JACK_SOURCE_RUNTIME_ENFORCEMENT_INSTALLED", False):
+        return
+
+    _install_kernel_release_enforcement(jk, authority)
+    _install_executor_admission_enforcement(jk, authority)
+    _install_orchestration_enforcement(jk, authority)
+    _install_http_observability(jk, authority)
+
+    jk._JACK_SOURCE_RUNTIME_ENFORCEMENT_INSTALLED = True
+    if start_periodic:
+        authority.start_periodic_verification(
+            interval_seconds=periodic_interval_seconds,
+        )
+
+
 def install(
     jk: Any,
     *,
     launch_entrypoint_path: Optional[Path] = None,
 ) -> RuntimeSourceAuthority:
-    """Seal one process-local Phase-8B active-source baseline exactly once."""
+    """Seal Phase-8 source identity and install Phase-8C runtime enforcement."""
 
     requested = _default_component_paths(
         jk,
@@ -476,6 +733,7 @@ def install(
             raise SourceComponentSetSealed(
                 "Phase-8 protected source set is sealed; restart is required"
             )
+        _install_runtime_enforcement(jk, existing)
         return existing
 
     missing = [
@@ -509,4 +767,6 @@ def install(
     if callable(register):
         register({"jack_source_drift_guard.py": Path(__file__).resolve()})
 
+    _install_runtime_enforcement(jk, authority)
+    atexit.register(authority.stop_periodic_verification)
     return authority
