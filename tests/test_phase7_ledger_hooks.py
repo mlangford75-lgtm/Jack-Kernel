@@ -11,6 +11,7 @@ def test_phase7_live_ledger_hooks_cover_enforcement_domains(tmp_path):
 import asyncio
 import json
 import logging
+from types import SimpleNamespace
 
 import httpx
 import jack_kernel as kernel
@@ -45,18 +46,15 @@ class FakeClient:
 
 
 async def secret_result(*args, **kwargs):
-    return {
-        "choices": [
-            {
-                "message": {
-                    "role": "assistant",
-                    "content": "safe-prefix-" + SECRET + "-unsafe-tail",
-                },
-                "finish_reason": "stop",
-            }
-        ],
-        "usage": {},
-    }
+    # Match the actual Jack KernelResult-like release shape consumed by the
+    # existing evidence guard rather than fabricating an OpenAI response dict.
+    return SimpleNamespace(
+        content="safe-prefix-" + SECRET + "-unsafe-tail",
+        reasoning_content=None,
+        reasoning=None,
+        thinking=None,
+        tool_calls=None,
+    )
 
 
 async def leaking_proxy(*args, **kwargs):
