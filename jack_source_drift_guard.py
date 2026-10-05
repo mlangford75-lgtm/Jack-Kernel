@@ -425,6 +425,31 @@ def _default_component_paths(
     return tuple(items)
 
 
+def _canonical_requested_identity(
+    requested: Tuple[Tuple[str, Path], ...],
+) -> Dict[str, str]:
+    """Resolve repeat-install component identities without re-measuring bytes."""
+
+    identity: Dict[str, str] = {}
+    for component_id, path in requested:
+        try:
+            canonical_path = os.path.normcase(
+                str(Path(path).expanduser().resolve(strict=False))
+            )
+        except (OSError, RuntimeError) as exc:
+            raise SourceComponentSetSealed(
+                "Phase-8 protected source identity cannot be re-established; restart is required"
+            ) from exc
+
+        prior = identity.get(component_id)
+        if prior is not None and prior != canonical_path:
+            raise SourceComponentSetSealed(
+                "Phase-8 protected source set is sealed; restart is required"
+            )
+        identity[component_id] = canonical_path
+    return identity
+
+
 def install(
     jk: Any,
     *,
@@ -436,13 +461,18 @@ def install(
         jk,
         launch_entrypoint_path=launch_entrypoint_path,
     )
-    requested_ids = frozenset(component_id for component_id, _path in requested)
 
     existing = getattr(jk, "_JACK_SOURCE_AUTHORITY", None)
     if getattr(jk, "_JACK_SOURCE_AUTHORITY_INSTALLED", False):
         if not isinstance(existing, RuntimeSourceAuthority):
             raise RuntimeError("Phase-8 source-authority marker exists without valid state")
-        if frozenset(existing.baseline.component_ids) != requested_ids:
+
+        sealed_identity = {
+            item.component_id: os.path.normcase(item.canonical_path)
+            for item in existing.baseline.components
+        }
+        requested_identity = _canonical_requested_identity(requested)
+        if sealed_identity != requested_identity:
             raise SourceComponentSetSealed(
                 "Phase-8 protected source set is sealed; restart is required"
             )
