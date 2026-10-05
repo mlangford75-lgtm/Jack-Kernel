@@ -67,7 +67,7 @@ jobs:
 
       - name: Run Phase-7 credential isolation and DLP tests
         shell: pwsh
-        run: python -m pytest -q tests/test_phase7_credential_policy.py tests/test_phase7_live_integration.py tests/test_phase7_output_dlp.py tests/test_phase7_orchestration_dlp.py tests/test_phase7_diagnostic_dlp.py tests/test_phase7_diagnostic_headers.py tests/test_phase7_diagnostic_outer_release.py tests/test_phase7_ledger_resources.py
+        run: python -m pytest -q tests/test_phase7_credential_policy.py tests/test_phase7_live_integration.py tests/test_phase7_output_dlp.py tests/test_phase7_orchestration_dlp.py tests/test_phase7_diagnostic_dlp.py tests/test_phase7_diagnostic_headers.py tests/test_phase7_diagnostic_outer_release.py tests/test_phase7_ledger_resources.py tests/test_phase7_ledger_hooks.py
 
       - name: Run Python regression suite
         shell: pwsh
