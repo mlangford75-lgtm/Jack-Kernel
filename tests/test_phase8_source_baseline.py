@@ -10,6 +10,7 @@ import jack_source_drift_guard as source_guard
 
 
 def _authority_for(tmp_path: Path, content: bytes = b"alpha"):
+    tmp_path.mkdir(parents=True, exist_ok=True)
     target = tmp_path / "authority.py"
     target.write_bytes(content)
     authority = source_guard.RuntimeSourceAuthority(
