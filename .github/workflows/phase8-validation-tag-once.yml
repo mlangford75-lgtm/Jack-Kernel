@@ -1,0 +1,80 @@
+name: Phase 8 validation tag once
+
+on:
+  push:
+    branches:
+      - ops/phase8-validation-tag-once
+
+permissions:
+  contents: write
+
+jobs:
+  create-validated-annotated-tag:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      - name: Create exact annotated Phase-8 validation tag
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $Target = 'cebe9fd75fe30a9c84a0af08d2105af448fc3d00'
+          $ExpectedTree = '7288396653db3590834d9ac1093207c4e1b19c3b'
+          $Tag = 'security-layer-phase8-validated-2026-10-06'
+
+          git fetch origin main --tags --force
+
+          $Main = (git rev-parse refs/remotes/origin/main).Trim()
+          if ($Main -ne $Target) {
+            throw "STOP: origin/main moved. expected=$Target actual=$Main"
+          }
+
+          $Tree = (git rev-parse "$Target^{tree}").Trim()
+          if ($Tree -ne $ExpectedTree) {
+            throw "STOP: validated closure tree mismatch. expected=$ExpectedTree actual=$Tree"
+          }
+
+          $Existing = git ls-remote --tags origin "refs/tags/$Tag"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'STOP: could not verify remote tag namespace.'
+          }
+          if ($Existing) {
+            throw "STOP: tag already exists: $Tag"
+          }
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          $Message = @"
+          Jack Kernel Security Layer Phase 8 validated 2026-10-06
+
+          Validated closure target: $Target
+          Validated closure tree: $ExpectedTree
+          Closure-complete Windows CI #218: PASS
+          Phase 8: VALIDATED / MERGED / DOCUMENTED / TAGGED / FROZEN
+          Phase 9: NOT STARTED
+          "@
+
+          git tag -a $Tag $Target -m $Message
+          if ($LASTEXITCODE -ne 0) { throw 'STOP: annotated tag creation failed.' }
+
+          $ObjectType = (git cat-file -t "refs/tags/$Tag").Trim()
+          if ($ObjectType -ne 'tag') {
+            throw "STOP: created ref is not an annotated tag object: $ObjectType"
+          }
+
+          $Peeled = (git rev-parse "$Tag^{}").Trim()
+          if ($Peeled -ne $Target) {
+            throw "STOP: annotated tag peeled target mismatch. expected=$Target actual=$Peeled"
+          }
+
+          $TagObject = (git rev-parse "refs/tags/$Tag").Trim()
+          Write-Host "PHASE8_TAG_OBJECT=$TagObject"
+          Write-Host "PHASE8_TAG_TARGET=$Peeled"
+          Write-Host "PHASE8_TAG_TREE=$Tree"
+
+          git push origin "refs/tags/$Tag:refs/tags/$Tag"
+          if ($LASTEXITCODE -ne 0) { throw 'STOP: annotated tag push failed.' }
