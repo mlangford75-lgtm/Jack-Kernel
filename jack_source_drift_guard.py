@@ -95,11 +95,19 @@ class RuntimeSourceBaseline:
 
 @dataclass(frozen=True)
 class SourceVerificationResult:
+    prior_state: SourceAuthorityState
     state: SourceAuthorityState
     baseline_instance_id: str
     verified: bool
     mismatched_component_ids: Tuple[str, ...] = ()
     unavailable_component_ids: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class SourceStateTransition:
+    prior_state: SourceAuthorityState
+    state: SourceAuthorityState
+    changed: bool
 
 
 @dataclass(frozen=True)
@@ -357,10 +365,16 @@ class RuntimeSourceAuthority:
         finally:
             self._lock.release()
 
-    def _suspend_unverified(self) -> None:
+    def _suspend_unverified(self) -> SourceStateTransition:
         with self._lock:
+            prior_state = self._state
             if self._state is not SourceAuthorityState.INVALIDATED:
                 self._state = SourceAuthorityState.SUSPENDED_UNVERIFIED
+            return SourceStateTransition(
+                prior_state=prior_state,
+                state=self._state,
+                changed=prior_state is not self._state,
+            )
 
     def verify_now(self) -> SourceVerificationResult:
         """Perform one bounded deterministic verification against the baseline.
@@ -369,14 +383,18 @@ class RuntimeSourceAuthority:
         here terminally invalidates this runtime. An inability to measure moves
         authority to SUSPENDED_UNVERIFIED until a later exact verification
         succeeds. INVALIDATED is terminal and cannot be repaired in place.
+        The returned prior/current state pair is captured under this same lock so
+        observers never need to reconstruct a transition from separate samples.
         """
 
         with self._lock:
             baseline = self._baseline
             if baseline is None:
                 raise SourceBaselineCreationError("source baseline is not sealed")
+            prior_state = self._state
             if self._state is SourceAuthorityState.INVALIDATED:
                 return SourceVerificationResult(
+                    prior_state=prior_state,
                     state=self._state,
                     baseline_instance_id=baseline.baseline_instance_id,
                     verified=False,
@@ -408,6 +426,7 @@ class RuntimeSourceAuthority:
                 self._state = SourceAuthorityState.ACTIVE
 
             return SourceVerificationResult(
+                prior_state=prior_state,
                 state=self._state,
                 baseline_instance_id=baseline.baseline_instance_id,
                 verified=self._state is SourceAuthorityState.ACTIVE,
