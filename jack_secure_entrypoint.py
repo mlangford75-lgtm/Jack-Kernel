@@ -74,11 +74,12 @@ def _state_value(value: Any) -> str:
 
 
 def _install_phase8_ledger_observer(jk_module: Any, authority: Any) -> bool:
-    """Observe source-authority transitions without participating in source truth.
+    """Observe immutable source transition facts after the source guard establishes them.
 
-    The source guard remains the sole verifier/lifecycle owner. Ledger writes happen
-    only after its state transition has completed and are fail-soft with respect to
-    source enforcement and recovery.
+    The source guard remains the sole verifier/lifecycle owner. The observer never
+    samples source state to reconstruct a transition and never acquires the source
+    authority lock. Ledger recording happens only after the source transition fact
+    has been returned and is fail-soft with respect to enforcement and recovery.
     """
 
     if getattr(jk_module, "_JACK_PHASE8_LEDGER_OBSERVER_INSTALLED", False):
@@ -115,10 +116,10 @@ def _install_phase8_ledger_observer(jk_module: Any, authority: Any) -> bool:
 
         @wraps(original_verify)
         def observed_verify_now(*args: Any, **kwargs: Any):
-            prior_state = _state_value(authority.state)
             result = original_verify(*args, **kwargs)
-            new_state = _state_value(authority.state)
-            if prior_state == new_state:
+            prior_state = _state_value(getattr(result, "prior_state", ""))
+            new_state = _state_value(getattr(result, "state", ""))
+            if not prior_state or prior_state == new_state:
                 return result
 
             mismatched = tuple(
@@ -174,10 +175,11 @@ def _install_phase8_ledger_observer(jk_module: Any, authority: Any) -> bool:
 
         @wraps(original_suspend)
         def observed_suspend(*args: Any, **kwargs: Any):
-            prior_state = _state_value(authority.state)
-            result = original_suspend(*args, **kwargs)
-            new_state = _state_value(authority.state)
-            if prior_state != new_state and new_state == "SUSPENDED_UNVERIFIED":
+            transition = original_suspend(*args, **kwargs)
+            prior_state = _state_value(getattr(transition, "prior_state", ""))
+            new_state = _state_value(getattr(transition, "state", ""))
+            changed = bool(getattr(transition, "changed", False))
+            if changed and new_state == "SUSPENDED_UNVERIFIED":
                 _record_phase8_source_event_failsoft(
                     ledger,
                     event_type=Phase8LedgerEventType.SOURCE_AUTHORITY_SUSPENDED,
@@ -186,7 +188,7 @@ def _install_phase8_ledger_observer(jk_module: Any, authority: Any) -> bool:
                     new_state=new_state,
                     reason="verification_operation_failed",
                 )
-            return result
+            return transition
 
         observed_suspend._jack_phase8_ledger_observer = True
         observed_suspend._jack_phase8_original = original_suspend
