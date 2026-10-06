@@ -2,45 +2,50 @@
 
 **Jack Kernel v0.1.1**
 
-**Current validated security checkpoint:** Phase 7 — Credential Isolation and Integrated DLP
+**Current validated implementation checkpoint:** Phase 8 — Active Source Authority / Source Drift Protection
 
-**Current checkpoint date:** 2026-10-05
+**Current checkpoint date:** 2026-10-06
 
-**Validated annotated tag:** `security-layer-phase7-validated-2026-10-05`
+**Phase-8 implementation state:** ACCEPTED / MERGED / CONTENT-VERIFIED
 
-**Annotated tag object:** `ffde3865178ac14c44d6222a39e0e59e6d8518a9`
+**Phase-8 closure state:** DOCUMENTATION + FINAL VALIDATION IN PROGRESS
 
-**Validated tag target / Phase-7 closure commit:** `59aef730e11031b23f67c735e35f1e68c9ecc394`
+**Annotated Phase-8 validation tag:** PENDING
 
-**Validated closure tree:** `95b9a30ec804cd6adede1132673dd9c1f33a0417`
+**Phase 9:** NOT STARTED
 
-**Tag state:** unsigned annotated tag
+Phase 8 is not yet frozen until closure documentation is merged, final `main` validation passes, and the annotated Phase-8 validation tag is created and independently verified.
 
-Phase 7 is **VALIDATED / MERGED / DOCUMENTED / TAGGED / FROZEN**.
+## Phase-8 implementation lineage
 
-Phases 8–11 have not started.
+Phase 8 was developed as an accepted stacked sequence from the frozen Phase-7 `main` checkpoint:
 
-## Phase-7 validation identity
+- Phase-7 baseline `main`: `0168d60577deb62c93cc82607206395eab00edb8`
+- Phase-8B accepted head: `956bcad5c7ca8e66a9c5355af0c58538a7e18845`
+- Phase-8B merge / PR #38: `7274854e18bb54824669f7ef5f650c5c6c8a4b7b`
+- Phase-8C accepted head: `16ac1172d8cf5a5a33e21f6b626149d104db2c1a`
+- Phase-8C merge / PR #39: `2ee9967e5d3a6a5b33c748aa716842f6b6c9c672`
+- Phase-8D accepted head: `c8b6f84f8f7f6818a1184d0d7c49cb523e71b2c2`
+- Phase-8D merge / PR #40: `7e9b1fa74c74ee374110307ea9b8b5e779272a9e`
+- Phase-8E accepted head: `106fab166d187ef381db90eb9dbe17ae2ae37cab`
+- Phase-8E implementation merge / PR #41: `90077f157183f442bb1d41eb23af865fab94ea43`
+- accepted 8E tree: `93771e59ab7f9213d438bc56dbe434961b07c0f4`
+- integrated implementation tree: `93771e59ab7f9213d438bc56dbe434961b07c0f4`
 
-Phase 7 was developed and closed through these exact repository identities:
+The accepted Phase-8E candidate tree and the integrated implementation tree are identical. Merge mechanics introduced no implementation-content drift.
 
-- baseline before Phase 7: `0c2a65a20cc9639efe8aa59f8ec73a2578e57b8e`
-- accepted pre-merge implementation head: `e33a529bc3035207475b3cf530cadac62b3533fd`
-- implementation merge commit / PR #35: `ec47aeb32702876ba1cd91078457e027325c5e04`
-- permanent closure merge commit / PR #36: `59aef730e11031b23f67c735e35f1e68c9ecc394`
-- annotated validation tag object: `ffde3865178ac14c44d6222a39e0e59e6d8518a9`
-- annotated validation tag peeled target: `59aef730e11031b23f67c735e35f1e68c9ecc394`
+Accepted candidate CI evidence:
 
-Validation evidence:
-
-- accepted implementation CI #182: **PASS**
-- closure-complete main CI #186: **PASS**
-- Phase-5 targeted regression: **37 passed**
-- Phase-6 targeted regression: **18 passed**
-- Phase-7 targeted regression: **34 passed**
-- complete Python regression suite: **483 passed**
+- Phase-8B CI #194: **PASS**
+- Phase-8C CI #204: **PASS**
+- Phase-8D CI #211: **PASS**
+- Phase-8E CI #212: **PASS**
+- Phase-8E targeted Phase-8 regression: **39 passed**
+- Phase-8E full Python regression: **523 passed**
 - Pi harnesses: **7 / 7 PASS**
 - runtime compilation: **PASS**
+
+Fresh integrated-main validation is performed separately during Phase 8F and must pass before freeze.
 
 The validated Pi bridge identities remain:
 
@@ -51,132 +56,128 @@ The validated Pi bridge identities remain:
 
 ### Phases 0–3 — deterministic release-boundary security
 
-Validated implementation includes:
-
-- reality and authority mapping before hardening;
-- the four deterministic `SecurityOutcome` values: `ALLOW`, `DENY_AND_CONTINUE`, `REQUIRE_USER_DECISION`, and `HARD_INTERRUPT`;
-- bounded StreamingIRQ pre-release quarantine;
-- malformed-SSE release protection without promoting ordinary protocol failure into hard-security authority;
-- deterministic exact-match Canary enforcement;
-- immutable runtime/lane-bound Canary policy;
-- static Tier A/B startup policy through `JACK_CANARY_POLICY_JSON`.
+Validated implementation includes deterministic `SecurityOutcome`, bounded StreamingIRQ pre-release quarantine, malformed-SSE release protection, exact-match Canary enforcement, and immutable runtime/lane-bound startup policy.
 
 Historical checkpoint:
 
 - `docs/security/SECURITY_LAYER_PHASE0_3_VALIDATED_2026-09-27.md`
-- `Documentation/Security/GOVERNING_DOCUMENT_SECURITY_AMENDMENT_PHASES_0_3_2026-09-27.md`
 
 ### Phase 4 — Restricted Paths + Workspace Lock
 
-Validated implementation adds:
+Validated implementation adds host-owned represented-path policy, deterministic NEVER-path enforcement, optional Workspace Lock, bounded recognized command authorization, consequence-release enforcement, executor admission, and minimum multi-call containment.
 
-- host-owned represented-path policy;
-- deterministic NEVER-path enforcement;
-- optional Workspace Lock;
-- represented-path normalization;
-- bounded recognized Bash/PowerShell command authorization;
-- non-stream and streaming consequence-release enforcement;
-- executor admission;
-- minimum multi-call containment.
-
-Phase 4 authorizes represented targets Jack can deterministically observe. It does **not** claim universal final-object filesystem attestation.
+Phase 4 authorizes represented targets Jack can deterministically observe. It does not claim universal final-object filesystem attestation.
 
 Historical checkpoint:
 
 - `docs/security/SECURITY_LAYER_PHASE4_VALIDATED_2026-09-30.md`
-- `Documentation/Security/GOVERNING_DOCUMENT_SECURITY_AMENDMENT_PHASE_4_2026-09-30.md`
 
 ### Phase 5 — Deterministic Consequence Gate
 
-Validated implementation centralizes deterministic consequence disposition while preserving distributed fact ownership.
-
-The Consequence Gate consumes typed facts from the subsystems that actually own them. It does not become a filesystem oracle, shell oracle, approval authority, telemetry authority, or universal host-effect inference mechanism.
-
-The governing containment rule remains:
-
-> Select the smallest disposition sufficient to preserve the violated deterministic invariant.
+The Consequence Gate consumes typed facts from the subsystems that actually own them and selects the narrowest deterministic disposition sufficient to preserve the violated invariant.
 
 Historical checkpoint:
 
 - `docs/security/SECURITY_LAYER_PHASE5_VALIDATED_2026-10-01.md`
-- `Documentation/Security/GOVERNING_DOCUMENT_SECURITY_AMENDMENT_PHASE_5_2026-10-01.md`
 
 ### Phase 6 — Runtime-Scoped Authority & Security Ledger
 
-Validated implementation adds a process-local Authority & Security Ledger that records selected established Kernel decisions and security events without becoming the source of the authority it records.
-
-Core Phase-6 boundaries remain:
-
-- one process-local `ledger_instance_id` per Jack runtime process lifetime;
-- one in-memory authoritative ledger head per process;
-- no mutable shared cross-runtime authority head;
-- immutable committed projection bytes fixed before the authority transition leaves the authority mutex;
-- bounded fail-soft durable forensic projection;
-- restart isolation;
-- narrow `LEDGER_AUTHORITY_FROZEN` behavior if active ledger state becomes internally impossible;
-- Pi/orchestration lifecycle authority remains separate.
+Phase 6 adds a process-local Authority & Security Ledger with canonical predecessor chaining, immutable committed projection, bounded fail-soft durability, restart isolation, and narrow ledger-authority freeze behavior. The ledger records selected established facts; it does not become the source of the authority it records.
 
 Historical checkpoint:
 
 - `docs/security/SECURITY_LAYER_PHASE6_VALIDATED_2026-10-02.md`
-- `Documentation/Security/GOVERNING_DOCUMENT_SECURITY_AMENDMENT_PHASE_6_2026-10-02.md`
 
 ### Phase 7 — Credential Isolation and Integrated DLP
 
-Phase 7 establishes deterministic authority over a closed set of known Kernel credentials and protects those exact values across the Kernel-controlled surfaces proven by the phase.
+Phase 7 establishes deterministic authority over a closed known-credential set and protects exact registered values at validated model ingress, model egress, orchestration observer release, diagnostic release, credential-resource represented paths, and safe ledger observation boundaries.
 
-Validated authority domains:
-
-1. **Model ingress** — final model-bound JSON is inspected for exact protected values before backend dispatch; authorized authentication transport remains distinct from leakage.
-2. **Model egress** — credential-derived Tier-A values feed the existing immutable StreamingIRQ/evidence release barrier; no duplicate output-DLP subsystem was introduced.
-3. **Orchestration observer release** — public orchestration HTTP and replayable SSE release are protected, including bounded identity-scoped cross-event completion on known Pi delta channels; observer blocking does not acquire worker cancellation or settlement authority.
-4. **Diagnostic/backend-error release** — precise internal error truth remains distinct from release authority; Jack-owned caller, stream, logging, header, and retained diagnostic surfaces are exact-scanned.
-5. **Credential-resource represented paths** — exact known credential configuration resources are denied with `DENY_AND_CONTINUE`; parent directories and adjacent harmless resources are not promoted to NEVER roots.
-6. **Phase-7 ledger observation** — `PROTECTED_CREDENTIAL_MATCH` and `PROTECTED_CREDENTIAL_RESOURCE_BLOCKED` append safe structural metadata to the existing Phase-6 process-local chain without becoming the source of the underlying fact or disposition.
-
-The closed initial credential source set is documented in:
+Historical checkpoint:
 
 - `docs/security/SECURITY_LAYER_PHASE7_VALIDATED_2026-10-05.md`
 
-The detailed Phase-7 closure document was authored before the final annotated tag existed. Its pre-tag freeze wording is historical process-state evidence. The actual annotated tag identity at the top of this file is the authoritative final Phase-7 repository checkpoint.
+### Phase 8 — Active Source Authority / Source Drift Protection
 
-## Phase-7 preservation doctrine
+Phase 8 establishes bounded exact source identity for the authority-bearing active runtime and withdraws new Kernel-authoritative admission if that source identity becomes unavailable or mismatched.
 
-The validated implementation preserves these distinctions:
+Protected source authority is process-local and based on an immutable component set established before ACTIVE. Exact regular-file bytes and canonical component identity are measured with SHA-256. Metadata such as mtime and size is not authority identity.
 
-- `primitive correctness != integration correctness != phase completion`
-- `credential authority > matching implementation convenience`
-- `reality > legacy test`
-- `cognition != release authority`
-- `observability != authority`
-- `error truth != release authority`
-- `evidence != authority`
-- `unsafe observer/diagnostic release != worker cancellation/settlement/failure`
+Lifecycle:
 
-The governing rule remains:
+```text
+INITIALIZING -> ACTIVE
+ACTIVE -> SUSPENDED_UNVERIFIED      (identity cannot currently be established)
+SUSPENDED_UNVERIFIED -> ACTIVE      (exact re-verification succeeds)
+ACTIVE/SUSPENDED -> INVALIDATED     (confirmed mismatch; terminal for runtime)
+```
 
-> Block the unsafe consequence while preserving all useful work and state that can safely survive.
+Phase 8 gates new Jack-authoritative task/result release, streamed release, structured tool release, executor admission, mutating orchestration control, and selected Jack-owned durable-write seams. Bounded periodic verification provides additional remeasurement without claiming continuous attestation.
+
+The permanent anti-brittleness statement is:
+
+> **Source-authority loss withdraws new Kernel-authoritative admission. It does not imply process death, blanket cancellation, invented worker failure, erasure of completed cognition, or loss of safe observation.**
+
+Important preservation semantics:
+
+- safe stream prefix already released remains released;
+- later stream chunks are withheld once source authority is lost for that transaction;
+- safe cognition may finish internally when isolated from further authoritative release;
+- read-only orchestration observation remains available where safe;
+- already admitted external work may settle truthfully after later source invalidation;
+- source invalidation does not invent worker cancellation or settlement;
+- ledger/observer degradation does not become source-verification or recovery authority.
+
+Phase-8D observation preserves:
+
+```text
+transition_sequence
+=
+process-local source-transition chronology for truthful forensic ordering
+
+transition_sequence
+!= source authority
+!= admission authority
+!= Phase-10 integrity protection
+
+ordering-buffer health
+!= source-enforcement health
+```
+
+The authoritative Phase-8 closure record is:
+
+- `docs/security/SECURITY_LAYER_PHASE8_VALIDATED_2026-10-06.md`
+
+## Phase-8 permanent semantic boundary
+
+> **Phase 8 serializes Kernel-authoritative admission, not physical continuous-world execution after an admission already occurred.**
+
+Once `SUSPENDED_UNVERIFIED` or `INVALIDATED` has been established, no **new** Kernel-authoritative consequence may be admitted. Phase 8 does not claim that all physical effects of previously admitted external work immediately cease.
 
 ## Explicit current nonclaims
 
-The current Phase-7 checkpoint does **not** claim:
+The current security stack does **not** claim:
 
+- continuous historical source attestation;
+- proof that protected disk bytes were never transiently changed between bounded measurements;
+- loaded-code/function-binding integrity;
+- proof that already imported Python objects correspond to current disk bytes;
+- authority-state integrity;
 - hostile in-process tamper resistance;
 - impossibility of deliberate monkeypatching by code with equivalent process authority;
-- universal third-party/service logger control;
-- universal filesystem-object attestation;
+- universal filesystem-object identity or attestation;
 - universal shell-effect or external-child-process effect knowledge;
 - a universal operating-system sandbox;
+- universal third-party/service logger control;
 - encrypted-at-rest secret custody redesign;
-- arbitrary-prefix secrecy beyond exact registered credential semantics;
-- distributed or cross-runtime consensus ledger authority;
-- a shared mutable cross-runtime ledger head;
-- dynamic process-global logger policy deregistration;
-- proof that represented filesystem consequences physically occurred;
-- Phase 8 Source Drift protection;
+- distributed or cross-runtime consensus ledger/source authority;
+- proof that represented or already admitted external consequences physically ceased after later invalidation;
 - Phase 9 Runtime Code Integrity;
 - Phase 10 Authority State Integrity;
 - Phase 11 Privacy/Telemetry Hardening.
+
+The permanent Phase-8 nonclaim is:
+
+> **Phase 8 protects active-runtime source identity through bounded exact measurements. It does not provide continuous historical attestation, loaded-code/function-binding integrity, authority-state integrity, universal filesystem-object identity, or hostile in-process tamper resistance.**
 
 ## Governing doctrine
 
@@ -188,4 +189,4 @@ The current Phase-7 checkpoint does **not** claim:
 
 > Do not destroy more state than the violation requires.
 
-For exact Phase-7 validation evidence, scope, evidence corrections, and nonclaims, read `docs/security/SECURITY_LAYER_PHASE7_VALIDATED_2026-10-05.md`. For the broader cumulative design history, read `Documentation/Security/Jack_Kernel_Security_Hardening_Architecture_2026-09-26.md` together with the cumulative governing amendments and checkpoint records.
+For exact Phase-8 scope, implementation lineage, adversarial preservation proofs, final validation evidence, and nonclaims, read `docs/security/SECURITY_LAYER_PHASE8_VALIDATED_2026-10-06.md`. Phase 9 must not begin until Phase 8F closure is complete and Phase 8 is tagged and frozen.
