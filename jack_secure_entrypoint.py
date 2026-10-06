@@ -75,6 +75,10 @@ class _Phase8OrderedLedgerObserver:
     Source authority owns transition identity and sequencing. This observer owns
     only a small post-transition ordering buffer so thread scheduling after the
     source lock is released cannot invert the forensic ledger history.
+
+    Observation is deliberately fail-soft. Unexpected observer failures may lose
+    forensic records, but they must never become source-verification, recovery,
+    or admission failures.
     """
 
     def __init__(
@@ -86,9 +90,17 @@ class _Phase8OrderedLedgerObserver:
     ) -> None:
         self._ledger = ledger
         self._authority = authority
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._next_sequence = int(next_transition_sequence)
         self._pending: dict[int, dict[str, Any]] = {}
+        self._disabled = False
+
+    def disable(self) -> None:
+        """Disable forensic observation without changing source authority."""
+
+        with self._lock:
+            self._disabled = True
+            self._pending.clear()
 
     def observe(
         self,
@@ -101,32 +113,54 @@ class _Phase8OrderedLedgerObserver:
         mismatched_component_ids: tuple[str, ...] = (),
         unavailable_component_ids: tuple[str, ...] = (),
     ) -> None:
-        sequence = int(transition_sequence)
-        if sequence < 1:
-            return
-        event = {
-            "event_type": event_type,
-            "prior_state": prior_state,
-            "new_state": new_state,
-            "reason": reason,
-            "mismatched_component_ids": tuple(mismatched_component_ids),
-            "unavailable_component_ids": tuple(unavailable_component_ids),
-        }
-
-        with self._lock:
-            if sequence < self._next_sequence:
+        try:
+            sequence = int(transition_sequence)
+            if sequence < 1:
                 return
-            self._pending.setdefault(sequence, event)
-            while self._next_sequence in self._pending:
-                current = self._pending.pop(self._next_sequence)
-                _record_phase8_source_event_failsoft(
-                    self._ledger,
-                    authority=self._authority,
-                    **current,
-                )
-                # Ledger failure is fail-soft for source authority and does not
-                # stop later source facts from remaining correctly ordered.
-                self._next_sequence += 1
+            event = {
+                "event_type": event_type,
+                "prior_state": prior_state,
+                "new_state": new_state,
+                "reason": reason,
+                "mismatched_component_ids": tuple(mismatched_component_ids),
+                "unavailable_component_ids": tuple(unavailable_component_ids),
+            }
+
+            with self._lock:
+                if self._disabled or sequence < self._next_sequence:
+                    return
+                self._pending.setdefault(sequence, event)
+                while self._next_sequence in self._pending:
+                    current = self._pending.pop(self._next_sequence)
+                    try:
+                        _record_phase8_source_event_failsoft(
+                            self._ledger,
+                            authority=self._authority,
+                            **current,
+                        )
+                    except Exception:
+                        # The normal recorder is already fail-soft. This outer
+                        # containment prevents even an unexpected observer bug
+                        # from becoming backpressure on source authority.
+                        LOG.exception(
+                            "Phase-8D observer append failed unexpectedly; "
+                            "source authority remains unchanged"
+                        )
+                    finally:
+                        # Forensic failure must not stall later source chronology
+                        # or turn a lost record into unbounded observer backlog.
+                        self._next_sequence += 1
+        except Exception:
+            # A malformed/unexpected observer-local condition degrades only the
+            # forensic observer. Source lifecycle and enforcement remain usable.
+            try:
+                self.disable()
+            except Exception:
+                pass
+            LOG.exception(
+                "Phase-8D observer processing failed and was disabled; "
+                "source authority remains unchanged"
+            )
 
 
 def _state_value(value: Any) -> str:
@@ -192,50 +226,61 @@ def _install_phase8_ledger_observer(jk_module: Any, authority: Any) -> bool:
         @wraps(original_verify)
         def observed_verify_now(*args: Any, **kwargs: Any):
             result = original_verify(*args, **kwargs)
-            prior_state = _state_value(getattr(result, "prior_state", ""))
-            new_state = _state_value(getattr(result, "state", ""))
-            if not prior_state or prior_state == new_state:
-                return result
+            try:
+                prior_state = _state_value(getattr(result, "prior_state", ""))
+                new_state = _state_value(getattr(result, "state", ""))
+                if not prior_state or prior_state == new_state:
+                    return result
 
-            transition_sequence = int(getattr(result, "transition_sequence", 0) or 0)
-            mismatched = tuple(
-                str(item)
-                for item in getattr(result, "mismatched_component_ids", ()) or ()
-            )
-            unavailable = tuple(
-                str(item)
-                for item in getattr(result, "unavailable_component_ids", ()) or ()
-            )
+                transition_sequence = int(
+                    getattr(result, "transition_sequence", 0) or 0
+                )
+                mismatched = tuple(
+                    str(item)
+                    for item in getattr(result, "mismatched_component_ids", ()) or ()
+                )
+                unavailable = tuple(
+                    str(item)
+                    for item in getattr(result, "unavailable_component_ids", ()) or ()
+                )
 
-            if new_state == "INVALIDATED":
-                recorder.observe(
-                    transition_sequence=transition_sequence,
-                    event_type=Phase8LedgerEventType.SOURCE_DRIFT_DETECTED,
-                    prior_state=prior_state,
-                    new_state=new_state,
-                    reason="confirmed_source_mismatch",
-                    mismatched_component_ids=mismatched,
-                    unavailable_component_ids=unavailable,
-                )
-            elif new_state == "SUSPENDED_UNVERIFIED":
-                recorder.observe(
-                    transition_sequence=transition_sequence,
-                    event_type=Phase8LedgerEventType.SOURCE_AUTHORITY_SUSPENDED,
-                    prior_state=prior_state,
-                    new_state=new_state,
-                    reason="measurement_unavailable",
-                    mismatched_component_ids=mismatched,
-                    unavailable_component_ids=unavailable,
-                )
-            elif prior_state == "SUSPENDED_UNVERIFIED" and new_state == "ACTIVE":
-                recorder.observe(
-                    transition_sequence=transition_sequence,
-                    event_type=Phase8LedgerEventType.SOURCE_AUTHORITY_RESTORED,
-                    prior_state=prior_state,
-                    new_state=new_state,
-                    reason="exact_reverification",
-                    mismatched_component_ids=mismatched,
-                    unavailable_component_ids=unavailable,
+                if new_state == "INVALIDATED":
+                    recorder.observe(
+                        transition_sequence=transition_sequence,
+                        event_type=Phase8LedgerEventType.SOURCE_DRIFT_DETECTED,
+                        prior_state=prior_state,
+                        new_state=new_state,
+                        reason="confirmed_source_mismatch",
+                        mismatched_component_ids=mismatched,
+                        unavailable_component_ids=unavailable,
+                    )
+                elif new_state == "SUSPENDED_UNVERIFIED":
+                    recorder.observe(
+                        transition_sequence=transition_sequence,
+                        event_type=Phase8LedgerEventType.SOURCE_AUTHORITY_SUSPENDED,
+                        prior_state=prior_state,
+                        new_state=new_state,
+                        reason="measurement_unavailable",
+                        mismatched_component_ids=mismatched,
+                        unavailable_component_ids=unavailable,
+                    )
+                elif prior_state == "SUSPENDED_UNVERIFIED" and new_state == "ACTIVE":
+                    recorder.observe(
+                        transition_sequence=transition_sequence,
+                        event_type=Phase8LedgerEventType.SOURCE_AUTHORITY_RESTORED,
+                        prior_state=prior_state,
+                        new_state=new_state,
+                        reason="exact_reverification",
+                        mismatched_component_ids=mismatched,
+                        unavailable_component_ids=unavailable,
+                    )
+            except Exception:
+                try:
+                    recorder.disable()
+                except Exception:
+                    pass
+                LOG.exception(
+                    "Phase-8D verify observer failed; source result remains authoritative"
                 )
             return result
 
@@ -249,18 +294,27 @@ def _install_phase8_ledger_observer(jk_module: Any, authority: Any) -> bool:
         @wraps(original_suspend)
         def observed_suspend(*args: Any, **kwargs: Any):
             transition = original_suspend(*args, **kwargs)
-            prior_state = _state_value(getattr(transition, "prior_state", ""))
-            new_state = _state_value(getattr(transition, "state", ""))
-            changed = bool(getattr(transition, "changed", False))
-            if changed and new_state == "SUSPENDED_UNVERIFIED":
-                recorder.observe(
-                    transition_sequence=int(
-                        getattr(transition, "transition_sequence", 0) or 0
-                    ),
-                    event_type=Phase8LedgerEventType.SOURCE_AUTHORITY_SUSPENDED,
-                    prior_state=prior_state,
-                    new_state=new_state,
-                    reason="verification_operation_failed",
+            try:
+                prior_state = _state_value(getattr(transition, "prior_state", ""))
+                new_state = _state_value(getattr(transition, "state", ""))
+                changed = bool(getattr(transition, "changed", False))
+                if changed and new_state == "SUSPENDED_UNVERIFIED":
+                    recorder.observe(
+                        transition_sequence=int(
+                            getattr(transition, "transition_sequence", 0) or 0
+                        ),
+                        event_type=Phase8LedgerEventType.SOURCE_AUTHORITY_SUSPENDED,
+                        prior_state=prior_state,
+                        new_state=new_state,
+                        reason="verification_operation_failed",
+                    )
+            except Exception:
+                try:
+                    recorder.disable()
+                except Exception:
+                    pass
+                LOG.exception(
+                    "Phase-8D suspension observer failed; source transition remains authoritative"
                 )
             return transition
 
