@@ -19,6 +19,11 @@ def test_secure_entrypoint_launcher_uses_predecessor_extensions_without_source_a
         lambda jk, *, launch_entrypoint_path=None: events.append("source-baseline"),
     )
     monkeypatch.setattr(
+        entrypoint,
+        "_install_phase8_ledger_observer",
+        lambda jk, authority: events.append("source-ledger-observer"),
+    )
+    monkeypatch.setattr(
         source_guard,
         "activate_runtime_enforcement",
         lambda jk, authority: events.append("source-enforcement"),
@@ -34,7 +39,7 @@ def test_secure_entrypoint_launcher_uses_predecessor_extensions_without_source_a
     assert events == ["bundled", "kernel-main"]
 
 
-def test_secure_entrypoint_serving_process_seals_then_activates_source_authority_before_kernel_main(monkeypatch):
+def test_secure_entrypoint_serving_process_seals_observes_then_activates_before_kernel_main(monkeypatch):
     events = []
     authority = object()
 
@@ -49,12 +54,18 @@ def test_secure_entrypoint_serving_process_seals_then_activates_source_authority
         events.append("source-baseline")
         return authority
 
+    def observe(jk, received):
+        assert received is authority
+        events.append("source-ledger-observer")
+        return True
+
     def activate(jk, received):
         assert received is authority
         events.append("source-enforcement")
         return received
 
     monkeypatch.setattr(source_guard, "install", install)
+    monkeypatch.setattr(entrypoint, "_install_phase8_ledger_observer", observe)
     monkeypatch.setattr(source_guard, "activate_runtime_enforcement", activate)
     monkeypatch.setattr(
         entrypoint.jk,
@@ -67,6 +78,7 @@ def test_secure_entrypoint_serving_process_seals_then_activates_source_authority
     assert events == [
         "bundled",
         "source-baseline",
+        "source-ledger-observer",
         "source-enforcement",
         "kernel-main",
     ]
