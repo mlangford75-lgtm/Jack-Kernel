@@ -8,16 +8,23 @@ These files are historical engineering evidence. Each checkpoint records what ha
 
 For present repository truth, read [`../../CURRENT_SECURITY_STATUS.md`](../../CURRENT_SECURITY_STATUS.md).
 
-Current validated implementation checkpoint:
+Current validated security checkpoint:
 
 - **Phase 8 — Active Source Authority / Source Drift Protection**
+- status: **VALIDATED / MERGED / DOCUMENTED / TAGGED / FROZEN**
 - implementation merged through PR #41
-- integrated implementation commit: `90077f157183f442bb1d41eb23af865fab94ea43`
-- integrated implementation tree: `93771e59ab7f9213d438bc56dbe434961b07c0f4`
-- Phase 8F closure/tag/freeze: in progress
-- Phase 9: not started
+- Phase-8F closure merge / PR #42: `cebe9fd75fe30a9c84a0af08d2105af448fc3d00`
+- validated closure tree: `7288396653db3590834d9ac1093207c4e1b19c3b`
+- closure-complete Windows CI #218: **PASS**
+- annotated validation tag: `security-layer-phase8-validated-2026-10-06`
+- annotated tag object: `20e35610444f409bbccd62a461e42e2dce06ac6a`
+- peeled tag target: `cebe9fd75fe30a9c84a0af08d2105af448fc3d00`
+- tag state: unsigned annotated tag
+- Phase 9: **NOT STARTED**
 
-The accepted Phase-8E candidate tree and the integrated implementation tree are identical. The annotated Phase-8 validation tag is intentionally not recorded here until it exists and has been independently verified.
+The accepted Phase-8E candidate tree and integrated implementation tree are identical:
+
+`93771e59ab7f9213d438bc56dbe434961b07c0f4`
 
 ## Preserved checkpoint records
 
@@ -30,15 +37,19 @@ The accepted Phase-8E candidate tree and the integrated implementation tree are 
 
 ## Phase-8 reading rule
 
-The permanent Phase-8 containment statement is:
+Permanent containment statement:
 
 > **Source-authority loss withdraws new Kernel-authoritative admission. It does not imply process death, blanket cancellation, invented worker failure, erasure of completed cognition, or loss of safe observation.**
 
-The permanent Phase-8 nonclaim is:
+Permanent semantic execution boundary:
+
+> **Phase 8 serializes Kernel-authoritative admission, not physical continuous-world execution after an admission already occurred.**
+
+Permanent nonclaim:
 
 > **Phase 8 protects active-runtime source identity through bounded exact measurements. It does not provide continuous historical attestation, loaded-code/function-binding integrity, authority-state integrity, universal filesystem-object identity, or hostile in-process tamper resistance.**
 
-Phase 8 also preserves:
+Permanent forensic distinction:
 
 ```text
 transition_sequence
@@ -64,10 +75,11 @@ Examples:
 - a Phase-4 record may correctly state that the Consequence Gate was not yet implemented;
 - a Phase-5 record may correctly state that Phase 6 had not started;
 - a Phase-6 record may preserve pre-tag closure-candidate language because it was authored before final Phase-6 annotated-tag creation;
-- the Phase-7 closure record may preserve pre-tag freeze language because it was authored before the final Phase-7 annotated tag existed;
-- the Phase-8 closure record may preserve staged Phase-8F wording from before the final annotated Phase-8 tag existed.
+- the Phase-7 closure record may preserve pre-tag process wording from before the final Phase-7 annotated tag existed.
 
 Those statements are evidence of the exact state at the time. They do not supersede the canonical current-state document.
+
+The Phase-8 closure record has been reconciled after independent tag verification and is the authoritative Phase-8 frozen checkpoint record.
 
 ## Related governing documents
 

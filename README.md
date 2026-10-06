@@ -89,9 +89,27 @@ See [`CURRENT_SECURITY_STATUS.md`](CURRENT_SECURITY_STATUS.md) for the exact cur
 
 ## Current validated state
 
-The current validated implementation checkpoint is **Phase 8 — Active Source Authority / Source Drift Protection**.
+The current validated security checkpoint is **Phase 8 — Active Source Authority / Source Drift Protection**.
 
-Phase 8 implementation is accepted, merged, and content-verified. Phase 8F closure is finalizing documentation, fresh final-main validation, annotated tagging, and freeze. Phase 9 has not started.
+Phase 8 is **VALIDATED / MERGED / DOCUMENTED / TAGGED / FROZEN**. Phase 9 has not started.
+
+Validated Phase-8 tag:
+
+`security-layer-phase8-validated-2026-10-06`
+
+Annotated tag object:
+
+`20e35610444f409bbccd62a461e42e2dce06ac6a`
+
+Validated peeled target / Phase-8 closure commit:
+
+`cebe9fd75fe30a9c84a0af08d2105af448fc3d00`
+
+Validated closure tree:
+
+`7288396653db3590834d9ac1093207c4e1b19c3b`
+
+Closure-complete Windows CI **#218 PASS**.
 
 Accepted Phase-8 lineage:
 
@@ -100,7 +118,7 @@ Accepted Phase-8 lineage:
 - **8D:** ledger observation / integration — accepted head `c8b6f84f8f7f6818a1184d0d7c49cb523e71b2c2`
 - **8E:** adversarial / preservation closure — accepted head `106fab166d187ef381db90eb9dbe17ae2ae37cab`
 
-Integrated implementation main:
+Integrated Phase-8E implementation merge:
 
 `90077f157183f442bb1d41eb23af865fab94ea43`
 
