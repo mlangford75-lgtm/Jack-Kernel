@@ -2,7 +2,7 @@
 
 **Validation date:** 2026-10-06
 
-**Status:** PHASE 8F CLOSURE IN PROGRESS
+**Status:** PHASE 8F CLOSURE DOCUMENTED / TAG + FREEZE PENDING
 
 **Baseline main before Phase 8:** `0168d60577deb62c93cc82607206395eab00edb8`
 
@@ -16,13 +16,19 @@
 
 **Accepted candidate CI evidence:** #194 / #204 / #211 / #212 PASS
 
-**Final integrated main commit:** PENDING
+**Phase-8B merge / PR #38:** `7274854e18bb54824669f7ef5f650c5c6c8a4b7b`
 
-**Final integrated main tree:** PENDING
+**Phase-8C merge / PR #39:** `2ee9967e5d3a6a5b33c748aa716842f6b6c9c672`
 
-**Final main CI:** PENDING
+**Phase-8D merge / PR #40:** `7e9b1fa74c74ee374110307ea9b8b5e779272a9e`
 
-**Annotated validation tag:** PENDING
+**Phase-8E implementation merge / PR #41:** `90077f157183f442bb1d41eb23af865fab94ea43`
+
+**Integrated implementation tree:** `93771e59ab7f9213d438bc56dbe434961b07c0f4`
+
+**Integrated-main CI:** #216 PASS
+
+**Annotated validation tag:** `security-layer-phase8-validated-2026-10-06` — PENDING CREATION
 
 **Annotated tag object:** PENDING
 
@@ -218,13 +224,7 @@ Phase-8 observer performs forensic ordering
 ledger append attempted fail-soft
 ```
 
-The ledger is not:
-
-- source verifier;
-- lifecycle owner;
-- recovery authority;
-- enforcement prerequisite;
-- cancellation authority.
+The ledger is not source verifier, lifecycle owner, recovery authority, enforcement prerequisite, or cancellation authority.
 
 ### Concurrency truth
 
@@ -300,7 +300,36 @@ Adversarial preservation proofs include:
 
 ---
 
-## 8. Validated source-authority outcomes
+## 8. Integration lineage and tree proof
+
+Phase 8 was merged in strict dependency order:
+
+```text
+Phase-7 main
+0168d60577deb62c93cc82607206395eab00edb8
+        ↓ PR #38
+7274854e18bb54824669f7ef5f650c5c6c8a4b7b
+        ↓ PR #39
+2ee9967e5d3a6a5b33c748aa716842f6b6c9c672
+        ↓ PR #40
+7e9b1fa74c74ee374110307ea9b8b5e779272a9e
+        ↓ PR #41
+90077f157183f442bb1d41eb23af865fab94ea43
+```
+
+The accepted Phase-8E candidate head `106fab166d187ef381db90eb9dbe17ae2ae37cab` points to tree:
+
+`93771e59ab7f9213d438bc56dbe434961b07c0f4`
+
+The integrated `main` implementation merge `90077f157183f442bb1d41eb23af865fab94ea43` points to the **same tree**:
+
+`93771e59ab7f9213d438bc56dbe434961b07c0f4`
+
+Therefore the dependency-order merges changed history/lineage only; they did not alter accepted implementation content.
+
+---
+
+## 9. Validated source-authority outcomes
 
 ### ACTIVE
 
@@ -332,7 +361,7 @@ Consequences:
 
 ---
 
-## 9. Validation evidence before final integration
+## 10. Validation evidence
 
 Accepted candidate validation evidence:
 
@@ -340,11 +369,19 @@ Accepted candidate validation evidence:
 - Phase-8C Windows CI #204: PASS
 - Phase-8D Windows CI #211: PASS
 - Phase-8E Windows CI #212: PASS
-- Phase-8E targeted Phase-8 suite: **39 passed**
-- Phase-8E full Python regression: **523 passed**
+
+Fresh integrated-main validation:
+
+- Windows CI #216: **PASS**
+- exact head: `90077f157183f442bb1d41eb23af865fab94ea43`
+- exact tree: `93771e59ab7f9213d438bc56dbe434961b07c0f4`
+- Phase-5 targeted regression: **38 passed**
+- Phase-6 targeted regression: **18 passed**
+- Phase-7 targeted regression: **34 passed**
+- Phase-8 targeted source-authority/preservation regression: **39 passed**
+- complete Python regression suite: **523 passed**
 - Pi harnesses: **7 / 7 PASS**
-- runtime compilation: PASS
-- pull-request diff whitespace: PASS
+- runtime compilation: **PASS**
 
 Validated toolchain:
 
@@ -364,11 +401,11 @@ Validated Pi bridge identities remain:
 - canonical repository LF SHA-256: `8ffd33fd33ae15a785e2bf9015f17fc14f1de27b09515d5e868ec163d54c15f0`
 - Windows CRLF representation SHA-256: `93a6843cdaaeda637474b584919ed003930296de281570e3ddc391f54ef65565`
 
-A fresh full validation on final integrated `main` is still required before freeze.
+One final closure-complete `main` validation remains required after this documentation set is merged and before the annotated validation tag is created.
 
 ---
 
-## 10. Explicit Phase-8 nonclaims
+## 11. Explicit Phase-8 nonclaims
 
 Phase 8 protects active-runtime source identity through bounded exact measurements. It does **not** provide:
 
@@ -395,7 +432,7 @@ The permanent nonclaim is:
 
 ---
 
-## 11. Phase boundary into Phase 9
+## 12. Phase boundary into Phase 9
 
 Phase 9 must not be treated as an extension of Phase-8 disk-source verification.
 
@@ -412,30 +449,35 @@ Phase 10
 protected authority policy and authority state
 ```
 
-Phase 8 must be fully merged, validated on final `main`, documented, tagged, and frozen before Phase 9 begins.
+Phase 8 must be fully merged, validated on closure-complete `main`, documented, tagged, and frozen before Phase 9 begins.
 
 ---
 
-## 12. Phase 8F finalization checklist
+## 13. Phase 8F finalization checklist
 
-Before changing this record to final frozen status:
+Completed:
 
-- [ ] merge PR #38 / Phase 8B in dependency order;
-- [ ] verify resulting main tree contains accepted 8B content;
-- [ ] merge PR #39 / Phase 8C only after 8B integration;
-- [ ] verify resulting main tree contains accepted 8C content;
-- [ ] merge PR #40 / Phase 8D only after 8C integration;
-- [ ] verify resulting main tree contains accepted 8D content;
-- [ ] merge PR #41 / Phase 8E only after 8D integration;
-- [ ] verify resulting main tree contains accepted 8E content;
-- [ ] run fresh complete Windows validation on final integrated main;
-- [ ] record final implementation merge lineage and main tree identity;
-- [ ] reconcile `CURRENT_SECURITY_STATUS.md`, root `README.md`, and `docs/security/README.md`;
-- [ ] merge this closure record and status documentation;
-- [ ] validate the closure-complete main tree;
-- [ ] create annotated `security-layer-phase8-validated-2026-10-06` tag;
+- [x] merge PR #38 / Phase 8B in dependency order;
+- [x] verify accepted 8B content survived integration;
+- [x] merge PR #39 / Phase 8C only after 8B integration;
+- [x] verify accepted 8C content survived integration;
+- [x] merge PR #40 / Phase 8D only after 8C integration;
+- [x] verify accepted 8D content survived integration;
+- [x] merge PR #41 / Phase 8E only after 8D integration;
+- [x] verify accepted 8E tree exactly equals integrated implementation tree;
+- [x] run fresh complete Windows validation on integrated implementation `main` — CI #216 PASS;
+- [x] record implementation merge lineage and integrated tree identity;
+- [x] reconcile `CURRENT_SECURITY_STATUS.md`, root `README.md`, and `docs/security/README.md` on the Phase-8F closure branch.
+
+Remaining before freeze:
+
+- [ ] merge this closure/status documentation to `main`;
+- [ ] run and pass closure-complete `main` Windows validation;
+- [ ] record closure commit/tree and closure-complete CI identity;
+- [ ] create annotated `security-layer-phase8-validated-2026-10-06` tag on the validated closure target;
 - [ ] independently verify annotated tag object and peeled target;
+- [ ] publish final post-tag current-status identity;
 - [ ] mark Phase 8 frozen;
 - [ ] only then authorize Phase 9.
 
-Until those items are complete, merge/tag/freeze identities remain intentionally PENDING rather than inferred.
+Until the tag exists, tag object and peeled target remain intentionally PENDING rather than inferred.
