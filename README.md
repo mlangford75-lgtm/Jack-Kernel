@@ -74,33 +74,45 @@ Jack's host-authoritative boundary includes, where applicable:
 - deterministic security outcomes and consequence disposition;
 - represented-path policy;
 - the runtime-scoped Authority & Security Ledger;
-- deterministic authority over the closed Phase-7 known-credential set at validated model ingress, model egress, orchestration observer release, diagnostic release, and exact credential-resource boundaries.
+- deterministic authority over the closed Phase-7 known-credential set at validated ingress/release/resource boundaries;
+- bounded Phase-8 source authority over the immutable active-runtime protected component set, including suspension on measurement uncertainty and terminal invalidation on confirmed source mismatch.
 
-Jack does not acquire authority merely because it can observe a value. Observability is not authority, evidence is not authority, a port is not identity, cancellation is not settlement, and represented targets are not necessarily resolved host objects.
+Jack does not acquire authority merely because it can observe a value. Observability is not authority, evidence is not authority, a port is not identity, cancellation is not settlement, represented targets are not necessarily resolved host objects, and forensic chronology is not source authority.
 
 ## What Jack does not claim
 
 Jack is not a universal operating-system sandbox, filesystem-object attestation layer, shell-effects oracle, distributed consensus ledger, or proof that every represented consequence was physically realized by an external executor.
 
-Phase 7 also does not claim hostile in-process tamper resistance, universal third-party logger control, encrypted-at-rest credential custody redesign, or the Phase 8–11 integrity/privacy mechanisms.
+Phase 8 also does not claim continuous historical attestation, loaded-code/function-binding integrity, authority-state integrity, universal filesystem-object identity, or hostile in-process tamper resistance.
 
 See [`CURRENT_SECURITY_STATUS.md`](CURRENT_SECURITY_STATUS.md) for the exact current claims and nonclaims.
 
 ## Current validated state
 
-The current frozen security checkpoint is **Phase 7 — Credential Isolation and Integrated DLP**.
+The current validated implementation checkpoint is **Phase 8 — Active Source Authority / Source Drift Protection**.
 
-Validated annotated tag:
+Phase 8 implementation is accepted, merged, and content-verified. Phase 8F closure is finalizing documentation, fresh final-main validation, annotated tagging, and freeze. Phase 9 has not started.
 
-`security-layer-phase7-validated-2026-10-05`
+Accepted Phase-8 lineage:
 
-Tag object:
+- **8B:** immutable active-source baseline — accepted head `956bcad5c7ca8e66a9c5355af0c58538a7e18845`
+- **8C:** drift detection + runtime enforcement — accepted head `16ac1172d8cf5a5a33e21f6b626149d104db2c1a`
+- **8D:** ledger observation / integration — accepted head `c8b6f84f8f7f6818a1184d0d7c49cb523e71b2c2`
+- **8E:** adversarial / preservation closure — accepted head `106fab166d187ef381db90eb9dbe17ae2ae37cab`
 
-`ffde3865178ac14c44d6222a39e0e59e6d8518a9`
+Integrated implementation main:
 
-Validated closure target:
+`90077f157183f442bb1d41eb23af865fab94ea43`
 
-`59aef730e11031b23f67c735e35f1e68c9ecc394`
+Integrated implementation tree:
+
+`93771e59ab7f9213d438bc56dbe434961b07c0f4`
+
+That tree is identical to the accepted 8E candidate tree.
+
+The permanent Phase-8 preservation statement is:
+
+> **Source-authority loss withdraws new Kernel-authoritative admission. It does not imply process death, blanket cancellation, invented worker failure, erasure of completed cognition, or loss of safe observation.**
 
 The cumulative validated security stack is:
 
@@ -108,9 +120,8 @@ The cumulative validated security stack is:
 - **Phase 4:** Restricted Paths, optional Workspace Lock, represented-path normalization, bounded recognized command authorization, executor admission, and minimum multi-call containment.
 - **Phase 5:** deterministic Consequence Gate that consumes typed authoritative facts and selects the narrowest justified disposition without centralizing failure blast radius.
 - **Phase 6:** process-local Authority & Security Ledger with closed event schemas, canonical predecessor chaining, immutable committed projection, bounded fail-soft durability, restart isolation, and narrow ledger-authority freeze semantics.
-- **Phase 7:** closed known-credential authority, exact model-input isolation, credential-derived model-output DLP through the existing StreamingIRQ barrier, orchestration and diagnostic release DLP, exact credential-resource `DENY_AND_CONTINUE`, and safe Phase-7 event observation in the existing ledger chain.
-
-Phases 8–11 have not started.
+- **Phase 7:** closed known-credential authority, exact model-input isolation, credential-derived model-output DLP through the existing StreamingIRQ barrier, orchestration and diagnostic release DLP, exact credential-resource `DENY_AND_CONTINUE`, and safe Phase-7 event observation.
+- **Phase 8:** immutable protected-source baseline, bounded exact remeasurement, ACTIVE / SUSPENDED_UNVERIFIED / INVALIDATED lifecycle, serialized source-authority admission, preservation-aware runtime enforcement, fail-soft lifecycle observation, concurrency-safe forensic ordering, and adversarial anti-brittleness closure.
 
 For exact validation evidence and phase-by-phase nonclaims, use [`CURRENT_SECURITY_STATUS.md`](CURRENT_SECURITY_STATUS.md) and the detailed checkpoint records under [`docs/security/`](docs/security/).
 
