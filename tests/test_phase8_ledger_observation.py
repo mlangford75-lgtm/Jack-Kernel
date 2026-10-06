@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -44,7 +45,10 @@ def test_observer_records_only_meaningful_source_transitions_with_safe_payloads(
     assert entrypoint._install_phase8_ledger_observer(jk, authority) is True
 
     # Stable ACTIVE verification is intentionally not a ledger event.
-    assert authority.verify_now().verified is True
+    result = authority.verify_now()
+    assert result.prior_state is source_guard.SourceAuthorityState.ACTIVE
+    assert result.state is source_guard.SourceAuthorityState.ACTIVE
+    assert result.verified is True
     assert recorded == []
 
     original_measure = source_guard._measure_regular_file
@@ -54,25 +58,32 @@ def test_observer_records_only_meaningful_source_transitions_with_safe_payloads(
 
     monkeypatch.setattr(source_guard, "_measure_regular_file", unavailable)
     result = authority.verify_now()
+    assert result.prior_state is source_guard.SourceAuthorityState.ACTIVE
     assert result.state is source_guard.SourceAuthorityState.SUSPENDED_UNVERIFIED
     assert len(recorded) == 1
 
     # Remaining suspended under the same fact does not spam the chain.
-    authority.verify_now()
+    result = authority.verify_now()
+    assert result.prior_state is source_guard.SourceAuthorityState.SUSPENDED_UNVERIFIED
+    assert result.state is source_guard.SourceAuthorityState.SUSPENDED_UNVERIFIED
     assert len(recorded) == 1
 
     monkeypatch.setattr(source_guard, "_measure_regular_file", original_measure)
     result = authority.verify_now()
+    assert result.prior_state is source_guard.SourceAuthorityState.SUSPENDED_UNVERIFIED
     assert result.state is source_guard.SourceAuthorityState.ACTIVE
     assert len(recorded) == 2
 
     target.write_bytes(b"changed")
     result = authority.verify_now()
+    assert result.prior_state is source_guard.SourceAuthorityState.ACTIVE
     assert result.state is source_guard.SourceAuthorityState.INVALIDATED
     assert len(recorded) == 3
 
     # INVALIDATED is terminal; repeat checks do not duplicate the drift fact.
-    authority.verify_now()
+    result = authority.verify_now()
+    assert result.prior_state is source_guard.SourceAuthorityState.INVALIDATED
+    assert result.state is source_guard.SourceAuthorityState.INVALIDATED
     assert len(recorded) == 3
 
     assert [item["event_type"] for item in recorded] == [
@@ -123,6 +134,141 @@ def test_unexpected_required_verifier_failure_records_suspension_after_source_st
     ledger.close()
 
 
+def test_two_concurrent_unavailable_verifications_record_exactly_one_suspension(
+    tmp_path,
+    monkeypatch,
+):
+    authority, _target = _authority_for(tmp_path)
+    ledger = _ledger_for(tmp_path)
+    jk = SimpleNamespace(_JACK_AUTHORITY_LEDGER=ledger)
+    recorded = []
+    recorded_lock = threading.Lock()
+    start = threading.Barrier(3)
+    results = []
+
+    def record(**kwargs):
+        with recorded_lock:
+            recorded.append(kwargs)
+
+    def unavailable(_path):
+        raise source_guard.SourceMeasurementUnavailable("sharing violation")
+
+    monkeypatch.setattr(ledger, "_advance", record)
+    monkeypatch.setattr(source_guard, "_measure_regular_file", unavailable)
+    assert entrypoint._install_phase8_ledger_observer(jk, authority) is True
+
+    def worker():
+        start.wait(timeout=5)
+        result = authority.verify_now()
+        with recorded_lock:
+            results.append(result)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    start.wait(timeout=5)
+    for thread in threads:
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+
+    assert authority.state is source_guard.SourceAuthorityState.SUSPENDED_UNVERIFIED
+    assert len(results) == 2
+    transitions = [(item.prior_state, item.state) for item in results]
+    assert transitions.count(
+        (
+            source_guard.SourceAuthorityState.ACTIVE,
+            source_guard.SourceAuthorityState.SUSPENDED_UNVERIFIED,
+        )
+    ) == 1
+    assert transitions.count(
+        (
+            source_guard.SourceAuthorityState.SUSPENDED_UNVERIFIED,
+            source_guard.SourceAuthorityState.SUSPENDED_UNVERIFIED,
+        )
+    ) == 1
+    assert len(recorded) == 1
+    assert recorded[0]["event_type"] is entrypoint.Phase8LedgerEventType.SOURCE_AUTHORITY_SUSPENDED
+    assert recorded[0]["payload"]["prior_state"] == "ACTIVE"
+    assert recorded[0]["payload"]["new_state"] == "SUSPENDED_UNVERIFIED"
+
+    ledger.close()
+
+
+def test_competing_verifications_preserve_exact_suspend_restore_history(
+    tmp_path,
+    monkeypatch,
+):
+    authority, _target = _authority_for(tmp_path)
+    ledger = _ledger_for(tmp_path)
+    jk = SimpleNamespace(_JACK_AUTHORITY_LEDGER=ledger)
+    recorded = []
+    recorded_lock = threading.Lock()
+    call_lock = threading.Lock()
+    start = threading.Barrier(3)
+    call_count = 0
+    original_measure = source_guard._measure_regular_file
+
+    def record(**kwargs):
+        with recorded_lock:
+            recorded.append(kwargs)
+
+    def unavailable_then_measurable(path):
+        nonlocal call_count
+        with call_lock:
+            call_count += 1
+            number = call_count
+        if number == 1:
+            raise source_guard.SourceMeasurementUnavailable("sharing violation")
+        return original_measure(path)
+
+    monkeypatch.setattr(ledger, "_advance", record)
+    monkeypatch.setattr(source_guard, "_measure_regular_file", unavailable_then_measurable)
+    assert entrypoint._install_phase8_ledger_observer(jk, authority) is True
+
+    results = []
+
+    def worker():
+        start.wait(timeout=5)
+        result = authority.verify_now()
+        with recorded_lock:
+            results.append(result)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    start.wait(timeout=5)
+    for thread in threads:
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+
+    assert call_count == 2
+    assert authority.state is source_guard.SourceAuthorityState.ACTIVE
+    transitions = {(item.prior_state, item.state) for item in results}
+    assert transitions == {
+        (
+            source_guard.SourceAuthorityState.ACTIVE,
+            source_guard.SourceAuthorityState.SUSPENDED_UNVERIFIED,
+        ),
+        (
+            source_guard.SourceAuthorityState.SUSPENDED_UNVERIFIED,
+            source_guard.SourceAuthorityState.ACTIVE,
+        ),
+    }
+    assert [item["event_type"] for item in recorded] == [
+        entrypoint.Phase8LedgerEventType.SOURCE_AUTHORITY_SUSPENDED,
+        entrypoint.Phase8LedgerEventType.SOURCE_AUTHORITY_RESTORED,
+    ]
+    assert [
+        (item["payload"]["prior_state"], item["payload"]["new_state"])
+        for item in recorded
+    ] == [
+        ("ACTIVE", "SUSPENDED_UNVERIFIED"),
+        ("SUSPENDED_UNVERIFIED", "ACTIVE"),
+    ]
+
+    ledger.close()
+
+
 def test_ledger_failure_cannot_change_source_suspension_or_recovery(
     tmp_path,
     monkeypatch,
@@ -143,12 +289,14 @@ def test_ledger_failure_cannot_change_source_suspension_or_recovery(
 
     monkeypatch.setattr(source_guard, "_measure_regular_file", unavailable)
     result = authority.verify_now()
+    assert result.prior_state is source_guard.SourceAuthorityState.ACTIVE
     assert result.state is source_guard.SourceAuthorityState.SUSPENDED_UNVERIFIED
     assert ledger.authority_frozen is True
 
     # Ledger failure/freeze cannot become source recovery authority or block it.
     monkeypatch.setattr(source_guard, "_measure_regular_file", original_measure)
     result = authority.verify_now()
+    assert result.prior_state is source_guard.SourceAuthorityState.SUSPENDED_UNVERIFIED
     assert result.state is source_guard.SourceAuthorityState.ACTIVE
     assert result.verified is True
 
@@ -165,6 +313,7 @@ def test_real_authority_ledger_accepts_phase8_transition_without_owning_source_s
     target.write_bytes(b"changed")
     result = authority.verify_now()
 
+    assert result.prior_state is source_guard.SourceAuthorityState.ACTIVE
     assert result.state is source_guard.SourceAuthorityState.INVALIDATED
     assert ledger.active_head.sequence == 1
     assert authority.state is source_guard.SourceAuthorityState.INVALIDATED
