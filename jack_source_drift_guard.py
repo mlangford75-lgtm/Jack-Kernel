@@ -95,11 +95,21 @@ class RuntimeSourceBaseline:
 
 @dataclass(frozen=True)
 class SourceVerificationResult:
+    prior_state: SourceAuthorityState
     state: SourceAuthorityState
+    transition_sequence: int
     baseline_instance_id: str
     verified: bool
     mismatched_component_ids: Tuple[str, ...] = ()
     unavailable_component_ids: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class SourceStateTransition:
+    prior_state: SourceAuthorityState
+    state: SourceAuthorityState
+    transition_sequence: int
+    changed: bool
 
 
 @dataclass(frozen=True)
@@ -217,6 +227,7 @@ class RuntimeSourceAuthority:
 
         self._lock = threading.RLock()
         self._state = SourceAuthorityState.INITIALIZING
+        self._transition_sequence = 0
         self._pending_components: Dict[str, Path] = {}
         self._baseline: Optional[RuntimeSourceBaseline] = None
         self._periodic_stop = threading.Event()
@@ -227,6 +238,11 @@ class RuntimeSourceAuthority:
     def state(self) -> SourceAuthorityState:
         with self._lock:
             return self._state
+
+    @property
+    def transition_sequence(self) -> int:
+        with self._lock:
+            return self._transition_sequence
 
     @property
     def baseline(self) -> RuntimeSourceBaseline:
@@ -357,10 +373,20 @@ class RuntimeSourceAuthority:
         finally:
             self._lock.release()
 
-    def _suspend_unverified(self) -> None:
+    def _suspend_unverified(self) -> SourceStateTransition:
         with self._lock:
+            prior_state = self._state
             if self._state is not SourceAuthorityState.INVALIDATED:
                 self._state = SourceAuthorityState.SUSPENDED_UNVERIFIED
+            changed = prior_state is not self._state
+            if changed:
+                self._transition_sequence += 1
+            return SourceStateTransition(
+                prior_state=prior_state,
+                state=self._state,
+                transition_sequence=self._transition_sequence,
+                changed=changed,
+            )
 
     def verify_now(self) -> SourceVerificationResult:
         """Perform one bounded deterministic verification against the baseline.
@@ -369,15 +395,20 @@ class RuntimeSourceAuthority:
         here terminally invalidates this runtime. An inability to measure moves
         authority to SUSPENDED_UNVERIFIED until a later exact verification
         succeeds. INVALIDATED is terminal and cannot be repaired in place.
+        The returned transition fact is established entirely under this lock,
+        including its monotonic source-owned transition sequence.
         """
 
         with self._lock:
             baseline = self._baseline
             if baseline is None:
                 raise SourceBaselineCreationError("source baseline is not sealed")
+            prior_state = self._state
             if self._state is SourceAuthorityState.INVALIDATED:
                 return SourceVerificationResult(
+                    prior_state=prior_state,
                     state=self._state,
+                    transition_sequence=self._transition_sequence,
                     baseline_instance_id=baseline.baseline_instance_id,
                     verified=False,
                 )
@@ -407,8 +438,13 @@ class RuntimeSourceAuthority:
             else:
                 self._state = SourceAuthorityState.ACTIVE
 
+            if prior_state is not self._state:
+                self._transition_sequence += 1
+
             return SourceVerificationResult(
+                prior_state=prior_state,
                 state=self._state,
+                transition_sequence=self._transition_sequence,
                 baseline_instance_id=baseline.baseline_instance_id,
                 verified=self._state is SourceAuthorityState.ACTIVE,
                 mismatched_component_ids=tuple(sorted(mismatched)),
