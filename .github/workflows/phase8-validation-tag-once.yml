@@ -76,5 +76,5 @@ jobs:
           Write-Host "PHASE8_TAG_TARGET=$Peeled"
           Write-Host "PHASE8_TAG_TREE=$Tree"
 
-          git push origin "refs/tags/$Tag:refs/tags/$Tag"
+          git push origin "refs/tags/${Tag}:refs/tags/${Tag}"
           if ($LASTEXITCODE -ne 0) { throw 'STOP: annotated tag push failed.' }
