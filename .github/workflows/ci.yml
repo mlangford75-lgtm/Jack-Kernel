@@ -69,9 +69,9 @@ jobs:
         shell: pwsh
         run: python -m pytest -q tests/test_phase7_credential_policy.py tests/test_phase7_live_integration.py tests/test_phase7_output_dlp.py tests/test_phase7_orchestration_dlp.py tests/test_phase7_diagnostic_dlp.py tests/test_phase7_diagnostic_headers.py tests/test_phase7_diagnostic_outer_release.py tests/test_phase7_ledger_resources.py tests/test_phase7_ledger_hooks.py
 
-      - name: Run Phase-8 source authority tests
+      - name: Run Phase-8 source authority and preservation tests
         shell: pwsh
-        run: python -m pytest -q tests/test_phase8_source_baseline.py tests/test_phase8_runtime_enforcement.py tests/test_phase8_ledger_observation.py
+        run: python -m pytest -q tests/test_phase8_source_baseline.py tests/test_phase8_runtime_enforcement.py tests/test_phase8_ledger_observation.py tests/test_phase8_adversarial_preservation.py
 
       - name: Run Python regression suite
         shell: pwsh
