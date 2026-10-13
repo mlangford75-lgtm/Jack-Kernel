@@ -259,6 +259,7 @@ def test_checkpoint_tracks_only_authorized_ids_and_deferred_denial():
 
     state = jack._pending_tool_resumes["call-safe"]
     assert state.expected_tool_call_ids == ("call-safe",)
+    assert state.withheld_tool_call_ids == ("call-denied",)
     assert len(state.deferred_tool_rejection_errors) == 1
     assert set(jack._pending_tool_resumes) == {"call-safe"}
 
@@ -323,6 +324,7 @@ def test_resume_rejects_extra_result_for_withheld_sibling():
         tool_choice="auto",
         expected_tool_call_ids=("call-safe",),
         created_at=10**12,
+        withheld_tool_call_ids=("call-denied",),
     )
     jack._pending_tool_resumes["call-safe"] = state
 
@@ -343,7 +345,7 @@ def test_resume_rejects_extra_result_for_withheld_sibling():
         asyncio.run(jack._consume_pending_tool_resume(messages))
 
     assert caught.value.status_code == 409
-    assert "Unexpected" in str(caught.value.detail)
+    assert "withheld" in str(caught.value.detail).lower()
 
 
 def test_complete_mixed_checkpoint_exposes_only_releasable_calls():
