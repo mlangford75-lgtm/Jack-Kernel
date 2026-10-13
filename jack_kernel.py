@@ -5153,6 +5153,7 @@ class PendingToolResume:
     created_at: float
     debugging_run_id: Optional[str] = None
     deferred_tool_rejection_errors: Tuple[str, ...] = ()
+    withheld_tool_call_ids: Tuple[str, ...] = ()
     in_flight: bool = False
 
 
@@ -5406,10 +5407,14 @@ class JackQwenKernel:
                     append=append, same_stage_resume=True, tool_validation_repair_depth=tool_validation_repair_depth + 1,
                 )
 
+        # Withheld-call provenance is host-owned. Never trust a backend/model-supplied
+        # private field with the same name.
+        msg.pop("_jack_phase4_withheld_tool_call_ids", None)
         if msg.get("tool_calls"):
+            proposed_calls = list(msg.get("tool_calls") or [])
             allowed_calls, path_authorization_errors = (
                 _phase4_partition_structured_tool_calls(
-                    msg.get("tool_calls")
+                    proposed_calls
                 )
             )
             if path_authorization_errors:
@@ -5451,10 +5456,23 @@ class JackQwenKernel:
                     len(path_authorization_errors),
                     len(allowed_calls),
                 )
+                allowed_ids = {
+                    str(call.get("id") or "").strip()
+                    for call in allowed_calls
+                    if isinstance(call, dict) and str(call.get("id") or "").strip()
+                }
+                withheld_ids = [
+                    str(call.get("id") or "").strip()
+                    for call in proposed_calls
+                    if isinstance(call, dict)
+                    and str(call.get("id") or "").strip()
+                    and str(call.get("id") or "").strip() not in allowed_ids
+                ]
                 msg["tool_calls"] = allowed_calls
                 msg["_jack_phase4_deferred_tool_rejection_errors"] = list(
                     path_authorization_errors
                 )
+                msg["_jack_phase4_withheld_tool_call_ids"] = withheld_ids
 
         if not msg.get("tool_calls"):
             if SELF_ADVERSARIAL_MODE and stage_key == "extended_initial":
@@ -5753,10 +5771,14 @@ class JackQwenKernel:
                     yield packet
                 return
 
+        # Streaming reconstruction creates host-owned message state, but clear the
+        # private field explicitly so this path mirrors non-stream semantics.
+        message.pop("_jack_phase4_withheld_tool_call_ids", None)
         if message.get("tool_calls"):
+            proposed_calls = list(message.get("tool_calls") or [])
             allowed_calls, path_authorization_errors = (
                 _phase4_partition_structured_tool_calls(
-                    message.get("tool_calls")
+                    proposed_calls
                 )
             )
             if path_authorization_errors:
@@ -5807,10 +5829,23 @@ class JackQwenKernel:
                     len(path_authorization_errors),
                     len(allowed_calls),
                 )
+                allowed_ids = {
+                    str(call.get("id") or "").strip()
+                    for call in allowed_calls
+                    if isinstance(call, dict) and str(call.get("id") or "").strip()
+                }
+                withheld_ids = [
+                    str(call.get("id") or "").strip()
+                    for call in proposed_calls
+                    if isinstance(call, dict)
+                    and str(call.get("id") or "").strip()
+                    and str(call.get("id") or "").strip() not in allowed_ids
+                ]
                 message["tool_calls"] = allowed_calls
                 message["_jack_phase4_deferred_tool_rejection_errors"] = list(
                     path_authorization_errors
                 )
+                message["_jack_phase4_withheld_tool_call_ids"] = withheld_ids
 
         unexpected_reasoning = message.get("reasoning_content") or message.get("reasoning")
         if unexpected_reasoning and not profile.thinking:
@@ -6579,6 +6614,22 @@ class JackQwenKernel:
             )
             if str(item).strip()
         )
+        withheld_ids = tuple(
+            dict.fromkeys(
+                str(item).strip()
+                for item in (
+                    msg.get("_jack_phase4_withheld_tool_call_ids")
+                    if isinstance(msg.get("_jack_phase4_withheld_tool_call_ids"), list)
+                    else []
+                )
+                if str(item).strip()
+            )
+        )
+        if set(withheld_ids) & set(call_ids):
+            raise HTTPException(
+                status_code=500,
+                detail="Jack checkpoint provenance overlaps released and withheld tool_call ids.",
+            )
         state = PendingToolResume(
             resume_id=f"jack-resume-{uuid.uuid4().hex}",
             stage_key=stage_key,
@@ -6591,6 +6642,7 @@ class JackQwenKernel:
             created_at=time.time(),
             debugging_run_id=debugging_run_id,
             deferred_tool_rejection_errors=deferred_errors,
+            withheld_tool_call_ids=withheld_ids,
         )
         async with self._pending_tool_resume_lock:
             await self._expire_pending_tool_resumes_locked()
@@ -6697,6 +6749,26 @@ class JackQwenKernel:
             # to a live pending Jack checkpoint participate in transaction
             # selection/validation. Historical nonpending results are ignored and
             # are never appended to the resumed stage history.
+            live_states = {
+                id(pending_state): pending_state
+                for pending_state in self._pending_tool_resumes.values()
+            }
+            withheld_live_ids = {
+                call_id
+                for pending_state in live_states.values()
+                for call_id in pending_state.withheld_tool_call_ids
+            }
+            returned_withheld = set(ids_in_request) & withheld_live_ids
+            if returned_withheld:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Tool-result request contains result(s) for Jack-withheld "
+                        "tool_call_id(s): "
+                        + ", ".join(sorted(returned_withheld))
+                    ),
+                )
+
             live_ids = [
                 call_id
                 for call_id in ids_in_request
