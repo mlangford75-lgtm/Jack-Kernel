@@ -6686,17 +6686,31 @@ class JackQwenKernel:
 
         if not ids_in_request:
             return None
-        if len(ids_in_request) != len(set(ids_in_request)):
-            raise HTTPException(
-                status_code=409,
-                detail="Duplicate tool_call_id values in one Jack tool-result request.",
-            )
 
         async with self._pending_tool_resume_lock:
             await self._expire_pending_tool_resumes_locked()
-            matched = [self._pending_tool_resumes[i] for i in ids_in_request if i in self._pending_tool_resumes]
-            if not matched:
+
+            # Calling agents commonly replay full conversation history on a tool
+            # result turn. Retired historical tool results carry no authority over
+            # the currently pending Jack transaction and must not poison it merely
+            # because their IDs remain in caller history. Only IDs that still map
+            # to a live pending Jack checkpoint participate in transaction
+            # selection/validation. Historical nonpending results are ignored and
+            # are never appended to the resumed stage history.
+            live_ids = [
+                call_id
+                for call_id in ids_in_request
+                if call_id in self._pending_tool_resumes
+            ]
+            if not live_ids:
                 return None
+            if len(live_ids) != len(set(live_ids)):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Duplicate tool_call_id values in one Jack tool-result request.",
+                )
+
+            matched = [self._pending_tool_resumes[i] for i in live_ids]
             resume_ids = {state.resume_id for state in matched}
             if len(resume_ids) != 1:
                 raise HTTPException(
@@ -6710,8 +6724,8 @@ class JackQwenKernel:
                     detail=f"{STAGES[state.stage_key].name} tool-result transaction is already being resumed.",
                 )
             expected = set(state.expected_tool_call_ids)
-            supplied = {i for i in ids_in_request if i in expected}
-            unexpected = set(ids_in_request) - expected
+            supplied = {i for i in live_ids if i in expected}
+            unexpected = set(live_ids) - expected
             if unexpected:
                 raise HTTPException(
                     status_code=409,
