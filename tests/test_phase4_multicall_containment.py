@@ -226,29 +226,58 @@ def test_nonstream_stage_keeps_safe_sibling_and_defers_denied_notice():
 
 
 def test_checkpoint_tracks_only_authorized_ids_and_deferred_denial():
-    data = stage_data(
-        [
-            call(
-                "call-safe",
-                "read",
-                {"path": r"D:\Projects\Jack\README.md"},
-            )
-        ]
-    )
-    data["choices"][0]["message"][
-        "_jack_phase4_deferred_tool_rejection_errors"
-    ] = [
-        "tool call 1: host-owned Phase-4 path policy denied "
-        "the represented filesystem target"
+    calls = [
+        call(
+            "call-safe",
+            "read",
+            {"path": r"D:\Projects\Jack\README.md"},
+        ),
+        call(
+            "call-denied",
+            "read",
+            {"path": r"D:\Outside\secret.txt"},
+        ),
     ]
+    jack = kernel.JackQwenKernel(
+        FakeBackend(stage_data(calls)),
+        kernel.CFG,
+    )
+    usage = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+    }
 
-    jack = kernel.JackQwenKernel(FakeBackend(), kernel.CFG)
+    # Exercise the real production sequence: model proposal -> host Phase-4
+    # partition -> checkpoint registration. The withheld provenance assertion must
+    # therefore be earned by Jack's partitioning, not fabricated by the fixture.
+    token = kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.set(executor_context())
+    try:
+        data = asyncio.run(
+            jack._run_stage(
+                [{"role": "user", "content": "Read both."}],
+                "",
+                active_tool_stage(),
+                usage,
+                tools=tools(),
+                tool_choice="auto",
+                append=False,
+            )
+        )
+    finally:
+        kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
+
+    message = data["choices"][0]["message"]
+    assert [item["id"] for item in message["tool_calls"]] == ["call-safe"]
+    assert message["_jack_phase4_withheld_tool_call_ids"] == ["call-denied"]
+    assert len(message["_jack_phase4_deferred_tool_rejection_errors"]) == 1
+
     result = asyncio.run(
         jack._register_stage_tool_resume(
             stage_key=active_tool_stage(),
             history=[{"role": "user", "content": "Read both."}],
             secondary_system="",
-            usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            usage=usage,
             tools=tools(),
             tool_choice="auto",
             data=data,
@@ -259,6 +288,7 @@ def test_checkpoint_tracks_only_authorized_ids_and_deferred_denial():
 
     state = jack._pending_tool_resumes["call-safe"]
     assert state.expected_tool_call_ids == ("call-safe",)
+    assert state.withheld_tool_call_ids == ("call-denied",)
     assert len(state.deferred_tool_rejection_errors) == 1
     assert set(jack._pending_tool_resumes) == {"call-safe"}
 
@@ -323,6 +353,7 @@ def test_resume_rejects_extra_result_for_withheld_sibling():
         tool_choice="auto",
         expected_tool_call_ids=("call-safe",),
         created_at=10**12,
+        withheld_tool_call_ids=("call-denied",),
     )
     jack._pending_tool_resumes["call-safe"] = state
 
@@ -343,7 +374,7 @@ def test_resume_rejects_extra_result_for_withheld_sibling():
         asyncio.run(jack._consume_pending_tool_resume(messages))
 
     assert caught.value.status_code == 409
-    assert "Unexpected" in str(caught.value.detail)
+    assert "withheld" in str(caught.value.detail).lower()
 
 
 def test_complete_mixed_checkpoint_exposes_only_releasable_calls():
@@ -405,6 +436,13 @@ def test_complete_mixed_checkpoint_exposes_only_releasable_calls():
 
     assert released_ids == ["call-safe", "call-shell"]
     assert "call-denied" not in released_ids
+
+    safe_state = jack._pending_tool_resumes["call-safe"]
+    shell_state = jack._pending_tool_resumes["call-shell"]
+    assert safe_state is shell_state
+    assert safe_state.expected_tool_call_ids == ("call-safe", "call-shell")
+    assert safe_state.withheld_tool_call_ids == ("call-denied",)
+    assert len(safe_state.deferred_tool_rejection_errors) == 1
     assert set(jack._pending_tool_resumes) == {
         "call-safe",
         "call-shell",

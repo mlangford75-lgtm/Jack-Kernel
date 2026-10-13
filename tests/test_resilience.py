@@ -138,6 +138,67 @@ async def agentic_nonstream_tests():
     assert out.content and "A1 after tool" in out.content
     assert "resume2" not in k._pending_tool_resumes
 
+    # Retired historical tool results replayed by the caller must not poison a
+    # later live resume. Only the currently pending call is admitted into the
+    # resumed stage history.
+    b = FakeBackend([
+        response(reasoning="old", tool_calls=call("retired-history", {"command": "echo old"})),
+        response(reasoning="current", tool_calls=call("current-resume", {"command": "echo current"})),
+    ])
+    k = m.JackQwenKernel(b, m.CFG)
+    retired = await k._prepare_commit({
+        "messages": [{"role": "user", "content": "Old work."}],
+        "tools": TOOLS,
+    })
+    assert retired.tool_calls and "retired-history" in k._pending_tool_resumes
+    retired_state = k._pending_tool_resumes["retired-history"]
+    await k._retire_pending_tool_resume(retired_state)
+    assert "retired-history" not in k._pending_tool_resumes
+
+    current = await k._prepare_commit({
+        "messages": [{"role": "user", "content": "Current work."}],
+        "tools": TOOLS,
+    })
+    assert current.tool_calls and "current-resume" in k._pending_tool_resumes
+
+    pending = await k._consume_pending_tool_resume([
+        {"role": "user", "content": "Old work."},
+        {"role": "tool", "tool_call_id": "retired-history", "content": "old result"},
+        {"role": "user", "content": "Current work."},
+        {"role": "tool", "tool_call_id": "current-resume", "content": "current result"},
+    ])
+    assert pending is not None
+    current_state, current_messages = pending
+    assert current_state is k._pending_tool_resumes["current-resume"]
+    assert [item["tool_call_id"] for item in current_messages] == ["current-resume"]
+    await k._rearm_pending_tool_resume(current_state)
+
+    # Security invariant: results for two simultaneously live Jack transactions
+    # remain ambiguous and must still be rejected rather than guessed.
+    b = FakeBackend([
+        response(reasoning="a", tool_calls=call("live-a", {"command": "echo a"})),
+        response(reasoning="b", tool_calls=call("live-b", {"command": "echo b"})),
+    ])
+    k = m.JackQwenKernel(b, m.CFG)
+    _ = await k._prepare_commit({
+        "messages": [{"role": "user", "content": "A."}],
+        "tools": TOOLS,
+    })
+    _ = await k._prepare_commit({
+        "messages": [{"role": "user", "content": "B."}],
+        "tools": TOOLS,
+    })
+    try:
+        await k._consume_pending_tool_resume([
+            {"role": "tool", "tool_call_id": "live-a", "content": "a"},
+            {"role": "tool", "tool_call_id": "live-b", "content": "b"},
+        ])
+    except m.HTTPException as exc:
+        assert exc.status_code == 409
+        assert "multiple pending Jack stage transactions" in str(exc.detail)
+    else:
+        raise AssertionError("mixed live transactions must remain rejected")
+
 
 async def deep_research_nonstream_tests():
     m = load("ultra")
