@@ -70,7 +70,7 @@ def test_agentic_stage2_contract_is_selection_first_and_user_prompt_guided():
     assert "Do not decide importance in the abstract" in prompt
     assert "already adequately preserved by the exact user prompts or the exact frozen answer" in prompt
     assert "meaningful alternative" in prompt
-    assert "label it explicitly as an alternative" in prompt
+    assert "Label any retained alternative explicitly as not selected" in prompt
     assert "semantic continuity, not semantic exhaustiveness" in prompt
 
     for tag in ("<continuity>", "<evidence>", "<unresolved>", "<reevaluate>"):
