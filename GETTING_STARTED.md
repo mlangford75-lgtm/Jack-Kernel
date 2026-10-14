@@ -80,7 +80,7 @@ Port 8000 remains available for a custom OpenAI-compatible/vLLM backend. Do not 
 - **Medium** — direct native Medium reasoning.
 - **X-High** — direct native X-High reasoning.
 - **Deep Research** — X-High Thesis -> Medium Antithesis -> X-High authoritative Synthesis.
-- **Agentic** — full native Stage-1 cognition followed by user-prompt-guided semantic continuity consolidation into compact Jack XML.
+- **Agentic** — full native Stage-1 cognition followed by user-prompt-guided semantic consolidation into a fixed Jack XML checkpoint: mandatory `workspace_state`, `decision_state`, `unresolved`, and `reevaluate` tags (`NONE` allowed), plus optional exact `anchor_fact` cards and a bounded `deterministic_check` when applicable.
 - **Code Debugging** — five-pass report-only forensic audit at Medium reasoning.
 - **Code Debugging (Deep)** — the same forensic topology at X-High reasoning.
 
