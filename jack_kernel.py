@@ -23,8 +23,9 @@ Agentic is the Qwen-oriented Preserve-Thinking semantic-consolidation program.
 Stage 1 receives full native cognition and caller tools, produces A1, and freezes
 that exact answer. Stage 2 has tools off and zero answer authority; while the
 immediately preceding Stage-1 reasoning/tool episode is still preserved, it
-re-encodes the future-relevant epistemic residue into strongly semantic
-grounding/verification/challenge/audit Jack XML. The durable turn is exact user
+re-encodes only future-useful semantic delta into a fixed Jack XML checkpoint:
+workspace state, decision state, unresolved work, and reevaluation, with optional
+exact anchor facts and deterministic checks. The durable turn is exact user
 message + Jack XML + exact frozen A1; completed raw native cognition and consumed
 tool protocol are retired. Preserve Thinking is the short-lived Stage-1 ->
 Stage-2 bridge, not the cross-turn memory mechanism, and semantic capability is
@@ -941,134 +942,96 @@ You have no tools in this stage. Synthesis may receive the caller's tools and is
 
 Output only the plan."""
 
-AGENTIC_36_STAGE2_PROMPT = """Your only task in this stage is to construct a compact, high-signal Jack XML checkpoint for this completed current turn.
+AGENTIC_36_STAGE2_PROMPT = """Your only task in this stage is to construct the compact Jack XML checkpoint that downstream turns will receive after completed Stage-1 native reasoning and consumed tool protocol are retired.
 
-The exact current user message is already retained deterministically by the Jack host outside Jack XML. Stage 1 has already produced the frozen model answer. Depending on model and backend capability, Stage 2 may also receive native Stage-1 reasoning and actual tool calls/results.
+The exact user-role prompts are retained by the Jack host outside Jack XML. The exact frozen Stage-1 answer is also retained. Jack XML therefore stores only semantic delta that a competent downstream model materially needs and that is not already adequately preserved by those exact surfaces.
 
-Jack preserves completed Agentic turns as exact user message + compact Jack XML + exact frozen Stage-1 answer. Jack XML must not become a synthetic workspace truth source. Use fewer semantic surfaces with stronger meaning. Preserve the smallest future-useful semantic state that can improve downstream reasoning: decisive relationships or dependencies, actual evidence, deterministic verification, adversarial findings, unresolved verification needs, and concrete discovered output mistakes. Use the richest current-turn information actually available. If native Stage-1 reasoning is available, distill only material reasoning that matters downstream; if it is unavailable, do not invent it. Leave broad state reconstruction to future reasoning and fresh tools.
+SELECTION COMES BEFORE TAGGING.
+
+Before writing XML:
+1. Use the exact user prompts to define the task scope, distinctions, constraints, and requested cardinality.
+2. Identify what Stage 1 materially learned, decided, selected, rejected, discovered, or left unresolved while fulfilling those prompts.
+3. Remove anything already adequately preserved by the exact user prompts or frozen Stage-1 answer.
+4. Remove exploratory chatter, redundant calculations, abandoned micro-ideas, temporary hypotheses, and surplus branches outside the user's requested scope/cardinality unless an extra branch materially changed the selected result.
+5. Preserve only what forgetting could materially confuse downstream work, cause meaningful rework, revive a rejected approach without its reason, lose an important dependency/identity/configuration, or hide unresolved work or a concrete defect.
+
+OUTPUT-SUPPRESSION BOUNDARY:
+- Instructions such as "do not output," "do not show," "do not name," or "output only the selected result" govern the frozen Stage-1 answer.
+- They do not by themselves make explicitly requested cognition irrelevant to downstream Jack XML.
+- If Stage 1 was explicitly asked to consider an alternative but intentionally omit it from A1, evaluate that hidden decision normally under the retention test. When it matters downstream, preserve only the minimum semantic state needed: identity, status, and material selection/rejection reason.
+- Never use Jack XML to modify, repair, or re-open the frozen A1.
+
+The user's requested scope, distinctions, and cardinality define the default retention boundary. If the user asked for two candidate answers but Stage 1 brainstormed three or more, do not automatically preserve every rejected branch. Preserve only the requested hidden candidate(s) needed to represent the user-defined comparison unless an extra branch materially changed the chosen result. Any retained alternative must be explicitly labeled SELECTED, REJECTED, ALTERNATIVE, or SUPERSEDED as applicable.
+
+MANDATORY STRUCTURE, OPTIONAL INFORMATION:
+Every required tag below must appear exactly once and in the stated order. A required tag does not need substantive content. Write exactly NONE when nothing qualifies. NONE is a valid first-class result. Never invent, repeat, summarize, or manufacture information merely to avoid NONE.
+
+<workspace_state>
+The minimum current task state needed for the next turn: active milestone/objective, operative current state, and material context not already adequately preserved by the exact user prompts or A1. Do not summarize the conversation or frozen answer. Prefer <anchor_fact> for brittle exact values. Write NONE if no additional workspace state is needed.
+</workspace_state>
+
+<decision_state>
+Only material decisions, meaningful alternatives, rejection/selection reasons, dependencies, failed approaches whose reason prevents repetition, or distinctions that matter downstream and are not already adequately preserved by A1. Make status explicit. Write NONE if no additional decision state is needed.
+</decision_state>
+
+After <decision_state>, you MAY emit zero or more:
+<anchor_fact ID="KEY">Exact identity, configuration, measurement, parameter, version, path, hash, threshold, or other brittle value that must remain exact downstream.</anchor_fact>
+Use separate anchor facts for values that must not be merged. An anchor fact preserves exact state; it does not automatically make a model-authored claim independent evidence.
+
+If a deterministic tool was actually used before this XML stage and its result materially matters downstream, you MAY emit exactly one:
+<deterministic_check>
+Tool: [actual tool identity]
+Result: [actual returned result needed downstream]
+Status: VERIFIED
+Scope: [exactly what the check established]
+</deterministic_check>
+Never use <deterministic_check> to request a future tool call, predict an untested outcome, or broaden verification beyond what the tool actually established.
+
+Then emit:
+<unresolved>
+Only material open work, uncertainty, pending action, or verification need that matters to continuing the user-defined work. Write NONE if none.
+</unresolved>
+
+<reevaluate>
+Only a concrete material defect, contradiction, instruction violation, or omission discovered in the frozen Stage-1 answer/current working cognition that downstream reasoning should revisit. Do not solve it here. Write NONE if none. Do not manufacture criticism.
+</reevaluate>
+
+EPISTEMIC BOUNDARY:
+- Exact host-retained user prompts remain authoritative for what the user requested.
+- Actual user-provided evidence, established conversation evidence, and actual tool results retain their evidential status.
+- Stage-1 reasoning, prior Jack XML, and the frozen answer are working cognition/claims, not independent evidence merely because they were generated.
+- A deterministic check establishes only what it actually tested.
+- Not verified does not mean false.
+- When actual current-turn tool evidence conflicts with model-authored cognition, the evidence governs.
+- Preserve identities, values, scope, polarity, causality, dependencies, status, and uncertainty exactly; do not merge or substitute them.
 
 Do not call tools.
-Do not generate or modify the frozen answer.
-Do not invent evidence.
-Do not reconstruct, summarize, or declare the current workspace state.
-Do not create anchor facts, operative-state summaries, persistent-constraint ledgers, dependency ledgers, open-loop ledgers, or superseded-state ledgers.
-Do not quote, reproduce, or summarize the current user message merely to preserve it; the host already preserves it exactly outside Jack XML.
-Do not treat prior Jack XML, Stage-1 reasoning, or the frozen Stage-1 answer as independent evidence.
-When fresh current-turn tool evidence conflicts with prior model-authored state, prefer the fresh tool evidence and record only the evidential conflict needed for calibration.
+Do not generate, repair, or modify the frozen answer.
+Do not invent evidence, decisions, alternatives, dependencies, failures, or unresolved work.
+Do not copy or paraphrase the exact user prompts merely for context.
+Do not recap the selected A1 merely to frame another retained item.
+Do not emit <continuity>, <evidence>, <grounding>, <verification>, <challenge>, <audit>, <grounded_source>, or <pitfall_check>.
 
-<Prime_Directive>
-- The exact host-retained user message remains authoritative for what the user requested.
-- Actual user-provided evidence, established conversation evidence, and actual tool results retain evidential status.
-- Prior Jack XML is working memory/attention context, not an independent source of truth.
-- Stage-1 reasoning and frozen A1 are working cognition and claims to evaluate, not evidence.
-- Premise != fact.
-- Requested conclusion != evidence.
-- A deterministic check establishes only what it actually tested.
-- Absence of evidence != evidence of safety, success, harm, or failure.
-- User preference does not change truth conditions.
-- Prefer specific evidence and narrow verification over broad semantic summaries.
-- Preserve exact meaning: identities, values, constraints, dependencies, scope, polarity, causality, and uncertainty. Never invent, merge, rename, or substitute.
-- Current config != counterfactual config.
-- Preserve causal precision. When A1 asserts a causal relationship, verify that the stated cause actually applies to the stated case. Do not merge distinct causes.
-</Prime_Directive>
+Output exactly one checkpoint in this order and nothing else:
 
-Build exactly four semantic blocks inside <Jack XML>, in this order:
-
-<grounding>
-Observed:
-Not Observed:
-</grounding>
-
-For <grounding>:
-- Observed means evidentially observed, not merely visible to Stage 2.
-- Record only material user-provided evidence, established conversation evidence, or actual tool results available in the completed current turn.
-- Do not place Stage-1 reasoning, A1, model self-checks, or model-generated conclusions under Observed merely because Stage 2 can see them.
-- Be concrete: identify the source or tool result when material.
-- If no material evidence beyond the exact host-retained user message needs retention, write:
-Observed: NONE
-- If a material fact was not observed, place it under Not Observed rather than inferring it.
-- Do not describe the whole workspace, task history, or future plan.
-
-<verification>
-Verified:
-Scope:
-Not Verified:
-</verification>
-
-For <verification>:
-- Include only claims directly established by an actual deterministic Stage-1 tool/result.
-- Model-authored reasoning and self-checks are not deterministic verification.
-- Not Verified means not deterministically established, not false.
-- State the exact narrow scope of the verification.
-- Never generalize syntax, file presence, grep, tests, or inspection into broader success.
-- If no deterministic tool verification occurred, use exactly:
-Verified: NONE
-Scope: No deterministic tool verification occurred during Stage 1.
-Not Verified: Any claim requiring deterministic verification.
-
-<challenge>
-PREMISE
-Question: What must be true for the Stage-1 answer to satisfy the exact user request?
-Answer:
-
-INVALIDATION
-Question: What concrete material problem or contradiction is actually supported by the current record?
-Answer:
-
-</challenge>
-
-For <challenge>:
-- Materially test the frozen Stage-1 answer against the exact current user request, current stated configuration, and available evidence.
-- When native Stage-1 reasoning is available, use it to inspect material reasoning relevant to A1. When it is unavailable, do not invent hidden reasoning.
-- For INVALIDATION, identify only a problem supported by the current record. Do not invent a different interpretation or configuration in which a problem could exist. If none is found, write NONE.
-- Do not introduce requirements or success criteria the user did not ask for.
-- Do not weaken, remove, reinterpret, or replace an explicit constraint to manufacture a failure.
-- Do not manufacture uncertainty, alternative interpretations, failure modes, hypothetical edge cases, or assumptions merely to populate a lens. If no material issue exists for a lens, write NONE.
-- Do not create a replacement answer, corrective plan, or workspace summary.
-- Do not treat unverified claims as established facts.
-
-
-<audit>
-Verdict: PASS | REEVALUATE
-Finding:
-Reevaluate:
-</audit>
-
-For <audit>:
-- Act as an independent third-party auditor of the frozen Stage-1 answer.
-- Audit the frozen Stage-1 answer exactly as written. Do not audit a reconstructed, intended, or corrected version of it.
-- Cross-check materially relevant claims and representations within A1 against each other.
-- Report a conflict only when it is material to correctness, execution, verification, or reliable downstream use.
-- Do not escalate non-material discrepancies that do not change the operative meaning.
-- If materially conflicting representations exist, report the contradiction even when the intended meaning can be inferred. Do not silently choose or repair a preferred version.
-- Report only concrete material errors, contradictions, or omissions. Do not invent criticism.
-- Lack of deterministic verification is not automatically an error; preserve that verification need in <verification>.
-- Do not rewrite or repair the answer.
-- If no material defect is found, use:
-Verdict: PASS
-Finding: NONE
-Reevaluate: NONE
-- If a material defect is found, use:
-Verdict: REEVALUATE
-Finding: State exactly what is wrong.
-Reevaluate: State only what downstream reasoning should verify or reconcile before relying on the affected claim. Do not resolve the discrepancy, select an interpretation, or provide the correction.
-- Audit findings are guidance for reevaluation, not independent evidence.
-
-Output exactly:
 <Jack XML>
-<grounding>...</grounding>
-<verification>...</verification>
-<challenge>...</challenge>
-<audit>...</audit>
+<workspace_state>
+NONE
+</workspace_state>
+<decision_state>
+NONE
+</decision_state>
+[zero or more optional <anchor_fact> cards]
+[optional <deterministic_check>]
+<unresolved>
+NONE
+</unresolved>
+<reevaluate>
+NONE
+</reevaluate>
 </Jack XML>
 
-Rules:
-- Output Jack XML only.
-- Use NONE or NOT OBSERVED when warranted rather than inventing content.
-- Each semantic block must contribute distinct information. Do not repeat the same limitation, fact, or caution across multiple blocks unless the distinction materially changes its meaning. Prefer sparse, high-signal output.
-- Preserve only material semantic relationships, evidence, verification scope, adversarial findings, unresolved verification needs, and concrete discovered output mistakes that could improve downstream reasoning.
-- Do not copy the user request into XML merely for retention.
-- Do not rewrite the frozen answer.
+Keep the checkpoint sparse, direct, and easy for the next model to consume. Mandatory schema; optional information. The goal is semantic continuity, not semantic exhaustiveness.
 """
 
 ULTRA_STAGE2_ANTITHESIS_PROMPT = """You are Antithesis.
@@ -3803,6 +3766,92 @@ def freeze_xml_stage_output(text: Any) -> str:
     remain runtime-owned and do not depend on XML syntax.
     """
     return _content_to_text(text).strip()
+
+
+_AGENTIC_REQUIRED_XML_TAGS = ("workspace_state", "decision_state", "unresolved", "reevaluate")
+
+
+def freeze_agentic_xml_stage_output(text: Any) -> str:
+    """Canonicalize new Agentic checkpoints to the mandatory semantic skeleton.
+
+    This is structural normalization only. Existing model-authored content inside
+    recognized tags is preserved verbatim apart from surrounding whitespace.
+    Missing/empty required tags become NONE; optional anchor facts and one
+    deterministic check are preserved. Unknown/legacy tags are not promoted into
+    the new schema. If Stage 2 emits none of the recognized current tags, return
+    empty so the existing degraded-commit path preserves exact A1 rather than
+    pretending semantic consolidation succeeded.
+    """
+    raw = _content_to_text(text).strip()
+    if not raw:
+        return ""
+
+    start = raw.find("<Jack XML>")
+    end = raw.find("</Jack XML>", start + len("<Jack XML>")) if start >= 0 else -1
+    body = raw[start + len("<Jack XML>"):end] if start >= 0 and end >= 0 else raw
+
+    required_values: Dict[str, str] = {}
+    found_recognized = False
+    for tag in _AGENTIC_REQUIRED_XML_TAGS:
+        match = re.search(
+            rf"<{tag}>\s*(.*?)\s*</{tag}>",
+            body,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if match:
+            found_recognized = True
+            value = match.group(1).strip()
+            required_values[tag] = value if value else "NONE"
+        else:
+            required_values[tag] = "NONE"
+
+    anchor_cards = [
+        match.group(0).strip()
+        for match in re.finditer(
+            r"<anchor_fact\b[^>]*>.*?</anchor_fact>",
+            body,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+    ]
+    if anchor_cards:
+        found_recognized = True
+
+    deterministic = re.search(
+        r"<deterministic_check>.*?</deterministic_check>",
+        body,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    deterministic_card = deterministic.group(0).strip() if deterministic else ""
+    if deterministic_card:
+        found_recognized = True
+
+    if not found_recognized:
+        LOG.warning(
+            "Agentic Stage-2 output contained no recognized mandatory-schema tags; preserving A1 through degraded commit"
+        )
+        return ""
+
+    parts = [
+        "<Jack XML>",
+        "<workspace_state>\n" + required_values["workspace_state"] + "\n</workspace_state>",
+        "<decision_state>\n" + required_values["decision_state"] + "\n</decision_state>",
+    ]
+    parts.extend(anchor_cards)
+    if deterministic_card:
+        parts.append(deterministic_card)
+    parts.extend(
+        [
+            "<unresolved>\n" + required_values["unresolved"] + "\n</unresolved>",
+            "<reevaluate>\n" + required_values["reevaluate"] + "\n</reevaluate>",
+            "</Jack XML>",
+        ]
+    )
+    canonical = "\n".join(parts)
+    if canonical != raw:
+        LOG.info(
+            "Agentic Stage-2 XML structurally normalized to mandatory workspace/decision/unresolved/reevaluate schema"
+        )
+    return canonical
 
 
 def strip_final_answer_heading(text: str) -> str:
@@ -6901,7 +6950,7 @@ class JackQwenKernel:
         """
         if not AGENTIC_MODE:
             raise HTTPException(status_code=500, detail="Agentic two-stage commit is only valid in Agentic mode")
-        xml = freeze_xml_stage_output(frozen_jack_xml)
+        xml = freeze_agentic_xml_stage_output(frozen_jack_xml)
         if not xml:
             raise HTTPException(status_code=502, detail="Agentic Stage 2 produced no Jack XML content.")
         _archive_agentic_stage1_forensic(history, frozen_stage1_answer, xml)
