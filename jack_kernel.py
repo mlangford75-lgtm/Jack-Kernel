@@ -941,134 +941,81 @@ You have no tools in this stage. Synthesis may receive the caller's tools and is
 
 Output only the plan."""
 
-AGENTIC_36_STAGE2_PROMPT = """Your only task in this stage is to construct a compact, high-signal Jack XML checkpoint for this completed current turn.
+AGENTIC_36_STAGE2_PROMPT = """Your only task in this stage is to construct a compact Jack XML checkpoint for downstream turns after the completed Stage-1 native reasoning and consumed tool protocol are retired.
 
-The exact current user message is already retained deterministically by the Jack host outside Jack XML. Stage 1 has already produced the frozen model answer. Depending on model and backend capability, Stage 2 may also receive native Stage-1 reasoning and actual tool calls/results.
+The exact user-role prompts are retained deterministically by the Jack host outside Jack XML. The exact frozen Stage-1 answer is also retained. Use those exact user prompts to decide what matters moving forward. Do not decide importance in the abstract and do not preserve something merely because it appeared in the reasoning.
 
-Jack preserves completed Agentic turns as exact user message + compact Jack XML + exact frozen Stage-1 answer. Jack XML must not become a synthetic workspace truth source. Use fewer semantic surfaces with stronger meaning. Preserve the smallest future-useful semantic state that can improve downstream reasoning: decisive relationships or dependencies, actual evidence, deterministic verification, adversarial findings, unresolved verification needs, and concrete discovered output mistakes. Use the richest current-turn information actually available. If native Stage-1 reasoning is available, distill only material reasoning that matters downstream; if it is unavailable, do not invent it. Leave broad state reconstruction to future reasoning and fresh tools.
+SELECTION COMES BEFORE TAGGING.
+
+Before producing XML, use the available current-turn cognition to determine:
+1. Which exact user prompts still define or constrain the work.
+2. What Stage 1 learned, decided, selected, rejected, discovered, or left unresolved while fulfilling those prompts.
+3. Which of those items a competent downstream model would materially need in order to continue the user-defined work correctly after the raw reasoning is gone.
+4. Which candidate items are already adequately preserved by the exact user prompts or the exact frozen answer and therefore do not need duplication.
+5. The semantic role of each surviving item, then place it in the appropriate allowed tag.
+
+The retention test is simple:
+- If forgetting an item could materially confuse downstream work, cause meaningful work to be repeated, revive a rejected approach without its reason, lose an important dependency or relationship, or hide an unresolved issue that matters to the user's continuing task, preserve it.
+- If downstream work can continue correctly without it, discard it.
+
+Examples of information that MAY deserve retention when relevant to the user's prompts:
+- a material decision or selected approach not adequately represented in the frozen answer;
+- a meaningful alternative that was actually developed and whose existence or rejection reason matters later;
+- a discovered dependency, causal relationship, distinction, or constraint needed for continuation;
+- the identity or role of an artifact/component when that identity matters to later work;
+- a failed approach when remembering why it failed prevents repeated work;
+- a material unresolved question, pending action, or verification need;
+- a concrete defect or contradiction discovered in the frozen answer.
+
+Do not preserve:
+- exploratory chatter, abandoned micro-ideas, repeated calculations, rhetorical self-talk, or temporary hypotheses that no longer matter;
+- information merely because a tag exists;
+- broad synthetic workspace summaries;
+- copies or paraphrases of user prompts that the host already preserves exactly;
+- copies or summaries of the frozen answer when the answer already preserves the needed information;
+- model-generated conclusions as evidence merely because they appeared in Stage-1 reasoning.
+
+A meaningful alternative must be represented with its status clear. Never make an unselected or rejected alternative look active. For example, if the user asked for two candidate answers but Stage 1 output only the selected answer, retain the other candidate only when it was materially developed and its existence or rejection reason could matter downstream; label it explicitly as an alternative and whether it was selected.
+
+EPISTEMIC BOUNDARY:
+- Exact host-retained user prompts remain authoritative for what the user requested.
+- Actual user-provided evidence, established conversation evidence, and actual tool results retain evidential status.
+- Stage-1 reasoning, prior Jack XML, and the frozen answer are working cognition/claims, not independent evidence.
+- A deterministic check establishes only what it actually tested.
+- Not verified does not mean false.
+- When actual current-turn tool evidence conflicts with model-authored cognition, the evidence governs.
+- Preserve identities, values, scope, polarity, causality, dependencies, and uncertainty exactly; do not merge or substitute them.
 
 Do not call tools.
-Do not generate or modify the frozen answer.
-Do not invent evidence.
-Do not reconstruct, summarize, or declare the current workspace state.
-Do not create anchor facts, operative-state summaries, persistent-constraint ledgers, dependency ledgers, open-loop ledgers, or superseded-state ledgers.
-Do not quote, reproduce, or summarize the current user message merely to preserve it; the host already preserves it exactly outside Jack XML.
-Do not treat prior Jack XML, Stage-1 reasoning, or the frozen Stage-1 answer as independent evidence.
-When fresh current-turn tool evidence conflicts with prior model-authored state, prefer the fresh tool evidence and record only the evidential conflict needed for calibration.
+Do not generate, repair, or modify the frozen answer.
+Do not invent evidence, decisions, alternatives, dependencies, failures, or unresolved work.
+Do not manufacture criticism merely to populate XML.
 
-<Prime_Directive>
-- The exact host-retained user message remains authoritative for what the user requested.
-- Actual user-provided evidence, established conversation evidence, and actual tool results retain evidential status.
-- Prior Jack XML is working memory/attention context, not an independent source of truth.
-- Stage-1 reasoning and frozen A1 are working cognition and claims to evaluate, not evidence.
-- Premise != fact.
-- Requested conclusion != evidence.
-- A deterministic check establishes only what it actually tested.
-- Absence of evidence != evidence of safety, success, harm, or failure.
-- User preference does not change truth conditions.
-- Prefer specific evidence and narrow verification over broad semantic summaries.
-- Preserve exact meaning: identities, values, constraints, dependencies, scope, polarity, causality, and uncertainty. Never invent, merge, rename, or substitute.
-- Current config != counterfactual config.
-- Preserve causal precision. When A1 asserts a causal relationship, verify that the stated cause actually applies to the stated case. Do not merge distinct causes.
-</Prime_Directive>
+Use only these semantic tags inside <Jack XML>. Emit a tag only when it contains material downstream-useful information.
 
-Build exactly four semantic blocks inside <Jack XML>, in this order:
+<continuity>
+Future-useful working cognition produced by Stage 1: material decisions, selected approaches, meaningful alternatives with explicit status, dependencies, relationships, distinctions, or artifact/component identity needed for continuation.
+</continuity>
 
-<grounding>
-Observed:
-Not Observed:
-</grounding>
+<evidence>
+Only material evidence or deterministic verification that downstream reasoning needs. State narrow verification scope when relevant. Do not place model reasoning here.
+</evidence>
 
-For <grounding>:
-- Observed means evidentially observed, not merely visible to Stage 2.
-- Record only material user-provided evidence, established conversation evidence, or actual tool results available in the completed current turn.
-- Do not place Stage-1 reasoning, A1, model self-checks, or model-generated conclusions under Observed merely because Stage 2 can see them.
-- Be concrete: identify the source or tool result when material.
-- If no material evidence beyond the exact host-retained user message needs retention, write:
-Observed: NONE
-- If a material fact was not observed, place it under Not Observed rather than inferring it.
-- Do not describe the whole workspace, task history, or future plan.
+<unresolved>
+Only material open work, uncertainty, pending action, or verification need that matters to continuing the user's prompts.
+</unresolved>
 
-<verification>
-Verified:
-Scope:
-Not Verified:
-</verification>
+<reevaluate>
+Only a concrete material defect, contradiction, or omission discovered in the frozen Stage-1 answer or current working cognition that downstream reasoning should revisit. Do not solve it here. Omit this tag when no such issue exists.
+</reevaluate>
 
-For <verification>:
-- Include only claims directly established by an actual deterministic Stage-1 tool/result.
-- Model-authored reasoning and self-checks are not deterministic verification.
-- Not Verified means not deterministically established, not false.
-- State the exact narrow scope of the verification.
-- Never generalize syntax, file presence, grep, tests, or inspection into broader success.
-- If no deterministic tool verification occurred, use exactly:
-Verified: NONE
-Scope: No deterministic tool verification occurred during Stage 1.
-Not Verified: Any claim requiring deterministic verification.
-
-<challenge>
-PREMISE
-Question: What must be true for the Stage-1 answer to satisfy the exact user request?
-Answer:
-
-INVALIDATION
-Question: What concrete material problem or contradiction is actually supported by the current record?
-Answer:
-
-</challenge>
-
-For <challenge>:
-- Materially test the frozen Stage-1 answer against the exact current user request, current stated configuration, and available evidence.
-- When native Stage-1 reasoning is available, use it to inspect material reasoning relevant to A1. When it is unavailable, do not invent hidden reasoning.
-- For INVALIDATION, identify only a problem supported by the current record. Do not invent a different interpretation or configuration in which a problem could exist. If none is found, write NONE.
-- Do not introduce requirements or success criteria the user did not ask for.
-- Do not weaken, remove, reinterpret, or replace an explicit constraint to manufacture a failure.
-- Do not manufacture uncertainty, alternative interpretations, failure modes, hypothetical edge cases, or assumptions merely to populate a lens. If no material issue exists for a lens, write NONE.
-- Do not create a replacement answer, corrective plan, or workspace summary.
-- Do not treat unverified claims as established facts.
-
-
-<audit>
-Verdict: PASS | REEVALUATE
-Finding:
-Reevaluate:
-</audit>
-
-For <audit>:
-- Act as an independent third-party auditor of the frozen Stage-1 answer.
-- Audit the frozen Stage-1 answer exactly as written. Do not audit a reconstructed, intended, or corrected version of it.
-- Cross-check materially relevant claims and representations within A1 against each other.
-- Report a conflict only when it is material to correctness, execution, verification, or reliable downstream use.
-- Do not escalate non-material discrepancies that do not change the operative meaning.
-- If materially conflicting representations exist, report the contradiction even when the intended meaning can be inferred. Do not silently choose or repair a preferred version.
-- Report only concrete material errors, contradictions, or omissions. Do not invent criticism.
-- Lack of deterministic verification is not automatically an error; preserve that verification need in <verification>.
-- Do not rewrite or repair the answer.
-- If no material defect is found, use:
-Verdict: PASS
-Finding: NONE
-Reevaluate: NONE
-- If a material defect is found, use:
-Verdict: REEVALUATE
-Finding: State exactly what is wrong.
-Reevaluate: State only what downstream reasoning should verify or reconcile before relying on the affected claim. Do not resolve the discrepancy, select an interpretation, or provide the correction.
-- Audit findings are guidance for reevaluation, not independent evidence.
-
-Output exactly:
+Output exactly one <Jack XML>...</Jack XML> wrapper and nothing else.
+Within it, include only the allowed tags that contain material information.
+If nothing beyond the exact user prompts and frozen answer needs semantic retention, output:
 <Jack XML>
-<grounding>...</grounding>
-<verification>...</verification>
-<challenge>...</challenge>
-<audit>...</audit>
 </Jack XML>
 
-Rules:
-- Output Jack XML only.
-- Use NONE or NOT OBSERVED when warranted rather than inventing content.
-- Each semantic block must contribute distinct information. Do not repeat the same limitation, fact, or caution across multiple blocks unless the distinction materially changes its meaning. Prefer sparse, high-signal output.
-- Preserve only material semantic relationships, evidence, verification scope, adversarial findings, unresolved verification needs, and concrete discovered output mistakes that could improve downstream reasoning.
-- Do not copy the user request into XML merely for retention.
-- Do not rewrite the frozen answer.
+Keep the checkpoint sparse, direct, and easy for the next model to consume. The goal is semantic continuity, not semantic exhaustiveness.
 """
 
 ULTRA_STAGE2_ANTITHESIS_PROMPT = """You are Antithesis.
