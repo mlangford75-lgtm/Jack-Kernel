@@ -67,10 +67,10 @@ def test_agentic_stage2_contract_is_selection_first_and_user_prompt_guided():
 
     assert "SELECTION COMES BEFORE TAGGING" in prompt
     assert "Use the exact user prompts to define the task scope, distinctions, constraints, and requested cardinality" in prompt
-    assert "Do not decide importance in the abstract" in prompt
-    assert "already adequately preserved by the exact user prompts or the exact frozen answer" in prompt
+    assert "stores only semantic delta" in prompt
+    assert "not already adequately preserved by those exact surfaces" in prompt
     assert "meaningful alternative" in prompt
-    assert "Label any retained alternative explicitly as not selected" in prompt
+    assert "Any retained alternative must be explicitly labeled SELECTED, REJECTED, ALTERNATIVE, or SUPERSEDED" in prompt
     assert "semantic continuity, not semantic exhaustiveness" in prompt
 
     for tag in ("<workspace_state>", "<decision_state>", "<unresolved>", "<reevaluate>"):
@@ -190,8 +190,8 @@ def test_agentic_contract_does_not_promote_surplus_brainstorming_into_durable_al
     assert "surplus branches outside the user's requested scope/cardinality" in prompt
     assert "If the user asked for two candidate answers but Stage 1 brainstormed three or more" in prompt
     assert "do not automatically preserve every rejected branch" in prompt
-    assert "contextual restatements used only to explain another retained item" in prompt
-    assert "selected-answer recaps used only to frame an alternative" in prompt
+    assert "Do not copy or paraphrase the exact user prompts merely for context" in prompt
+    assert "Do not recap the selected A1 merely to frame another retained item" in prompt
 
 
 def test_agentic_xml_canonicalizer_enforces_mandatory_skeleton_without_semantic_invention():
