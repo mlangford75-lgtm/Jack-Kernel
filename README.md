@@ -15,6 +15,8 @@ Deep Research, Agentic, and Code Debugging are **reference programs built on the
 > **Install and run:** [`GETTING_STARTED.md`](GETTING_STARTED.md)
 >
 > **Current security state:** [`CURRENT_SECURITY_STATUS.md`](CURRENT_SECURITY_STATUS.md)
+>
+> **Latest operational checkpoint (October 14, 2026):** Phase 8 remains the last formally validated/frozen security phase. Phase 9A research closed without Phase 9 runtime-code-integrity enforcement; the Agentic tool-resume repair (PR #45) and Responses error non-disclosure repair (PR #46) are merged, with **527 Windows Python tests passing** on the verified post-fix baseline.
 
 ## Architecture at a glance
 
@@ -57,6 +59,28 @@ The accepted all-local architecture is illustrated here:
 
 ![Jack Orchestration Flow](assets/orchestration/jack_orchestration_flow_diagram.png)
 
+## Cognition programs and current runtime surfaces
+
+Jack's cognition modes are **programs built on the Kernel**. They do not make Jack the agent or the model, and model-generated reasoning never becomes host authority merely because a mode produced it.
+
+| Program | Currently documented behavior |
+|---|---|
+| Off | Direct inference with native thinking off |
+| Medium | Direct native Medium reasoning |
+| X-High | Direct native X-High reasoning |
+| Deep Research | X-High Thesis → Medium Antithesis → X-High authoritative Synthesis |
+| Agentic | Full native Stage-1 cognition, staged tool continuation, then semantic Jack XML consolidation |
+| Code Debugging | Five-pass, report-only defect review using Medium reasoning |
+| Code Debugging (Deep) | Same report-only topology at X-High reasoning |
+
+For selection, supported deployment commands, and runtime lanes, see [Getting Started](GETTING_STARTED.md#3-choose-a-cognition-program).
+
+The current integrated control surfaces include the OpenAI-compatible `/v1` API (including Responses compatibility), Orchestration Gateway v2 for supervisor-to-worker mediation, authenticated Pi worker control, and independently identified multi-endpoint runtime lanes. `runtime_id` and `lane_id` are logical identities; ports and sockets remain transport locators.
+
+### Agentic continuation correction
+
+The [PR #45 Agentic fix](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/45) resolves a real stage-resume bug discovered while investigating Phase 9A: when a caller replays historical conversation messages, retired/nonpending tool results must not poison the current live pending transaction. The correction ignores retired results for current transaction selection **without admitting them into the resumed stage history**. Withheld-call results, duplicate live results, incomplete current results, and results spanning conflicting live transactions continue to be rejected. This correctness improvement is **not** Phase 9 Runtime Code Integrity enforcement.
+
 ## What Jack owns
 
 Jack's host-authoritative boundary includes, where applicable:
@@ -87,61 +111,32 @@ Phase 8 also does not claim continuous historical attestation, loaded-code/funct
 
 See [`CURRENT_SECURITY_STATUS.md`](CURRENT_SECURITY_STATUS.md) for the exact current claims and nonclaims.
 
-## Current validated state
+## Current security status
 
-The current validated security checkpoint is **Phase 8 — Active Source Authority / Source Drift Protection**.
+**Phase 8 — Active Source Authority / Source Drift Protection — is the most recent fully validated, merged, documented, tagged and frozen security phase.** Its frozen [validation tag](https://github.com/mlangford75-lgtm/Jack-Kernel/tree/security-layer-phase8-validated-2026-10-06) points to closure commit `cebe9fd75fe30a9c84a0af08d2105af448fc3d00`. Phase 8 protects selected on-disk active source identity through bounded exact measurements and authority gating; it **does not** prove integrity of loaded Python code objects or mutable authority state.
 
-Phase 8 is **VALIDATED / MERGED / DOCUMENTED / TAGGED / FROZEN**. Phase 9A experimental research is [documented and closed](docs/security/SECURITY_LAYER_PHASE9A_RESEARCH_CHECKPOINT_2026-10-14.md), but Phase 9 Runtime Code Integrity was **not implemented or validated**. The latest verified post-freeze `main` baseline (PRs #45 and #46) passed **527 Windows Python tests**.
+The cumulative validated security controls are:
 
-Validated Phase-8 tag:
+- **Phases 0–3:** deterministic security outcomes, bounded StreamingIRQ pre-release quarantine, malformed-SSE release protection and Canary controls.
+- **Phase 4:** represented-path restrictions, optional Workspace Lock, tool-release and executor admission checks.
+- **Phase 5:** deterministic, proportionate consequence disposition.
+- **Phase 6:** process-local Authority & Security Ledger.
+- **Phase 7:** closed known-credential isolation and selected model/output/diagnostic DLP boundaries.
+- **Phase 8:** immutable protected-source baseline, bounded remeasurement, source-authority suspension/invalidation and preservation of otherwise safe work.
 
-`security-layer-phase8-validated-2026-10-06`
+**Phase 9A research closed without production enforcement.** The [Phase 9A research checkpoint](docs/security/SECURITY_LAYER_PHASE9A_RESEARCH_CHECKPOINT_2026-10-14.md) documents the live binding inventory, experiments, unresolved Phase 9A.4 identity differences, and the decision to defer Phase 9B. The annotated [Phase 9A research-closure tag](https://github.com/mlangford75-lgtm/Jack-Kernel/tree/security-layer-phase9a-research-closed-2026-10-14) identifies that **research milestone**, not a validated integrity guard.
 
-Annotated tag object:
+Post-Phase-8 merged maintenance:
 
-`20e35610444f409bbccd62a461e42e2dce06ac6a`
+- [PR #45](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/45): Agentic historical tool-result replay and pending stage-resume correction.
+- [PR #46](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/46): Responses API exception non-disclosure while retaining sanitized Phase-7 diagnostics.
+- [PR #47](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/47): Phase 9A research-closure record and live status reconciliation.
 
-Validated peeled target / Phase-8 closure commit:
+The verified October 14 post-fix Windows clone at `ef613e46e70181f7fa8d054aabc3b5a744d8f704` passed **527 Python regression tests**. This is not Phase 9 security validation.
 
-`cebe9fd75fe30a9c84a0af08d2105af448fc3d00`
+**Still unimplemented/unvalidated:** Phase 9 loaded-code/function-binding enforcement, Phase 10 authority-state integrity and Phase 11 comprehensive telemetry/privacy hardening. Jack does not claim hostile in-process tamper resistance, universal OS sandboxing, or proof of external consequences.
 
-Validated closure tree:
-
-`7288396653db3590834d9ac1093207c4e1b19c3b`
-
-Closure-complete Windows CI **#218 PASS**.
-
-Accepted Phase-8 lineage:
-
-- **8B:** immutable active-source baseline — accepted head `956bcad5c7ca8e66a9c5355af0c58538a7e18845`
-- **8C:** drift detection + runtime enforcement — accepted head `16ac1172d8cf5a5a33e21f6b626149d104db2c1a`
-- **8D:** ledger observation / integration — accepted head `c8b6f84f8f7f6818a1184d0d7c49cb523e71b2c2`
-- **8E:** adversarial / preservation closure — accepted head `106fab166d187ef381db90eb9dbe17ae2ae37cab`
-
-Integrated Phase-8E implementation merge:
-
-`90077f157183f442bb1d41eb23af865fab94ea43`
-
-Integrated implementation tree:
-
-`93771e59ab7f9213d438bc56dbe434961b07c0f4`
-
-That tree is identical to the accepted 8E candidate tree.
-
-The permanent Phase-8 preservation statement is:
-
-> **Source-authority loss withdraws new Kernel-authoritative admission. It does not imply process death, blanket cancellation, invented worker failure, erasure of completed cognition, or loss of safe observation.**
-
-The cumulative validated security stack is:
-
-- **Phases 0–3:** deterministic `SecurityOutcome`, StreamingIRQ bounded pre-release quarantine, malformed-SSE release protection, exact-match Canary enforcement, immutable runtime/lane-bound static Tier A/B Canary policy.
-- **Phase 4:** Restricted Paths, optional Workspace Lock, represented-path normalization, bounded recognized command authorization, executor admission, and minimum multi-call containment.
-- **Phase 5:** deterministic Consequence Gate that consumes typed authoritative facts and selects the narrowest justified disposition without centralizing failure blast radius.
-- **Phase 6:** process-local Authority & Security Ledger with closed event schemas, canonical predecessor chaining, immutable committed projection, bounded fail-soft durability, restart isolation, and narrow ledger-authority freeze semantics.
-- **Phase 7:** closed known-credential authority, exact model-input isolation, credential-derived model-output DLP through the existing StreamingIRQ barrier, orchestration and diagnostic release DLP, exact credential-resource `DENY_AND_CONTINUE`, and safe Phase-7 event observation.
-- **Phase 8:** immutable protected-source baseline, bounded exact remeasurement, ACTIVE / SUSPENDED_UNVERIFIED / INVALIDATED lifecycle, serialized source-authority admission, preservation-aware runtime enforcement, fail-soft lifecycle observation, concurrency-safe forensic ordering, and adversarial anti-brittleness closure.
-
-For exact validation evidence and phase-by-phase nonclaims, use [`CURRENT_SECURITY_STATUS.md`](CURRENT_SECURITY_STATUS.md) and the detailed checkpoint records under [`docs/security/`](docs/security/).
+For authoritative current implementation claims, exclusions, and exact Phase 8 validation lineage, read [Current Security Status](CURRENT_SECURITY_STATUS.md). Preserve the dated prior-phase checkpoints in [the security archive](docs/security/README.md) as historical validation records.
 
 ## Run on Windows
 
