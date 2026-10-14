@@ -4,7 +4,9 @@
 
 **Current validated security checkpoint:** Phase 8 — Active Source Authority / Source Drift Protection
 
-**Current checkpoint date:** 2026-10-06
+**Last validated/frozen security checkpoint date:** 2026-10-06
+
+**Research/status reconciliation date:** 2026-10-14
 
 **Validated annotated tag:** `security-layer-phase8-validated-2026-10-06`
 
@@ -22,7 +24,9 @@ Phase 8 is **VALIDATED / MERGED / DOCUMENTED / TAGGED / FROZEN**.
 
 Research evidence: [`docs/security/SECURITY_LAYER_PHASE9A_RESEARCH_CHECKPOINT_2026-10-14.md`](docs/security/SECURITY_LAYER_PHASE9A_RESEARCH_CHECKPOINT_2026-10-14.md).
 
-Post-Phase-8 maintenance baseline: PR #45 (Agentic tool-result provenance correction) and PR #46 (Responses API error non-disclosure) merged; fresh Windows `main` at `ef613e46e70181f7fa8d054aabc3b5a744d8f704` passed **527 tests**. Neither PR implements Phase 9 Runtime Code Integrity. Phase 8 remains the latest validated/frozen security checkpoint.
+Post-Phase-8 maintenance: PR #45 (Agentic tool-result provenance correction), PR #46 (Responses API error non-disclosure), and PR #47 (Phase 9A research documentation) merged. The verified October 14 post-fix source baseline `ef613e46e70181f7fa8d054aabc3b5a744d8f704` passed **527 Windows Python tests**. This is a dated test baseline, not a claim that this SHA remains the latest GitHub `main`. Neither maintenance fix implements Phase 9 Runtime Code Integrity. Phase 8 remains the latest validated/frozen security checkpoint.
+
+**Phase-9A milestone:** annotated tag `security-layer-phase9a-research-closed-2026-10-14` points to documentation merge commit `5e909494eb354c45907bb15c9a621980f99b2263`. The tag marks **research closure only**, not Phase 9 security validation.
 
 ## Phase-8 validation identity
 

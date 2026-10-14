@@ -17,13 +17,15 @@ Current checkpoint:
 - status: **VALIDATED / MERGED / DOCUMENTED / TAGGED / FROZEN**
 - tag state: **unsigned annotated tag**
 
-Post-freeze repository status publication:
+Historical post-Phase-8 status-publication checkpoint (not the current `main` branch identity):
 
-- current `main`: `7e00f7209ccb168387da2bbd2fd2344e57c2f82d`
-- current `main` tree: `cde43597139637a461c04d446d7d165dea1fa46b`
+- historical publication commit: `7e00f7209ccb168387da2bbd2fd2344e57c2f82d`
+- historical publication tree: `cde43597139637a461c04d446d7d165dea1fa46b`
 - post-freeze Windows CI #220: **PASS**
 
-The immutable Phase-8 tag remains pinned to the CI-validated closure commit above. The later `main` commit publishes already-verified frozen status only; it does not move the tag or redefine Phase-8 runtime behavior.
+Later merged maintenance includes PR #45 (Agentic tool-resume correction), PR #46 (Responses error non-disclosure), and PR #47 (Phase-9A research checkpoint). The documented October 14 post-fix runtime baseline at `ef613e46e70181f7fa8d054aabc3b5a744d8f704` passed 527 Windows Python tests. For current branch identity, inspect GitHub `main` rather than treating a dated checkpoint SHA as perpetually current.
+
+The immutable Phase-8 tag remains pinned to the CI-validated closure commit above. The historical post-freeze publication commit documented above did not move the tag or redefine Phase-8 runtime behavior.
 
 **Phase 9A: RESEARCH CLOSED (not a validated security phase).** Phase 9B enforcement was not implemented or merged. The [separate Phase-9A checkpoint](../../docs/security/SECURITY_LAYER_PHASE9A_RESEARCH_CHECKPOINT_2026-10-14.md) records experiments, limitations, and unresolved differences. Phase 8 remains the last fully validated/frozen phase.
 
@@ -58,6 +60,7 @@ The archive contains:
 - Phase 6 validated checkpoint / closure record
 - Phase 7 validated closure record
 - Phase 8 validated frozen closure record
+- Phase 9A experimental research-closure record (not security validation)
 
 Current Phase-8 closure record:
 

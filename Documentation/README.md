@@ -35,7 +35,7 @@ For a new user, read in this order:
 - cumulative governing amendments for Phases 0–6 remain in [`Security/`](Security/).
 - exact detailed phase checkpoints remain under [`../docs/security/`](../docs/security/).
 
-The current validated security checkpoint is Phase 6. Earlier phase statements inside dated checkpoint/amendment documents remain intentionally preserved as historical truth.
+The latest validated/frozen security checkpoint is **Phase 8**. [Phase 9A research closed without enforcement](../docs/security/SECURITY_LAYER_PHASE9A_RESEARCH_CHECKPOINT_2026-10-14.md); Phase 10 authority-state integrity is not yet validated. Earlier statements inside dated checkpoint/amendment documents remain preserved as historical evidence.
 
 ## Historical Build Record
 
