@@ -294,9 +294,9 @@ async def _stream(
                     fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
                     if fn.get("name"): acc["function"]["name"] += str(fn["name"])
                     if fn.get("arguments"): acc["function"]["arguments"] += str(fn["arguments"])
-    except Exception as exc:
+    except Exception:
         failed = {"id": rid, "object": "response", "created_at": created, "completed_at": int(time.time()), "status": "failed",
-                  "error": {"code": "jack_responses_stream_error", "message": str(exc)}, "model": jk.CFG.virtual_model, "output": []}
+                  "error": {"code": "jack_responses_stream_error", "message": "Jack Responses stream failed"}, "model": jk.CFG.virtual_model, "output": []}
         yield _sse("response.failed", {"response": failed, "error": failed["error"]}); return
     finally:
         await jk.KERNEL._rearm_pending_tool_resume_for_messages(chat.get("messages"))
@@ -445,7 +445,7 @@ def register(jk: Any) -> None:
         except HTTPException: raise
         except Exception as exc:
             jk.LOG.exception("Responses compatibility request failed")
-            raise HTTPException(status_code=500, detail=f"Jack Responses compatibility failure: {exc}") from exc
+            raise HTTPException(status_code=500, detail="Jack Responses compatibility failure") from exc
         return JSONResponse(_nonstream(jk, result, kinds))
 
 
