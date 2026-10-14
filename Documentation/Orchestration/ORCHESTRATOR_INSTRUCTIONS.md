@@ -428,7 +428,7 @@ settlement -> physical completion
 
 ## 20. Respect Kernel security boundaries
 
-The current Kernel includes a validated Phase 0–3 security release layer. Treat its deterministic decisions as host-owned boundary state, not as suggestions from the model.
+The current Kernel includes cumulative validated security controls through Phase 8 (including the Phase 0–3 release-boundary layer). Treat their deterministic decisions as host-owned boundary state, not as suggestions from the model. Phase 9A research did not introduce runtime-code-integrity enforcement.
 
 If Jack withholds output or reports a Kernel security/protocol failure:
 
