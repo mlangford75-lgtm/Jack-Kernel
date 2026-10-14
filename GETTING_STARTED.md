@@ -80,7 +80,7 @@ Port 8000 remains available for a custom OpenAI-compatible/vLLM backend. Do not 
 - **Medium** — direct native Medium reasoning.
 - **X-High** — direct native X-High reasoning.
 - **Deep Research** — X-High Thesis -> Medium Antithesis -> X-High authoritative Synthesis.
-- **Agentic** — full native Stage-1 cognition followed by semantic Jack XML consolidation.
+- **Agentic** — full native Stage-1 cognition followed by semantic Jack XML consolidation. Merged PR #45 also corrects live tool-result continuation when clients replay retired historical tool results; withheld or conflicting live results remain rejected.
 - **Code Debugging** — five-pass report-only forensic audit at Medium reasoning.
 - **Code Debugging (Deep)** — the same forensic topology at X-High reasoning.
 
@@ -182,7 +182,7 @@ Historical Phase-6 validation evidence (not the current full-suite baseline):
 - Pi harnesses: **7/7 PASS**;
 - runtime compilation: **PASS**.
 
-See `CURRENT_SECURITY_STATUS.md` for exact checkpoint identities.
+See `CURRENT_SECURITY_STATUS.md` for exact checkpoint identities. The post-PR #46 clean Windows baseline passed **527 Python tests**; that is a later regression result, not a new Phase 8 validation tag.
 
 ## 10. Multi-endpoint runtime lanes
 
