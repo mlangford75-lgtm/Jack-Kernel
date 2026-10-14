@@ -66,7 +66,7 @@ def test_agentic_stage2_contract_is_selection_first_and_user_prompt_guided():
     prompt = mod.AGENTIC_36_STAGE2_PROMPT
 
     assert "SELECTION COMES BEFORE TAGGING" in prompt
-    assert "Use those exact user prompts to decide what matters moving forward" in prompt
+    assert "Use the exact user prompts to define the task scope, distinctions, constraints, and requested cardinality" in prompt
     assert "Do not decide importance in the abstract" in prompt
     assert "already adequately preserved by the exact user prompts or the exact frozen answer" in prompt
     assert "meaningful alternative" in prompt
@@ -118,7 +118,7 @@ def test_agentic_stage2_receives_exact_user_prompt_and_stage1_reasoning():
 
     assert isinstance(result, mod.PreparedCommit)
     assert result.frozen_answer == frozen_a1
-    assert result.frozen_xml == xml
+    assert result.frozen_xml == mod.freeze_agentic_xml_stage_output(xml)
     assert len(backend.calls) == 2
 
     stage2_call = backend.calls[1]
@@ -187,7 +187,7 @@ def test_agentic_contract_does_not_promote_surplus_brainstorming_into_durable_al
     prompt = mod.AGENTIC_36_STAGE2_PROMPT
 
     assert "scope, distinctions, and cardinality define the default retention boundary" in prompt
-    assert "surplus branches are exploratory by default" in prompt
+    assert "surplus branches outside the user's requested scope/cardinality" in prompt
     assert "If the user asked for two candidate answers but Stage 1 brainstormed three or more" in prompt
     assert "do not automatically preserve every rejected branch" in prompt
     assert "contextual restatements used only to explain another retained item" in prompt
