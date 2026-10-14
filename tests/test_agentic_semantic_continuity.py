@@ -73,11 +73,19 @@ def test_agentic_stage2_contract_is_selection_first_and_user_prompt_guided():
     assert "Label any retained alternative explicitly as not selected" in prompt
     assert "semantic continuity, not semantic exhaustiveness" in prompt
 
-    for tag in ("<continuity>", "<evidence>", "<unresolved>", "<reevaluate>"):
+    for tag in ("<workspace_state>", "<decision_state>", "<unresolved>", "<reevaluate>"):
         assert tag in prompt
 
-    # The previous rigid audit-form schema must not remain the Stage-2 contract.
-    for old_tag in ("<grounding>", "<verification>", "<challenge>", "<audit>"):
+    assert "NONE is a valid first-class result" in prompt
+    assert "OUTPUT-SUPPRESSION BOUNDARY" in prompt
+    assert "<anchor_fact ID=" in prompt
+    assert "<deterministic_check>" in prompt
+
+    # Audit/falsification schemas and the superseded free-form tags are not Agentic Stage 2.
+    for old_tag in (
+        "<continuity>", "<evidence>", "<grounding>", "<verification>",
+        "<challenge>", "<audit>", "<grounded_source>", "<pitfall_check>",
+    ):
         assert old_tag not in prompt
 
 
@@ -91,8 +99,10 @@ def test_agentic_stage2_receives_exact_user_prompt_and_stage1_reasoning():
     frozen_a1 = "Selected answer: Approach A."
     xml = (
         "<Jack XML>\n"
-        "<continuity>Selected A. Alternative B was developed but not selected "
-        "because it violates the latency constraint.</continuity>\n"
+        "<workspace_state>NONE</workspace_state>\n"
+        "<decision_state>REJECTED: Approach B — violates the latency constraint.</decision_state>\n"
+        "<unresolved>NONE</unresolved>\n"
+        "<reevaluate>NONE</reevaluate>\n"
         "</Jack XML>"
     )
 
@@ -143,9 +153,10 @@ def test_agentic_completed_turn_gc_preserves_exact_user_and_semantic_delta():
     frozen_a1 = "Visible answer for the user."
     xml = (
         "<Jack XML>\n"
-        "<continuity>Alternative B remains relevant only if the user relaxes "
-        "the latency constraint.</continuity>\n"
+        "<workspace_state>NONE</workspace_state>\n"
+        "<decision_state>ALTERNATIVE: B becomes relevant only if the latency constraint is relaxed.</decision_state>\n"
         "<unresolved>Integration behavior has not been tested.</unresolved>\n"
+        "<reevaluate>NONE</reevaluate>\n"
         "</Jack XML>"
     )
     committed = f"{xml}\n\n{frozen_a1}"
@@ -181,3 +192,35 @@ def test_agentic_contract_does_not_promote_surplus_brainstorming_into_durable_al
     assert "do not automatically preserve every rejected branch" in prompt
     assert "contextual restatements used only to explain another retained item" in prompt
     assert "selected-answer recaps used only to frame an alternative" in prompt
+
+
+def test_agentic_xml_canonicalizer_enforces_mandatory_skeleton_without_semantic_invention():
+    mod = load_agentic()
+    raw = (
+        "<Jack XML>\n"
+        "<decision_state>REJECTED: Redis-backed queue — external service conflicts with local-first.</decision_state>\n"
+        "<anchor_fact ID=\"HEAD_SHA\">abc123</anchor_fact>\n"
+        "<pitfall_check>must not survive Agentic canonicalization</pitfall_check>\n"
+        "</Jack XML>"
+    )
+
+    frozen = mod.freeze_agentic_xml_stage_output(raw)
+
+    assert frozen == (
+        "<Jack XML>\n"
+        "<workspace_state>\nNONE\n</workspace_state>\n"
+        "<decision_state>\nREJECTED: Redis-backed queue — external service conflicts with local-first.\n</decision_state>\n"
+        "<anchor_fact ID=\"HEAD_SHA\">abc123</anchor_fact>\n"
+        "<unresolved>\nNONE\n</unresolved>\n"
+        "<reevaluate>\nNONE\n</reevaluate>\n"
+        "</Jack XML>"
+    )
+    assert "<pitfall_check>" not in frozen
+
+
+def test_agentic_xml_canonicalizer_rejects_unrecognized_stage2_surface():
+    mod = load_agentic()
+
+    assert mod.freeze_agentic_xml_stage_output(
+        "<Jack XML><pitfall_check>legacy-only content</pitfall_check></Jack XML>"
+    ) == ""
