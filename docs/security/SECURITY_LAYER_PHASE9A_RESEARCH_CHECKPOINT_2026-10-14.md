@@ -1,13 +1,13 @@
 # Jack Kernel — Phase 9 Research Checkpoint
 
-**Checkpoint date:** 2026-10-14  
-**Checkpoint class:** Retrospective technical research record; **NOT** a validated Phase-9 security release, not an enforcement authorization  
-**Phase:** 9 — Runtime Code Integrity (exploratory Phase 9A only)  
-**Repository:** <https://github.com/mlangford75-lgtm/Jack-Kernel>  
-**Current clean `main` and verified local-clone HEAD:** `ef613e46e70181f7fa8d054aabc3b5a744d8f704` (PR #46 merged)  
-**Frozen last fully validated security checkpoint:** Phase 8; annotated tag `security-layer-phase8-validated-2026-10-06`, peeled commit `cebe9fd75fe30a9c84a0af08d2105af448fc3d00`  
-**Current clean-clone Windows regression:** **527 passed in 8.88 seconds**, Python 3.14 virtual environment with pinned runtime/test dependencies  
-**Final Phase-9 decision:** **Phase 9A exploration closed and evidence preserved; Phase 9B code-integrity enforcement deferred/not authorized; P0/P1 inventory/fingerprint NOT frozen.**  
+**Checkpoint date:** 2026-10-14
+**Checkpoint class:** Retrospective technical research record; **NOT** a validated Phase-9 security release, not an enforcement authorization
+**Phase:** 9 — Runtime Code Integrity (exploratory Phase 9A only)
+**Repository:** <https://github.com/mlangford75-lgtm/Jack-Kernel>
+**Current clean `main` and verified local-clone HEAD:** `ef613e46e70181f7fa8d054aabc3b5a744d8f704` (PR #46 merged)
+**Frozen last fully validated security checkpoint:** Phase 8; annotated tag `security-layer-phase8-validated-2026-10-06`, peeled commit `cebe9fd75fe30a9c84a0af08d2105af448fc3d00`
+**Current clean-clone Windows regression:** **527 passed in 8.88 seconds**, Python 3.14 virtual environment with pinned runtime/test dependencies
+**Final Phase-9 decision:** **Phase 9A exploration closed and evidence preserved; Phase 9B code-integrity enforcement deferred/not authorized; P0/P1 inventory/fingerprint NOT frozen.**
 **Scope:** This checkpoint is a retrospective Phase-9 research record, separate from any subsequent agent briefing or development plan.
 
 ---
