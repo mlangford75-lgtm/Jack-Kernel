@@ -169,3 +169,15 @@ def test_agentic_completed_turn_gc_preserves_exact_user_and_semantic_delta():
     assert compact[1]["content"] == committed
     assert "reasoning_content" not in compact[1]
     assert compact[-1]["content"] == "Now continue from that work."
+
+
+def test_agentic_contract_does_not_promote_surplus_brainstorming_into_durable_alternatives():
+    mod = load_agentic()
+    prompt = mod.AGENTIC_36_STAGE2_PROMPT
+
+    assert "scope, distinctions, and cardinality define the default retention boundary" in prompt
+    assert "surplus branches are exploratory by default" in prompt
+    assert "If the user asked for two candidate answers but Stage 1 brainstormed three or more" in prompt
+    assert "do not automatically preserve every rejected branch" in prompt
+    assert "contextual restatements used only to explain another retained item" in prompt
+    assert "selected-answer recaps used only to frame an alternative" in prompt
