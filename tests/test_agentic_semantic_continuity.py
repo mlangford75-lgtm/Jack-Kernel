@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import importlib.util
 import os
 import sys
@@ -50,7 +51,11 @@ class FakeBackend:
         self.calls = []
 
     async def chat(self, **kwargs):
-        self.calls.append(kwargs)
+        # Snapshot the exact provider-facing request at call time. Jack clears
+        # completed transient Agentic history after the frozen commit, so storing
+        # the live list by reference would make a post-commit test inspect an
+        # intentionally emptied history rather than what Stage 2 actually saw.
+        self.calls.append(copy.deepcopy(kwargs))
         if not self.items:
             raise AssertionError("FakeBackend ran out of responses")
         return self.items.pop(0)
