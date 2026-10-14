@@ -294,9 +294,25 @@ async def _stream(
                     fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
                     if fn.get("name"): acc["function"]["name"] += str(fn["name"])
                     if fn.get("arguments"): acc["function"]["arguments"] += str(fn["arguments"])
-    except Exception:
+    except Exception as exc:
+        # Preserve Phase-7's canonical, already-sanitized credential interrupt
+        # markers. Never forward arbitrary exception text or dictionary values.
+        message = "Jack Responses stream failed"
+        if isinstance(exc, HTTPException):
+            detail = exc.detail
+            if (
+                isinstance(detail, dict)
+                and detail.get("error") == "protected_credential_diagnostic_withheld"
+                and detail.get("security_outcome") == "HARD_INTERRUPT"
+                and detail.get("release_boundary") == "diagnostic_stream_exception_release"
+                and set(detail) == {"error", "security_outcome", "release_boundary"}
+            ):
+                message = (
+                    "protected_credential_diagnostic_withheld "
+                    "(diagnostic_stream_exception_release)"
+                )
         failed = {"id": rid, "object": "response", "created_at": created, "completed_at": int(time.time()), "status": "failed",
-                  "error": {"code": "jack_responses_stream_error", "message": "Jack Responses stream failed"}, "model": jk.CFG.virtual_model, "output": []}
+                  "error": {"code": "jack_responses_stream_error", "message": message}, "model": jk.CFG.virtual_model, "output": []}
         yield _sse("response.failed", {"response": failed, "error": failed["error"]}); return
     finally:
         await jk.KERNEL._rearm_pending_tool_resume_for_messages(chat.get("messages"))
