@@ -25,7 +25,7 @@ Post-freeze repository status publication:
 
 The immutable Phase-8 tag remains pinned to the CI-validated closure commit above. The later `main` commit publishes already-verified frozen status only; it does not move the tag or redefine Phase-8 runtime behavior.
 
-**Phase 9: NOT STARTED.**
+**Phase 9A: RESEARCH CLOSED (not a validated security phase).** Phase 9B enforcement was not implemented or merged. The [separate Phase-9A checkpoint](../../docs/security/SECURITY_LAYER_PHASE9A_RESEARCH_CHECKPOINT_2026-10-14.md) records experiments, limitations, and unresolved differences. Phase 8 remains the last fully validated/frozen phase.
 
 ## Governing security architecture
 
@@ -90,4 +90,4 @@ Permanent Phase-8 nonclaim:
 
 > **Phase 8 protects active-runtime source identity through bounded exact measurements. It does not provide continuous historical attestation, loaded-code/function-binding integrity, authority-state integrity, universal filesystem-object identity, or hostile in-process tamper resistance.**
 
-Phase 9 remains a separate, not-yet-started boundary for loaded modules, function bindings, and code objects. Phase 10 remains the separate authority-state-integrity boundary. Phase 11 remains the separate privacy/telemetry-hardening boundary.
+Phase 9A research is closed; runtime loaded-code/function-binding enforcement remains unimplemented. Phase 10 authority-state integrity and Phase 11 privacy/telemetry hardening remain separate future protection boundaries.

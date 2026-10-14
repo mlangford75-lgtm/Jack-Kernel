@@ -20,7 +20,7 @@ Current validated security checkpoint:
 - annotated tag object: `20e35610444f409bbccd62a461e42e2dce06ac6a`
 - peeled tag target: `cebe9fd75fe30a9c84a0af08d2105af448fc3d00`
 - tag state: unsigned annotated tag
-- Phase 9: **NOT STARTED**
+- Phase 9A: **EXPERIMENTAL RESEARCH CLOSED; NO SECURITY VALIDATION / NO ENFORCEMENT**
 
 The accepted Phase-8E candidate tree and integrated implementation tree are identical:
 
@@ -34,6 +34,10 @@ The accepted Phase-8E candidate tree and integrated implementation tree are iden
 - [`SECURITY_LAYER_PHASE6_VALIDATED_2026-10-02.md`](SECURITY_LAYER_PHASE6_VALIDATED_2026-10-02.md)
 - [`SECURITY_LAYER_PHASE7_VALIDATED_2026-10-05.md`](SECURITY_LAYER_PHASE7_VALIDATED_2026-10-05.md)
 - [`SECURITY_LAYER_PHASE8_VALIDATED_2026-10-06.md`](SECURITY_LAYER_PHASE8_VALIDATED_2026-10-06.md)
+
+Separate, **non-validated research** checkpoint:
+
+- [`SECURITY_LAYER_PHASE9A_RESEARCH_CHECKPOINT_2026-10-14.md`](SECURITY_LAYER_PHASE9A_RESEARCH_CHECKPOINT_2026-10-14.md) — evidence and unresolved limitations; no production integrity guard.
 
 ## Phase-8 reading rule
 

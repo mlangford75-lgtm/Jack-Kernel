@@ -18,7 +18,11 @@
 
 Phase 8 is **VALIDATED / MERGED / DOCUMENTED / TAGGED / FROZEN**.
 
-**Phase 9: NOT STARTED.**
+**Phase 9A: EXPERIMENTAL RESEARCH CLOSED (2026-10-14). Phase 9B runtime-code-integrity enforcement: NOT IMPLEMENTED / NOT VALIDATED.**
+
+Research evidence: [`docs/security/SECURITY_LAYER_PHASE9A_RESEARCH_CHECKPOINT_2026-10-14.md`](docs/security/SECURITY_LAYER_PHASE9A_RESEARCH_CHECKPOINT_2026-10-14.md).
+
+Post-Phase-8 maintenance baseline: PR #45 (Agentic tool-result provenance correction) and PR #46 (Responses API error non-disclosure) merged; fresh Windows `main` at `ef613e46e70181f7fa8d054aabc3b5a744d8f704` passed **527 tests**. Neither PR implements Phase 9 Runtime Code Integrity. Phase 8 remains the latest validated/frozen security checkpoint.
 
 ## Phase-8 validation identity
 
@@ -207,4 +211,4 @@ Permanent Phase-8 nonclaim:
 
 > Do not destroy more state than the violation requires.
 
-Phase 8 is frozen. Phase 9 remains a separate, not-yet-started boundary for loaded modules, function bindings, and code objects.
+Phase 8 is frozen. Phase 9A was explored in disposable, unmerged diagnostics; Phase 9B enforcement remains deferred. Phase 10 authority-state integrity is a separate, not yet validated protection boundary.

@@ -91,7 +91,7 @@ See [`CURRENT_SECURITY_STATUS.md`](CURRENT_SECURITY_STATUS.md) for the exact cur
 
 The current validated security checkpoint is **Phase 8 — Active Source Authority / Source Drift Protection**.
 
-Phase 8 is **VALIDATED / MERGED / DOCUMENTED / TAGGED / FROZEN**. Phase 9 has not started.
+Phase 8 is **VALIDATED / MERGED / DOCUMENTED / TAGGED / FROZEN**. Phase 9A experimental research is [documented and closed](docs/security/SECURITY_LAYER_PHASE9A_RESEARCH_CHECKPOINT_2026-10-14.md), but Phase 9 Runtime Code Integrity was **not implemented or validated**. The latest verified post-freeze `main` baseline (PRs #45 and #46) passed **527 Windows Python tests**.
 
 Validated Phase-8 tag:
 

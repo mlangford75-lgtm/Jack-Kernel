@@ -174,7 +174,7 @@ py -3 -m pytest -q tests\test_surgical_regressions.py
 
 Additional project regression tests remain under `tests/`.
 
-The current frozen Phase-6 validation baseline reached:
+Historical Phase-6 validation evidence (not the current full-suite baseline):
 
 - Phase-5 targeted regression: **37/37 PASS**;
 - Phase-6 targeted regression: **18/18 PASS**;
@@ -235,7 +235,7 @@ Do not treat available lane count as inference-slot count. Before declaring a sh
 
 ## 11. Current security configuration
 
-The current validated security checkpoint is **Phase 6**. The operational controls below build cumulatively; later phases do not erase earlier configuration.
+The latest validated, frozen security checkpoint is **Phase 8**. The operational controls below describe earlier configuration cumulatively; later phases do not erase earlier configuration. Phase 9A produced experimental research only, with no loaded-code integrity enforcement. For current status see `CURRENT_SECURITY_STATUS.md`.
 
 For exact current claims, checkpoint identities, validation results, and nonclaims, read:
 
