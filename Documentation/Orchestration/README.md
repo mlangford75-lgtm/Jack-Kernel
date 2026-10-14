@@ -15,7 +15,7 @@ Historical acceptance artifacts are evidence for what was validated at the time.
 
 ## Current security interaction
 
-The current Kernel security checkpoint is Phase 6. For exact current security claims and identities, read [`../../CURRENT_SECURITY_STATUS.md`](../../CURRENT_SECURITY_STATUS.md).
+The latest validated/frozen Kernel security checkpoint is **Phase 8**. Phase 9A research closed without runtime-code-integrity enforcement. For exact current security claims and identities, read [`../../CURRENT_SECURITY_STATUS.md`](../../CURRENT_SECURITY_STATUS.md).
 
 The orchestration authority model remains separate from the security phase stack:
 
@@ -23,6 +23,9 @@ The orchestration authority model remains separate from the security phase stack
 - **Phase 4:** represented-path and Workspace Lock decisions remain Kernel security decisions. They do not transfer lifecycle authority to the supervisor.
 - **Phase 5:** the deterministic Consequence Gate selects the Kernel disposition for typed authoritative facts at the relevant consequence boundary. The supervisor cannot override or manufacture that disposition, and the outcome does not automatically widen to the whole task/run/process.
 - **Phase 6:** the Authority & Security Ledger records selected established Kernel decisions/events. It is not Pi lifecycle authority, task/run/epoch authority, cancellation authority, settlement authority, or runtime-observability authority.
+- **Phase 7:** known-credential isolation and integrated DLP apply at supported model, diagnostic, and orchestration release boundaries without transferring ownership of worker lifecycle state.
+- **Phase 8:** bounded active-source authority gates selected Kernel admissions and releases. Source-authority loss does not imply worker cancellation or physical settlement; safe observation and previously completed cognition remain distinct.
+- **Phase 9A:** experimental research closed without loaded-code-integrity enforcement. No new orchestration authority is implied.
 
 The separation remains:
 
