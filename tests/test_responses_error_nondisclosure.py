@@ -103,3 +103,34 @@ def test_nonstream_explicit_http_policy_exception_retained():
         asyncio.run(endpoint(Request()))
     assert caught.value.status_code == 409
     assert caught.value.detail == "withheld sibling result"
+
+
+def test_stream_phase7_canonical_diagnostic_is_preserved_without_raw_secret():
+    class Kernel:
+        async def stream(self, _body):
+            if False:
+                yield b""
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": "protected_credential_diagnostic_withheld",
+                    "security_outcome": "HARD_INTERRUPT",
+                    "release_boundary": "diagnostic_stream_exception_release",
+                },
+            )
+
+        async def _rearm_pending_tool_resume_for_messages(self, _messages):
+            return None
+
+        async def _rearm_pending_debugging_resumes_for_messages(self, _messages):
+            return None
+
+    jk = SimpleNamespace(KERNEL=Kernel(), CFG=SimpleNamespace(virtual_model="jack-kernel"))
+
+    async def collect():
+        return b"".join([chunk async for chunk in compat._stream(jk, {"messages": []}, {})]).decode()
+
+    output = asyncio.run(collect())
+    assert "protected_credential_diagnostic_withheld" in output
+    assert "diagnostic_stream_exception_release" in output
+    assert CANARY not in output
