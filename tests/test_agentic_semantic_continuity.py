@@ -177,7 +177,7 @@ def test_agentic_completed_turn_gc_preserves_exact_user_and_semantic_delta():
 
 def _tag_value(xml: str, tag: str) -> str:
     match = re.search(
-        rf"<{tag}>\\s*(.*?)\\s*</{tag}>",
+        rf"<{tag}>\s*(.*?)\s*</{tag}>",
         xml,
         flags=re.DOTALL,
     )
