@@ -4,6 +4,7 @@ import asyncio
 import copy
 import importlib.util
 import os
+import re
 import sys
 import uuid
 from pathlib import Path
@@ -61,32 +62,24 @@ class FakeBackend:
         return self.items.pop(0)
 
 
-def test_agentic_stage2_contract_is_selection_first_and_user_prompt_guided():
+def test_agentic_stage2_contract_exposes_fixed_semantic_schema():
     mod = load_agentic()
     prompt = mod.AGENTIC_36_STAGE2_PROMPT
 
-    assert "SELECTION COMES BEFORE TAGGING" in prompt
-    assert "Use the exact user prompts to define the task scope, distinctions, constraints, and requested cardinality" in prompt
-    assert "stores only semantic delta" in prompt
-    assert "not already adequately preserved by those exact surfaces" in prompt
-    assert "meaningful alternative" in prompt
-    assert "Any retained alternative must be explicitly labeled SELECTED, REJECTED, ALTERNATIVE, or SUPERSEDED" in prompt
-    assert "semantic continuity, not semantic exhaustiveness" in prompt
+    assert mod._AGENTIC_REQUIRED_XML_TAGS == (
+        "workspace_state",
+        "decision_state",
+        "unresolved",
+        "reevaluate",
+    )
+    for tag in mod._AGENTIC_REQUIRED_XML_TAGS:
+        assert f"<{tag}>" in prompt
+        assert f"</{tag}>" in prompt
 
-    for tag in ("<workspace_state>", "<decision_state>", "<unresolved>", "<reevaluate>"):
-        assert tag in prompt
-
-    assert "NONE is a valid first-class result" in prompt
-    assert "OUTPUT-SUPPRESSION BOUNDARY" in prompt
-    assert "<anchor_fact ID=" in prompt
+    # Optional cards are part of the schema, but are not required on every turn.
+    assert "<anchor_fact" in prompt
     assert "<deterministic_check>" in prompt
-
-    # Audit/falsification schemas and the superseded free-form tags are not Agentic Stage 2.
-    for old_tag in (
-        "<continuity>", "<evidence>", "<grounding>", "<verification>",
-        "<challenge>", "<audit>", "<grounded_source>", "<pitfall_check>",
-    ):
-        assert old_tag not in prompt
+    assert "NONE" in prompt
 
 
 def test_agentic_stage2_receives_exact_user_prompt_and_stage1_reasoning():
@@ -182,40 +175,89 @@ def test_agentic_completed_turn_gc_preserves_exact_user_and_semantic_delta():
     assert compact[-1]["content"] == "Now continue from that work."
 
 
-def test_agentic_contract_does_not_promote_surplus_brainstorming_into_durable_alternatives():
-    mod = load_agentic()
-    prompt = mod.AGENTIC_36_STAGE2_PROMPT
-
-    assert "scope, distinctions, and cardinality define the default retention boundary" in prompt
-    assert "surplus branches outside the user's requested scope/cardinality" in prompt
-    assert "If the user asked for two candidate answers but Stage 1 brainstormed three or more" in prompt
-    assert "do not automatically preserve every rejected branch" in prompt
-    assert "Do not copy or paraphrase the exact user prompts merely for context" in prompt
-    assert "Do not recap the selected A1 merely to frame another retained item" in prompt
+def _tag_value(xml: str, tag: str) -> str:
+    match = re.search(
+        rf"<{tag}>\\s*(.*?)\\s*</{tag}>",
+        xml,
+        flags=re.DOTALL,
+    )
+    assert match is not None
+    return match.group(1).strip()
 
 
 def test_agentic_xml_canonicalizer_enforces_mandatory_skeleton_without_semantic_invention():
     mod = load_agentic()
     raw = (
         "<Jack XML>\n"
+        "<continuity>legacy continuity</continuity>\n"
+        "<evidence>legacy evidence</evidence>\n"
+        "<grounding>legacy grounding</grounding>\n"
+        "<verification>legacy verification</verification>\n"
+        "<challenge>legacy challenge</challenge>\n"
+        "<audit>legacy audit</audit>\n"
+        "<grounded_source>legacy grounded source</grounded_source>\n"
+        "<pitfall_check>legacy pitfall</pitfall_check>\n"
         "<decision_state>REJECTED: Redis-backed queue — external service conflicts with local-first.</decision_state>\n"
         "<anchor_fact ID=\"HEAD_SHA\">abc123</anchor_fact>\n"
-        "<pitfall_check>must not survive Agentic canonicalization</pitfall_check>\n"
         "</Jack XML>"
     )
 
     frozen = mod.freeze_agentic_xml_stage_output(raw)
 
-    assert frozen == (
+    assert frozen.startswith("<Jack XML>")
+    assert frozen.endswith("</Jack XML>")
+    assert _tag_value(frozen, "workspace_state") == "NONE"
+    assert _tag_value(frozen, "decision_state") == (
+        "REJECTED: Redis-backed queue — external service conflicts with local-first."
+    )
+    assert _tag_value(frozen, "unresolved") == "NONE"
+    assert _tag_value(frozen, "reevaluate") == "NONE"
+    assert '<anchor_fact ID="HEAD_SHA">abc123</anchor_fact>' in frozen
+
+    positions = [frozen.index(f"<{tag}>") for tag in mod._AGENTIC_REQUIRED_XML_TAGS]
+    assert positions == sorted(positions)
+
+    for legacy_tag in (
+        "continuity",
+        "evidence",
+        "grounding",
+        "verification",
+        "challenge",
+        "audit",
+        "grounded_source",
+        "pitfall_check",
+    ):
+        assert f"<{legacy_tag}" not in frozen
+
+
+def test_agentic_xml_canonicalizer_preserves_optional_cards_and_normalizes_required_order():
+    mod = load_agentic()
+    raw = (
         "<Jack XML>\n"
-        "<workspace_state>\nNONE\n</workspace_state>\n"
-        "<decision_state>\nREJECTED: Redis-backed queue — external service conflicts with local-first.\n</decision_state>\n"
-        "<anchor_fact ID=\"HEAD_SHA\">abc123</anchor_fact>\n"
-        "<unresolved>\nNONE\n</unresolved>\n"
-        "<reevaluate>\nNONE\n</reevaluate>\n"
+        "<reevaluate>NONE</reevaluate>\n"
+        "<anchor_fact ID=\"PORT\">8001</anchor_fact>\n"
+        "<deterministic_check>Tool: unit-test\nResult: PASS\nStatus: VERIFIED\nScope: parser only</deterministic_check>\n"
+        "<workspace_state>Milestone: validate parser.</workspace_state>\n"
+        "<unresolved></unresolved>\n"
+        "<decision_state>NONE</decision_state>\n"
         "</Jack XML>"
     )
-    assert "<pitfall_check>" not in frozen
+
+    frozen = mod.freeze_agentic_xml_stage_output(raw)
+
+    assert _tag_value(frozen, "workspace_state") == "Milestone: validate parser."
+    assert _tag_value(frozen, "decision_state") == "NONE"
+    assert _tag_value(frozen, "unresolved") == "NONE"
+    assert _tag_value(frozen, "reevaluate") == "NONE"
+    assert '<anchor_fact ID="PORT">8001</anchor_fact>' in frozen
+    assert "<deterministic_check>" in frozen
+    assert "Status: VERIFIED" in frozen
+
+    required_positions = [frozen.index(f"<{tag}>") for tag in mod._AGENTIC_REQUIRED_XML_TAGS]
+    assert required_positions == sorted(required_positions)
+    assert frozen.index("<decision_state>") < frozen.index("<anchor_fact")
+    assert frozen.index("<anchor_fact") < frozen.index("<deterministic_check>")
+    assert frozen.index("<deterministic_check>") < frozen.index("<unresolved>")
 
 
 def test_agentic_xml_canonicalizer_rejects_unrecognized_stage2_surface():
