@@ -957,6 +957,7 @@ Before producing XML, use the available current-turn cognition to determine:
 The retention test is simple:
 - If forgetting an item could materially confuse downstream work, cause meaningful work to be repeated, revive a rejected approach without its reason, lose an important dependency or relationship, or hide an unresolved issue that matters to the user's continuing task, preserve it.
 - If downstream work can continue correctly without it, discard it.
+- The user's requested scope, distinctions, and cardinality define the default retention boundary. Stage 1 may explore beyond that boundary, but surplus branches are exploratory by default and must not become durable alternatives merely because they were substantively considered. Preserve an unrequested branch only when it materially changed the selected result or is otherwise necessary to continue the user-defined task correctly.
 
 Examples of information that MAY deserve retention when relevant to the user's prompts:
 - a material decision or selected approach not adequately represented in the frozen answer;
@@ -968,14 +969,14 @@ Examples of information that MAY deserve retention when relevant to the user's p
 - a concrete defect or contradiction discovered in the frozen answer.
 
 Do not preserve:
-- exploratory chatter, abandoned micro-ideas, repeated calculations, rhetorical self-talk, or temporary hypotheses that no longer matter;
+- exploratory chatter, abandoned micro-ideas, repeated calculations, rhetorical self-talk, temporary hypotheses that no longer matter, or surplus candidate branches outside the user's requested scope/cardinality unless they materially changed the selected result;
 - information merely because a tag exists;
 - broad synthetic workspace summaries;
-- copies or paraphrases of user prompts that the host already preserves exactly;
-- copies or summaries of the frozen answer when the answer already preserves the needed information;
+- copies or paraphrases of user prompts that the host already preserves exactly, including contextual restatements used only to explain another retained item;
+- copies or summaries of the frozen answer when the answer already preserves the needed information, including selected-answer recaps used only to frame an alternative;
 - model-generated conclusions as evidence merely because they appeared in Stage-1 reasoning.
 
-A meaningful alternative must be represented with its status clear. Never make an unselected or rejected alternative look active. For example, if the user asked for two candidate answers but Stage 1 output only the selected answer, retain the other candidate only when it was materially developed and its existence or rejection reason could matter downstream; label it explicitly as an alternative and whether it was selected.
+A meaningful alternative must be represented with its status clear. Never make an unselected or rejected alternative look active. If the user asked for two candidate answers but Stage 1 brainstormed three or more, do not automatically preserve every rejected branch. Preserve only the requested hidden candidate(s) needed to represent the user-defined comparison, unless an extra branch materially changed the chosen result. Label any retained alternative explicitly as not selected.
 
 EPISTEMIC BOUNDARY:
 - Exact host-retained user prompts remain authoritative for what the user requested.
