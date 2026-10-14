@@ -20,7 +20,7 @@ Current validated security checkpoint:
 - annotated tag object: `20e35610444f409bbccd62a461e42e2dce06ac6a`
 - peeled tag target: `cebe9fd75fe30a9c84a0af08d2105af448fc3d00`
 - tag state: unsigned annotated tag
-- Phase 9A: **EXPERIMENTAL RESEARCH CLOSED; NO SECURITY VALIDATION / NO ENFORCEMENT**
+- Phase 9A: **EXPERIMENTAL RESEARCH CLOSED; NO SECURITY VALIDATION / NO ENFORCEMENT**. Annotated research milestone: `security-layer-phase9a-research-closed-2026-10-14` (target: `5e909494eb354c45907bb15c9a621980f99b2263`).
 
 The accepted Phase-8E candidate tree and integrated implementation tree are identical:
 
