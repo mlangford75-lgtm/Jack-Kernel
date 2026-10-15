@@ -19,16 +19,16 @@ and is the sole authoritative reasoning/execution/final-answer stage. Full
 active cognition is preserved through Synthesis; only Stage-1/Stage-2 native
 reasoning is retired on later re-entry. Deep Research emits no Jack XML.
 
-Agentic is the Qwen-oriented Preserve-Thinking semantic-consolidation program.
-Stage 1 receives full native cognition and caller tools, produces A1, and freezes
+Agentic is a two-stage retrospective memory program. Stage 1 receives
+full native cognition and caller-authorized tools, produces A1, and freezes
 that exact answer. Stage 2 has tools off and zero answer authority; while the
-immediately preceding Stage-1 reasoning/tool episode is still preserved, it
-re-encodes the future-relevant epistemic residue into strongly semantic
-grounding/verification/challenge/audit Jack XML. The durable turn is exact user
-message + Jack XML + exact frozen A1; completed raw native cognition and consumed
-tool protocol are retired. Preserve Thinking is the short-lived Stage-1 ->
-Stage-2 bridge, not the cross-turn memory mechanism, and semantic capability is
-required in addition to transport compatibility.
+Stage-1 reasoning/tool episode remains available where supported, it produces
+a retrospective explanation of why Stage 1 reached its conclusion. Jack wraps
+the model-authored summary as Agentic Memory, appends bounded host-recorded
+tool receipts when available, and retains the exact user message and frozen
+A1 for later turns. Completed native reasoning and consumed tool protocol
+are retired. Preserve Thinking bridges Stage 1 to Stage 2 when supported;
+the completed cross-turn memory is not raw Preserve Thinking.
 
 Code Debugging is a separate user-guided intake plus five-pass fresh-context forensic audit loop.
 Before Pass 1, Jack records the user's request in a tools-off diagnostic intake. The intake is non-blocking by default:
@@ -815,7 +815,7 @@ _STAGE_CONTINUATIONS = {
     "Native answer": "Continue the original user request.",
     "Agentic native pass 1": "Continue the current user turn.",
     "Agentic native pass 2": (
-        "[JACK RUNTIME STAGE CONTINUATION â€” NOT USER CONTENT â€” SAME USER TURN]\n"
+        "[JACK RUNTIME STAGE CONTINUATION - NOT USER CONTENT - SAME USER TURN]\n"
         "The immediately preceding assistant response is the completed, frozen Stage-1 answer. This is a retrospective memory pass, not a new user request. Explain why Stage 1 reached that answer using available Stage-1 reasoning and observed tool outcomes. Do not continue the task, address the user, ask questions, offer revisions, or emit tool calls."
     ),
 }
