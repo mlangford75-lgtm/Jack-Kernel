@@ -815,8 +815,8 @@ _STAGE_CONTINUATIONS = {
     "Native answer": "Continue the original user request.",
     "Agentic native pass 1": "Continue the current user turn.",
     "Agentic native pass 2": (
-        "[JACK RUNTIME STAGE CONTINUATION — NOT USER CONTENT — SAME USER TURN]\n"
-        "Generate Jack XML now."
+        "[JACK RUNTIME STAGE CONTINUATION â€” NOT USER CONTENT â€” SAME USER TURN]\n"
+        "The immediately preceding assistant response is the completed, frozen Stage-1 answer. This is a retrospective memory pass, not a new user request. Explain why Stage 1 reached that answer using available Stage-1 reasoning and observed tool outcomes. Do not continue the task, address the user, ask questions, offer revisions, or emit tool calls."
     ),
 }
 
@@ -930,8 +930,10 @@ def _stage_requires_user_continuation(profile: "StageProfile") -> bool:
     return True
 
 
-# Plain native and Agentic Stage-1 cognition intentionally carry no Jack-authored cognitive prompt.
+# Native mode has no Jack-authored cognitive prompt; Agentic Stage 1 has a minimal directive.
 THESIS_PROMPT = ""
+
+AGENTIC_STAGE1_PROMPT = "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer."
 
 ULTRA_STAGE1_THESIS_PROMPT = """You are Thesis.
 
@@ -941,135 +943,7 @@ You have no tools in this stage. Synthesis may receive the caller's tools and is
 
 Output only the plan."""
 
-AGENTIC_36_STAGE2_PROMPT = """Your only task in this stage is to construct a compact, high-signal Jack XML checkpoint for this completed current turn.
-
-The exact current user message is already retained deterministically by the Jack host outside Jack XML. Stage 1 has already produced the frozen model answer. Depending on model and backend capability, Stage 2 may also receive native Stage-1 reasoning and actual tool calls/results.
-
-Jack preserves completed Agentic turns as exact user message + compact Jack XML + exact frozen Stage-1 answer. Jack XML must not become a synthetic workspace truth source. Use fewer semantic surfaces with stronger meaning. Preserve the smallest future-useful semantic state that can improve downstream reasoning: decisive relationships or dependencies, actual evidence, deterministic verification, adversarial findings, unresolved verification needs, and concrete discovered output mistakes. Use the richest current-turn information actually available. If native Stage-1 reasoning is available, distill only material reasoning that matters downstream; if it is unavailable, do not invent it. Leave broad state reconstruction to future reasoning and fresh tools.
-
-Do not call tools.
-Do not generate or modify the frozen answer.
-Do not invent evidence.
-Do not reconstruct, summarize, or declare the current workspace state.
-Do not create anchor facts, operative-state summaries, persistent-constraint ledgers, dependency ledgers, open-loop ledgers, or superseded-state ledgers.
-Do not quote, reproduce, or summarize the current user message merely to preserve it; the host already preserves it exactly outside Jack XML.
-Do not treat prior Jack XML, Stage-1 reasoning, or the frozen Stage-1 answer as independent evidence.
-When fresh current-turn tool evidence conflicts with prior model-authored state, prefer the fresh tool evidence and record only the evidential conflict needed for calibration.
-
-<Prime_Directive>
-- The exact host-retained user message remains authoritative for what the user requested.
-- Actual user-provided evidence, established conversation evidence, and actual tool results retain evidential status.
-- Prior Jack XML is working memory/attention context, not an independent source of truth.
-- Stage-1 reasoning and frozen A1 are working cognition and claims to evaluate, not evidence.
-- Premise != fact.
-- Requested conclusion != evidence.
-- A deterministic check establishes only what it actually tested.
-- Absence of evidence != evidence of safety, success, harm, or failure.
-- User preference does not change truth conditions.
-- Prefer specific evidence and narrow verification over broad semantic summaries.
-- Preserve exact meaning: identities, values, constraints, dependencies, scope, polarity, causality, and uncertainty. Never invent, merge, rename, or substitute.
-- Current config != counterfactual config.
-- Preserve causal precision. When A1 asserts a causal relationship, verify that the stated cause actually applies to the stated case. Do not merge distinct causes.
-</Prime_Directive>
-
-Build exactly four semantic blocks inside <Jack XML>, in this order:
-
-<grounding>
-Observed:
-Not Observed:
-</grounding>
-
-For <grounding>:
-- Observed means evidentially observed, not merely visible to Stage 2.
-- Record only material user-provided evidence, established conversation evidence, or actual tool results available in the completed current turn.
-- Do not place Stage-1 reasoning, A1, model self-checks, or model-generated conclusions under Observed merely because Stage 2 can see them.
-- Be concrete: identify the source or tool result when material.
-- If no material evidence beyond the exact host-retained user message needs retention, write:
-Observed: NONE
-- If a material fact was not observed, place it under Not Observed rather than inferring it.
-- Do not describe the whole workspace, task history, or future plan.
-
-<verification>
-Verified:
-Scope:
-Not Verified:
-</verification>
-
-For <verification>:
-- Include only claims directly established by an actual deterministic Stage-1 tool/result.
-- Model-authored reasoning and self-checks are not deterministic verification.
-- Not Verified means not deterministically established, not false.
-- State the exact narrow scope of the verification.
-- Never generalize syntax, file presence, grep, tests, or inspection into broader success.
-- If no deterministic tool verification occurred, use exactly:
-Verified: NONE
-Scope: No deterministic tool verification occurred during Stage 1.
-Not Verified: Any claim requiring deterministic verification.
-
-<challenge>
-PREMISE
-Question: What must be true for the Stage-1 answer to satisfy the exact user request?
-Answer:
-
-INVALIDATION
-Question: What concrete material problem or contradiction is actually supported by the current record?
-Answer:
-
-</challenge>
-
-For <challenge>:
-- Materially test the frozen Stage-1 answer against the exact current user request, current stated configuration, and available evidence.
-- When native Stage-1 reasoning is available, use it to inspect material reasoning relevant to A1. When it is unavailable, do not invent hidden reasoning.
-- For INVALIDATION, identify only a problem supported by the current record. Do not invent a different interpretation or configuration in which a problem could exist. If none is found, write NONE.
-- Do not introduce requirements or success criteria the user did not ask for.
-- Do not weaken, remove, reinterpret, or replace an explicit constraint to manufacture a failure.
-- Do not manufacture uncertainty, alternative interpretations, failure modes, hypothetical edge cases, or assumptions merely to populate a lens. If no material issue exists for a lens, write NONE.
-- Do not create a replacement answer, corrective plan, or workspace summary.
-- Do not treat unverified claims as established facts.
-
-
-<audit>
-Verdict: PASS | REEVALUATE
-Finding:
-Reevaluate:
-</audit>
-
-For <audit>:
-- Act as an independent third-party auditor of the frozen Stage-1 answer.
-- Audit the frozen Stage-1 answer exactly as written. Do not audit a reconstructed, intended, or corrected version of it.
-- Cross-check materially relevant claims and representations within A1 against each other.
-- Report a conflict only when it is material to correctness, execution, verification, or reliable downstream use.
-- Do not escalate non-material discrepancies that do not change the operative meaning.
-- If materially conflicting representations exist, report the contradiction even when the intended meaning can be inferred. Do not silently choose or repair a preferred version.
-- Report only concrete material errors, contradictions, or omissions. Do not invent criticism.
-- Lack of deterministic verification is not automatically an error; preserve that verification need in <verification>.
-- Do not rewrite or repair the answer.
-- If no material defect is found, use:
-Verdict: PASS
-Finding: NONE
-Reevaluate: NONE
-- If a material defect is found, use:
-Verdict: REEVALUATE
-Finding: State exactly what is wrong.
-Reevaluate: State only what downstream reasoning should verify or reconcile before relying on the affected claim. Do not resolve the discrepancy, select an interpretation, or provide the correction.
-- Audit findings are guidance for reevaluation, not independent evidence.
-
-Output exactly:
-<Jack XML>
-<grounding>...</grounding>
-<verification>...</verification>
-<challenge>...</challenge>
-<audit>...</audit>
-</Jack XML>
-
-Rules:
-- Output Jack XML only.
-- Use NONE or NOT OBSERVED when warranted rather than inventing content.
-- Each semantic block must contribute distinct information. Do not repeat the same limitation, fact, or caution across multiple blocks unless the distinction materially changes its meaning. Prefer sparse, high-signal output.
-- Preserve only material semantic relationships, evidence, verification scope, adversarial findings, unresolved verification needs, and concrete discovered output mistakes that could improve downstream reasoning.
-- Do not copy the user request into XML merely for retention.
-- Do not rewrite the frozen answer.
-"""
+AGENTIC_36_STAGE2_PROMPT = "Generate a detailed summary of why you came to this conclusion."
 
 ULTRA_STAGE2_ANTITHESIS_PROMPT = """You are Antithesis.
 
@@ -2167,7 +2041,7 @@ STAGES: Dict[str, StageProfile] = {
     # non-executing Thesis -> question-only Antithesis -> tool-enabled authoritative Synthesis.
     "extended_initial": StageProfile(
         "Agentic native pass 1" if AGENTIC_MODE else "Deep Research Thesis pass 1",
-        THESIS_PROMPT if AGENTIC_MODE else ULTRA_STAGE1_THESIS_PROMPT,
+        AGENTIC_STAGE1_PROMPT if AGENTIC_MODE else ULTRA_STAGE1_THESIS_PROMPT,
         True,
         ACTIVE_REASONING_PROFILE.get("pass1", "xhigh"),
         True if AGENTIC_MODE else False,
@@ -3387,13 +3261,13 @@ def build_stage_system_prompt(secondary_system: str, profile: StageProfile, mess
     """Build the stage-local system instruction surface.
 
     Native mode receives only the optional persistent secondary prompt. Agentic Stage 1
-    remains raw. Every Deep Research stage receives only its own current stage contract; no
+    receives its minimal directive. Every Deep Research stage receives only its own current stage contract; no
     completed stage instruction is carried into another stage's system message.
     """
     if profile.name == "Native answer":
         return (secondary_system or "").strip()
     if profile.name == "Agentic native pass 1":
-        return ""
+        return profile.prompt
     if profile.name == "Code Debugging Intake":
         return _debugging_intake_system_prompt()
     if profile.name.startswith("Code Debugging Pass "):
@@ -3805,6 +3679,14 @@ def freeze_xml_stage_output(text: Any) -> str:
     return _content_to_text(text).strip()
 
 
+def _format_agentic_completed_response(memory: str, frozen_answer: str) -> str:
+    """Host-owned memory/answer boundary. Frozen A1 remains the exact output suffix."""
+    summary = _content_to_text(memory).strip()
+    if not summary:
+        raise ValueError("Agentic Stage 2 produced no distilled memory")
+    return f"<Agentic Memory>\n{summary}\n</Agentic Memory>\n\n<Model Response>\n{frozen_answer}"
+
+
 def strip_final_answer_heading(text: str) -> str:
     value = (text or "").strip()
     upper = value.upper()
@@ -3818,14 +3700,23 @@ FINAL_ANSWER_MARKER = "FINAL ANSWER:"
 
 
 def _split_prior_jack_output(content: Any) -> tuple[Optional[str], Optional[str]]:
-    """Recover the committed Jack XML + frozen Stage-1 answer boundary.
+    """Recover the Agentic Memory (or legacy XML) + frozen answer boundary.
 
-    Current Agentic output is emitted as an exact <Jack XML>...</Jack XML> block followed
+    New Agentic output uses host-owned memory/response labels; legacy XML was followed
     directly by the frozen Stage-1 answer. Legacy FINAL ANSWER/FROZEN XML markers remain
     readable for predecessor conversations.
     """
     if not isinstance(content, str) or not content:
         return None, None
+    # Current Agentic distillation format. Read from original content so the
+    # exact A1 payload (including significant surrounding whitespace) survives.
+    opener = "<Agentic Memory>\n"
+    divider = "\n</Agentic Memory>\n\n<Model Response>\n"
+    if content.startswith(opener):
+        boundary = content.find(divider, len(opener))
+        if boundary >= 0:
+            return content[len(opener):boundary], content[boundary + len(divider):]
+
     text = content.strip()
 
     jack_start = text.find("<Jack XML>")
@@ -3870,6 +3761,104 @@ def _split_prior_jack_output(content: Any) -> tuple[Optional[str], Optional[str]
     return None, None
 
 
+# Host-produced Agentic tool observations. These do NOT authorize new execution,
+# establish final filesystem identity, or upgrade caller-replayed text to trusted evidence.
+_AGENTIC_TOOL_NOTE_OPEN = "\n\n[Jack Tool History - Host-Recorded Receipt]\n"
+_AGENTIC_TOOL_NOTE_CLOSE = "\n[/Jack Tool History - Host-Recorded Receipt]"
+_AGENTIC_TOOL_NOTE_MAX_ENTRIES = 6
+_AGENTIC_TOOL_NOTE_MAX_TOTAL_CHARS = 2400
+_AGENTIC_TOOL_CONTEXT_BUDGET_CHARS = 4800
+
+
+def _agentic_tool_history_note(history: List[Dict[str, Any]]) -> str:
+    """Project completed stage-1 tool transactions into bounded factual receipts.
+
+    The full conversation protocol remains in the active Stage-1 history through
+    Stage 2. This host projection keeps only returned result identities and
+    *represented* targets, never claims to know the executor's resolved CWD.
+    Full tool results are recoverable only where Pi history or a successfully
+    written forensic snapshot actually exists.
+    """
+    metadata: Dict[str, Dict[str, str]] = {}
+    rows: List[str] = []
+
+    def safe(value: Any, limit: int = 120) -> str:
+        normalized = " ".join(str(value or "UNKNOWN").split())[:limit]
+        return html.escape(normalized, quote=True)
+
+    for item in history:
+        if not isinstance(item, dict) or not item.get("_jack_internal_tool_exchange"):
+            continue
+        if item.get("role") == "assistant" and item.get("tool_calls"):
+            metadata.update(_tool_call_metadata(item.get("tool_calls")))
+            continue
+        if item.get("role") != "tool":
+            continue
+        call_id = str(item.get("tool_call_id") or "").strip()
+        meta = metadata.get(call_id)
+        if not call_id or not meta:
+            continue
+        target = str(meta.get("artifact_target") or "UNKNOWN")
+        is_absolute = bool(re.match(r"^(?:[A-Za-z]:[\\/]|/|\\\\)", target))
+        kind = "REPRESENTED_ABSOLUTE_UNVERIFIED" if is_absolute else (
+            "UNKNOWN" if target == "UNKNOWN" else "RELATIVE_CWD_UNKNOWN"
+        )
+        result = _content_to_text(item.get("content"))
+        outcome = "REPORTED_ERROR" if item.get("_jack_internal_tool_failed") else "RESULT_RETURNED"
+        rows.append(
+            f"- id={safe(call_id, 110)}; tool={safe(item.get('name') or meta.get('tool'), 55)}; "
+            f"target={safe(target, 150)}; path={kind}; "
+            f"outcome={outcome}; result_sha256={_sha256_text(result)}; "
+            f"args_sha256={safe(meta.get('arguments_sha256'), 64)}"
+        )
+    if not rows:
+        return ""
+    omitted = max(0, len(rows) - _AGENTIC_TOOL_NOTE_MAX_ENTRIES)
+    rows = rows[-_AGENTIC_TOOL_NOTE_MAX_ENTRIES:]
+    while rows and len("\n".join(rows)) > _AGENTIC_TOOL_NOTE_MAX_TOTAL_CHARS:
+        rows.pop(0)
+        omitted += 1
+    if not rows:
+        return ""
+    footnote = (
+        "Paths above are representations from tool calls; execution CWD and "
+        "resolved on-disk identity are NOT verified. A returned result is NOT "
+        "proof of filesystem effect. Tool history is not a new tool request."
+    )
+    body = "\n".join(rows)
+    if omitted:
+        body += f"\n[{omitted} older tool receipt(s) omitted from context]"
+    return _AGENTIC_TOOL_NOTE_OPEN + body + "\n" + footnote + _AGENTIC_TOOL_NOTE_CLOSE
+
+
+def _agentic_limit_tool_history_context(messages: List[Dict[str, Any]]) -> None:
+    """Bound host tool receipts over ALL completed turns without changing A1.
+
+    Only the exact host receipt markers are removed, working from old turns to
+    new turns. The caller's original conversation objects are copy-on-write.
+    This does not reduce the size of user requests, A1 answers, or Stage-2 memory.
+    """
+    consumed = 0
+    for message in reversed(messages):
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        content = message.get("content")
+        if not isinstance(content, str):
+            continue
+        begin = content.find(_AGENTIC_TOOL_NOTE_OPEN)
+        if begin < 0:
+            continue
+        end = content.find(_AGENTIC_TOOL_NOTE_CLOSE, begin + len(_AGENTIC_TOOL_NOTE_OPEN))
+        if end < 0:
+            continue
+        end += len(_AGENTIC_TOOL_NOTE_CLOSE)
+        size = end - begin
+        if consumed + size <= _AGENTIC_TOOL_CONTEXT_BUDGET_CHARS:
+            consumed += size
+        else:
+            message["content"] = content[:begin] + content[end:]
+
+
 def _stage2_reasoning_trace(reasoning: Optional[str]) -> Optional[str]:
     """Format final substantive-stage reasoning for response observability."""
     text = str(reasoning or "").strip()
@@ -3885,14 +3874,14 @@ def _compact_agentic_completed_capsules(
 
     A durable Agentic turn is represented in ordinary conversation order as:
         exact host-captured user message
-        + committed assistant artifact (Jack XML + exact frozen Stage-1 answer).
+        + committed assistant artifact (Agentic Memory + exact frozen Stage-1 answer).
 
     Historical native reasoning, consumed tool-call/result protocol, Jack runtime prompts,
     and other transient stage machinery are removed. The newest user turn remains active
     and is not duplicated into the completed history. This keeps user authority byte-faithful
-    while letting each Jack XML checkpoint remain turn-local rather than acting as a lossy
+    while letting each Agentic Memory checkpoint remain turn-local rather than acting as a lossy
     rewrite of the entire conversation. User requests survive directly in user-role messages,
-    not through a model-authored User Request field in Jack XML.
+    not through a model-authored field in Agentic Memory.
     """
     compact = strip_secondary_system_messages(messages)
     latest_user_index: Optional[int] = None
@@ -3940,7 +3929,7 @@ def _compact_agentic_completed_capsules(
             if isinstance(key, str) and key.startswith("_jack_"):
                 item.pop(key, None)
         item.pop("tool_calls", None)
-        # The visible Agentic commit contains host-owned XML/separator bytes followed
+        # The visible Agentic commit contains host-owned delimiters followed
         # by the exact frozen A1. Validate emptiness above, but never normalize the
         # committed content here or the next turn would silently rewrite A1.
         item["content"] = text
@@ -3981,6 +3970,7 @@ def _compact_agentic_completed_capsules(
         pruned_tool_messages,
         pruned_reasoning_chars,
     )
+    _agentic_limit_tool_history_context(retained)
     return retained + tail
 
 
@@ -6890,26 +6880,25 @@ class JackQwenKernel:
         frozen_jack_xml: str,
         stage2_reasoning: Optional[str] = None,
     ) -> PreparedCommit:
-        """Commit Stage-2 Jack XML beside the exact frozen Stage-1 answer.
+        """Commit Stage-2 reasoning distillation beside the exact frozen Stage-1 answer.
 
-        Stage 1 is the sole answer-generating stage. Stage 2 reviews the complete
-        Stage-1 trajectory under Preserve Thinking and emits Jack XML only. After XML
-        reaches EOS, Jack archives Stage-1 reasoning when enabled, clears all native
-        cognition (including Stage-2 XML reasoning), and retains only the exact user-role message,
-        Jack XML, and frozen Stage-1 answer for future turns. Jack XML does not need to
-        reproduce the user request because the user-role message itself survives.
+        Stage 1 owns the answer. Stage 2 has zero answer authority; it distills
+        the completed native reasoning. The host wraps that memory separately from
+        frozen A1. Active native cognition is then retired; later turns retain
+        exact user requests, committed memory, and the frozen response.
         """
         if not AGENTIC_MODE:
             raise HTTPException(status_code=500, detail="Agentic two-stage commit is only valid in Agentic mode")
-        xml = freeze_xml_stage_output(frozen_jack_xml)
-        if not xml:
-            raise HTTPException(status_code=502, detail="Agentic Stage 2 produced no Jack XML content.")
-        _archive_agentic_stage1_forensic(history, frozen_stage1_answer, xml)
+        memory = freeze_xml_stage_output(frozen_jack_xml)
+        if not memory:
+            raise HTTPException(status_code=502, detail="Agentic Stage 2 produced no distilled memory.")
+        memory += _agentic_tool_history_note(history)
+        _archive_agentic_stage1_forensic(history, frozen_stage1_answer, memory)
         history.clear()
         return PreparedCommit(
-            frozen_xml=xml,
+            frozen_xml=memory,
             frozen_answer=frozen_stage1_answer,
-            authoritative_source="STAGE1_FROZEN_PLUS_STAGE2_XML",
+            authoritative_source="STAGE1_FROZEN_PLUS_STAGE2_MEMORY",
             usage=usage,
             stage2_reasoning=str(stage2_reasoning or "").strip() or None,
         )
@@ -6920,14 +6909,14 @@ class JackQwenKernel:
         """Preserve exact frozen A1 when zero-authority semantic consolidation cannot complete."""
         _discard_agentic_stage1_forensic_snapshot(history)
         history.clear()
-        LOG.warning("Agentic degraded commit: exact frozen A1 preserved without Jack XML: %s", reason)
+        LOG.warning("Agentic degraded commit: exact frozen A1 preserved without distilled memory: %s", reason)
         return KernelResult(
             content=frozen_stage1_answer,
             tool_calls=None,
             finish_reason="stop",
             usage=normalize_usage(dict(usage)),
             reasoning_content=(
-                "[JACK AGENTIC DEGRADED COMMIT — A1 PRESERVED; JACK XML NOT PRODUCED]\n"
+                "[JACK AGENTIC DEGRADED COMMIT — A1 PRESERVED; MEMORY NOT PRODUCED]\n"
                 + reason[:1200]
             ),
         )
@@ -7281,7 +7270,7 @@ class JackQwenKernel:
                 choice = (xml_stage.get("choices") or [{}])[0] or {}
                 msg = choice.get("message") or {}
                 reasoning = msg.get("_jack_stage2_reasoning_trace") or msg.get("reasoning_content") or msg.get("reasoning") or msg.get("thinking")
-                frozen_jack_xml = self._exact_frozen_answer_from_stage(xml_stage, "Agentic Stage 2 Jack XML")
+                frozen_jack_xml = self._exact_frozen_answer_from_stage(xml_stage, "Agentic Stage 2 distillation")
                 completed = await self._complete_commit(
                     history,
                     state.secondary_system,
@@ -7405,7 +7394,7 @@ class JackQwenKernel:
                 choice = (second.get("choices") or [{}])[0] or {}
                 msg = choice.get("message") or {}
                 reasoning = msg.get("_jack_stage2_reasoning_trace") or msg.get("reasoning_content") or msg.get("reasoning") or msg.get("thinking")
-                frozen_jack_xml = self._exact_frozen_answer_from_stage(second, "Agentic Stage 2 Jack XML")
+                frozen_jack_xml = self._exact_frozen_answer_from_stage(second, "Agentic Stage 2 distillation")
                 return await self._complete_commit(
                     history,
                     secondary_system,
@@ -7639,7 +7628,7 @@ class JackQwenKernel:
                 prepared.usage = usage_delta(prepared.usage, response_usage_baseline)
                 return prepared
 
-            complete = f"{prepared.frozen_xml}\n\n{prepared.frozen_answer}"
+            complete = _format_agentic_completed_response(prepared.frozen_xml, prepared.frozen_answer)
             return KernelResult(
                 content=complete,
                 tool_calls=None,
@@ -7951,7 +7940,7 @@ class JackQwenKernel:
                             elif AGENTIC_MODE:
                                 if not stage_content_started:
                                     stage_content_started = True
-                                    yield event({"reasoning_content": "\n[STAGE 2 JACK XML GENERATION]\n"})
+                                    yield event({"reasoning_content": "\n[STAGE 2 REASONING DISTILLATION]\n"})
                                 yield event({"reasoning_content": packet["text"]})
                             elif ULTRA_MODE and stage_key == "extended_reflection":
                                 # Antithesis is advisory and non-authoritative, but it should still be
@@ -8126,12 +8115,18 @@ class JackQwenKernel:
                         or final_msg.get("thinking")
                         or ""
                     )
-                    frozen_jack_xml = self._exact_frozen_answer_from_stage(final_result, "Agentic Stage 2 Jack XML")
+                    frozen_jack_xml = self._exact_frozen_answer_from_stage(final_result, "Agentic Stage 2 distillation")
                     if agentic_frozen_stage1_answer is None:
                         raise HTTPException(status_code=500, detail="Agentic Stage-1 frozen answer was unavailable at commit")
-                    committed_output = f"{freeze_xml_stage_output(frozen_jack_xml)}\n\n{agentic_frozen_stage1_answer}"
+                    distilled_memory = freeze_xml_stage_output(frozen_jack_xml)
+                    if not distilled_memory:
+                        raise HTTPException(status_code=502, detail="Agentic Stage 2 produced no distilled memory.")
+                    distilled_memory += _agentic_tool_history_note(history)
+                    committed_output = _format_agentic_completed_response(
+                        distilled_memory, agentic_frozen_stage1_answer
+                    )
                     _archive_agentic_stage1_forensic(
-                        history, agentic_frozen_stage1_answer, freeze_xml_stage_output(frozen_jack_xml)
+                        history, agentic_frozen_stage1_answer, distilled_memory
                     )
                     history.clear()
                 except Exception as exc:
@@ -8149,7 +8144,7 @@ class JackQwenKernel:
                     return
                 if pending_state is not None:
                     await self._retire_pending_tool_resume(pending_state)
-                yield event({"reasoning_content": "\n[END AGENTIC STAGE 2 — JACK XML COMPLETE; A1 COMMIT]\n"})
+                yield event({"reasoning_content": "\n[END AGENTIC STAGE 2 — MEMORY COMPLETE; A1 COMMIT]\n"})
                 yield event({"content": committed_output})
                 yield event({}, "stop")
                 yield usage_event(usage_delta(usage, response_usage_baseline))
@@ -10369,7 +10364,7 @@ def _edit_sampling(cfg: Dict[str, Any]) -> None:
     print()
     print("Stage temperatures")
     print("Deep Research: Stage 1 = 0.85; Stage 2 = 0.70; Stage 3 = 0.70 (fixed).")
-    print("Agentic: Stage 1 = 0.70; Stage 2 Jack XML = 0.50 (fixed).")
+    print("Agentic: Stage 1 = 0.70; Stage 2 distillation = 0.50 (fixed).")
     print("Code Debugging: Passes 1-5 = 1.00 / 0.80 / 0.70 / 0.60 / 0.50; final report = 1.00 (fixed).")
 
     print()
