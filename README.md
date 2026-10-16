@@ -69,13 +69,19 @@ Jack's cognition modes are **programs built on the Kernel**. They do not make Ja
 | Medium | Direct native Medium reasoning |
 | X-High | Direct native X-High reasoning |
 | Deep Research | X-High Thesis → Medium Antithesis → X-High authoritative Synthesis |
-| Agentic | Full native Stage-1 cognition, staged tool continuation, then semantic Jack XML consolidation |
+| Agentic | Full native Stage-1 cognition and authorized tools, exact frozen A1, followed by tools-off Stage-2 retrospective reasoning distillation, host receipts, and completed-turn pruning |
 | Code Debugging | Five-pass, report-only defect review using Medium reasoning |
 | Code Debugging (Deep) | Same report-only topology at X-High reasoning |
 
 For selection, supported deployment commands, and runtime lanes, see [Getting Started](GETTING_STARTED.md#3-choose-a-cognition-program).
 
 The current integrated control surfaces include the OpenAI-compatible `/v1` API (including Responses compatibility), Orchestration Gateway v2 for supervisor-to-worker mediation, authenticated Pi worker control, and independently identified multi-endpoint runtime lanes. `runtime_id` and `lane_id` are logical identities; ports and sockets remain transport locators.
+
+### Agentic retrospective-memory release candidate (October 15, 2026)
+
+The [October 15 Agentic release candidate](Documentation/Agentic/AGENTIC_RETROSPECTIVE_MEMORY_RELEASE_2026-10-15.md) replaces the earlier long-form Stage-2 Jack XML audit with the short instruction **“Generate a detailed summary of why you came to this conclusion.”** Jack freezes the Stage-1 answer, performs a tools-off retrospective pass, wraps distilled memory and bounded host-recorded tool receipts separately from the exact frozen answer, and prunes completed raw reasoning and obsolete tool protocol for later turns. These memory statements remain model-authored; host tool receipts do not prove external effects.
+
+**Release state:** the candidate is committed on a release branch, not yet merged or tagged. Local October 15 validation reported 525 Python passes, two environment-related `httpx` subprocess failures requiring a clean rerun, and seven passing Pi harnesses. Security Phase 8 remains the latest validated phase. Existing historic Agentic demonstrations and DOCX papers may describe an earlier XML variant; those descriptions are not the October 15 candidate.
 
 ### Agentic continuation correction
 

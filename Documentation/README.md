@@ -21,6 +21,10 @@ For a new user, read in this order:
 
 - [`Research/Jack_Kernel_Long_Horizon_Cognition_Technical_Whitepaper_v0.1.1.docx`](Research/Jack_Kernel_Long_Horizon_Cognition_Technical_Whitepaper_v0.1.1.docx) — research and architectural treatment of long-horizon cognition.
 
+## Agentic
+
+- [`Agentic Retrospective Memory — October 15 Release Candidate`](Agentic/AGENTIC_RETROSPECTIVE_MEMORY_RELEASE_2026-10-15.md) — current implementation design, memory/answer authority separation, receipt boundaries, pruning, local test evidence, and pending release validation. This candidate is not yet merged into `main`; older v0.1.1 DOCX texts retain historical descriptions of the preceding Agentic XML topology.
+
 ## Orchestration
 
 - [`Orchestration/README.md`](Orchestration/README.md) — current navigation and interaction notes.

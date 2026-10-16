@@ -80,7 +80,7 @@ Port 8000 remains available for a custom OpenAI-compatible/vLLM backend. Do not 
 - **Medium** — direct native Medium reasoning.
 - **X-High** — direct native X-High reasoning.
 - **Deep Research** — X-High Thesis -> Medium Antithesis -> X-High authoritative Synthesis.
-- **Agentic** — full native Stage-1 cognition followed by semantic Jack XML consolidation. Merged PR #45 also corrects live tool-result continuation when clients replay retired historical tool results; withheld or conflicting live results remain rejected.
+- **Agentic (October 15 release candidate)** — full native Stage-1 cognition and caller-authorized tools, exact Stage-1 answer freeze, then a tools-off Stage-2 retrospective memory summary; Jack wraps memory and bounded host tool receipts, prunes completed raw reasoning and tool protocol, and retains exact user requests and frozen answers. This candidate is not yet merged into `main`. See [Agentic technical record](Documentation/Agentic/AGENTIC_RETROSPECTIVE_MEMORY_RELEASE_2026-10-15.md). The merged PR #45 historical tool-result continuation correction remains in force; withheld or conflicting live results are still rejected.
 - **Code Debugging** — five-pass report-only forensic audit at Medium reasoning.
 - **Code Debugging (Deep)** — the same forensic topology at X-High reasoning.
 
