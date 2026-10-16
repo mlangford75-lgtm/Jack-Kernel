@@ -3679,27 +3679,6 @@ def freeze_xml_stage_output(text: Any) -> str:
     return _content_to_text(text).strip()
 
 
-def _agentic_escape_model_memory(memory: str) -> str:
-    """Neutralize model-authored strings that resemble Kernel-owned markers.
-
-    Stage-2 content is working memory, never a source of host boundaries or
-    receipts. Keep the semantic text readable while protecting A1 separation
-    and receipt pruning from delimiter spoofing.
-    """
-    text = _content_to_text(memory).strip()
-    return (
-        text.replace("</Agentic Memory>", "&lt;/Agentic Memory&gt;")
-        .replace(
-            "[Jack Tool History - Host-Recorded Receipt]",
-            "[Jack Tool History - Model-Quoted Receipt]",
-        )
-        .replace(
-            "[/Jack Tool History - Host-Recorded Receipt]",
-            "[/Jack Tool History - Model-Quoted Receipt]",
-        )
-    )
-
-
 def _format_agentic_completed_response(memory: str, frozen_answer: str) -> str:
     """Host-owned memory/answer boundary. Frozen A1 remains the exact output suffix."""
     summary = _content_to_text(memory).strip()
@@ -6910,7 +6889,7 @@ class JackQwenKernel:
         """
         if not AGENTIC_MODE:
             raise HTTPException(status_code=500, detail="Agentic two-stage commit is only valid in Agentic mode")
-        memory = _agentic_escape_model_memory(freeze_xml_stage_output(frozen_jack_xml))
+        memory = freeze_xml_stage_output(frozen_jack_xml)
         if not memory:
             raise HTTPException(status_code=502, detail="Agentic Stage 2 produced no distilled memory.")
         memory += _agentic_tool_history_note(history)
@@ -8139,7 +8118,7 @@ class JackQwenKernel:
                     frozen_jack_xml = self._exact_frozen_answer_from_stage(final_result, "Agentic Stage 2 distillation")
                     if agentic_frozen_stage1_answer is None:
                         raise HTTPException(status_code=500, detail="Agentic Stage-1 frozen answer was unavailable at commit")
-                    distilled_memory = _agentic_escape_model_memory(freeze_xml_stage_output(frozen_jack_xml))
+                    distilled_memory = freeze_xml_stage_output(frozen_jack_xml)
                     if not distilled_memory:
                         raise HTTPException(status_code=502, detail="Agentic Stage 2 produced no distilled memory.")
                     distilled_memory += _agentic_tool_history_note(history)
