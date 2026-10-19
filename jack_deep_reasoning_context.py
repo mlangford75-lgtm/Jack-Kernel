@@ -94,10 +94,16 @@ def _artifact_handoff(references: Sequence[Mapping[str, Any]]) -> str:
 
 def antithesis_messages(
     *, request: str, thesis_answer: str,
+    visible_history: Sequence[Mapping[str, Any]] = (),
     host_artifact_references: Sequence[Mapping[str, Any]] = (),
 ) -> list[dict[str, Any]]:
-    """Current request + A1 + tool target locators; never R1 or prior tool protocol."""
-    return [
+    """Complete prior visible conversation + current request and untrusted A1.
+
+    Historical user instructions survive the stage boundary in original order.
+    Only committed, visible assistant content crosses; no R1, native reasoning,
+    historical tool protocol, or host-private metadata is projected.
+    """
+    return _safe_visible_history(visible_history) + [
         {"role": "user", "content": _text(request, "request")},
         {"role": "assistant", "content": _text(thesis_answer, "thesis_answer")},
         {"role": "user", "content": (
@@ -114,13 +120,15 @@ def antithesis_messages(
 
 def synthesis_messages(
     *, request: str, thesis_answer: str, antithesis_findings: str,
+    visible_history: Sequence[Mapping[str, Any]] = (),
     host_evidence_receipts: Sequence[Mapping[str, Any]] = (),
     host_artifact_references: Sequence[Mapping[str, Any]] = (),
 ) -> list[dict[str, Any]]:
-    """Only visible A1/A2 and host-supplied receipts reach Synthesis.
+    """Complete prior visible conversation + A1/A2 and authenticated receipts.
 
-    Tool outputs are untrusted observations; the caller must authenticate them.
-    No raw tool-call history, R1, R2 or previous R3 is accepted here.
+    Tool outputs remain untrusted observations. No prior raw tool-call history,
+    native R1/R2, or previous R3 crosses this boundary. Earlier user requests
+    are authoritative task history and must not be pruned with model cognition.
     """
     receipts = []
     for receipt in host_evidence_receipts:
@@ -128,7 +136,7 @@ def synthesis_messages(
             raise ValueError("host evidence receipts must be mappings")
         receipts.append(copy.deepcopy(dict(receipt)))
     evidence = json.dumps(receipts, ensure_ascii=False, sort_keys=True, default=str)
-    return [
+    return _safe_visible_history(visible_history) + [
         {"role": "user", "content": _text(request, "request")},
         {"role": "assistant", "content": _text(thesis_answer, "thesis_answer")},
         {"role": "user", "content": "The preceding assistant message is the Thesis candidate. Next comes Antithesis's findings."},

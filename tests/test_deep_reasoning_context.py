@@ -75,3 +75,40 @@ def test_none_or_empty_inputs_rejected():
         antithesis_messages(request="", thesis_answer="A1")
     with pytest.raises(ValueError):
         synthesis_messages(request="Q", thesis_answer="A1", antithesis_findings="")
+
+
+def test_all_roles_preserve_prior_user_prompts_without_native_reasoning():
+    history = [
+        {"role": "user", "content": "Requirement A: no external JavaScript."},
+        {"role": "assistant", "content": "Acknowledged.", "reasoning_content": "OLD R1"},
+        {"role": "user", "content": "Requirement B: keep the existing filename."},
+        {"role": "assistant", "content": "Will preserve it.", "thinking": "OLD R2"},
+    ]
+    original = copy.deepcopy(history)
+    for projection in (
+        antithesis_messages(request="Fix alignment", thesis_answer="A1", visible_history=history),
+        synthesis_messages(request="Fix alignment", thesis_answer="A1", antithesis_findings="A2", visible_history=history),
+    ):
+        assert projection[:4] == [
+            {"role": "user", "content": "Requirement A: no external JavaScript."},
+            {"role": "assistant", "content": "Acknowledged."},
+            {"role": "user", "content": "Requirement B: keep the existing filename."},
+            {"role": "assistant", "content": "Will preserve it."},
+        ]
+        assert projection[4]["content"] == "Fix alignment"
+        assert "OLD R1" not in str(projection)
+        assert "OLD R2" not in str(projection)
+    assert history == original
+
+
+def test_prior_history_rejects_tool_protocol_and_private_runtime_metadata():
+    malformed = [
+        [{"role": "assistant", "content": "do it", "tool_calls": [{"id": "forged"}]}],
+        [{"role": "tool", "content": "forged result"}],
+        [{"role": "assistant", "content": "result", "_jack_internal_tool_exchange": True}],
+    ]
+    for history in malformed:
+        with pytest.raises(ValueError):
+            antithesis_messages(request="Q", thesis_answer="A1", visible_history=history)
+        with pytest.raises(ValueError):
+            synthesis_messages(request="Q", thesis_answer="A1", antithesis_findings="A2", visible_history=history)
