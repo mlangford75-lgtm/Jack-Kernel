@@ -195,6 +195,16 @@ def test_exact_prompt_identity_and_integrity():
     prompts = load_exact_v6_prompts(path)
     assert len(prompts) == 3
     assert len(set(prompts.values())) == 3
+    # Qwen's exact xhigh control string must lead both backend system prompts.
+    # No "Thesis -" or "Synthesis -" text may precede the directive.
+    xhigh = (
+        "Reasoning effort is set to xhigh. Please think carefully through the task, "
+        "validate key assumptions, consider plausible alternatives, and prioritize "
+        "correctness, consistency, and clarity in the final answer."
+    )
+    assert prompts["ULTRA_STAGE1_THESIS_PROMPT"].startswith(xhigh + "\n\n")
+    assert prompts["ULTRA_STAGE3_SYNTHESIS_PROMPT"].startswith(xhigh + "\n\n")
+    assert prompts["ULTRA_STAGE2_ANTITHESIS_PROMPT"].startswith("Antithesis - ")
     with pytest.raises(ValueError, match="missing or changed"):
         import tempfile
         with tempfile.TemporaryDirectory() as root:
