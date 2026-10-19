@@ -8230,7 +8230,20 @@ class JackQwenKernel:
                     stage_result = self_adversarial_results[stage_key]
                     if self._tool_interrupt(stage_result, usage):
                         if AGENTIC_MODE and stage_key == "extended_reflection":
-                            raise HTTPException(status_code=502, detail="Agentic Stage 2 attempted a tool call even though XML-stage tools are disabled")
+                            if agentic_frozen_stage1_answer is None:
+                                raise HTTPException(status_code=500, detail="Agentic frozen A1 unavailable after Stage-2 tool interruption")
+                            degraded = self._agentic_degraded_result(
+                                history, usage, agentic_frozen_stage1_answer,
+                                "Agentic Stage 2 attempted a forbidden tool call"
+                            )
+                            if pending_state is not None:
+                                await self._retire_pending_tool_resume(pending_state)
+                            yield event({"reasoning_content": "\n" + (degraded.reasoning_content or "") + "\n"})
+                            yield event({"content": degraded.content or ""})
+                            yield event({}, "stop")
+                            yield usage_event(usage_delta(usage, response_usage_baseline))
+                            yield b"data: [DONE]\n\n"
+                            return
                         if ULTRA_MODE and stage_key == "extended_initial":
                             raise HTTPException(status_code=502, detail="Deep Research Thesis attempted a tool call even though the non-executing Thesis stage has tools disabled")
                         if ULTRA_MODE and stage_key == "extended_reflection":
