@@ -99,7 +99,7 @@ async def _test_full_nonstream_toolfirst_and_isolation_async():
     result = await kernel._prepare_commit({'messages':[{'role':'user','content':'Solve circle'}], 'tools':tools()})
     assert result.finish_reason == 'tool_calls'
     assert result.tool_calls[0]['function']['name'] == 'python_repl'
-    assert kernel.calls[1][2] == 'required'
+    assert kernel.calls[1][2] == 'auto'  # Authorized tools remain available but are never compulsory
     assert [t['function']['name'] for t in kernel.calls[1][3]] == ['python_repl']
     assert 'SECRET_R1' not in repr(kernel.calls[1][1])
     active=kernel._pending_tool_resumes['call-7']
@@ -179,4 +179,37 @@ def test_kernel_preserves_historical_user_constraints_in_each_stage():
             if stage_key == 'deep_reasoning_synthesis':
                 assert "SECRET_R1" not in repr(messages)
                 assert "SECRET_R2" not in repr(messages)
+    asyncio.run(run())
+
+
+def test_creative_request_with_tools_completes_without_irrelevant_tool_call():
+    async def run():
+        class CreativeFakeKernel(FakeKernel):
+            async def _run_stage(self, messages, secondary_system, stage_key, usage, *, tools, tool_choice, append):
+                if stage_key == 'deep_reasoning_antithesis':
+                    self.calls.append((stage_key, messages, tool_choice, tools))
+                    return {'choices': [{'message': {'content':
+                        'SUPPORTED: the earlier three-playable-character limit is preserved; no file search needed'}}]}
+                return await super()._run_stage(messages, secondary_system, stage_key, usage,
+                                                tools=tools, tool_choice=tool_choice, append=append)
+        kernel = CreativeFakeKernel()
+        install_deep_reasoning(kernel, ns())
+        response = await kernel._prepare_commit({'messages': [
+            {'role':'user','content':'No supernatural elements, three playable characters.'},
+            {'role':'assistant','content':'Underwater survival concept.'},
+            {'role':'user','content':'Invent a mysterious fourth NPC.'}
+        ], 'tools':tools()})
+        assert response.finish_reason == 'stop'
+        assert response.tool_calls is None
+        assert response.content == 'Synthesis: Part B=17'
+        assert [stage for stage, *_ in kernel.calls] == [
+            'deep_reasoning_thesis','deep_reasoning_antithesis','deep_reasoning_synthesis']
+        assert kernel.calls[1][2] == 'auto'
+        assert kernel.calls[1][3] == tools()  # Never revoke tool authorization
+        assert [msg['content'] for msg in kernel.calls[1][1][:4]] == [
+            'No supernatural elements, three playable characters.',
+            'Underwater survival concept.',
+            'Invent a mysterious fourth NPC.',
+            'Thesis: Part B=15',
+        ]
     asyncio.run(run())

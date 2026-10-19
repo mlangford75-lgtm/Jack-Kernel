@@ -320,7 +320,10 @@ def install_deep_reasoning(kernel: Any, namespace: Any) -> None:
                 visible_history=history,
                 prior_synthesis=prior_synthesis,
                 preserve_thinking=bool(preserve_enabled and prior_synthesis is not None),
-                require_verification=bool(tools),
+                # Authorize meaningful tool tests without forcing a first call simply
+                # because the caller supplied a tool surface. A required call
+                # on a creative/no-evidence request is not verification.
+                require_verification=False,
             )
         except BaseException as exc:
             # Failed or cancelled Thesis may retry its one allowed R3 handoff.
