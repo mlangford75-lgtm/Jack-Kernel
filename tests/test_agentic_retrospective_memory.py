@@ -63,16 +63,27 @@ def test_stage_contracts_and_frozen_answer_are_separate():
 
     answer = "  exact answer\nwith trailing spaces  \n"
     memory = "The approach preserved the user's constraints."
-    rendered = k._format_agentic_completed_response(memory, answer)
+    token = k._AGENTIC_SESSION_ID.set("test-runtime:test-lane:session-0000000000000001")
+    try:
+        rendered = k._format_agentic_completed_response(memory, answer)
+    finally:
+        k._AGENTIC_SESSION_ID.reset(token)
     assert rendered == answer
     assert "<Agentic Memory>" not in rendered
     assert "<Model Response>" not in rendered
+    # Legacy stateless callers preserve their in-band semantic memory.
+    legacy = k._format_agentic_completed_response(memory, answer)
+    assert k._split_prior_jack_output(legacy) == (memory, answer)
 
 
 def test_agentic_gc_retires_native_reasoning_and_tool_protocol():
     k = load_kernel()
     answer = "A1"
-    assert k._format_agentic_completed_response("Retained lesson", answer) == answer
+    token = k._AGENTIC_SESSION_ID.set("test-runtime:test-lane:session-0000000000000001")
+    try:
+        assert k._format_agentic_completed_response("Retained lesson", answer) == answer
+    finally:
+        k._AGENTIC_SESSION_ID.reset(token)
     messages = [
         {"role": "user", "content": "first question"},
         {"role": "assistant", "content": answer, "reasoning_content": "long raw reasoning"},
@@ -90,9 +101,12 @@ def test_agentic_gc_retires_native_reasoning_and_tool_protocol():
 
 
 def test_tag_free_replay_memory_and_isolation():
+    # Simulate a bound Pi session for volatile replay testing.
+
     k = load_kernel()
     from types import SimpleNamespace
     kernel = k.JackQwenKernel(SimpleNamespace(), k.CFG)
+    k._AGENTIC_SESSION_ID.set("test-runtime:test-lane:session-0000000000000001")
     system = "Stable caller instruction"
     previous = [
         {"role": "user", "content": "Initial task"},
@@ -115,9 +129,12 @@ def test_tag_free_replay_memory_and_isolation():
 
 
 def test_tag_free_replay_collision_fails_closed():
+    # Simulate a bound Pi session for volatile replay testing.
+
     k = load_kernel()
     from types import SimpleNamespace
     kernel = k.JackQwenKernel(SimpleNamespace(), k.CFG)
+    k._AGENTIC_SESSION_ID.set("test-runtime:test-lane:session-0000000000000001")
     history = [
         {"role": "user", "content": "task"},
         {"role": "assistant", "content": "same answer"},
@@ -150,9 +167,12 @@ def test_receipts_are_host_created_bounded_and_non_authoritative():
 
 
 def test_replay_receipt_budget_preserves_semantic_memory_and_a1():
+    # Simulate a bound Pi session for volatile replay testing.
+
     k = load_kernel()
     from types import SimpleNamespace
     kernel = k.JackQwenKernel(SimpleNamespace(), k.CFG)
+    k._AGENTIC_SESSION_ID.set("test-runtime:test-lane:session-0000000000000001")
     turns = []
     for i in range(10):
         turns.append({"role": "user", "content": f"request-{i}"})
