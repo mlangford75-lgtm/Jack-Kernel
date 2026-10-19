@@ -3919,7 +3919,7 @@ _AGENTIC_MEMORY_REPLAY_LIMIT = 64
 def _agentic_visible_transcript(messages: Iterable[Dict[str, Any]]) -> List[Dict[str, str]]:
     visible: List[Dict[str, str]] = []
     for item in messages:
-        if not isinstance(item, dict) or item.get("_jack_internal_stage_generation_trigger"):
+        if not isinstance(item, dict) or any(item.get(key) for key in ("_jack_internal_stage_generation_trigger", "_jack_internal_tool_validation_rejection", "_jack_tool_evidence_receipt")):
             continue
         role = item.get("role")
         if role not in {"user", "assistant"} or item.get("tool_calls"):
@@ -5386,7 +5386,7 @@ class JackQwenKernel:
         receipt_budget = _AGENTIC_TOOL_CONTEXT_BUDGET_CHARS
         history_items = []
         for item in history:
-            if not isinstance(item, dict) or item.get("_jack_internal_stage_generation_trigger"):
+            if not isinstance(item, dict) or any(item.get(key) for key in ("_jack_internal_stage_generation_trigger", "_jack_internal_tool_validation_rejection", "_jack_tool_evidence_receipt")):
                 continue
             if item.get("role") not in {"user", "assistant"} or item.get("tool_calls"):
                 continue
@@ -5435,7 +5435,7 @@ class JackQwenKernel:
             raise ValueError("Completed Agentic memory has no frozen A1")
         records: List[Optional[Dict[str, str]]] = []
         for item in history:
-            if not isinstance(item, dict) or item.get("_jack_internal_stage_generation_trigger"):
+            if not isinstance(item, dict) or any(item.get(key) for key in ("_jack_internal_stage_generation_trigger", "_jack_internal_tool_validation_rejection", "_jack_tool_evidence_receipt")):
                 continue
             if item.get("role") not in {"user", "assistant"} or item.get("tool_calls"):
                 continue
