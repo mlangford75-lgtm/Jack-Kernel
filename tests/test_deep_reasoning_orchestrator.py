@@ -306,6 +306,7 @@ def test_synthesis_final_claim_review_prompt_integrity_and_stage_isolation():
     assert actual["ULTRA_STAGE3_SYNTHESIS_PROMPT"].startswith(xhigh)
     addition = "Before producing the final answer, perform an independent final verification review"
     assert actual["ULTRA_STAGE3_SYNTHESIS_PROMPT"].count(addition) == 1
+    assert "any new or altered factual claims, numerical values, or assumptions introduced during Synthesis itself" in actual["ULTRA_STAGE3_SYNTHESIS_PROMPT"]
     assert addition not in actual["ULTRA_STAGE1_THESIS_PROMPT"]
     assert addition not in actual["ULTRA_STAGE2_ANTITHESIS_PROMPT"]
     backend = FakeBackend([
