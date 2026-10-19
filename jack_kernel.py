@@ -9776,11 +9776,14 @@ async def _safe_public_stream(
 ) -> AsyncIterator[bytes]:
     """Convert internal stage failures into a clean OpenAI SSE termination."""
     try:
-        stream = KERNEL.stream(
-            body,
-            executor_context=executor_context,
-            agentic_session_id=agentic_session_id,
-        )
+        if executor_context is None:
+            stream = KERNEL.stream(body)
+        else:
+            stream = KERNEL.stream(
+                body,
+                executor_context=executor_context,
+                agentic_session_id=agentic_session_id,
+            )
         async for chunk in stream:
             yield chunk
     except Exception as exc:
