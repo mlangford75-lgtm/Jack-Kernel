@@ -213,3 +213,62 @@ def test_exact_prompt_identity_and_integrity():
             changed["ULTRA_STAGE2_ANTITHESIS_PROMPT"] += " DO NOT ALTER"
             broken.write_text(json.dumps(changed), encoding="utf-8")
             load_exact_v6_prompts(broken)
+
+
+def test_multi_turn_full_history_survives_all_roles_and_tool_resume():
+    user_history = [
+        {"role": "user", "content": "Build dashboard.html using local JavaScript only."},
+        {"role": "assistant", "content": "Created initial HTML.", "reasoning_content": "FORBIDDEN OLD R1"},
+        {"role": "user", "content": "Avoid any new dependencies."},
+        {"role": "assistant", "content": "No external deps.", "thinking": "FORBIDDEN OLD R2"},
+    ]
+    before = json.dumps(user_history, sort_keys=True)
+    backend = FakeBackend([
+        {"content": "THESIS", "reasoning_content": "NEW R1 PRIVATE"},
+        {"tool_calls": [call("a-test")], "reasoning_content": "NEW R2 PRIVATE"},
+        {"content": "ANTITHESIS", "reasoning_content": "NEW R2 COMPLETE"},
+        {"tool_calls": [call("s-test")], "reasoning_content": "NEW R3 PARTIAL"},
+        {"content": "FINAL", "reasoning_content": "NEW R3 FINAL"},
+    ])
+    engine = DeepReasoningOrchestrator(backend, prompts=PROMPTS, tools=TOOLS)
+    antitool = run(engine.start(request="Fix alignment", visible_history=user_history))
+    assert antitool.stage == "antithesis"
+    synthtool = run(engine.resume(antitool, results=[{"tool_call_id":"a-test", "content":"observed failure"}]))
+    assert synthtool.stage == "synthesis"
+    completed = run(engine.resume(synthtool, results=[{"tool_call_id":"s-test", "content":"observed correction"}]))
+    assert completed.answer == "FINAL"
+    for call_row in backend.calls:
+        msgs = call_row["messages"]
+        assert [msg["content"] for msg in msgs[:4]] == [
+            "Build dashboard.html using local JavaScript only.",
+            "Created initial HTML.", "Avoid any new dependencies.", "No external deps.",
+        ]
+        assert msgs[4]["content"] == "Fix alignment"
+    for call_row in backend.calls[1:]:
+        rendered = repr(call_row["messages"])
+        assert "NEW R1 PRIVATE" not in rendered
+        assert "FORBIDDEN OLD R1" not in rendered
+        assert "FORBIDDEN OLD R2" not in rendered
+    for call_row in backend.calls[3:]:
+        assert "NEW R2 PRIVATE" not in repr(call_row["messages"])
+    assert json.dumps(user_history, sort_keys=True) == before
+
+
+def test_prior_r3_is_thesis_only_but_prior_user_pair_survives_review():
+    history = [{"role":"user", "content":"Original constraint: no npm."}]
+    prior = CompletedSynthesis("Previous question: create a widget", "Previous A3", "ONE HOP R3 PRIVATE")
+    backend = FakeBackend([{"content":"THESIS"}, {"content":"A2"}, {"content":"FINAL"}])
+    engine = DeepReasoningOrchestrator(backend, prompts=PROMPTS, tools=TOOLS)
+    end = run(engine.start(request="Now refine it", visible_history=history, prior_synthesis=prior,
+                           preserve_thinking=True, require_verification=False))
+    assert end.answer == "FINAL"
+    for stage_call in backend.calls:
+        messages = stage_call["messages"]
+        assert messages[0] == history[0]
+        assert messages[1:3] == [
+            {"role":"user", "content":"Previous question: create a widget"},
+            {"role":"assistant", "content":"Previous A3", **({"reasoning_content":"ONE HOP R3 PRIVATE"} if stage_call["stage"] == "thesis" else {})},
+        ]
+        assert messages[3]["content"] == "Now refine it"
+        if stage_call["stage"] != "thesis":
+            assert "ONE HOP R3 PRIVATE" not in repr(messages)

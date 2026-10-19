@@ -152,3 +152,31 @@ def test_installed_kernel_dispatch_compiles_and_is_gated():
     assert 'if DEEP_REASONING_MODE:' in source
     assert 'install_deep_reasoning(KERNEL, _dr_sys.modules[__name__])' in source
     assert 'allowed_tool_stages = {"deep_reasoning_antithesis", "deep_reasoning_synthesis", "deep_reasoning_thesis"}' in source
+
+
+def test_kernel_preserves_historical_user_constraints_in_each_stage():
+    async def run():
+        kernel = FakeKernel()
+        install_deep_reasoning(kernel, ns())
+        previous = [
+            {"role": "user", "content": "No external dependencies"},
+            {"role": "assistant", "content": "Acknowledged", "reasoning_content": "OLD_THINKING_SECRET"},
+            {"role": "user", "content": "Keep the filename unchanged"},
+            {"role": "assistant", "content": "Will comply"},
+            {"role": "user", "content": "Improve alignment"},
+        ]
+        response = await kernel._prepare_commit({"messages": previous, "tools": tools()})
+        assert response.finish_reason == "tool_calls"
+        state = kernel._pending_tool_resumes['call-7']
+        completed = await kernel._resume_tool_stage_nonstream(state,[{'tool_call_id':'call-7','content':'17'}])
+        assert completed.content == 'Synthesis: Part B=17'
+        for stage_key, messages, _choice, _tools in kernel.calls:
+            assert [m['content'] for m in messages[:5]] == [
+                "No external dependencies", "Acknowledged",
+                "Keep the filename unchanged", "Will comply", "Improve alignment",
+            ]
+            assert "OLD_THINKING_SECRET" not in repr(messages)
+            if stage_key == 'deep_reasoning_synthesis':
+                assert "SECRET_R1" not in repr(messages)
+                assert "SECRET_R2" not in repr(messages)
+    asyncio.run(run())

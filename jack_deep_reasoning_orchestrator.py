@@ -18,6 +18,7 @@ from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 from jack_deep_reasoning_context import (
     CompletedSynthesis,
+    _safe_visible_history,
     antithesis_messages,
     append_stage_local_tool_results,
     next_thesis_messages,
@@ -113,6 +114,8 @@ class DeepReasoningSession:
     stage: str
     messages: list[dict[str, Any]]
     thesis_answer: str
+    # Immutable sequence of sanitized committed visible turns; not R1/R2/R3.
+    conversation_history: tuple[dict[str, str], ...] = ()
     antithesis_findings: str = ""
     evidence: list[dict[str, Any]] = field(default_factory=list)
     artifact_references: list[dict[str, Any]] = field(default_factory=list)
@@ -233,8 +236,14 @@ class DeepReasoningOrchestrator:
         # Thesis is a real tool-enabled cognition stage, not merely a one-shot
         # prelude. Hold its own stage-local context until its answer is complete.
         # Never allow its native reasoning to cross the Antithesis boundary.
+        # Snapshot the precise previous visible conversation given to Thesis.
+        # It may include a reconstructed immediately prior A3 (without its R3).
+        # This survives Thesis's private-context destruction and is projected
+        # into Antithesis/Synthesis without leaking any native reasoning.
+        conversation_history = tuple(_safe_visible_history(thesis_history[:-1]))
         session = DeepReasoningSession(
             request=request, stage="thesis", messages=thesis_history, thesis_answer="",
+            conversation_history=conversation_history,
             verification_required=require_verification,
         )
         try:
@@ -299,6 +308,7 @@ class DeepReasoningOrchestrator:
             session.tool_rounds = 0  # independent per-role tool budget
             session.messages = antithesis_messages(
                 request=session.request, thesis_answer=thesis,
+                visible_history=session.conversation_history,
                 host_artifact_references=session.artifact_references,
             )
             return await self._advance(
@@ -318,6 +328,7 @@ class DeepReasoningOrchestrator:
                 request=session.request,
                 thesis_answer=session.thesis_answer,
                 antithesis_findings=anti,
+                visible_history=session.conversation_history,
                 host_evidence_receipts=session.evidence,
                 host_artifact_references=session.artifact_references,
             )
