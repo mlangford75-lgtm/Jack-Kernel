@@ -9837,10 +9837,14 @@ async def chat_completions(request: Request):
             agentic_session_id = f"{executor_context.runtime_id}:{executor_context.lane_id}:{claimed_session}"
 
     if body.get("stream"):
-        public_stream = _safe_public_stream(
-            body,
-            executor_context=executor_context,
-            agentic_session_id=agentic_session_id,
+        public_stream = (
+            _safe_public_stream(body)
+            if executor_context is None
+            else _safe_public_stream(
+                body,
+                executor_context=executor_context,
+                agentic_session_id=agentic_session_id,
+            )
         )
         return StreamingResponse(
             public_stream,
@@ -9851,11 +9855,14 @@ async def chat_completions(request: Request):
                 "X-Accel-Buffering": "no",
             },
         )
-    result = await KERNEL.run(
-        body,
-        executor_context=executor_context,
-        agentic_session_id=agentic_session_id,
-    )
+    if executor_context is None:
+        result = await KERNEL.run(body)
+    else:
+        result = await KERNEL.run(
+            body,
+            executor_context=executor_context,
+            agentic_session_id=agentic_session_id,
+        )
     return JSONResponse(completion_envelope(result))
 
 
