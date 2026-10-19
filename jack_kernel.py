@@ -67,6 +67,7 @@ Ollama, Jan.ai, llama.cpp, and custom OpenAI-compatible endpoints are supported.
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 import base64
 import copy
 import errno
@@ -3717,7 +3718,7 @@ def _format_agentic_completed_response(memory: str, frozen_answer: str) -> str:
     summary = _content_to_text(memory).strip()
     if not summary:
         raise ValueError("Agentic Stage 2 produced no distilled memory")
-    return f"<Agentic Memory>\n{summary}\n</Agentic Memory>\n\n<Model Response>\n{frozen_answer}"
+    return frozen_answer
 
 
 def strip_final_answer_heading(text: str) -> str:
@@ -3900,14 +3901,56 @@ def _stage2_reasoning_trace(reasoning: Optional[str]) -> Optional[str]:
     label = "AGENTIC NATIVE PASS 2" if AGENTIC_MODE else "DEEP RESEARCH RE-EVALUATION PASS 2"
     return f"===== JACK {label} =====\n[NATIVE REASONING]\n" + text
 
+# Volatile continuity experiment: the caller replays clean A1, not Jack's memory.
+# Replay is exact-transcript bound and fail-closed on ambiguous memory collisions.
+# This is not durable, cross-process storage or a universal session protocol.
+_AGENTIC_MEMORY_REPLAY_LIMIT = 64
+
+
+def _agentic_visible_transcript(messages: Iterable[Dict[str, Any]]) -> List[Dict[str, str]]:
+    visible: List[Dict[str, str]] = []
+    for item in messages:
+        if not isinstance(item, dict) or item.get("_jack_internal_stage_generation_trigger"):
+            continue
+        role = item.get("role")
+        if role not in {"user", "assistant"} or item.get("tool_calls"):
+            continue
+        content = _content_to_text(item.get("content"))
+        if role == "assistant" and content.startswith("<Agentic Memory>\n"):
+            _, answer = _split_prior_jack_output(content)
+            if answer is not None:
+                content = answer
+        if content.strip():
+            visible.append({"role": role, "content": content})
+    return visible
+
+
+def _agentic_replay_digest(visible: List[Dict[str, str]], caller_system: str) -> str:
+    canonical = json.dumps(
+        {"system": caller_system, "transcript": visible},
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    )
+    return _sha256_text(canonical)
+
+
+def _agentic_memory_as_reasoning(record: Dict[str, str], *, include_receipt: bool) -> str:
+    """Semantic memory is a historical assistant reasoning field, not answer content."""
+    memory = str(record.get("memory") or "").strip()
+    receipt = str(record.get("receipt") or "")
+    if include_receipt and receipt:
+        return memory + receipt.replace(_AGENTIC_TOOL_NOTE_OPEN, "\n\n").replace(
+            _AGENTIC_TOOL_NOTE_CLOSE, ""
+        )
+    return memory
+
+
 def _compact_agentic_completed_capsules(
     messages: List[Dict[str, Any]],
 ) -> Optional[List[Dict[str, Any]]]:
-    """Retain every completed visible turn capsule while pruning native cognition.
+    """Retain exact completed user/A1 conversation while pruning native cognition.
 
-    A durable Agentic turn is represented in ordinary conversation order as:
-        exact host-captured user message
-        + committed assistant artifact (Agentic Memory + exact frozen Stage-1 answer).
+    Stage-2 memory is rehydrated separately by the Kernel when an exact transcript
+    continuity record remains available in process memory.
 
     Historical native reasoning, consumed tool-call/result protocol, Jack runtime prompts,
     and other transient stage machinery are removed. The newest user turn remains active
@@ -3962,14 +4005,10 @@ def _compact_agentic_completed_capsules(
             if isinstance(key, str) and key.startswith("_jack_"):
                 item.pop(key, None)
         item.pop("tool_calls", None)
-        # The visible Agentic commit contains host-owned delimiters followed
-        # by the exact frozen A1. Validate emptiness above, but never normalize the
-        # committed content here or the next turn would silently rewrite A1.
+        # The new completed answer is exact A1; never normalize it here.
         item["content"] = text
         retained.append(item)
-        frozen_xml, frozen_answer = _split_prior_jack_output(text)
-        if frozen_xml and frozen_answer is not None:
-            retained_agentic_commits += 1
+        retained_agentic_commits += 1
 
     # Active tail: preserve the exact current user message and any caller-provided tail.
     # In normal first-entry execution this is only the new user turn.
@@ -5307,12 +5346,98 @@ class JackQwenKernel:
         self._semaphore = asyncio.Semaphore(max(1, cfg.max_concurrent_requests))
         self.activity = RuntimeActivityTracker()
         self._activity_telemetry_degraded = False
+        self._agentic_memory_replay: OrderedDict[str, Optional[List[Optional[Dict[str, str]]]]] = OrderedDict()
         self._pending_tool_resumes: Dict[str, PendingToolResume] = {}
         self._pending_tool_resume_lock = asyncio.Lock()
         self._pending_debugging_intake_resumes: Dict[str, PendingDebuggingIntakeResume] = {}
         self._pending_debugging_intake_resume_lock = asyncio.Lock()
         self._pending_debugging_user_resumes: Dict[str, PendingDebuggingUserResume] = {}
         self._pending_debugging_user_resume_lock = asyncio.Lock()
+
+    def _agentic_restore_completed_memory(
+        self, history: List[Dict[str, Any]], caller_system: str
+    ) -> None:
+        """Recover memory from an exact visible transcript without modifying A1."""
+        visible = _agentic_visible_transcript(history)
+        if not visible or visible[-1]["role"] != "user":
+            return
+        key = _agentic_replay_digest(visible[:-1], caller_system)
+        records = self._agentic_memory_replay.get(key)
+        if records is not None:
+            self._agentic_memory_replay.move_to_end(key)
+        if records is not None and len(records) != len(visible) - 1:
+            records = None
+
+        # Charge newest receipts first; older host tool metadata is optional.
+        receipt_budget = _AGENTIC_TOOL_CONTEXT_BUDGET_CHARS
+        history_items = []
+        for item in history:
+            if not isinstance(item, dict) or item.get("_jack_internal_stage_generation_trigger"):
+                continue
+            if item.get("role") not in {"user", "assistant"} or item.get("tool_calls"):
+                continue
+            content = _content_to_text(item.get("content"))
+            if content.strip():
+                history_items.append(item)
+
+        for index in range(len(history_items) - 1, -1, -1):
+            item = history_items[index]
+            if item["role"] != "assistant":
+                continue
+            content = _content_to_text(item.get("content"))
+            legacy_memory = None
+            if content.startswith("<Agentic Memory>\n"):
+                legacy_memory, legacy_answer = _split_prior_jack_output(content)
+                if legacy_answer is not None:
+                    item["content"] = legacy_answer
+            record = (
+                records[index] if records is not None and index < len(records)
+                else None
+            )
+            if record is None and legacy_memory is not None:
+                record = {"memory": legacy_memory, "receipt": ""}
+            if record is not None:
+                receipt = str(record.get("receipt") or "")
+                include_receipt = bool(receipt and len(receipt) <= receipt_budget)
+                if include_receipt:
+                    receipt_budget -= len(receipt)
+                item["_jack_agentic_retained_memory"] = dict(record)
+                item["reasoning_content"] = _agentic_memory_as_reasoning(
+                    record, include_receipt=include_receipt
+                )
+
+    def _agentic_store_completed_memory(
+        self,
+        history: List[Dict[str, Any]],
+        caller_system: str,
+        summary: str,
+        receipt: str,
+    ) -> None:
+        """Commit bounded RAM-only memory after successful Stage-2 distillation."""
+        visible = _agentic_visible_transcript(history)
+        if not visible or visible[-1]["role"] != "assistant":
+            raise ValueError("Completed Agentic memory has no frozen A1")
+        records: List[Optional[Dict[str, str]]] = []
+        for item in history:
+            if not isinstance(item, dict) or item.get("_jack_internal_stage_generation_trigger"):
+                continue
+            if item.get("role") not in {"user", "assistant"} or item.get("tool_calls"):
+                continue
+            if not _content_to_text(item.get("content")).strip():
+                continue
+            old = item.get("_jack_agentic_retained_memory")
+            records.append(dict(old) if isinstance(old, dict) else None)
+        if len(records) != len(visible):
+            raise ValueError("Agentic continuity transcript mismatch")
+        records[-1] = {"memory": summary, "receipt": receipt}
+        key = _agentic_replay_digest(visible, caller_system)
+        if key in self._agentic_memory_replay and self._agentic_memory_replay[key] != records:
+            self._agentic_memory_replay[key] = None
+        elif key not in self._agentic_memory_replay:
+            self._agentic_memory_replay[key] = records
+        self._agentic_memory_replay.move_to_end(key)
+        while len(self._agentic_memory_replay) > _AGENTIC_MEMORY_REPLAY_LIMIT:
+            self._agentic_memory_replay.popitem(last=False)
 
     async def _activity_update(self, **kwargs: Any) -> None:
         """Best-effort observability update; telemetry never governs cognition."""
@@ -6930,8 +7055,9 @@ class JackQwenKernel:
         memory = freeze_xml_stage_output(frozen_jack_xml)
         if not memory:
             raise HTTPException(status_code=502, detail="Agentic Stage 2 produced no distilled memory.")
-        memory += _agentic_tool_history_note(history)
-        _archive_agentic_stage1_forensic(history, frozen_stage1_answer, memory)
+        receipt = _agentic_tool_history_note(history)
+        self._agentic_store_completed_memory(history, secondary_system, memory, receipt)
+        _archive_agentic_stage1_forensic(history, frozen_stage1_answer, memory + receipt)
         history.clear()
         return PreparedCommit(
             frozen_xml=memory,
@@ -7350,6 +7476,8 @@ class JackQwenKernel:
             if SELF_ADVERSARIAL_MODE
             else strip_secondary_system_messages(messages)
         )
+        if AGENTIC_MODE:
+            self._agentic_restore_completed_memory(history, secondary_system)
         tools = request_body.get("tools") if isinstance(request_body.get("tools"), list) else None
         tool_choice = request_body.get("tool_choice")
         usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
@@ -7821,6 +7949,8 @@ class JackQwenKernel:
                     if SELF_ADVERSARIAL_MODE
                     else strip_secondary_system_messages(messages)
                 )
+                if AGENTIC_MODE:
+                    self._agentic_restore_completed_memory(history, secondary_system)
                 tools = request_body.get("tools") if isinstance(request_body.get("tools"), list) else None
                 tool_choice = request_body.get("tool_choice")
                 usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
@@ -8166,12 +8296,15 @@ class JackQwenKernel:
                     distilled_memory = freeze_xml_stage_output(frozen_jack_xml)
                     if not distilled_memory:
                         raise HTTPException(status_code=502, detail="Agentic Stage 2 produced no distilled memory.")
-                    distilled_memory += _agentic_tool_history_note(history)
+                    receipt = _agentic_tool_history_note(history)
                     committed_output = _format_agentic_completed_response(
                         distilled_memory, agentic_frozen_stage1_answer
                     )
+                    self._agentic_store_completed_memory(
+                        history, secondary_system, distilled_memory, receipt
+                    )
                     _archive_agentic_stage1_forensic(
-                        history, agentic_frozen_stage1_answer, distilled_memory
+                        history, agentic_frozen_stage1_answer, distilled_memory + receipt
                     )
                     history.clear()
                 except Exception as exc:
