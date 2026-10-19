@@ -165,7 +165,7 @@ async function verifyRuntimeIdentity(url, token, expectedRuntimeId) {
   return health;
 }
 
-async function fetchJackModels(url, token) {
+async function fetchJackModels(url, token, health) {
   const root = String(url || DEFAULT_JACK_URL).replace(/\/+$/, "").replace(/\/v1$/, "");
   const payload = await fetchJson(`${root}/api/v1/models`, token);
   const models = Array.isArray(payload?.models) ? payload.models : [];
@@ -179,7 +179,7 @@ async function fetchJackModels(url, token) {
     return {
       id: model.key,
       name: model.display_name || model.key,
-      reasoning: false,
+      reasoning: String(health?.reasoning_level || "").trim().toLowerCase() === "deep reasoning",
       input: ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow,
@@ -198,7 +198,7 @@ export default async function (pi) {
     activeRuntimeBinding = null;
     try {
       const health = await verifyRuntimeIdentity(url, token, expectedRuntimeId);
-      const models = await fetchJackModels(url, token);
+      const models = await fetchJackModels(url, token, health);
       if (!models.length) return;
       const root = String(url || DEFAULT_JACK_URL).replace(/\/+$/, "").replace(/\/v1$/, "");
       const runtimeId = String(health?.runtime_id || "");
