@@ -393,6 +393,11 @@ def _phase4_current_executor_context() -> Optional[Phase4ExecutorRequestContext]
     return _PHASE4_EXECUTOR_REQUEST_CONTEXT.get()
 
 
+_AGENTIC_SESSION_ID: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    f"jack_agentic_session_{RUNTIME_ID}", default=None
+)
+
+
 def _bind_runtime_path_policy() -> Any:
     """Bind exactly one immutable host-owned Phase-4 policy to this runtime/lane."""
     global _RUNTIME_PATH_POLICY
@@ -3718,7 +3723,11 @@ def _format_agentic_completed_response(memory: str, frozen_answer: str) -> str:
     summary = _content_to_text(memory).strip()
     if not summary:
         raise ValueError("Agentic Stage 2 produced no distilled memory")
-    return frozen_answer
+    if _AGENTIC_SESSION_ID.get():
+        return frozen_answer
+    # Stateless legacy clients require an in-band continuity capsule until
+    # they adopt an authenticated conversation-binding transport.
+    return f"<Agentic Memory>\n{summary}\n</Agentic Memory>\n\n<Model Response>\n{frozen_answer}"
 
 
 def strip_final_answer_heading(text: str) -> str:
@@ -3930,7 +3939,10 @@ def _agentic_replay_digest(visible: List[Dict[str, str]], caller_system: str) ->
         {"system": caller_system, "transcript": visible},
         ensure_ascii=False, sort_keys=True, separators=(",", ":"),
     )
-    return _sha256_text(canonical)
+    session_id = _AGENTIC_SESSION_ID.get()
+    if not session_id:
+        return ""
+    return _sha256_text(session_id + "\n" + canonical)
 
 
 def _agentic_memory_as_reasoning(record: Dict[str, str], *, include_receipt: bool) -> str:
@@ -5358,6 +5370,8 @@ class JackQwenKernel:
         self, history: List[Dict[str, Any]], caller_system: str
     ) -> None:
         """Recover memory from an exact visible transcript without modifying A1."""
+        if not _AGENTIC_SESSION_ID.get():
+            return
         visible = _agentic_visible_transcript(history)
         if not visible or visible[-1]["role"] != "user":
             return
@@ -5414,6 +5428,8 @@ class JackQwenKernel:
         receipt: str,
     ) -> None:
         """Commit bounded RAM-only memory after successful Stage-2 distillation."""
+        if not _AGENTIC_SESSION_ID.get():
+            return
         visible = _agentic_visible_transcript(history)
         if not visible or visible[-1]["role"] != "assistant":
             raise ValueError("Completed Agentic memory has no frozen A1")
@@ -7716,12 +7732,15 @@ class JackQwenKernel:
         request_body: Dict[str, Any],
         *,
         executor_context: Optional[Phase4ExecutorRequestContext] = None,
+        agentic_session_id: Optional[str] = None,
     ) -> KernelResult:
         token = _PHASE4_EXECUTOR_REQUEST_CONTEXT.set(executor_context)
+        session_token = _AGENTIC_SESSION_ID.set(agentic_session_id)
         try:
             async with self._activity_request_scope("nonstream"):
                 return await self._run_impl(request_body)
         finally:
+            _AGENTIC_SESSION_ID.reset(session_token)
             _PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
 
     async def _run_impl(self, request_body: Dict[str, Any]) -> KernelResult:
@@ -7810,13 +7829,16 @@ class JackQwenKernel:
         request_body: Dict[str, Any],
         *,
         executor_context: Optional[Phase4ExecutorRequestContext] = None,
+        agentic_session_id: Optional[str] = None,
     ) -> AsyncIterator[bytes]:
         token = _PHASE4_EXECUTOR_REQUEST_CONTEXT.set(executor_context)
+        session_token = _AGENTIC_SESSION_ID.set(agentic_session_id)
         try:
             async with self._activity_request_scope("stream"):
                 async for chunk in self._stream_impl(request_body):
                     yield chunk
         finally:
+            _AGENTIC_SESSION_ID.reset(session_token)
             _PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
 
     async def _stream_impl(self, request_body: Dict[str, Any]) -> AsyncIterator[bytes]:
@@ -9737,16 +9759,15 @@ async def _safe_public_stream(
     body: Dict[str, Any],
     *,
     executor_context: Optional[Phase4ExecutorRequestContext] = None,
+    agentic_session_id: Optional[str] = None,
 ) -> AsyncIterator[bytes]:
     """Convert internal stage failures into a clean OpenAI SSE termination."""
     try:
-        if executor_context is None:
-            stream = KERNEL.stream(body)
-        else:
-            stream = KERNEL.stream(
-                body,
-                executor_context=executor_context,
-            )
+        stream = KERNEL.stream(
+            body,
+            executor_context=executor_context,
+            agentic_session_id=agentic_session_id,
+        )
         async for chunk in stream:
             yield chunk
     except Exception as exc:
@@ -9794,15 +9815,19 @@ async def chat_completions(request: Request):
     # transport behavior; cognition-control fields are ignored, never forwarded.
     body = sanitize_agent_request(body)
     executor_context = _phase4_executor_context_from_request(request)
+    agentic_session_id: Optional[str] = None
+    if AGENTIC_MODE and executor_context is not None and executor_context.adapter == "pi":
+        claimed_session = str(request.headers.get("x-jack-agentic-session-id") or "").strip()
+        if claimed_session:
+            if not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", claimed_session):
+                raise HTTPException(status_code=400, detail="Invalid Agentic session identifier")
+            agentic_session_id = f"{executor_context.runtime_id}:{executor_context.lane_id}:{claimed_session}"
 
     if body.get("stream"):
-        public_stream = (
-            _safe_public_stream(body)
-            if executor_context is None
-            else _safe_public_stream(
-                body,
-                executor_context=executor_context,
-            )
+        public_stream = _safe_public_stream(
+            body,
+            executor_context=executor_context,
+            agentic_session_id=agentic_session_id,
         )
         return StreamingResponse(
             public_stream,
@@ -9813,13 +9838,11 @@ async def chat_completions(request: Request):
                 "X-Accel-Buffering": "no",
             },
         )
-    if executor_context is None:
-        result = await KERNEL.run(body)
-    else:
-        result = await KERNEL.run(
-            body,
-            executor_context=executor_context,
-        )
+    result = await KERNEL.run(
+        body,
+        executor_context=executor_context,
+        agentic_session_id=agentic_session_id,
+    )
     return JSONResponse(completion_envelope(result))
 
 
