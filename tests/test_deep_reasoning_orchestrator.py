@@ -272,3 +272,23 @@ def test_prior_r3_is_thesis_only_but_prior_user_pair_survives_review():
         assert messages[3]["content"] == "Now refine it"
         if stage_call["stage"] != "thesis":
             assert "ONE HOP R3 PRIVATE" not in repr(messages)
+
+
+def test_optional_verification_with_available_tools_does_not_require_a_tool_call():
+    backend = FakeBackend([
+        {"content":"THESIS: design idea"},
+        {"content":"SUPPORTED: no fourth playable character"},
+        {"content":"FINAL"},
+    ])
+    engine = DeepReasoningOrchestrator(backend, prompts=PROMPTS, tools=TOOLS)
+    result = run(engine.start(
+        request="Design a fourth non-playable character",
+        visible_history=[{"role":"user","content":"There can only be three playable characters."}],
+        require_verification=False,
+    ))
+    assert result.answer == "FINAL"
+    assert backend.calls[1]["tool_choice"] == "auto"
+    assert backend.calls[1]["tools"] == TOOLS
+    assert backend.calls[1]["messages"][0]["content"] == "There can only be three playable characters."
+    assert backend.calls[1]["messages"][1]["content"] == "Design a fourth non-playable character"
+    assert backend.calls[2]["stage"] == "synthesis"
