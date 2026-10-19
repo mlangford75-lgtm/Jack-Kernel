@@ -120,12 +120,29 @@ def test_tag_free_replay_memory_and_isolation():
     assert next_history[1]["content"] == "Exactly A1  "
     assert next_history[1]["reasoning_content"] == "Important rejected approach"
     assert not any("Agentic Memory" in str(row["content"]) for row in next_history)
+    # Model-facing Stage 1 sees recovered memory without answer scaffolding.
+    # The model input projection must preserve the injected historical reasoning.
+    stage = k.STAGES["extended_initial"]
+    instance = object.__new__(k.OpenAICompatibleBackend)
+    model_input = instance._stage_messages_for_profile(next_history, stage)
+    assert model_input[1]["reasoning_content"] == "Important rejected approach"
+    assert model_input[1]["content"] == "Exactly A1  "
     other_system = [dict(row) for row in next_history]
     for row in other_system:
         row.pop("reasoning_content", None)
         row.pop("_jack_agentic_retained_memory", None)
     kernel._agentic_restore_completed_memory(other_system, "Different caller instruction")
     assert "reasoning_content" not in other_system[1]
+    different_session = [dict(row) for row in next_history]
+    for row in different_session:
+        row.pop("reasoning_content", None)
+        row.pop("_jack_agentic_retained_memory", None)
+    token = k._AGENTIC_SESSION_ID.set("test-runtime:test-lane:session-0000000000000002")
+    try:
+        kernel._agentic_restore_completed_memory(different_session, system)
+    finally:
+        k._AGENTIC_SESSION_ID.reset(token)
+    assert "reasoning_content" not in different_session[1]
 
 
 def test_tag_free_replay_collision_fails_closed():
