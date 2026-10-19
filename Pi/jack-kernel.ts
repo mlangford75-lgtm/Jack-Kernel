@@ -234,6 +234,10 @@ export default async function (pi) {
     event.headers["X-Jack-Executor-Cwd"] = String(ctx?.cwd || "");
     event.headers["X-Jack-Executor-Platform"] = process.platform;
     event.headers["X-Jack-Executor-Adapter"] = "pi";
+    const sessionId = String(ctx?.sessionManager?.getSessionId?.() || "");
+    if (/^[A-Za-z0-9_-]{16,128}$/.test(sessionId)) {
+      event.headers["X-Jack-Agentic-Session-Id"] = sessionId;
+    }
   });
 
   pi.on("tool_call", async (event, ctx) => {
