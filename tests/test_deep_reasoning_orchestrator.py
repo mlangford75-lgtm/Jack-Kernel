@@ -292,3 +292,31 @@ def test_optional_verification_with_available_tools_does_not_require_a_tool_call
     assert backend.calls[1]["messages"][0]["content"] == "There can only be three playable characters."
     assert backend.calls[1]["messages"][1]["content"] == "Design a fourth non-playable character"
     assert backend.calls[2]["stage"] == "synthesis"
+
+
+def test_synthesis_final_claim_review_prompt_integrity_and_stage_isolation():
+    from jack_deep_reasoning_orchestrator import load_exact_v6_prompts
+    actual = load_exact_v6_prompts(Path(__file__).resolve().parents[1] / "tas_v6_prompts.json")
+    xhigh = (
+        "Reasoning effort is set to xhigh. Please think carefully through the task, "
+        "validate key assumptions, consider plausible alternatives, and prioritize "
+        "correctness, consistency, and clarity in the final answer."
+    )
+    assert actual["ULTRA_STAGE1_THESIS_PROMPT"].startswith(xhigh)
+    assert actual["ULTRA_STAGE3_SYNTHESIS_PROMPT"].startswith(xhigh)
+    addition = "Before producing the final answer, perform an independent final verification review"
+    assert actual["ULTRA_STAGE3_SYNTHESIS_PROMPT"].count(addition) == 1
+    assert "any new or altered factual claims, numerical values, or assumptions introduced during Synthesis itself" in actual["ULTRA_STAGE3_SYNTHESIS_PROMPT"]
+    assert addition not in actual["ULTRA_STAGE1_THESIS_PROMPT"]
+    assert addition not in actual["ULTRA_STAGE2_ANTITHESIS_PROMPT"]
+    backend = FakeBackend([
+        {"content":"THESIS"},
+        {"content":"ANTITHESIS"},
+        {"content":"SYNTHESIS"},
+    ])
+    engine = DeepReasoningOrchestrator(backend, prompts=actual, tools=[])
+    completed = run(engine.start(request="Check 1 + 1", require_verification=False))
+    assert completed.answer == "SYNTHESIS"
+    assert [call["stage"] for call in backend.calls] == ["thesis", "antithesis", "synthesis"]
+    assert backend.calls[-1]["system_prompt"] == actual["ULTRA_STAGE3_SYNTHESIS_PROMPT"]
+    assert backend.calls[-1]["tool_choice"] == "auto"
