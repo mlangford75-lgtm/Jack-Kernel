@@ -744,6 +744,15 @@ REASONING_PROFILES: Dict[str, Dict[str, Any]] = {
         "pass3": "xhigh",
         "disabled": False,
     },
+    "deep-reasoning": {
+        "label": "Deep Reasoning",
+        "mode": "deep_reasoning",
+        "answer": "xhigh",
+        "pass1": "xhigh",
+        "pass2": "medium",
+        "pass3": "xhigh",
+        "disabled": False,
+    },
     "agentic": {
         "label": "Agentic",
         "mode": "agentic",
@@ -782,6 +791,9 @@ _REASONING_LEVEL_ALIASES = {
     "deep_research": "ultra",
     "deep research": "ultra",
     "deepresearch": "ultra",
+    "deep_reasoning": "deep-reasoning",
+    "deep reasoning": "deep-reasoning",
+    "deepreasoning": "deep-reasoning",
     "extreme": "ultra",
     "max": "ultra",
     "debug": "code-debugging",
@@ -803,8 +815,9 @@ if REASONING_PROFILES[_reasoning_level].get("disabled"):
 ACTIVE_REASONING_PROFILE = REASONING_PROFILES[_reasoning_level]
 AGENTIC_MODE = ACTIVE_REASONING_PROFILE["mode"] == "agentic"
 ULTRA_MODE = ACTIVE_REASONING_PROFILE["mode"] == "ultra"
+DEEP_REASONING_MODE = ACTIVE_REASONING_PROFILE["mode"] == "deep_reasoning"
 CODE_DEBUGGING_MODE = ACTIVE_REASONING_PROFILE["mode"] == "code_debugging"
-SELF_ADVERSARIAL_MODE = AGENTIC_MODE or ULTRA_MODE
+SELF_ADVERSARIAL_MODE = AGENTIC_MODE or ULTRA_MODE or DEEP_REASONING_MODE
 
 
 # ---------------------------------------------------------------------------
@@ -2073,6 +2086,26 @@ STAGES: Dict[str, StageProfile] = {
         ULTRA_STAGE3_MAX_TOKENS if ULTRA_MODE else None,
     ),
 }
+
+# Deep Reasoning is a separate, experimentally gated inference topology.
+# Its prompt file is verified against the successful TAS v6 experiment hashes.
+if DEEP_REASONING_MODE:
+    from jack_deep_reasoning_orchestrator import load_exact_v6_prompts
+    _DR_PROMPTS = load_exact_v6_prompts(Path(__file__).resolve().parent / "tas_v6_prompts.json")
+    STAGES.update({
+        "deep_reasoning_thesis": StageProfile(
+            "Deep Reasoning Thesis pass 1", _DR_PROMPTS["ULTRA_STAGE1_THESIS_PROMPT"],
+            True, "xhigh", True, 1.0, 0.0, False, None,
+        ),
+        "deep_reasoning_antithesis": StageProfile(
+            "Deep Reasoning Antithesis pass 2", _DR_PROMPTS["ULTRA_STAGE2_ANTITHESIS_PROMPT"],
+            True, "medium", True, 0.5, 0.0, False, None,
+        ),
+        "deep_reasoning_synthesis": StageProfile(
+            "Deep Reasoning Synthesis pass 3", _DR_PROMPTS["ULTRA_STAGE3_SYNTHESIS_PROMPT"],
+            True, "xhigh", True, 0.5, 0.0, False, None,
+        ),
+    })
 
 DEBUGGING_REASONING_EFFORT = ACTIVE_REASONING_PROFILE.get("debugging", "xhigh")
 
@@ -4781,6 +4814,9 @@ class OpenAICompatibleBackend:
                 or (self.cfg.preserve_thinking and not debugging_fresh_boundary)
             )
         )
+        # TAS context projection (not a backend flag) enforces role isolation:
+        # Preserve Thinking remains controlled by the user's configuration.
+        # The optional completed Synthesis R3 is inserted only into next Thesis.
         kwargs: Dict[str, Any] = {
             "enable_thinking": profile.thinking,
             "preserve_thinking": effective_preserve,
@@ -5348,7 +5384,7 @@ class JackQwenKernel:
     ) -> Dict[str, Any]:
         force_native_resume = bool(
             same_stage_resume
-            and (stage_key == "thesis" or _debugging_pass_from_stage_key(stage_key) is not None)
+            and (stage_key in {"thesis", "deep_reasoning_thesis"} or _debugging_pass_from_stage_key(stage_key) is not None)
             and STAGES[stage_key].thinking
         )
         profile = (
@@ -5558,7 +5594,7 @@ class JackQwenKernel:
         """
         force_native_resume = bool(
             same_stage_resume
-            and (stage_key == "thesis" or _debugging_pass_from_stage_key(stage_key) is not None)
+            and (stage_key in {"thesis", "deep_reasoning_thesis"} or _debugging_pass_from_stage_key(stage_key) is not None)
             and STAGES[stage_key].thinking
         )
         profile = (
@@ -6524,6 +6560,8 @@ class JackQwenKernel:
     ) -> KernelResult:
         if ULTRA_MODE:
             allowed_tool_stages = {"extended_synthesis"}
+        elif DEEP_REASONING_MODE:
+            allowed_tool_stages = {"deep_reasoning_antithesis", "deep_reasoning_synthesis", "deep_reasoning_thesis"}
         elif AGENTIC_MODE:
             allowed_tool_stages = {"extended_initial"}
         elif CODE_DEBUGGING_MODE:
@@ -7654,6 +7692,13 @@ class JackQwenKernel:
             _PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
 
     async def _stream_impl(self, request_body: Dict[str, Any]) -> AsyncIterator[bytes]:
+        if DEEP_REASONING_MODE:
+            # Pi uses SSE. Run the tested host-authoritative nonstream TAS
+            # transaction and package only its committed result / released calls.
+            # Heartbeats keep the connection alive; stage output stays private.
+            async for wire in self._deep_reasoning_pi_stream(request_body):
+                yield wire
+            return
         """Stream the active Jack reasoning program.
 
         Agentic keeps its two-stage frozen-A1/XML behavior. Deep Research runs a full-retention
@@ -8547,6 +8592,12 @@ class JackQwenKernel:
 
 BACKEND = OpenAICompatibleBackend(CFG)
 KERNEL = JackQwenKernel(BACKEND, CFG)
+if DEEP_REASONING_MODE:
+    # Install only in the explicitly selected experimental mode. All legacy
+    # reasoning modes retain their original dispatch and tool governance.
+    import sys as _dr_sys
+    from jack_deep_reasoning_kernel import install_deep_reasoning
+    install_deep_reasoning(KERNEL, _dr_sys.modules[__name__])
 
 
 # ---------------------------------------------------------------------------
@@ -10263,7 +10314,8 @@ def _print_header(
     print(_status_value("Virtual model", cfg['virtual_model']))
     print(_status_value("Preserve thinking", "ON" if cfg.get("preserve_thinking", True) else "OFF"))
     print(_status_value("Forensic archive", str(cfg.get("forensic_archive_mode", "stage")).upper()))
-    print(_status_value("Live stage streaming", "ON  [stream=true]"))
+    active_mode = _REASONING_LEVEL_ALIASES.get(str(cfg.get("reasoning_level", "x-high")).lower(), str(cfg.get("reasoning_level", "x-high")).lower())
+    print(_status_value("Live stage streaming", "BUFFERED  [stream=true; Pi-compatible]" if active_mode == "deep-reasoning" else "ON  [stream=true]"))
     print(_status_value("Kernel max-token cap", "NONE"))
     level_key = _REASONING_LEVEL_ALIASES.get(str(cfg.get("reasoning_level", "x-high")).lower(), str(cfg.get("reasoning_level", "x-high")).lower())
     level_profile = REASONING_PROFILES.get(level_key, REASONING_PROFILES["x-high"])
@@ -10283,17 +10335,18 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
     print(_ansi_rgb("  2) Low (Disabled)", _JACK_MUTED))
     print("  3) Medium")
     print("  4) X-High (Default)")
-    print("  5) Deep Research")
+    print("  5) Deep Reasoning")
     print("  6) Agentic")
     print("  7) Code Debugging")
     print("  8) Code Debugging (Deep)")
+    print("  9) Deep Research (Legacy)")
     print()
     current = str(cfg.get("reasoning_level", "x-high")).lower()
     current = _REASONING_LEVEL_ALIASES.get(current, current)
     if current == "low" or current not in REASONING_PROFILES or REASONING_PROFILES[current].get("disabled"):
         current = "x-high"
     choice = _cli_input(
-        f"Select level [1-8] [{REASONING_PROFILES[current]['label']}]: "
+        f"Select level [1-9] [{REASONING_PROFILES[current]['label']}]: "
     ).strip().lower()
     if not choice:
         return
@@ -10304,7 +10357,8 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
         "1": "off", "off": "off", "flash": "off",
         "3": "medium", "medium": "medium", "standard": "medium",
         "4": "x-high", "x-high": "x-high", "xhigh": "x-high", "high": "x-high", "default": "x-high", "recommended": "x-high",
-        "5": "ultra", "deep-research": "ultra", "deep_research": "ultra", "deep research": "ultra", "deepresearch": "ultra", "ultra": "ultra", "extreme": "ultra", "max": "ultra",
+        "5": "deep-reasoning", "deep-reasoning": "deep-reasoning", "deep_reasoning": "deep-reasoning", "deep reasoning": "deep-reasoning", "deepreasoning": "deep-reasoning",
+        "9": "ultra", "deep-research": "ultra", "deep_research": "ultra", "deep research": "ultra", "deepresearch": "ultra", "ultra": "ultra", "extreme": "ultra", "max": "ultra",
         "6": "agentic", "agentic": "agentic",
         "7": "code-debugging", "code-debugging": "code-debugging", "debug": "code-debugging", "debugging": "code-debugging",
         "8": "code-debugging-deep", "code-debugging-deep": "code-debugging-deep", "code debugging deep": "code-debugging-deep", "debugging deep": "code-debugging-deep", "deep debugging": "code-debugging-deep",

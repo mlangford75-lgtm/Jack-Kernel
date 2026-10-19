@@ -4,7 +4,7 @@ param(
     [string]$RuntimeId,
 
     [Parameter(Mandatory = $true)]
-    [ValidateSet("off", "medium", "x-high", "deep-research", "agentic", "code-debugging", "code-debugging-deep")]
+    [ValidateSet("off", "medium", "x-high", "deep-reasoning", "deep-research", "agentic", "code-debugging", "code-debugging-deep")]
     [string]$Mode,
 
     [ValidateRange(0, 65535)]

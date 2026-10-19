@@ -18,3 +18,6 @@ Thumbs.db
 
 Debugging/Reports/*
 !Debugging/Reports/README.md
+
+# Local browser test dependencies
+node_modules/
