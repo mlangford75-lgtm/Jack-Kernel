@@ -1638,6 +1638,160 @@ def extract_command_paths(
     )
 
 
+
+# Phase 4 safe default: ordinary Windows system inspection is not a destructive
+# filesystem consequence. This exception is deliberately narrower than a raw
+# pathname allowlist. Only Jack-owned, positively identified read-only executor
+# contracts may request it; caller text cannot set an "intent" flag.
+_SAFE_DEFAULT_READ_STRUCTURED = frozenset({"read", "ls"})
+_SAFE_DEFAULT_READ_BASH = frozenset({"cat", "head", "tail", "ls"})
+_SAFE_DEFAULT_READ_POWERSHELL = frozenset({
+    "get-content", "gc", "cat", "type",
+    "get-childitem", "gci", "dir", "ls", "test-path",
+})
+_SAFE_DEFAULT_READ_FLAGS_BASH = frozenset({
+    "--", "-n", "-b", "-A", "-a", "-l", "-la", "-al", "-h", "-1",
+})
+_SAFE_DEFAULT_READ_FLAGS_POWERSHELL = frozenset({
+    "-path", "-literalpath", "-filepath", "-encoding", "-force", "-name",
+})
+
+
+def _safe_default_read_command(
+    call: Any,
+    extraction: CommandPathExtraction,
+) -> bool:
+    """True only for an unambiguous single read-only shell command.
+
+    No pipelines, redirections, shell wrappers, script interpreters, dynamic
+    evaluation, recursive discovery, or unknown command options qualify.
+    """
+    if extraction.ambiguous or extraction.error or not extraction.targets:
+        return False
+    function = call.get("function") if isinstance(call, dict) else None
+    if not isinstance(function, dict):
+        return False
+    command, error = _command_text_from_arguments(function.get("arguments"))
+    if error or not command:
+        return False
+    dialect = extraction.dialect or ""
+    tokens = _shell_tokens(command, dialect)
+    if not tokens or len(_split_command_segments(tokens)) != 1:
+        return False
+    if any(t in _COMMAND_CONTROL or t in _REDIRECT_OPS or t.startswith("<<") for t in tokens):
+        return False
+    name = ntpath.basename(_strip_token_quotes(tokens[0])).casefold()
+    if dialect == "bash":
+        if name not in _SAFE_DEFAULT_READ_BASH:
+            return False
+        return all(
+            token in _SAFE_DEFAULT_READ_FLAGS_BASH
+            for token in tokens[1:] if token.startswith("-")
+        )
+    if dialect == "powershell":
+        if name not in _SAFE_DEFAULT_READ_POWERSHELL:
+            return False
+        return all(
+            token.casefold() in _SAFE_DEFAULT_READ_FLAGS_POWERSHELL
+            for token in tokens[1:] if token.startswith("-")
+        )
+    return False
+
+
+def _safe_default_windows_read(
+    policy: RuntimePathPolicy,
+    represented_target: str,
+    *,
+    executor_cwd: Optional[str] = None,
+    defer_relative_without_executor: bool = False,
+) -> Optional[PathAuthorizationDecision]:
+    """Narrow host-authoritative read exemption for the *default* Windows tree.
+
+    Other NEVER roots, explicit Workspace Lock, sensitive system subtrees, and
+    the separate Phase-7 credential resource guard keep their full authority.
+    Non-Windows, dynamic, or unresolved paths do not receive this exemption.
+    A None result means: apply the original path policy unchanged.
+    """
+    facts = inspect_represented_path(
+        policy, represented_target,
+        executor_cwd=executor_cwd,
+        defer_relative_without_executor=defer_relative_without_executor,
+    )
+    target = facts.canonical_target
+    if not facts.never_match or not facts.deterministic or not target:
+        return None
+    environment = policy.path_environment()
+    system_root = environment.get("systemroot") or environment.get("windir")
+    if not system_root:
+        return None
+    try:
+        canonical_system = normalize_represented_windows_path(system_root, environment=environment)
+    except RepresentedPathError:
+        return None
+    if not path_is_within_or_equal(target, canonical_system):
+        return None
+
+    # User-defined NEVER paths always outrank the default read-only exception,
+    # including an explicit user NEVER root nested within C:\Windows.
+    default_roots = frozenset(_default_windows_never_roots(environment))
+    if any(path_is_within_or_equal(target, root) for root in policy.never_roots if root not in default_roots):
+        return None
+
+    # Workspace Lock remains non-negotiable even for non-mutating inspection.
+    if facts.workspace_configured and facts.inside_workspace is not True:
+        return PathAuthorizationDecision(
+            PathAuthorizationOutcome.DENY_AND_CONTINUE,
+            "read-only system inspection lies outside the configured workspace",
+            target,
+        )
+
+    # Registry hives, credential-protection data, machine policies, task data,
+    # and unattended setup artifacts are not ordinary system metadata.
+    sensitive = (
+        r"System32\config",
+        r"System32\Microsoft\Protect",
+        r"System32\winevt\Logs",
+        r"System32\GroupPolicy",
+        r"System32\Tasks",
+        r"Panther",
+    )
+    if any(
+        path_is_within_or_equal(
+            target, ntpath.normcase(ntpath.normpath(ntpath.join(canonical_system, suffix)))
+        )
+        for suffix in sensitive
+    ):
+        return PathAuthorizationDecision(
+            PathAuthorizationOutcome.DENY_AND_CONTINUE,
+            "sensitive Windows resource is not eligible for read-only inspection",
+            target,
+        )
+
+    # Phase-7 credential resources are always authoritative. When its policy is
+    # installed, never convert a protected resource into a read allow.
+    try:
+        import jack_credential_resource_guard as credential_guard
+        resource = credential_guard.fact_for_canonical_target(policy, target)
+    except Exception:
+        return PathAuthorizationDecision(
+            PathAuthorizationOutcome.DENY_AND_CONTINUE,
+            "credential resource inspection could not be confirmed safe",
+            target,
+        )
+    if resource is not None and resource.protected:
+        return PathAuthorizationDecision(
+            PathAuthorizationOutcome.DENY_AND_CONTINUE,
+            "read-only inspection of protected credential resource is denied",
+            target,
+        )
+
+    return PathAuthorizationDecision(
+        PathAuthorizationOutcome.ALLOW,
+        "verified read-only capability targets ordinary Windows system metadata",
+        target,
+    )
+
+
 def authorize_command_tool_call(
     policy: RuntimePathPolicy,
     call: Any,
@@ -1714,7 +1868,16 @@ def authorize_command_tool_call(
                 )
             continue
 
-        decision = authorize_represented_path(
+        # Only a single verified read-only command may inspect the default
+        # Windows tree. Multi-segment or unclassified commands retain legacy
+        # NEVER enforcement, including a hard interrupt for known system paths.
+        read_exception = (
+            _safe_default_windows_read(
+                policy, prepared_target, executor_cwd=canonical_cwd
+            )
+            if _safe_default_read_command(call, extraction) else None
+        )
+        decision = read_exception or authorize_represented_path(
             policy,
             prepared_target,
             executor_cwd=canonical_cwd,
@@ -1919,7 +2082,12 @@ def authorize_structured_tool_call(
                 "executor cwd is required for this structured filesystem tool",
             )
 
-        cwd_decision = authorize_represented_path(
+        tool_name = str(function.get("name") or "").strip().casefold()
+        read_exception = (
+            _safe_default_windows_read(policy, executor_cwd)
+            if tool_name in _SAFE_DEFAULT_READ_STRUCTURED else None
+        )
+        cwd_decision = read_exception or authorize_represented_path(
             policy,
             executor_cwd,
         )
@@ -1927,7 +2095,16 @@ def authorize_structured_tool_call(
             return cwd_decision
 
     for represented_target in extraction.targets:
-        decision = authorize_represented_path(
+        tool_name = str(function.get("name") or "").strip().casefold()
+        read_exception = (
+            _safe_default_windows_read(
+                policy, represented_target,
+                executor_cwd=executor_cwd,
+                defer_relative_without_executor=defer_relative_without_executor,
+            )
+            if tool_name in _SAFE_DEFAULT_READ_STRUCTURED else None
+        )
+        decision = read_exception or authorize_represented_path(
             policy,
             represented_target,
             executor_cwd=executor_cwd,
