@@ -78,7 +78,7 @@ def test_bash_explicit_escape_is_recoverably_denied_under_workspace_lock():
 def test_bash_positive_never_target_is_hard():
     decision = policy.authorize_command_tool_call(
         build(workspace=None),
-        call("bash", r'cat "C:\Windows\System32\drivers\etc\hosts"'),
+        call("bash", r'cat "C:\Boot\BCD"'),
         executor_cwd=r"D:\Projects\Jack",
         command_dialect="bash",
     )
@@ -151,7 +151,7 @@ def test_powershell_positive_never_target_is_hard():
         build(workspace=None),
         call(
             "powershell",
-            r'Get-Content -LiteralPath "C:\Windows\System32\drivers\etc\hosts"',
+            r'Get-Content -LiteralPath "C:\Boot\BCD"',
         ),
         executor_cwd=r"D:\Projects\Jack",
         command_dialect="powershell",
