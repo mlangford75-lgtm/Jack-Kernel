@@ -270,7 +270,7 @@ def test_nonstream_never_target_hard_interrupts_without_model_retry_or_checkpoin
         tool_response(
             "read",
             {
-                "path": r"C:\Windows\System32\drivers\etc\hosts",
+                "path": r"C:\Boot\BCD",
             },
         ),
         content_response("must never be reached"),
