@@ -289,7 +289,7 @@ def test_streamed_never_target_hard_interrupts_before_any_tool_release():
                 call_id="call-never",
                 name="read",
                 arguments=(
-                    '{"path":"C:\\\\Windows\\\\System32\\\\drivers\\\\etc\\\\hosts"}'
+                    '{"path":"C:\\\\Boot\\\\BCD"}'
                 ),
             ),
             finish(),

@@ -162,7 +162,7 @@ def test_positive_never_sibling_hard_interrupts_before_subset_release():
         call(
             "call-never",
             "read",
-            {"path": r"C:\Windows\System32\drivers\etc\hosts"},
+            {"path": r"C:\Boot\BCD"},
         ),
     ]
 

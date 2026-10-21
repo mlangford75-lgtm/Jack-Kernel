@@ -57,8 +57,8 @@ def auth(
 @pytest.mark.parametrize(
     "target",
     (
-        r"FileSystem::C:\Windows\System32\drivers\etc\hosts",
-        r"Microsoft.PowerShell.Core\FileSystem::C:\Windows\System32\cmd.exe",
+        r"FileSystem::C:\Boot\BCD",
+        r"Microsoft.PowerShell.Core\FileSystem::C:\Boot\BCD",
     ),
 )
 def test_filesystem_provider_never(target):
@@ -120,7 +120,7 @@ def test_git_status_outside_workspace_is_denied():
 
 def test_drive_rooted_powershell_never_uses_executor_drive():
     assert auth(
-        r"Get-Content -LiteralPath \Windows\System32\drivers\etc\hosts",
+        r"Get-Content -LiteralPath \Boot\BCD",
         workspace=None,
         cwd=r"C:\Users\Operator",
     ) is p.PathAuthorizationOutcome.HARD_INTERRUPT

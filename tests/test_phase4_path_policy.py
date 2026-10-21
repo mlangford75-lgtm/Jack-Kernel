@@ -484,7 +484,7 @@ def test_structured_never_target_is_hard():
         build(workspace=None),
         structured_call(
             "read",
-            {"path": r"C:\Windows\System32\drivers\etc\hosts"},
+            {"path": r"C:\Boot\BCD"},
         ),
     )
 

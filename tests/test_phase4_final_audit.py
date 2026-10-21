@@ -59,14 +59,14 @@ def read_call(path, *, call_id="call-read"):
 @pytest.mark.parametrize(
     "command",
     (
-        r"cat /c/Windows/System32/cmd.exe",
-        r"cat /mnt/c/Windows/System32/cmd.exe",
-        r"cat /cygdrive/c/Windows/System32/cmd.exe",
-        r"cat $WINDIR/System32/cmd.exe",
-        'bash -c "cat /c/Windows/System32/cmd.exe"',
-        r"command cat /c/Windows/System32/cmd.exe",
-        r"exec cat /c/Windows/System32/cmd.exe",
-        r"nohup cat /c/Windows/System32/cmd.exe",
+        r"cat /c/Boot/BCD",
+        r"cat /mnt/c/Boot/BCD",
+        r"cat /cygdrive/c/Boot/BCD",
+        r"cat $SystemDrive/Boot/BCD",
+        'bash -c "cat /c/Boot/BCD"',
+        r"command cat /c/Boot/BCD",
+        r"exec cat /c/Boot/BCD",
+        r"nohup cat /c/Boot/BCD",
     ),
 )
 def test_windows_bash_representations_of_never_are_hard(command):
@@ -85,7 +85,7 @@ def test_nested_powershell_literal_never_is_hard():
     decision = policy.authorize_command_tool_call(
         build(workspace=None),
         command_call(
-            r'pwsh -Command "Get-Content C:\Windows\System32\drivers\etc\hosts"',
+            r'pwsh -Command "Get-Content C:\Boot\BCD"',
             name="powershell",
         ),
         executor_cwd=r"D:\Work",
