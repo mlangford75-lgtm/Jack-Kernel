@@ -8193,8 +8193,14 @@ class JackQwenKernel:
         )
         try:
             async with self._activity_request_scope("stream"):
-                async for chunk in self._stream_impl(request_body):
-                    yield chunk
+                inner_stream = self._stream_impl(request_body)
+                try:
+                    async for chunk in inner_stream:
+                        yield chunk
+                finally:
+                    # Closing the outward generator must also terminate the
+                    # underlying Stage-2 stream and release its semaphore.
+                    await inner_stream.aclose()
         finally:
             try:
                 if scope_token is not None:
