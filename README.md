@@ -68,12 +68,11 @@ Jack's cognition modes are **programs built on the Kernel**. They do not make Ja
 | Off | Direct inference with native thinking off |
 | Medium | Direct native Medium reasoning |
 | X-High | Direct native X-High reasoning |
-| Deep Reasoning (`ultra` classic topology) | X-High Thesis → Medium Antithesis → X-High authoritative Synthesis |
+| Deep Reasoning | Thesis → Antithesis → Synthesis |
 | Agentic (Preserve Thinking) | Full native Stage-1 cognition and authorized tools, exact frozen A1, followed by tools-off Stage-2 retrospective reasoning distillation, host receipts, authenticated historical memory projection, one-hop native-reasoning continuity, and completed-turn pruning |
 | Code Debugging | Five-pass, report-only defect review using Medium reasoning |
 | Code Debugging (Deep) | Same report-only topology at X-High reasoning |
 
-**Deep Reasoning nomenclature:** This is the updated public documentation name. The established `ultra` selector retains its classic three-stage topology and `deep-research` compatibility alias. A distinct `deep-reasoning` selector/profile is present, but the [TAS v6 integration gate](Documentation/Orchestration/DEEP_REASONING_TAS_V6_INTEGRATION_GATE.md) does not certify it as equivalent or fully validated. These selectors must not be conflated. This documentation-only change does not alter runtime profile labels, stage prompts, or selectors.
 
 For selection, supported deployment commands, and runtime lanes, see [Getting Started](GETTING_STARTED.md#3-choose-a-cognition-program).
 

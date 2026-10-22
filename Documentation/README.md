@@ -28,7 +28,7 @@ For a new user, read in this order:
 
 ## Deep Reasoning
 
-- **Public naming:** Deep Reasoning is the current documentation name for the three-stage cognition family. The established `ultra` selector and the distinct `deep-reasoning` integration-track selector are **not interchangeable**; see the [TAS v6 integration gate](Orchestration/DEEP_REASONING_TAS_V6_INTEGRATION_GATE.md) for evidence and unvalidated items. Existing compatible selector names remain unchanged.
+- **Deep Reasoning** — Thesis → Antithesis → Synthesis.
 
 ## Orchestration
 
