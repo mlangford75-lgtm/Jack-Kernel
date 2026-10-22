@@ -8,7 +8,7 @@ Jack Kernel is a **local-first, host-authoritative inference mediation and contr
 
 Jack is **not the agent and not the LLM**. The agent chooses the task and workflow. The model supplies probabilistic cognition. Jack owns deterministic boundaries around that cognition: stage topology, reasoning and sampling controls, tool exposure, context projection, answer/commit authority, retention, evidence handling, runtime identity, consequence disposition, and selected security controls.
 
-Deep Research, Agentic (Preserve Thinking), and Code Debugging are **reference programs built on the kernel**. They demonstrate what Jack can express; they are not the product boundary.
+Deep Reasoning, Agentic (Preserve Thinking), and Code Debugging are **reference programs built on the kernel**. They demonstrate what Jack can express; they are not the product boundary.
 
 > **Start here:** [`00_Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx`](00_Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx)
 >
@@ -16,7 +16,7 @@ Deep Research, Agentic (Preserve Thinking), and Code Debugging are **reference p
 >
 > **Current security state:** [`CURRENT_SECURITY_STATUS.md`](CURRENT_SECURITY_STATUS.md)
 >
-> **Latest operational checkpoint (October 14, 2026):** Phase 8 remains the last formally validated/frozen security phase. Phase 9A research closed without Phase 9 runtime-code-integrity enforcement; the Agentic tool-resume repair (PR #45) and Responses error non-disclosure repair (PR #46) are merged, with **527 Windows Python tests passing** on the verified post-fix baseline.
+> **Latest operational checkpoint (October 14, 2026):** Phase 8 remains the last formally validated/frozen security phase. Phase 9A research closed without Phase 9 runtime-code-integrity enforcement; the Agentic (Preserve Thinking) lineage tool-resume repair (PR #45) and Responses error non-disclosure repair (PR #46) are merged, with **527 Windows Python tests passing** on the verified post-fix baseline.
 
 ## Architecture at a glance
 
@@ -68,26 +68,28 @@ Jack's cognition modes are **programs built on the Kernel**. They do not make Ja
 | Off | Direct inference with native thinking off |
 | Medium | Direct native Medium reasoning |
 | X-High | Direct native X-High reasoning |
-| Deep Research | X-High Thesis → Medium Antithesis → X-High authoritative Synthesis |
+| Deep Reasoning (`ultra` classic topology) | X-High Thesis → Medium Antithesis → X-High authoritative Synthesis |
 | Agentic (Preserve Thinking) | Full native Stage-1 cognition and authorized tools, exact frozen A1, followed by tools-off Stage-2 retrospective reasoning distillation, host receipts, authenticated historical memory projection, one-hop native-reasoning continuity, and completed-turn pruning |
 | Code Debugging | Five-pass, report-only defect review using Medium reasoning |
 | Code Debugging (Deep) | Same report-only topology at X-High reasoning |
+
+**Deep Reasoning nomenclature:** This is the updated public documentation name. The established `ultra` selector retains its classic three-stage topology and `deep-research` compatibility alias. A distinct `deep-reasoning` selector/profile is present, but the [TAS v6 integration gate](Documentation/Orchestration/DEEP_REASONING_TAS_V6_INTEGRATION_GATE.md) does not certify it as equivalent or fully validated. These selectors must not be conflated. This documentation-only change does not alter runtime profile labels, stage prompts, or selectors.
 
 For selection, supported deployment commands, and runtime lanes, see [Getting Started](GETTING_STARTED.md#3-choose-a-cognition-program).
 
 The current integrated control surfaces include the OpenAI-compatible `/v1` API (including Responses compatibility), Orchestration Gateway v2 for supervisor-to-worker mediation, authenticated Pi worker control, and independently identified multi-endpoint runtime lanes. `runtime_id` and `lane_id` are logical identities; ports and sockets remain transport locators.
 
-### Agentic (Preserve Thinking) — active Agentic mode (October 2026)
+### Agentic (Preserve Thinking) — active cognition mode (October 2026)
 
-The [`Agentic (Preserve Thinking)` design](Documentation/Agentic/AGENTIC_PRESERVE_THINKING_2026-10-21.md) **replaces the prior Agentic implementation** under the existing `JACK_REASONING_LEVEL=agentic` selector. There is no parallel legacy Agentic mode. The name is a user-facing label; the stable internal selector remains `agentic` for existing launchers and integrations.
+The [`Agentic (Preserve Thinking)` design](Documentation/Agentic/AGENTIC_PRESERVE_THINKING_2026-10-21.md) **replaces the previous XML-based implementation** under the existing `JACK_REASONING_LEVEL=agentic` selector. There is no parallel legacy mode. The name is a user-facing label; the stable internal selector remains `agentic` for existing launchers and integrations.
 
 Stage 1 uses native x-high cognition with authorized tools and freezes the exact user-facing answer (A1). Tools-off Stage 2 produces a retrospective semantic memory explaining how Stage 1 reached A1. Historical user turns, the host-authenticated retrospective memory, and exact frozen answers are projected separately; completed native thinking and tool protocols are retired, while the immediately previous Stage-2 native reasoning can bridge once into the next Stage 1 before retirement. Tool-result receipts are observations, not proof of filesystem effects. Stage 2 does not revise A1. The Stage-1 and Stage-2 cognition prompt text is unchanged.
 
 Additional observational features are opt-in: LM Studio Stage-2 cache append (`JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT`) and byte accounting (`JACK_AGENTIC_CONTEXT_ACCOUNTING`); neither is a token-window limit. The run-time behavior has been exercised with local multi-turn Pi/LM Studio experiments, but improvement against a native Pi control remains unmeasured. The last formal security checkpoint is still Phase 8.
 
-### Agentic continuation correction
+### Agentic (Preserve Thinking) continuation correction
 
-The [PR #45 Agentic fix](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/45) resolves a real stage-resume bug discovered while investigating Phase 9A: when a caller replays historical conversation messages, retired/nonpending tool results must not poison the current live pending transaction. The correction ignores retired results for current transaction selection **without admitting them into the resumed stage history**. Withheld-call results, duplicate live results, incomplete current results, and results spanning conflicting live transactions continue to be rejected. This correctness improvement is **not** Phase 9 Runtime Code Integrity enforcement.
+The [PR #45 historical tool-resume fix](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/45) resolves a real stage-resume bug discovered while investigating Phase 9A: when a caller replays historical conversation messages, retired/nonpending tool results must not poison the current live pending transaction. The correction ignores retired results for current transaction selection **without admitting them into the resumed stage history**. Withheld-call results, duplicate live results, incomplete current results, and results spanning conflicting live transactions continue to be rejected. This correctness improvement is **not** Phase 9 Runtime Code Integrity enforcement.
 
 ## What Jack owns
 
@@ -136,7 +138,7 @@ The cumulative validated security controls are:
 
 Post-Phase-8 merged maintenance:
 
-- [PR #45](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/45): Agentic historical tool-result replay and pending stage-resume correction.
+- [PR #45](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/45): historical tool-result replay in the Agentic (Preserve Thinking) lineage and pending stage-resume correction.
 - [PR #46](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/46): Responses API exception non-disclosure while retaining sanitized Phase-7 diagnostics.
 - [PR #47](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/47): Phase 9A research-closure record and live status reconciliation.
 
