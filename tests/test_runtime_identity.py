@@ -123,7 +123,10 @@ def test_consolidated_runtime_identity_contract():
     assert deep_identity["stage_controls"]["extended_synthesis"]["allow_tools"] is True
 
     agentic = load("agentic")
-    agentic_identity = asyncio.run(agentic.root())["runtime_identity"]
+    agentic_root = asyncio.run(agentic.root())
+    assert agentic_root["reasoning_level"] == "Local Agentic (Preserve Thinking)"
+    assert agentic.REASONING_PROFILES["agentic"]["label"] == "Local Agentic (Preserve Thinking)"
+    agentic_identity = agentic_root["runtime_identity"]
     assert agentic_identity["reasoning_profile"] == "agentic"
     assert agentic_identity["mode"] == "agentic"
     assert agentic_identity["flow"] == [
