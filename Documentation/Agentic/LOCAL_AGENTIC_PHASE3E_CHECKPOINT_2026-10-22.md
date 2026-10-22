@@ -2,7 +2,7 @@
 
 **Date:** October 22, 2026  
 **Scope:** The current locally tested Agentic (Preserve Thinking) implementation using Qwen3.8-27B-GSQ-RCO IQ3_S through LM Studio and Pi.  
-**Selector:** `JACK_REASONING_LEVEL=agentic` (unchanged).  
+**Canonical selector:** `JACK_REASONING_LEVEL="Local Agentic (Preserve Thinking)"`; legacy `agentic` accepted as alias.  
 **Runtime display:** Local Agentic (Preserve Thinking).
 
 ## Current implementation
@@ -40,7 +40,7 @@ Stage 1 created and corrected the SVG; retrospective memories completed; subsequ
 
 ## Source of truth
 
-- Runtime: `jack_kernel.py`, `REASONING_PROFILES["agentic"]["label"]`, `AGENTIC_CACHE_APPEND_EXPERIMENT`, `_agentic_cache_append_enabled`, and `_agentic_retire_consumed_one_hop`.
+- Runtime: `jack_kernel.py`, `REASONING_PROFILES["Local Agentic (Preserve Thinking)"]["label"]`, `AGENTIC_CACHE_APPEND_EXPERIMENT`, `_agentic_cache_append_enabled`, and `_agentic_retire_consumed_one_hop`.
 - Regressions: `tests/test_agentic_cache_append_experiment_phase3e.py`, `tests/test_agentic_one_hop_bridge_phase3d.py`, and `tests/test_runtime_identity.py`.
 - Phase 3E default-on merge: [PR #60](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/60).
 
