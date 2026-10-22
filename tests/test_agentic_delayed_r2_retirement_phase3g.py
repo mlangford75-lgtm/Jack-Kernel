@@ -223,7 +223,10 @@ def test_degraded_commit_retires_bridge_preserves_a1():
     token = k._AGENTIC_DELAY_R2_SCOPE.set(scope)
     try:
         answer = freeze(k, history)
-        result = k.KERNEL._agentic_degraded_result(history, {}, answer, "stage2 rejected")
+        result = k.KERNEL._agentic_degraded_result(
+            history, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            answer, "stage2 rejected"
+        )
         assert result.content == answer
         assert history == []
         assert "reasoning_content" not in scope["bridge_messages"][0]
@@ -265,4 +268,49 @@ def test_previous_speculation_is_not_authored_as_verified_memory_by_host():
             assert "reasoning_content" not in scope["bridge_messages"][0]
         finally:
             k._AGENTIC_DELAY_R2_SCOPE.reset(token)
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("interrupt", ["close", "cancel", "tool_violation"])
+def test_streamed_terminal_exit_retires_only_frozen_bridge(interrupt):
+    async def exercise():
+        k = load(True)
+        history = bridge_history()
+        sibling = bridge_history()
+        sibling[1]["reasoning_content"] = "sibling active bridge"
+        reached_stage2 = asyncio.Event()
+
+        async def interrupted_stage(request_body):
+            freeze(k, history)
+            reached_stage2.set()
+            if interrupt == "tool_violation":
+                raise k.HTTPException(status_code=502, detail="Stage 2 unauthorized tool call")
+            # Active Stage 2 has begun. Cancellation/close must terminate it
+            # without waiting for generation to complete.
+            yield b": stage2 active\\n\\n"
+            await asyncio.sleep(3600)
+
+        k.KERNEL._stream_impl = interrupted_stage
+        stream = k.KERNEL.stream({"messages": [{"role": "user", "content": "current"}]})
+        try:
+            if interrupt == "tool_violation":
+                with pytest.raises(k.HTTPException):
+                    await anext(stream)
+            else:
+                await anext(stream)
+                assert reached_stage2.is_set()
+                assert history[1]["reasoning_content"] == "previous R2"
+                if interrupt == "close":
+                    await stream.aclose()
+                else:
+                    task = asyncio.create_task(anext(stream))
+                    await asyncio.sleep(0)
+                    task.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await task
+        finally:
+            await stream.aclose()
+        assert "reasoning_content" not in history[1]
+        assert sibling[1]["reasoning_content"] == "sibling active bridge"
+
     asyncio.run(exercise())
