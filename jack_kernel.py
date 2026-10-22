@@ -754,7 +754,7 @@ REASONING_PROFILES: Dict[str, Dict[str, Any]] = {
         "pass3": "xhigh",
         "disabled": False,
     },
-    "agentic": {
+    "Local Agentic (Preserve Thinking)": {
         "label": "Local Agentic (Preserve Thinking)",
         "mode": "agentic",
         "answer": "xhigh",
@@ -780,6 +780,12 @@ REASONING_PROFILES: Dict[str, Dict[str, Any]] = {
 
 # Accepted aliases for reasoning-level input.
 _REASONING_LEVEL_ALIASES = {
+    # Public canonical mode name; normalize case only for input matching.
+    "local agentic (preserve thinking)": "Local Agentic (Preserve Thinking)",
+    # Legacy launcher/environment spelling remains accepted, not canonical.
+    "agentic": "Local Agentic (Preserve Thinking)",
+    "local-agentic": "Local Agentic (Preserve Thinking)",
+    "local_agentic": "Local Agentic (Preserve Thinking)",
     "xhigh": "x-high",
     "x_high": "x-high",
     "x high": "x-high",
@@ -810,9 +816,9 @@ _REASONING_LEVEL_ALIASES = {
 }
 _reasoning_level = _REASONING_LEVEL_ALIASES.get(CFG.reasoning_level, CFG.reasoning_level)
 if _reasoning_level not in REASONING_PROFILES:
-    raise RuntimeError("JACK_REASONING_LEVEL must be off, medium, x-high, deep-research, agentic, code-debugging, or code-debugging-deep; low is listed but disabled")
+    raise RuntimeError("JACK_REASONING_LEVEL must be off, medium, x-high, deep-research, Local Agentic (Preserve Thinking), code-debugging, or code-debugging-deep; low is listed but disabled")
 if REASONING_PROFILES[_reasoning_level].get("disabled"):
-    raise RuntimeError("JACK_REASONING_LEVEL=low is disabled in Jack Kernel v0.1.1. Choose off, medium, x-high, deep-research, agentic, code-debugging, or code-debugging-deep.")
+    raise RuntimeError("JACK_REASONING_LEVEL=low is disabled in Jack Kernel v0.1.1. Choose off, medium, x-high, deep-research, Local Agentic (Preserve Thinking), code-debugging, or code-debugging-deep.")
 ACTIVE_REASONING_PROFILE = REASONING_PROFILES[_reasoning_level]
 AGENTIC_MODE = ACTIVE_REASONING_PROFILE["mode"] == "agentic"
 ULTRA_MODE = ACTIVE_REASONING_PROFILE["mode"] == "ultra"
