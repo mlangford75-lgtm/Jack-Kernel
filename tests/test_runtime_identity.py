@@ -122,12 +122,12 @@ def test_consolidated_runtime_identity_contract():
     assert deep_identity["stage_controls"]["extended_reflection"]["allow_tools"] is False
     assert deep_identity["stage_controls"]["extended_synthesis"]["allow_tools"] is True
 
-    agentic = load("agentic")
+    agentic = load("Local Agentic (Preserve Thinking)")
     agentic_root = asyncio.run(agentic.root())
     assert agentic_root["reasoning_level"] == "Local Agentic (Preserve Thinking)"
-    assert agentic.REASONING_PROFILES["agentic"]["label"] == "Local Agentic (Preserve Thinking)"
+    assert agentic.REASONING_PROFILES["Local Agentic (Preserve Thinking)"]["label"] == "Local Agentic (Preserve Thinking)"
     agentic_identity = agentic_root["runtime_identity"]
-    assert agentic_identity["reasoning_profile"] == "agentic"
+    assert agentic_identity["reasoning_profile"] == "Local Agentic (Preserve Thinking)"
     assert agentic_identity["mode"] == "agentic"
     assert agentic_identity["flow"] == [
         "extended_initial",
@@ -136,6 +136,10 @@ def test_consolidated_runtime_identity_contract():
     assert agentic_identity["authoritative_stage"] == "extended_initial"
     assert agentic_identity["stage_controls"]["extended_initial"]["allow_tools"] is True
     assert agentic_identity["stage_controls"]["extended_reflection"]["allow_tools"] is False
+
+    legacy = load("agentic")
+    assert legacy._reasoning_level == "Local Agentic (Preserve Thinking)"
+    assert legacy.AGENTIC_MODE is True
 
     debugging = load("code-debugging")
     debugging_identity = asyncio.run(debugging.root())["runtime_identity"]
