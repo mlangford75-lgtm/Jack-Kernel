@@ -79,7 +79,7 @@ Port 8000 remains available for a custom OpenAI-compatible/vLLM backend. Do not 
 - **Off** — native thinking disabled.
 - **Medium** — direct native Medium reasoning.
 - **X-High** — direct native X-High reasoning.
-- **Deep Reasoning (`ultra` classic topology)** — X-High Thesis -> Medium Antithesis -> X-High authoritative Synthesis. The `deep-research` selector remains a compatibility alias; the separate `deep-reasoning` profile has its own [TAS v6 integration gate](Documentation/Orchestration/DEEP_REASONING_TAS_V6_INTEGRATION_GATE.md). A documentation rename does not merge these runtime behaviors.
+- **Deep Reasoning** — Thesis → Antithesis → Synthesis.
 - **Agentic (Preserve Thinking)** — the active, merged replacement of the earlier Agentic implementation ([PR #57](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/57)), selected with `JACK_REASONING_LEVEL=agentic`. Stage 1 has native reasoning and authorized tools and freezes A1; tools-off Stage 2 generates retrospective memory; Jack keeps authenticated U/M/A history, one-hop previous-stage reasoning when supported, tool-result receipts, and completed-turn pruning. See the [current technical reference](Documentation/Agentic/AGENTIC_PRESERVE_THINKING_2026-10-21.md); the [October 15 precursor](Documentation/Agentic/AGENTIC_RETROSPECTIVE_MEMORY_RELEASE_2026-10-15.md) is historical, not the current release.
 - **Code Debugging** — five-pass report-only forensic audit at Medium reasoning.
 - **Code Debugging (Deep)** — the same forensic topology at X-High reasoning.
