@@ -64,9 +64,10 @@ def test_stage_contracts_and_frozen_answer_are_separate():
     answer = "  exact answer\nwith trailing spaces  \n"
     memory = "The approach preserved the user's constraints."
     rendered = k._format_agentic_completed_response(memory, answer)
-    recovered_memory, recovered_answer = k._split_prior_jack_output(rendered)
-    assert recovered_memory == memory
-    assert recovered_answer == answer
+    assert rendered == memory + "\n\n" + answer
+    assert rendered.endswith(answer)
+    assert "<Agentic Memory>" not in rendered
+    assert "<Model Response>" not in rendered
 
 
 def test_agentic_gc_retires_native_reasoning_and_tool_protocol():
