@@ -1,0 +1,20 @@
+name: Phase 3G experimental regressions
+on:
+  push:
+    branches:
+      - experiment/agentic-phase3g-delayed-r2-retirement-20261022
+  workflow_dispatch:
+jobs:
+  phase3g:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: python -m pip install -r requirements.txt pytest
+      - name: Run Agentic baseline and Phase 3G regression suites
+        run: |
+          python -m pytest -q             tests/test_agentic_turn_artifacts_phase2.py             tests/test_agentic_turn_lifecycle_phase3b.py             tests/test_agentic_memory_projection_phase3c.py             tests/test_agentic_one_hop_bridge_phase3d.py             tests/test_agentic_cache_append_experiment_phase3e.py             tests/test_agentic_context_accounting_phase3f.py             tests/test_agentic_retrospective_memory.py             tests/test_agentic_delayed_r2_retirement_phase3g.py
