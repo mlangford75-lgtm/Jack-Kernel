@@ -4,7 +4,7 @@ param(
     [string]$RuntimeId,
 
     [Parameter(Mandatory = $true)]
-    [ValidateSet("off", "medium", "x-high", "deep-reasoning", "deep-research", "agentic", "code-debugging", "code-debugging-deep")]
+    [ValidateSet("off", "medium", "x-high", "deep-reasoning", "deep-research", "Local Agentic (Preserve Thinking)", "agentic", "code-debugging", "code-debugging-deep")]
     [string]$Mode,
 
     [ValidateRange(0, 65535)]
@@ -39,7 +39,8 @@ if ([string]::IsNullOrWhiteSpace($LaneId)) {
 
 $env:JACK_RUNTIME_ID = $RuntimeId
 $env:JACK_LANE_ID = $LaneId
-$env:JACK_REASONING_LEVEL = $Mode
+$CanonicalMode = if ($Mode -eq "agentic") { "Local Agentic (Preserve Thinking)" } else { $Mode }
+$env:JACK_REASONING_LEVEL = $CanonicalMode
 $env:JACK_HOST = "127.0.0.1"
 $env:JACK_PORT = [string]$Port
 $env:JACK_PORT_FALLBACK = if ($PortFallback) { "1" } else { "0" }
@@ -84,7 +85,7 @@ if (Test-Path -LiteralPath ".venv\Scripts\python.exe" -PathType Leaf) {
 Write-Host "Starting Jack lane" -ForegroundColor Cyan
 Write-Host "  runtime_id : $RuntimeId"
 Write-Host "  lane_id    : $LaneId"
-Write-Host "  mode       : $Mode"
+Write-Host "  mode       : $CanonicalMode"
 Write-Host "  preferred  : 127.0.0.1:$Port"
 Write-Host "  fallback   : $PortFallback"
 Write-Host "  backend    : $BackendBaseUrl"
