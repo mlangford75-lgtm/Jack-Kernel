@@ -958,6 +958,20 @@ AGENTIC_CACHE_APPEND_EXPERIMENT = (
 )
 
 
+# Phase 3G: opt-in full-turn one-hop R2 lifetime. This changes only when
+# previous-turn native retrospective reasoning is retired, not its provenance,
+# the Stage-2 prompt, stage authority, or durable U/M/A retention.
+AGENTIC_DELAY_R2_RETIREMENT = (
+    os.environ.get("JACK_AGENTIC_DELAY_R2_RETIREMENT", "0").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+# Each request owns its own references. Never scan or mutate unrelated pending
+# transactions: a successor Stage-1 tool checkpoint may still need its bridge.
+_AGENTIC_DELAY_R2_SCOPE: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
+    contextvars.ContextVar("jack_agentic_phase3g_delayed_r2", default=None)
+)
+
+
 def _agentic_cache_append_enabled(profile: "StageProfile", tool_choice: Any = None) -> bool:
     return bool(
         AGENTIC_MODE
@@ -3650,7 +3664,19 @@ def append_extended_candidate_response(
     history.append(entry)
     if AGENTIC_MODE:
         _agentic_turn_status(history, "response_frozen")
-        _agentic_retire_consumed_one_hop(history)
+        if AGENTIC_DELAY_R2_RETIREMENT:
+            # The bridge is consumed by this entire two-stage turn. Hold only
+            # references belonging to this request, for cancellation cleanup
+            # even if a commit subsequently clears its active history list.
+            scope = _AGENTIC_DELAY_R2_SCOPE.get()
+            if scope is not None:
+                scope["stage1_frozen"] = True
+                scope["bridge_messages"] = [
+                    item for item in history
+                    if isinstance(item, dict) and item.get("_jack_agentic_one_hop_r2")
+                ]
+        else:
+            _agentic_retire_consumed_one_hop(history)
     return candidate
 
 
@@ -4073,6 +4099,20 @@ def _agentic_retire_consumed_one_hop(history: List[Dict[str, Any]]) -> None:
         item.pop("reasoning", None)
         item.pop("thinking", None)
         item.pop("_jack_agentic_one_hop_r2", None)
+
+
+def _agentic_finish_delayed_one_hop(history: List[Dict[str, Any]]) -> None:
+    """Retire the consuming turn's bridge before terminal history clearance.
+
+    Scope references cover aliased tool checkpoint dictionaries; no global
+    ledger or unrelated concurrent turn is consulted.
+    """
+    if not (AGENTIC_MODE and AGENTIC_DELAY_R2_RETIREMENT):
+        return
+    _agentic_retire_consumed_one_hop(history)
+    scope = _AGENTIC_DELAY_R2_SCOPE.get()
+    if scope is not None:
+        _agentic_retire_consumed_one_hop(scope.get("bridge_messages", []))
 
 
 # Phase 3F — portable, opt-in observational context accounting.
@@ -7359,6 +7399,7 @@ class JackQwenKernel:
         memory += tool_receipt
         _archive_agentic_stage1_forensic(history, frozen_stage1_answer, memory)
         _agentic_shadow_record_commit(frozen_stage1_answer, unadorned_memory, tool_receipt, history=history)
+        _agentic_finish_delayed_one_hop(history)
         history.clear()
         return PreparedCommit(
             frozen_xml=memory,
@@ -7374,6 +7415,7 @@ class JackQwenKernel:
         """Preserve exact frozen A1 when zero-authority semantic consolidation cannot complete."""
         _discard_agentic_stage1_forensic_snapshot(history)
         _agentic_shadow_record_commit(frozen_stage1_answer, None, history=history)
+        _agentic_finish_delayed_one_hop(history)
         history.clear()
         LOG.warning("Agentic degraded commit: exact frozen A1 preserved without distilled memory: %s", reason)
         return KernelResult(
@@ -7606,6 +7648,9 @@ class JackQwenKernel:
             state,
             tool_messages,
         )
+        scope = _AGENTIC_DELAY_R2_SCOPE.get() if AGENTIC_MODE else None
+        if scope is not None:
+            scope["pending_state"] = state
         usage = dict(state.usage)
         stage_key = state.stage_key
         debugging_run = _debugging_get_run(state.debugging_run_id) if CODE_DEBUGGING_MODE else None
@@ -8011,6 +8056,24 @@ class JackQwenKernel:
             reasoning_content=str(reasoning) if reasoning else None,
         )
 
+    async def _agentic_phase3g_close_scope(self, scope_token: contextvars.Token) -> None:
+        """Close exactly the consuming turn, including an aliased tool checkpoint.
+
+        Stage-1 tool suspensions never freeze A1, so they remain resumable.
+        A terminal Stage-2 path cannot rearm a completed Stage-1 checkpoint.
+        """
+        try:
+            scope = _AGENTIC_DELAY_R2_SCOPE.get()
+            if scope is None or not scope.get("stage1_frozen"):
+                return
+            _agentic_retire_consumed_one_hop(scope.get("bridge_messages", []))
+            state = scope.get("pending_state")
+            if state is not None:
+                _agentic_retire_consumed_one_hop(state.history)
+                await self._retire_pending_tool_resume(state)
+        finally:
+            _AGENTIC_DELAY_R2_SCOPE.reset(scope_token)
+
     async def run(
         self,
         request_body: Dict[str, Any],
@@ -8018,11 +8081,21 @@ class JackQwenKernel:
         executor_context: Optional[Phase4ExecutorRequestContext] = None,
     ) -> KernelResult:
         token = _PHASE4_EXECUTOR_REQUEST_CONTEXT.set(executor_context)
+        scope_token = (
+            _AGENTIC_DELAY_R2_SCOPE.set({
+                "stage1_frozen": False, "bridge_messages": [], "pending_state": None,
+            })
+            if AGENTIC_MODE and AGENTIC_DELAY_R2_RETIREMENT else None
+        )
         try:
             async with self._activity_request_scope("nonstream"):
                 return await self._run_impl(request_body)
         finally:
-            _PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
+            try:
+                if scope_token is not None:
+                    await self._agentic_phase3g_close_scope(scope_token)
+            finally:
+                _PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
 
     async def _run_impl(self, request_body: Dict[str, Any]) -> KernelResult:
         request_body = sanitize_agent_request(request_body)
@@ -8112,12 +8185,22 @@ class JackQwenKernel:
         executor_context: Optional[Phase4ExecutorRequestContext] = None,
     ) -> AsyncIterator[bytes]:
         token = _PHASE4_EXECUTOR_REQUEST_CONTEXT.set(executor_context)
+        scope_token = (
+            _AGENTIC_DELAY_R2_SCOPE.set({
+                "stage1_frozen": False, "bridge_messages": [], "pending_state": None,
+            })
+            if AGENTIC_MODE and AGENTIC_DELAY_R2_RETIREMENT else None
+        )
         try:
             async with self._activity_request_scope("stream"):
                 async for chunk in self._stream_impl(request_body):
                     yield chunk
         finally:
-            _PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
+            try:
+                if scope_token is not None:
+                    await self._agentic_phase3g_close_scope(scope_token)
+            finally:
+                _PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
 
     async def _stream_impl(self, request_body: Dict[str, Any]) -> AsyncIterator[bytes]:
         if DEEP_REASONING_MODE:
@@ -8211,6 +8294,9 @@ class JackQwenKernel:
             elif pending is not None:
                 state, tool_messages = pending
                 pending_state = state
+                scope = _AGENTIC_DELAY_R2_SCOPE.get() if AGENTIC_MODE else None
+                if scope is not None:
+                    scope["pending_state"] = state
                 pending_tool_messages = tool_messages
                 response_usage_baseline = normalize_usage(dict(state.usage))
                 if ULTRA_MODE:
@@ -8609,6 +8695,7 @@ class JackQwenKernel:
                         history, agentic_frozen_stage1_answer, distilled_memory
                     )
                     _agentic_shadow_record_commit(agentic_frozen_stage1_answer, unadorned_memory, tool_receipt, history=history)
+                    _agentic_finish_delayed_one_hop(history)
                     history.clear()
                 except Exception as exc:
                     if agentic_frozen_stage1_answer is None:
@@ -10312,6 +10399,7 @@ async def _safe_public_stream(
     executor_context: Optional[Phase4ExecutorRequestContext] = None,
 ) -> AsyncIterator[bytes]:
     """Convert internal stage failures into a clean OpenAI SSE termination."""
+    stream = None
     try:
         if executor_context is None:
             stream = KERNEL.stream(body)
@@ -10353,10 +10441,16 @@ async def _safe_public_stream(
         yield event({}, "stop")
         yield b"data: [DONE]\n\n"
     finally:
-        await KERNEL._rearm_pending_tool_resume_for_messages(body.get("messages"))
-        await KERNEL._rearm_pending_debugging_resumes_for_messages(body.get("messages"))
-        if AGENTIC_MODE:
-            _AGENTIC_ACTIVE_TURN.set(None)
+        try:
+            # Disconnect/cancellation must close the inner generator now, not
+            # defer Stage-2 terminal cleanup until generator garbage collection.
+            if stream is not None:
+                await stream.aclose()
+        finally:
+            await KERNEL._rearm_pending_tool_resume_for_messages(body.get("messages"))
+            await KERNEL._rearm_pending_debugging_resumes_for_messages(body.get("messages"))
+            if AGENTIC_MODE:
+                _AGENTIC_ACTIVE_TURN.set(None)
 
 
 @APP.post("/v1/chat/completions")
