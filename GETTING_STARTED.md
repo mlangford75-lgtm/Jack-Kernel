@@ -80,7 +80,7 @@ Port 8000 remains available for a custom OpenAI-compatible/vLLM backend. Do not 
 - **Medium** — direct native Medium reasoning.
 - **X-High** — direct native X-High reasoning.
 - **Deep Reasoning** — Thesis → Antithesis → Synthesis.
-- **Local Agentic (Preserve Thinking)** — the current locally tested implementation of Agentic (Preserve Thinking), replacing the earlier Agentic implementation ([PR #57](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/57)), selected with `JACK_REASONING_LEVEL=agentic`. Stage 1 has native reasoning and authorized tools and freezes A1; tools-off Stage 2 generates retrospective memory; Jack keeps authenticated U/M/A history, one-hop previous-stage reasoning when supported, tool-result receipts, and completed-turn pruning. See the [current technical reference](Documentation/Agentic/AGENTIC_PRESERVE_THINKING_2026-10-21.md); the [October 15 precursor](Documentation/Agentic/AGENTIC_RETROSPECTIVE_MEMORY_RELEASE_2026-10-15.md) is historical, not the current release.
+- **Local Agentic (Preserve Thinking)** — the current locally tested implementation of Agentic (Preserve Thinking), replacing the earlier Agentic implementation ([PR #57](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/57)), selected with `JACK_REASONING_LEVEL="Local Agentic (Preserve Thinking)"` (the prior `agentic` spelling is an accepted compatibility alias). Stage 1 has native reasoning and authorized tools and freezes A1; tools-off Stage 2 generates retrospective memory; Jack keeps authenticated U/M/A history, one-hop previous-stage reasoning when supported, tool-result receipts, and completed-turn pruning. See the [current technical reference](Documentation/Agentic/AGENTIC_PRESERVE_THINKING_2026-10-21.md); the [October 15 precursor](Documentation/Agentic/AGENTIC_RETROSPECTIVE_MEMORY_RELEASE_2026-10-15.md) is historical, not the current release.
 - **Code Debugging** — five-pass report-only forensic audit at Medium reasoning.
 - **Code Debugging (Deep)** — the same forensic topology at X-High reasoning.
 
@@ -191,7 +191,7 @@ The legacy single-lane `start.bat` path remains valid. For independent hot runti
 Example:
 
 ```powershell
-.\start-lane.ps1 -RuntimeId jack-agentic-01 -Mode agentic -Port 8101
+.\start-lane.ps1 -RuntimeId jack-agentic-01 -Mode "Local Agentic (Preserve Thinking)" -Port 8101
 .\start-lane.ps1 -RuntimeId jack-debug-01 -Mode code-debugging -Port 8102
 .\start-lane.ps1 -RuntimeId jack-research-01 -Mode deep-research -Port 8103
 ```
@@ -213,7 +213,7 @@ A lane that needs a privileged Pi worker should be paired with its own named bri
 Then launch the owning Jack lane with the same worker identity/token:
 
 ```powershell
-.\start-lane.ps1 -RuntimeId jack-agentic-01 -Mode agentic -Port 8101 -WorkerBridgeId agentic-worker-01 -WorkerControlToken "<lane-specific-secret>"
+.\start-lane.ps1 -RuntimeId jack-agentic-01 -Mode "Local Agentic (Preserve Thinking)" -Port 8101 -WorkerBridgeId agentic-worker-01 -WorkerControlToken "<lane-specific-secret>"
 ```
 
 Named workers publish their actual control endpoint after binding. Endpoint movement does not change worker identity. Jack resolves the named worker from the local bridge registry and rejects bridge-identity mismatches. The worker's Pi provider separately resolves its owning Jack runtime by `JackRuntimeId` and verifies live runtime identity before provider registration.
