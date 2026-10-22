@@ -1,8 +1,10 @@
-# Agentic (Preserve Thinking)
+# Local Agentic (Preserve Thinking)
 
 **Status:** Active replacement of the prior Agentic runtime implementation; retain the historical Agentic documents as archival descriptions rather than alternate live modes.
 
-**Selector:** `JACK_REASONING_LEVEL=agentic`. **Display label:** `Agentic (Preserve Thinking)`.
+**Selector:** `JACK_REASONING_LEVEL=agentic`. **Display label:** `Local Agentic (Preserve Thinking)`.
+
+**Architecture:** Agentic (Preserve Thinking), a two-stage cognition program. **Deployment status:** locally tested with Pi/LM Studio; the label does not imply a separate internal mode or a validated cloud-specific profile.
 
 Jack Kernel orchestrates this mode. The model generates cognition and proposes authorized tool calls; the host owns stage transitions, tool execution, identity/provenance, historical projection, and authoritative final-answer freezing. The native model's intelligence is not the same thing as the Kernel's contribution.
 
@@ -27,6 +29,8 @@ Stage-1 and Stage-2 cognition prompts remain as implemented; this release does n
 - Phase 3F — optional reporting of request-byte/context-category sizes (`JACK_AGENTIC_CONTEXT_ACCOUNTING=1`); `JACK_AGENTIC_CONTEXT_REPORT_BUDGET_BYTES` is a reporting threshold, **not** a truncation budget.
 
 ## Evidence and limits
+
+The [October 22 local Phase 3E checkpoint](LOCAL_AGENTIC_PHASE3E_CHECKPOINT_2026-10-22.md) preserves measured Stage-2 prefill and observed behavior. Phase 3E was made the LM Studio Agentic default in [PR #60](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/60); fallback via `JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT=0` remains available.
 
 Local targeted Agentic regression tests passed on the inspected snapshot. Interactive Pi/LM Studio six-turn inventory and multi-turn clock debugging provided evidence of successful work continuation, historical recall, tool-use continuity, and backend omission of completed tool protocols in subsequent model requests. One earlier run exhibited temporary Stage-1/retrospective-format contamination; user-visible repeats are not, by themselves, evidence of duplicate model-facing requests.
 
