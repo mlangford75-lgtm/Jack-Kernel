@@ -724,7 +724,7 @@ if CFG.backend_auth_mode not in {
 if CFG.forensic_archive_mode not in {"off", "stage"}:
     raise RuntimeError("JACK_FORENSIC_ARCHIVE_MODE must be off or stage")
 # Reasoning-mode taxonomy.
-# Agentic (Preserve Thinking): tool-enabled Stage 1 -> tools-off retrospective Stage 2.
+# Local Agentic (Preserve Thinking): tool-enabled Stage 1 -> tools-off retrospective Stage 2.
 # A1 remains authoritative. Completed tool protocol is retired; one-hop native
 # reasoning carries to the immediately following turn and is then retired.
 # Deep Research: grounded Thesis -> narrow Antithesis -> tool-enabled Synthesis. The complete
@@ -755,7 +755,7 @@ REASONING_PROFILES: Dict[str, Dict[str, Any]] = {
         "disabled": False,
     },
     "agentic": {
-        "label": "Agentic (Preserve Thinking)",
+        "label": "Local Agentic (Preserve Thinking)",
         "mode": "agentic",
         "answer": "xhigh",
         "pass1": "xhigh",
