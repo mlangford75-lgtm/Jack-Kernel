@@ -2,7 +2,7 @@
 
 **Status:** Active replacement of the prior Agentic runtime implementation; retain the historical Agentic documents as archival descriptions rather than alternate live modes.
 
-**Selector:** `JACK_REASONING_LEVEL=agentic`. **Display label:** `Local Agentic (Preserve Thinking)`.
+**Canonical selector:** `JACK_REASONING_LEVEL="Local Agentic (Preserve Thinking)"` (`agentic` remains a legacy compatibility alias). **Display label:** `Local Agentic (Preserve Thinking)`.
 
 **Architecture:** Agentic (Preserve Thinking), a two-stage cognition program. **Deployment status:** locally tested with Pi/LM Studio; the label does not imply a separate internal mode or a validated cloud-specific profile.
 
