@@ -1,5 +1,7 @@
 # Deep Reasoning — TAS v6 integration gate
 
+> **Naming clarification (October 2026):** Active documentation calls the three-stage cognition family **Deep Reasoning**. The established `ultra` classic topology (`deep-research` selector alias) remains separate from the `deep-reasoning` TAS v6 integration track. This historical integration gate retains the original terms for its unmerged migration plan; the public-name change alone does not signify a completed TAS v6 integration. The concurrently active memory mode is **Agentic (Preserve Thinking)**.
+
 **Status: NOT MERGE-READY.** This branch stages the approved design and public-mode naming decision, not an implementation of TAS v6. Do not rename the existing `ultra` Deep Research mode to imply TAS v6 is active.
 
 ## Naming
