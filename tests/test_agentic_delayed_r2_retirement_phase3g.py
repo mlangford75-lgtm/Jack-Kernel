@@ -14,6 +14,31 @@ import httpx
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def restore_experiment_environment():
+    # Imported kernels read environment once. Do not leak experimental mode
+    # into the older baseline suites when pytest runs multiple modules.
+    keys = (
+        "JACK_AGENTIC_DELAY_R2_RETIREMENT",
+        "JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT",
+        "JACK_REASONING_LEVEL",
+        "JACK_BACKEND_PROFILE",
+        "JACK_BACKEND_MODEL",
+        "JACK_FORENSIC_ARCHIVE_MODE",
+    )
+    prior = {key: os.environ.get(key) for key in keys}
+    try:
+        yield
+    finally:
+        for key, value in prior.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 MARKER = "===== JACK AGENTIC NATIVE PASS 2 =====\n[NATIVE REASONING]\n"
 
 
