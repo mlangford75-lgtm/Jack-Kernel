@@ -940,23 +940,27 @@ def _append_ultra_stage_generation_trigger(
     return trigger
 
 
-# Phase 3E: disabled-by-default cache-continuation experiment.
+# Phase 3E: cache-compatible Stage-2 request, default on for LM Studio Agentic.
+# Set JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT=0 to restore legacy request layout.
 # This changes only the backend REQUEST REPRESENTATION of Agentic Stage 2.
 # It does not change either stage's prompt text, frozen answer, tool authority,
 # stage lifecycle, or user-visible output. The Stage-2 wording changes ROLE
 # (from system to appended user), so results must be evaluated empirically.
 AGENTIC_CACHE_APPEND_EXPERIMENT = (
-    os.environ.get("JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT", "").strip().lower()
+    os.environ.get("JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT", "1").strip().lower()
     in {"1", "true", "yes", "on"}
 )
 
 
-def _agentic_cache_append_enabled(profile: "StageProfile") -> bool:
+def _agentic_cache_append_enabled(profile: "StageProfile", tool_choice: Any = None) -> bool:
     return bool(
         AGENTIC_MODE
         and AGENTIC_CACHE_APPEND_EXPERIMENT
         and CFG.backend_profile == "lmstudio"
         and profile.name == "Agentic native pass 2"
+        # Forced/named tool choices cannot be mirrored into a zero-authority
+        # retrospective; keep the legacy Stage-2 request for those callers.
+        and tool_choice in (None, "auto")
     )
 
 
@@ -5290,7 +5294,7 @@ class OpenAICompatibleBackend:
     ) -> Dict[str, Any]:
         model = await self.resolve_model()
         prepared_messages = self._stage_messages_for_profile(messages, profile)
-        cache_append = _agentic_cache_append_enabled(profile)
+        cache_append = _agentic_cache_append_enabled(profile, tool_choice)
         stage_system = build_stage_system_prompt(
             secondary_system,
             STAGES["extended_initial"] if cache_append else profile,
@@ -5400,7 +5404,7 @@ class OpenAICompatibleBackend:
         """Stream one backend stage as normalized OpenAI-style chunks internally."""
         model = await self.resolve_model()
         prepared_messages = self._stage_messages_for_profile(messages, profile)
-        cache_append = _agentic_cache_append_enabled(profile)
+        cache_append = _agentic_cache_append_enabled(profile, tool_choice)
         stage_system = build_stage_system_prompt(
             secondary_system,
             STAGES["extended_initial"] if cache_append else profile,
@@ -5796,7 +5800,7 @@ class JackQwenKernel:
             if force_native_resume
             else STAGES[stage_key]
         )
-        cache_append = _agentic_cache_append_enabled(profile)
+        cache_append = _agentic_cache_append_enabled(profile, tool_choice)
         effective_tools = tools if (profile.allow_tools or cache_append) else None
         effective_tool_choice = tool_choice if (profile.allow_tools or cache_append) else None
         if AGENTIC_MODE and stage_key == "extended_initial":
@@ -6009,7 +6013,7 @@ class JackQwenKernel:
             if force_native_resume
             else STAGES[stage_key]
         )
-        cache_append = _agentic_cache_append_enabled(profile)
+        cache_append = _agentic_cache_append_enabled(profile, tool_choice)
         effective_tools = tools if (profile.allow_tools or cache_append) else None
         effective_tool_choice = tool_choice if (profile.allow_tools or cache_append) else None
         if AGENTIC_MODE and stage_key == "extended_initial":

@@ -1,4 +1,4 @@
-"""Phase 3E: opt-in backend-payload A/B test; no hardware requirement."""
+"""Phase 3E: default-on LM Studio backend payload with opt-out; no hardware required."""
 import asyncio
 import importlib.util
 import json
@@ -17,7 +17,10 @@ def load(enabled):
     os.environ["JACK_FORENSIC_ARCHIVE_MODE"]="off"
     os.environ["JACK_BACKEND_MODEL"]="test-model"
     os.environ["JACK_BACKEND_PROFILE"]="lmstudio"
-    os.environ["JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT"]="1" if enabled else "0"
+    if enabled is None:
+        os.environ.pop("JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT", None)
+    else:
+        os.environ["JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT"]="1" if enabled else "0"
     name="jack_cache_test_"+uuid.uuid4().hex
     spec=importlib.util.spec_from_file_location(name,ROOT/"jack_kernel.py")
     k=importlib.util.module_from_spec(spec)
@@ -31,7 +34,7 @@ def fixture(k):
     tools=[{"type":"function","function":{"name":"read","description":"read", "parameters":{"type":"object","properties":{}}}}]
     return hist,tools
 
-async def collect(k,enabled,stream=False):
+async def collect(k,enabled,stream=False,tool_choice="auto"):
     payloads=[]
     def responder(request):
         body=json.loads(request.content)
@@ -49,9 +52,9 @@ async def collect(k,enabled,stream=False):
     hist,tools=fixture(k)
     profile=k.STAGES["extended_reflection"]
     if stream:
-        async for _ in b.chat_stream(messages=hist,secondary_system="",profile=profile,tools=tools if enabled else None,tool_choice="auto" if enabled else None):pass
+        async for _ in b.chat_stream(messages=hist,secondary_system="",profile=profile,tools=tools if enabled else None,tool_choice=tool_choice if enabled else None):pass
     else:
-        await b.chat(messages=hist,secondary_system="",profile=profile,tools=tools if enabled else None,tool_choice="auto" if enabled else None)
+        await b.chat(messages=hist,secondary_system="",profile=profile,tools=tools if enabled else None,tool_choice=tool_choice if enabled else None)
     await b._client.aclose()
     assert len(payloads)==1
     return payloads[0]
@@ -111,7 +114,28 @@ def test_stage2_tool_request_not_authorized_for_execution():
     assert count[0]>=1
 
 
-def test_cache_switch_is_not_on_by_default():
+def test_cache_append_is_on_by_default_and_can_be_disabled():
+    k=load(None)
+    assert k.AGENTIC_CACHE_APPEND_EXPERIMENT
+    assert k._agentic_cache_append_enabled(k.STAGES["extended_reflection"])
+    assert not k._agentic_cache_append_enabled(k.STAGES["extended_reflection"], "required")
+    assert not k._agentic_cache_append_enabled(k.STAGES["extended_reflection"], {"type":"function", "function":{"name":"read"}})
     k=load(False)
     assert not k.AGENTIC_CACHE_APPEND_EXPERIMENT
     assert not k._agentic_cache_append_enabled(k.STAGES["extended_reflection"])
+
+@pytest.mark.parametrize("stream",[False,True])
+def test_default_request_uses_cache_append(stream):
+    k=load(None)
+    p=asyncio.run(collect(k,True,stream))
+    assert p["messages"][0]["content"]==k.AGENTIC_STAGE1_PROMPT
+    assert p["messages"][-1]["content"].startswith(STAGE2)
+    assert p["tools"][0]["function"]["name"]=="read"
+
+@pytest.mark.parametrize("stream",[False,True])
+def test_forced_tool_choice_falls_back_to_existing_stage2(stream):
+    k=load(None)
+    p=asyncio.run(collect(k,True,stream,tool_choice="required"))
+    assert p["messages"][0]["content"]==STAGE2
+    assert "tools" not in p
+
