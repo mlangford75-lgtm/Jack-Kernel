@@ -21,9 +21,10 @@ For a new user, read in this order:
 
 - [`Research/Jack_Kernel_Long_Horizon_Cognition_Technical_Whitepaper_v0.1.1.docx`](Research/Jack_Kernel_Long_Horizon_Cognition_Technical_Whitepaper_v0.1.1.docx) — research and architectural treatment of long-horizon cognition.
 
-## Agentic (Preserve Thinking)
+## Local Agentic (Preserve Thinking)
 
-- **Current merged mode:** [`Agentic (Preserve Thinking) — implementation and operating contract`](Agentic/AGENTIC_PRESERVE_THINKING_2026-10-21.md) — authoritative Stage-1 answer freezing, tools-off retrospective memory, authenticated U/M/A history, one-hop native-reasoning bridge, tool-receipt provenance, context pruning, and optional observability.
+- **Current merged mode:** [`Local Agentic (Preserve Thinking) — implementation and operating contract`](Agentic/AGENTIC_PRESERVE_THINKING_2026-10-21.md) — authoritative Stage-1 answer freezing, tools-off retrospective memory, authenticated U/M/A history, one-hop native-reasoning bridge, tool-receipt provenance, context pruning, and Phase 3E cache append enabled by default on LM Studio, with optional Phase 3F observability.
+- **Local Phase 3E test checkpoint:** [`October 22 three-turn cache and memory findings`](Agentic/LOCAL_AGENTIC_PHASE3E_CHECKPOINT_2026-10-22.md) — observed cache reuse with no demonstrated functional regression in the tested workload; not a controlled A/B speedup.
 - **Historical precursor:** [`October 15 retrospective-memory release candidate`](Agentic/AGENTIC_RETROSPECTIVE_MEMORY_RELEASE_2026-10-15.md) — retained for design provenance only; its unmerged status is superseded by [PR #57](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/57). Prior DOCX descriptions of the XML-based predecessor are dated references, not the current mode.
 
 ## Deep Reasoning
