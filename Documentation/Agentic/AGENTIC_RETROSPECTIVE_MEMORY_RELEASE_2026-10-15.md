@@ -1,4 +1,6 @@
-# Agentic Retrospective Memory — October 15, 2026
+# Agentic (Preserve Thinking) — October 15 Retrospective Memory Precursor
+
+> **ARCHIVED DEVELOPMENT RECORD (October 15, 2026).** This document describes a historical release candidate and retains its dated validation/status claims as evidence of the development timeline. The implemented successor, **Agentic (Preserve Thinking)**, was merged through [PR #57](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/57). Refer to the [current implementation contract](AGENTIC_PRESERVE_THINKING_2026-10-21.md) for active behavior. The XML excerpts below are historical examples, not a second selectable mode.
 
 **Status:** Release candidate on `release/agentic-retrospective-memory-20261015`. Not merged or tagged until validation is complete.
 

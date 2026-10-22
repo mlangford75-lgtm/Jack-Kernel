@@ -34,4 +34,4 @@ These are operational observations, not proof that the model is more accurate un
 
 ## Scope
 
-This release replaces **only** the old Agentic cognition topology. It does not remove Deep Research, Deep Reasoning, Code Debugging, security phases, or standard native inference. It does not advance the security validation baseline beyond Phase 8 or implement Phase 9B enforcement.
+This release replaces **only** the prior XML-based Agentic cognition topology. It does not remove the three-stage cognition family (publicly documented as **Deep Reasoning**), Code Debugging, security phases, or standard native inference. The classic `ultra` profile (`deep-research` compatibility alias) and the separate experimental `deep-reasoning` profile retain distinct runtime contracts; this documentation terminology change does not equate them. It does not advance the security validation baseline beyond Phase 8 or implement Phase 9B enforcement.

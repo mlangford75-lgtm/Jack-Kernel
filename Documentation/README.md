@@ -21,9 +21,14 @@ For a new user, read in this order:
 
 - [`Research/Jack_Kernel_Long_Horizon_Cognition_Technical_Whitepaper_v0.1.1.docx`](Research/Jack_Kernel_Long_Horizon_Cognition_Technical_Whitepaper_v0.1.1.docx) — research and architectural treatment of long-horizon cognition.
 
-## Agentic
+## Agentic (Preserve Thinking)
 
-- [`Agentic Retrospective Memory — October 15 Release Candidate`](Agentic/AGENTIC_RETROSPECTIVE_MEMORY_RELEASE_2026-10-15.md) — current implementation design, memory/answer authority separation, receipt boundaries, pruning, local test evidence, and pending release validation. This candidate is not yet merged into `main`; older v0.1.1 DOCX texts retain historical descriptions of the preceding Agentic XML topology.
+- **Current merged mode:** [`Agentic (Preserve Thinking) — implementation and operating contract`](Agentic/AGENTIC_PRESERVE_THINKING_2026-10-21.md) — authoritative Stage-1 answer freezing, tools-off retrospective memory, authenticated U/M/A history, one-hop native-reasoning bridge, tool-receipt provenance, context pruning, and optional observability.
+- **Historical precursor:** [`October 15 retrospective-memory release candidate`](Agentic/AGENTIC_RETROSPECTIVE_MEMORY_RELEASE_2026-10-15.md) — retained for design provenance only; its unmerged status is superseded by [PR #57](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/57). Prior DOCX descriptions of the XML-based predecessor are dated references, not the current mode.
+
+## Deep Reasoning
+
+- **Public naming:** Deep Reasoning is the current documentation name for the three-stage cognition family. The established `ultra` selector and the distinct `deep-reasoning` integration-track selector are **not interchangeable**; see the [TAS v6 integration gate](Orchestration/DEEP_REASONING_TAS_V6_INTEGRATION_GATE.md) for evidence and unvalidated items. Existing compatible selector names remain unchanged.
 
 ## Orchestration
 
