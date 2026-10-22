@@ -8,7 +8,7 @@ Jack Kernel is a **local-first, host-authoritative inference mediation and contr
 
 Jack is **not the agent and not the LLM**. The agent chooses the task and workflow. The model supplies probabilistic cognition. Jack owns deterministic boundaries around that cognition: stage topology, reasoning and sampling controls, tool exposure, context projection, answer/commit authority, retention, evidence handling, runtime identity, consequence disposition, and selected security controls.
 
-Deep Reasoning, Agentic (Preserve Thinking), and Code Debugging are **reference programs built on the kernel**. They demonstrate what Jack can express; they are not the product boundary.
+Deep Reasoning, Local Agentic (Preserve Thinking), and Code Debugging are **reference programs built on the kernel**. They demonstrate what Jack can express; they are not the product boundary.
 
 > **Start here:** [`00_Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx`](00_Jack_Kernel_Plain_English_Master_Guide_v0.1.1.docx)
 >
@@ -69,7 +69,7 @@ Jack's cognition modes are **programs built on the Kernel**. They do not make Ja
 | Medium | Direct native Medium reasoning |
 | X-High | Direct native X-High reasoning |
 | Deep Reasoning | Thesis → Antithesis → Synthesis |
-| Agentic (Preserve Thinking) | Full native Stage-1 cognition and authorized tools, exact frozen A1, followed by tools-off Stage-2 retrospective reasoning distillation, host receipts, authenticated historical memory projection, one-hop native-reasoning continuity, and completed-turn pruning |
+| Local Agentic (Preserve Thinking) | Full native Stage-1 cognition and authorized tools, exact frozen A1, followed by tools-off Stage-2 retrospective reasoning distillation, host receipts, authenticated historical memory projection, one-hop native-reasoning continuity, and completed-turn pruning |
 | Code Debugging | Five-pass, report-only defect review using Medium reasoning |
 | Code Debugging (Deep) | Same report-only topology at X-High reasoning |
 
@@ -78,15 +78,15 @@ For selection, supported deployment commands, and runtime lanes, see [Getting St
 
 The current integrated control surfaces include the OpenAI-compatible `/v1` API (including Responses compatibility), Orchestration Gateway v2 for supervisor-to-worker mediation, authenticated Pi worker control, and independently identified multi-endpoint runtime lanes. `runtime_id` and `lane_id` are logical identities; ports and sockets remain transport locators.
 
-### Agentic (Preserve Thinking) — active cognition mode (October 2026)
+### Local Agentic (Preserve Thinking) — current validated local profile (October 2026)
 
-The [`Agentic (Preserve Thinking)` design](Documentation/Agentic/AGENTIC_PRESERVE_THINKING_2026-10-21.md) **replaces the previous XML-based implementation** under the existing `JACK_REASONING_LEVEL=agentic` selector. There is no parallel legacy mode. The name is a user-facing label; the stable internal selector remains `agentic` for existing launchers and integrations.
+The [`Local Agentic (Preserve Thinking)` profile](Documentation/Agentic/AGENTIC_PRESERVE_THINKING_2026-10-21.md) is the currently tested local implementation of the two-stage Agentic (Preserve Thinking) architecture. It **replaces the previous XML-based implementation** under the existing `JACK_REASONING_LEVEL=agentic` selector; no parallel legacy mode is selectable. This is a public-facing name for the current local implementation, not a new selector or separate cognition program. The stable internal selector remains `agentic` for launchers and integrations.
 
 Stage 1 uses native x-high cognition with authorized tools and freezes the exact user-facing answer (A1). Tools-off Stage 2 produces a retrospective semantic memory explaining how Stage 1 reached A1. Historical user turns, the host-authenticated retrospective memory, and exact frozen answers are projected separately; completed native thinking and tool protocols are retired, while the immediately previous Stage-2 native reasoning can bridge once into the next Stage 1 before retirement. Tool-result receipts are observations, not proof of filesystem effects. Stage 2 does not revise A1. The Stage-1 and Stage-2 cognition prompt text is unchanged.
 
-On LM Studio, Agentic Stage-2 cache append (Phase 3E) is enabled by default; set `JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT=0` to restore the legacy Stage-2 request layout. Non-LM Studio backends are unchanged, and forced/named tool choices use the legacy Stage-2 layout. Phase 3F byte accounting (`JACK_AGENTIC_CONTEXT_ACCOUNTING=1`) remains opt-in; its reporting threshold is not a token-window limit. The run-time behavior has been exercised with local multi-turn Pi/LM Studio experiments, but improvement against a native Pi control remains unmeasured. The last formal security checkpoint is still Phase 8.
+On LM Studio, Local Agentic Stage-2 cache append (Phase 3E) is enabled by default; set `JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT=0` to restore the legacy Stage-2 request layout. Non-LM Studio backends are unchanged, and forced/named tool choices use the legacy Stage-2 layout. Phase 3F byte accounting (`JACK_AGENTIC_CONTEXT_ACCOUNTING=1`) remains opt-in; its reporting threshold is not a token-window limit. The runtime behavior has been exercised with local multi-turn Pi/LM Studio experiments, including a [three-turn Phase 3E checkpoint](Documentation/Agentic/LOCAL_AGENTIC_PHASE3E_CHECKPOINT_2026-10-22.md), but a controlled same-workload Phase 3E off/on comparison and improvement against a native Pi control remain unmeasured. The last formal security checkpoint is still Phase 8.
 
-### Agentic (Preserve Thinking) continuation correction
+### Local Agentic (Preserve Thinking) continuation correction
 
 The [PR #45 historical tool-resume fix](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/45) resolves a real stage-resume bug discovered while investigating Phase 9A: when a caller replays historical conversation messages, retired/nonpending tool results must not poison the current live pending transaction. The correction ignores retired results for current transaction selection **without admitting them into the resumed stage history**. Withheld-call results, duplicate live results, incomplete current results, and results spanning conflicting live transactions continue to be rejected. This correctness improvement is **not** Phase 9 Runtime Code Integrity enforcement.
 
