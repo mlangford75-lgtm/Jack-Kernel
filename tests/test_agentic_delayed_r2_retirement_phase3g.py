@@ -285,31 +285,37 @@ def test_streamed_terminal_exit_retires_only_frozen_bridge(interrupt):
             reached_stage2.set()
             if interrupt == "tool_violation":
                 raise k.HTTPException(status_code=502, detail="Stage 2 unauthorized tool call")
-            # Active Stage 2 has begun. Cancellation/close must terminate it
-            # without waiting for generation to complete.
             yield b": stage2 active\\n\\n"
             await asyncio.sleep(3600)
 
         k.KERNEL._stream_impl = interrupted_stage
-        stream = k.KERNEL.stream({"messages": [{"role": "user", "content": "current"}]})
-        try:
-            if interrupt == "tool_violation":
-                with pytest.raises(k.HTTPException):
-                    await anext(stream)
-            else:
-                await anext(stream)
-                assert reached_stage2.is_set()
-                assert history[1]["reasoning_content"] == "previous R2"
-                if interrupt == "close":
-                    await stream.aclose()
+
+        async def own_stream():
+            # Open, advance, and close the generator in the SAME request task:
+            # ContextVar tokens and telemetry are scoped to that task.
+            stream = k.KERNEL.stream({"messages": [{"role": "user", "content": "current"}]})
+            try:
+                if interrupt == "tool_violation":
+                    with pytest.raises(k.HTTPException):
+                        await anext(stream)
                 else:
-                    task = asyncio.create_task(anext(stream))
-                    await asyncio.sleep(0)
-                    task.cancel()
-                    with pytest.raises(asyncio.CancelledError):
-                        await task
-        finally:
-            await stream.aclose()
+                    await anext(stream)
+                    assert reached_stage2.is_set()
+                    assert history[1]["reasoning_content"] == "previous R2"
+                    if interrupt == "cancel":
+                        await anext(stream)
+            finally:
+                await stream.aclose()
+
+        if interrupt == "cancel":
+            task = asyncio.create_task(own_stream())
+            await reached_stage2.wait()
+            await asyncio.sleep(0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            await own_stream()
         assert "reasoning_content" not in history[1]
         assert sibling[1]["reasoning_content"] == "sibling active bridge"
 
