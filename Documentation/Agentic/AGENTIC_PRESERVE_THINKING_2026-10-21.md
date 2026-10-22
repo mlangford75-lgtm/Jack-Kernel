@@ -23,7 +23,7 @@ Stage-1 and Stage-2 cognition prompts remain as implemented; this release does n
 - Phase 3A/B — user-origin and host-minted turn identity/lifecycle.
 - Phase 3C — authenticated historical M/A projection and safe fallback.
 - Phase 3D — immediate predecessor Stage-2 reasoning one-hop bridge and retirement.
-- Phase 3E — LM Studio Stage-2 cache-append experiment, **disabled by default** (`JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT=1`). This changes only request role/representation, not prompt text.
+- Phase 3E — LM Studio Stage-2 cache append, **enabled by default**; `JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT=0` restores the legacy request layout. Non-LM Studio backends and forced/named tool-choice Stage-2 requests retain the legacy layout. This changes the Stage-2 request role/representation, not either stage's prompt text. The three-turn local LM Studio experiment demonstrated cache reuse and successful retrospective memory production, but did not establish a same-workload disabled/enabled speedup.
 - Phase 3F — optional reporting of request-byte/context-category sizes (`JACK_AGENTIC_CONTEXT_ACCOUNTING=1`); `JACK_AGENTIC_CONTEXT_REPORT_BUDGET_BYTES` is a reporting threshold, **not** a truncation budget.
 
 ## Evidence and limits
