@@ -8193,14 +8193,8 @@ class JackQwenKernel:
         )
         try:
             async with self._activity_request_scope("stream"):
-                inner_stream = self._stream_impl(request_body)
-                try:
-                    async for chunk in inner_stream:
-                        yield chunk
-                finally:
-                    # Closing the outward generator must also terminate the
-                    # underlying Stage-2 stream and release its semaphore.
-                    await inner_stream.aclose()
+                async for chunk in self._stream_impl(request_body):
+                    yield chunk
         finally:
             try:
                 if scope_token is not None:
@@ -10405,7 +10399,6 @@ async def _safe_public_stream(
     executor_context: Optional[Phase4ExecutorRequestContext] = None,
 ) -> AsyncIterator[bytes]:
     """Convert internal stage failures into a clean OpenAI SSE termination."""
-    stream = None
     try:
         if executor_context is None:
             stream = KERNEL.stream(body)
@@ -10447,16 +10440,10 @@ async def _safe_public_stream(
         yield event({}, "stop")
         yield b"data: [DONE]\n\n"
     finally:
-        try:
-            # Disconnect/cancellation must close the inner generator now, not
-            # defer Stage-2 terminal cleanup until generator garbage collection.
-            if stream is not None:
-                await stream.aclose()
-        finally:
-            await KERNEL._rearm_pending_tool_resume_for_messages(body.get("messages"))
-            await KERNEL._rearm_pending_debugging_resumes_for_messages(body.get("messages"))
-            if AGENTIC_MODE:
-                _AGENTIC_ACTIVE_TURN.set(None)
+        await KERNEL._rearm_pending_tool_resume_for_messages(body.get("messages"))
+        await KERNEL._rearm_pending_debugging_resumes_for_messages(body.get("messages"))
+        if AGENTIC_MODE:
+            _AGENTIC_ACTIVE_TURN.set(None)
 
 
 @APP.post("/v1/chat/completions")
@@ -11174,7 +11161,7 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
     print("  3) Medium")
     print("  4) X-High (Default)")
     print("  5) Deep Reasoning")
-    print("  6) Agentic")
+    print("  6) Local Agentic (Preserve Thinking)")
     print("  7) Code Debugging")
     print("  8) Code Debugging (Deep)")
     print("  9) Deep Research (Legacy)")
@@ -11197,7 +11184,7 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
         "4": "x-high", "x-high": "x-high", "xhigh": "x-high", "high": "x-high", "default": "x-high", "recommended": "x-high",
         "5": "deep-reasoning", "deep-reasoning": "deep-reasoning", "deep_reasoning": "deep-reasoning", "deep reasoning": "deep-reasoning", "deepreasoning": "deep-reasoning",
         "9": "ultra", "deep-research": "ultra", "deep_research": "ultra", "deep research": "ultra", "deepresearch": "ultra", "ultra": "ultra", "extreme": "ultra", "max": "ultra",
-        "6": "agentic", "agentic": "agentic",
+        "6": "Local Agentic (Preserve Thinking)", "agentic": "Local Agentic (Preserve Thinking)",
         "7": "code-debugging", "code-debugging": "code-debugging", "debug": "code-debugging", "debugging": "code-debugging",
         "8": "code-debugging-deep", "code-debugging-deep": "code-debugging-deep", "code debugging deep": "code-debugging-deep", "debugging deep": "code-debugging-deep", "deep debugging": "code-debugging-deep",
     }

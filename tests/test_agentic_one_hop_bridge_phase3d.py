@@ -7,10 +7,18 @@ import os
 from pathlib import Path
 import sys
 import uuid
+import pytest
 
 ROOT=Path(__file__).resolve().parents[1]
 PREFIX="[Agentic Memory associated with the preceding user request and following frozen response]\n"
 MARKER="===== JACK AGENTIC NATIVE PASS 2 =====\n[NATIVE REASONING]\n"
+
+@pytest.fixture(autouse=True)
+def phase3d_original_retirement_contract(monkeypatch):
+    # Phase 3D establishes the unchanged default-off control.
+    # Do not weaken its original immediate-retirement assertions.
+    monkeypatch.setenv("JACK_AGENTIC_DELAY_R2_RETIREMENT", "0")
+
 
 def load():
     os.environ["JACK_REASONING_LEVEL"]="agentic"
