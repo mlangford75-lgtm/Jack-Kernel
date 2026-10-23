@@ -7,18 +7,10 @@ import os
 from pathlib import Path
 import sys
 import uuid
-import pytest
 
 ROOT=Path(__file__).resolve().parents[1]
 PREFIX="[Agentic Memory associated with the preceding user request and following frozen response]\n"
 MARKER="===== JACK AGENTIC NATIVE PASS 2 =====\n[NATIVE REASONING]\n"
-
-@pytest.fixture(autouse=True)
-def phase3d_original_retirement_contract(monkeypatch):
-    # Phase 3D establishes the unchanged default-off control.
-    # Do not weaken its original immediate-retirement assertions.
-    monkeypatch.setenv("JACK_AGENTIC_DELAY_R2_RETIREMENT", "0")
-
 
 def load():
     os.environ["JACK_REASONING_LEVEL"]="agentic"
@@ -66,6 +58,8 @@ def test_one_hop_only_r2_reaches_backend_stage1():
     assert "massive original private reasoning" not in json.dumps(model)
     a2=k.append_extended_candidate_response(ctx,{"content":"A2","reasoning_content":"fresh R1_2"})
     assert a2=="A2"
+    assert ctx[1]["reasoning_content"]==r2
+    k._agentic_finish_delayed_one_hop(ctx)
     assert "reasoning_content" not in ctx[1]
     assert ctx[-1]["reasoning_content"]=="fresh R1_2"
     assert ctx[1]["content"]==PREFIX+"M"
@@ -79,6 +73,8 @@ def test_one_hop_survives_tool_continuation_until_frozen():
     _=k.BACKEND._stage_messages_for_profile(ctx,k.STAGES["extended_initial"])
     assert ctx[1]["reasoning_content"]=="valuable R2"
     k.append_extended_candidate_response(ctx,{"content":"done"})
+    assert ctx[1]["reasoning_content"]=="valuable R2"
+    k._agentic_finish_delayed_one_hop(ctx)
     assert "reasoning_content" not in ctx[1]
 
 def test_only_immediately_preceding_r2_is_kept():

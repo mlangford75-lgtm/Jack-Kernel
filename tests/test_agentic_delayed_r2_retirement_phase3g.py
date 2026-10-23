@@ -1,4 +1,4 @@
-"""Phase 3G: opt-in full-turn one-hop R2 retirement.
+"""Phase 3G: canonical full-turn one-hop R2 retirement.
 
 Run with: python -m pytest -q tests/test_agentic_delayed_r2_retirement_phase3g.py
 """
@@ -18,10 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.fixture(autouse=True)
 def restore_experiment_environment():
-    # Imported kernels read environment once. Do not leak experimental mode
-    # into the older baseline suites when pytest runs multiple modules.
+    # Imported kernels read environment once. Restore test configuration.
     keys = (
-        "JACK_AGENTIC_DELAY_R2_RETIREMENT",
         "JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT",
         "JACK_REASONING_LEVEL",
         "JACK_BACKEND_PROFILE",
@@ -42,12 +40,11 @@ def restore_experiment_environment():
 MARKER = "===== JACK AGENTIC NATIVE PASS 2 =====\n[NATIVE REASONING]\n"
 
 
-def load(enabled=True, cache_enabled=True):
+def load(cache_enabled=True):
     os.environ["JACK_REASONING_LEVEL"] = "Local Agentic (Preserve Thinking)"
     os.environ["JACK_BACKEND_PROFILE"] = "lmstudio"
     os.environ["JACK_BACKEND_MODEL"] = "test-model"
     os.environ["JACK_FORENSIC_ARCHIVE_MODE"] = "off"
-    os.environ["JACK_AGENTIC_DELAY_R2_RETIREMENT"] = "1" if enabled else "0"
     os.environ["JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT"] = "1" if cache_enabled else "0"
     name = "jack_phase3g_" + uuid.uuid4().hex
     spec = importlib.util.spec_from_file_location(name, ROOT / "jack_kernel.py")
@@ -72,31 +69,29 @@ def freeze(k, history):
     )
 
 
-@pytest.mark.parametrize("enabled",[False, True])
-def test_freeze_flag_and_answer_authority(enabled):
-    k = load(enabled)
+def test_freeze_retains_prior_r2_through_stage2_and_answer_authority():
+    k = load()
     history = bridge_history()
     scope = {"stage1_frozen": False, "bridge_messages": [], "pending_state": None}
     token = k._AGENTIC_DELAY_R2_SCOPE.set(scope)
     try:
         assert freeze(k, history) == " A1 exact \n"
-        assert ("reasoning_content" in history[1]) is enabled
+        assert "reasoning_content" in history[1]
         assert history[-1]["content"] == " A1 exact \n"
         assert history[-1]["reasoning_content"] == "current R1"
-        if enabled:
-            assert scope["stage1_frozen"]
-            k._agentic_finish_delayed_one_hop(history)
-            assert "reasoning_content" not in history[1]
-            assert "reasoning" not in history[1]
-            assert "_jack_agentic_one_hop_r2" not in history[1]
+        assert scope["stage1_frozen"]
+        k._agentic_finish_delayed_one_hop(history)
+        assert "reasoning_content" not in history[1]
+        assert "reasoning" not in history[1]
+        assert "_jack_agentic_one_hop_r2" not in history[1]
     finally:
         k._AGENTIC_DELAY_R2_SCOPE.reset(token)
 
 
 @pytest.mark.parametrize("cache_enabled",[False, True])
-def test_previous_r2_reaches_backend_stage2_only_when_enabled(cache_enabled):
-    async def exercise(enabled):
-        k = load(enabled, cache_enabled)
+def test_previous_r2_reaches_backend_stage2_with_either_cache_profile(cache_enabled):
+    async def exercise():
+        k = load(cache_enabled=cache_enabled)
         history = bridge_history()
         scope = {"stage1_frozen": False, "bridge_messages": [], "pending_state": None}
         token = k._AGENTIC_DELAY_R2_SCOPE.set(scope)
@@ -122,7 +117,7 @@ def test_previous_r2_reaches_backend_stage2_only_when_enabled(cache_enabled):
             assert len(payloads) == 1
             model_messages = payloads[0]["messages"]
             bridge = next(m for m in model_messages if m.get("content") == "previous memory")
-            assert ("reasoning_content" in bridge) is enabled
+            assert "reasoning_content" in bridge
             if cache_enabled:
                 assert model_messages[-1]["content"].startswith(k.AGENTIC_36_STAGE2_PROMPT)
             assert k.AGENTIC_STAGE1_PROMPT == (
@@ -135,13 +130,12 @@ def test_previous_r2_reaches_backend_stage2_only_when_enabled(cache_enabled):
             await backend._client.aclose()
             k._AGENTIC_DELAY_R2_SCOPE.reset(token)
 
-    asyncio.run(exercise(False))
-    asyncio.run(exercise(True))
+    asyncio.run(exercise())
 
 
 def test_terminal_cleanup_is_transaction_scoped():
     async def exercise():
-        k = load(True)
+        k = load()
         h1 = bridge_history()
         h2 = bridge_history()
         h2[1]["reasoning_content"] = "other transaction bridge"
@@ -161,7 +155,7 @@ def test_terminal_cleanup_is_transaction_scoped():
 
 def test_stage1_suspension_does_not_retire_bridge():
     async def exercise():
-        k = load(True)
+        k = load()
         h = bridge_history()
         scope = {"stage1_frozen": False, "bridge_messages": [], "pending_state": None}
         token = k._AGENTIC_DELAY_R2_SCOPE.set(scope)
@@ -172,7 +166,7 @@ def test_stage1_suspension_does_not_retire_bridge():
 
 def test_pending_checkpoint_retired_on_terminal_scope():
     async def exercise():
-        k = load(True)
+        k = load()
         h = bridge_history()
         scope = {"stage1_frozen": False, "bridge_messages": [], "pending_state": None}
         token = k._AGENTIC_DELAY_R2_SCOPE.set(scope)
@@ -198,7 +192,7 @@ def test_pending_checkpoint_retired_on_terminal_scope():
 
 def test_successful_commit_retires_bridge_and_preserves_memory():
     async def exercise():
-        k = load(True)
+        k = load()
         history = bridge_history()
         scope = {"stage1_frozen": False, "bridge_messages": [], "pending_state": None}
         token = k._AGENTIC_DELAY_R2_SCOPE.set(scope)
@@ -217,7 +211,7 @@ def test_successful_commit_retires_bridge_and_preserves_memory():
 
 
 def test_degraded_commit_retires_bridge_preserves_a1():
-    k = load(True)
+    k = load()
     history = bridge_history()
     scope = {"stage1_frozen": False, "bridge_messages": [], "pending_state": None}
     token = k._AGENTIC_DELAY_R2_SCOPE.set(scope)
@@ -235,7 +229,7 @@ def test_degraded_commit_retires_bridge_preserves_a1():
 
 
 def test_no_historical_r2_accumulation():
-    k = load(True)
+    k = load()
     first = bridge_history()
     first[1]["reasoning_content"] = "R2 very old"
     first[1]["_jack_agentic_one_hop_r2"] = True
@@ -252,7 +246,7 @@ def test_previous_speculation_is_not_authored_as_verified_memory_by_host():
     generated M can prove its semantic fidelity.
     """
     async def exercise():
-        k = load(True)
+        k = load()
         history = bridge_history()
         history[1]["reasoning_content"] = "SPECULATION: output file exists (not checked)"
         scope = {"stage1_frozen": False, "bridge_messages": [], "pending_state": None}
@@ -274,7 +268,7 @@ def test_previous_speculation_is_not_authored_as_verified_memory_by_host():
 @pytest.mark.parametrize("interrupt", ["close", "cancel", "tool_violation"])
 def test_streamed_terminal_exit_retires_only_frozen_bridge(interrupt):
     async def exercise():
-        k = load(True)
+        k = load()
         history = bridge_history()
         sibling = bridge_history()
         sibling[1]["reasoning_content"] = "sibling active bridge"

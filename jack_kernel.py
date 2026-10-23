@@ -958,13 +958,8 @@ AGENTIC_CACHE_APPEND_EXPERIMENT = (
 )
 
 
-# Phase 3G: opt-in full-turn one-hop R2 lifetime. This changes only when
-# previous-turn native retrospective reasoning is retired, not its provenance,
-# the Stage-2 prompt, stage authority, or durable U/M/A retention.
-AGENTIC_DELAY_R2_RETIREMENT = (
-    os.environ.get("JACK_AGENTIC_DELAY_R2_RETIREMENT", "0").strip().lower()
-    in {"1", "true", "yes", "on"}
-)
+# Canonical Agentic lifecycle: previous-turn R2 remains throughout the
+# consuming two-stage turn and retires only at its terminal boundary.
 # Each request owns its own references. Never scan or mutate unrelated pending
 # transactions: a successor Stage-1 tool checkpoint may still need its bridge.
 _AGENTIC_DELAY_R2_SCOPE: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
@@ -3664,19 +3659,15 @@ def append_extended_candidate_response(
     history.append(entry)
     if AGENTIC_MODE:
         _agentic_turn_status(history, "response_frozen")
-        if AGENTIC_DELAY_R2_RETIREMENT:
-            # The bridge is consumed by this entire two-stage turn. Hold only
-            # references belonging to this request, for cancellation cleanup
-            # even if a commit subsequently clears its active history list.
-            scope = _AGENTIC_DELAY_R2_SCOPE.get()
-            if scope is not None:
-                scope["stage1_frozen"] = True
-                scope["bridge_messages"] = [
-                    item for item in history
-                    if isinstance(item, dict) and item.get("_jack_agentic_one_hop_r2")
-                ]
-        else:
-            _agentic_retire_consumed_one_hop(history)
+        # The bridge is consumed by the entire two-stage turn. Capture
+        # request-owned references for terminal and cancellation cleanup.
+        scope = _AGENTIC_DELAY_R2_SCOPE.get()
+        if scope is not None:
+            scope["stage1_frozen"] = True
+            scope["bridge_messages"] = [
+                item for item in history
+                if isinstance(item, dict) and item.get("_jack_agentic_one_hop_r2")
+            ]
     return candidate
 
 
@@ -4087,10 +4078,10 @@ def _agentic_extract_one_hop_stage2_reasoning(raw: Any) -> Optional[str]:
 
 
 def _agentic_retire_consumed_one_hop(history: List[Dict[str, Any]]) -> None:
-    """Retire previous R2 ONLY after current Stage-1 A was frozen.
+    """Retire previous R2 at the consuming turn's terminal boundary.
 
-    A suspended tool continuation retains the bridge. Stage 2 of the current
-    turn must not inherit previous-turn native reasoning, just current R1.
+    Tool suspensions and Stage 2 retain the bridge until terminal cleanup.
+    Older R2 must not survive into a second subsequent user turn.
     """
     for item in history:
         if not isinstance(item, dict) or not item.get("_jack_agentic_one_hop_r2"):
@@ -4107,7 +4098,7 @@ def _agentic_finish_delayed_one_hop(history: List[Dict[str, Any]]) -> None:
     Scope references cover aliased tool checkpoint dictionaries; no global
     ledger or unrelated concurrent turn is consulted.
     """
-    if not (AGENTIC_MODE and AGENTIC_DELAY_R2_RETIREMENT):
+    if not AGENTIC_MODE:
         return
     _agentic_retire_consumed_one_hop(history)
     scope = _AGENTIC_DELAY_R2_SCOPE.get()
@@ -8085,7 +8076,7 @@ class JackQwenKernel:
             _AGENTIC_DELAY_R2_SCOPE.set({
                 "stage1_frozen": False, "bridge_messages": [], "pending_state": None,
             })
-            if AGENTIC_MODE and AGENTIC_DELAY_R2_RETIREMENT else None
+            if AGENTIC_MODE else None
         )
         try:
             async with self._activity_request_scope("nonstream"):
@@ -8189,7 +8180,7 @@ class JackQwenKernel:
             _AGENTIC_DELAY_R2_SCOPE.set({
                 "stage1_frozen": False, "bridge_messages": [], "pending_state": None,
             })
-            if AGENTIC_MODE and AGENTIC_DELAY_R2_RETIREMENT else None
+            if AGENTIC_MODE else None
         )
         try:
             async with self._activity_request_scope("stream"):
