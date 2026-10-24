@@ -755,7 +755,7 @@ REASONING_PROFILES: Dict[str, Dict[str, Any]] = {
         "disabled": False,
     },
     "Local Agentic (Preserve Thinking)": {
-        "label": "Local Agentic (Preserve Thinking)",
+        "label": "Agentic",
         "mode": "agentic",
         "answer": "xhigh",
         "pass1": "xhigh",
@@ -11152,17 +11152,17 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
     print("  3) Medium")
     print("  4) X-High (Default)")
     print("  5) Deep Reasoning")
-    print("  6) Local Agentic (Preserve Thinking)")
+    print("  6) Agentic")
     print("  7) Code Debugging")
     print("  8) Code Debugging (Deep)")
-    print("  9) Deep Research (Legacy)")
+
     print()
     current = str(cfg.get("reasoning_level", "x-high")).lower()
     current = _REASONING_LEVEL_ALIASES.get(current, current)
     if current == "low" or current not in REASONING_PROFILES or REASONING_PROFILES[current].get("disabled"):
         current = "x-high"
     choice = _cli_input(
-        f"Select level [1-9] [{REASONING_PROFILES[current]['label']}]: "
+        f"Select level [1-8] [{REASONING_PROFILES[current]['label']}]: "
     ).strip().lower()
     if not choice:
         return
@@ -11174,7 +11174,7 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
         "3": "medium", "medium": "medium", "standard": "medium",
         "4": "x-high", "x-high": "x-high", "xhigh": "x-high", "high": "x-high", "default": "x-high", "recommended": "x-high",
         "5": "deep-reasoning", "deep-reasoning": "deep-reasoning", "deep_reasoning": "deep-reasoning", "deep reasoning": "deep-reasoning", "deepreasoning": "deep-reasoning",
-        "9": "ultra", "deep-research": "ultra", "deep_research": "ultra", "deep research": "ultra", "deepresearch": "ultra", "ultra": "ultra", "extreme": "ultra", "max": "ultra",
+
         "6": "Local Agentic (Preserve Thinking)", "agentic": "Local Agentic (Preserve Thinking)",
         "7": "code-debugging", "code-debugging": "code-debugging", "debug": "code-debugging", "debugging": "code-debugging",
         "8": "code-debugging-deep", "code-debugging-deep": "code-debugging-deep", "code debugging deep": "code-debugging-deep", "debugging deep": "code-debugging-deep", "deep debugging": "code-debugging-deep",
@@ -11594,7 +11594,7 @@ def _start_server_from_cli(cfg: Dict[str, Any]) -> None:
 def _print_main_menu_options() -> None:
     print(_ansi_rgb("  1", _JACK_ICE, bold=True) + "  Start Kernel")
     print(_ansi_rgb("  2", _JACK_STEEL, bold=True) + "  Model Selection")
-    print(_ansi_rgb("  3", _JACK_STEEL, bold=True) + "  Reasoning level")
+    print(_ansi_rgb("  3", _JACK_STEEL, bold=True) + "  Agent Mode")
     print(_ansi_rgb("  4", _JACK_STEEL, bold=True) + "  Sampling settings")
     print(_ansi_rgb("  5", _JACK_STEEL, bold=True) + "  Server / agent endpoint")
     print(_ansi_rgb("  6", _JACK_STEEL, bold=True) + "  Advanced settings")
