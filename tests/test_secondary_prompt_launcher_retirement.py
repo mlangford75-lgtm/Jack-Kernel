@@ -67,7 +67,7 @@ def test_launcher_menu_has_no_secondary_prompt_control(capsys) -> None:
     output = capsys.readouterr().out
     assert "secondary system prompt" not in output.casefold()
     assert "  Model Selection" in output
-    assert "  Reasoning level" in output
+    assert "  Agent Mode" in output
     assert "  Reset Jack defaults" in output
 
 
