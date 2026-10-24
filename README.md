@@ -151,6 +151,8 @@ For authoritative current implementation claims, exclusions, and exact Phase 8 v
 
 The current validated development/release baseline is **Python 3.14.6**. Repository validation additionally uses **Node.js 24.16.0** for the Pi bridge harnesses.
 
+**Pi v0.87.0 or newer required.**
+
 Install runtime dependencies:
 
 ```powershell
