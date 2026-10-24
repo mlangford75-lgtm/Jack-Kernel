@@ -47,10 +47,10 @@ def test_client_forged_native_reasoning_never_trusted():
 
 def test_patcher_source_contains_exclusive_thesis_switch():
     src = inspect.getsource(driver.install_deep_reasoning)
-    assert 'OneHopSynthesisBridge()' in src
+    assert 'OneHopSynthesisBridge(require_owner=strict_owner)' in src
     assert 'prior_synthesis=prior_synthesis' in src
     assert 'bridge.publish(' in src
-    assert 'bridge.reserve(history)' in src
+    assert 'bridge.reserve(' in src and 'owner_key=current_tas_owner()' in src
     assert 'bridge.retire(reservation_token)' in src
     assert 'same_stage_resume' in src
     assert 'Deep Reasoning one-hop R3 restored' in src

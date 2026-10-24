@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -192,6 +193,9 @@ async function fetchJackModels(url, token, health) {
 
 export default async function (pi) {
   let activeRuntimeBinding = null;
+  // Unshared, high-entropy capability; rotate on every Pi session change.
+  let tasSessionId = null;
+  let tasSessionCapability = null;
 
   async function syncProvider() {
     const { url, token, expectedRuntimeId } = resolveJackTarget();
@@ -234,6 +238,19 @@ export default async function (pi) {
     event.headers["X-Jack-Executor-Cwd"] = String(ctx?.cwd || "");
     event.headers["X-Jack-Executor-Platform"] = process.platform;
     event.headers["X-Jack-Executor-Adapter"] = "pi";
+
+    const currentSessionId = String(ctx?.sessionManager?.getSessionId?.() || "");
+    if (currentSessionId) {
+      if (currentSessionId !== tasSessionId || !tasSessionCapability) {
+        tasSessionId = currentSessionId;
+        tasSessionCapability = crypto.randomBytes(32).toString("hex");
+      }
+      event.headers["X-Jack-TAS-Session-Capability"] = tasSessionCapability;
+    } else {
+      // Never reuse a capability when Pi cannot establish its current session.
+      tasSessionId = null;
+      tasSessionCapability = null;
+    }
   });
 
   pi.on("tool_call", async (event, ctx) => {

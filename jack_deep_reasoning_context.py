@@ -70,11 +70,21 @@ def next_thesis_messages(
         _text(prior_synthesis.answer, "prior_synthesis.answer")
         # No ambiguous composite/older reasoning copied from caller history.
         # Caller must supply the last *completed Synthesis* specifically.
-        result.append({"role": "user", "content": prior_synthesis.user_request})
-        prior: dict[str, Any] = {"role": "assistant", "content": prior_synthesis.answer}
+        matched_pair = (
+            len(result) >= 2
+            and result[-2] == {"role": "user", "content": prior_synthesis.user_request}
+            and result[-1] == {"role": "assistant", "content": prior_synthesis.answer}
+        )
+        if matched_pair:
+            # Maintain the original prior visible pair once, and restore native
+            # R3 only inside this Thesis-local projection.
+            prior = result[-1]
+        else:
+            result.append({"role": "user", "content": prior_synthesis.user_request})
+            prior = {"role": "assistant", "content": prior_synthesis.answer}
+            result.append(prior)
         if preserve_thinking and prior_synthesis.reasoning.strip():
             prior["reasoning_content"] = prior_synthesis.reasoning
-        result.append(prior)
     result.append({"role": "user", "content": _text(request, "request")})
     return result
 

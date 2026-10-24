@@ -20,14 +20,17 @@ class _Frontier:
     reasoning: str
     created: float
     token: str
+    owner_key: str | None = None
 
 
 class OneHopSynthesisBridge:
-    def __init__(self, *, max_entries: int = 24, ttl_seconds: int = 3600):
+    def __init__(self, *, max_entries: int = 24, ttl_seconds: int = 3600,
+                 require_owner: bool = False):
         if max_entries < 1 or ttl_seconds < 1:
             raise ValueError('Invalid R3 bridge bounds')
         self._frontiers: deque[_Frontier] = deque(maxlen=max_entries)
         self.ttl_seconds = ttl_seconds
+        self.require_owner = bool(require_owner)
         # A reservation prevents competing next-turn Thesis starts from reusing
         # the same R3 while an eligible Thesis is still generating.
         self._reserved: set[str] = set()
@@ -37,14 +40,18 @@ class OneHopSynthesisBridge:
         self._frontiers = deque((r for r in self._frontiers if now - r.created < self.ttl_seconds), maxlen=self._frontiers.maxlen)
         self._reserved.intersection_update(r.token for r in self._frontiers)
 
-    def publish(self, *, user_request: str, answer: str, reasoning: str) -> bool:
+    def publish(self, *, user_request: str, answer: str, reasoning: str,
+                owner_key: str | None = None) -> bool:
         self._expire()
+        if self.require_owner and not owner_key:
+            return False
         if not all(isinstance(v, str) and v.strip() for v in (user_request, answer, reasoning)):
             return False
-        self._frontiers.append(_Frontier(user_request, answer, reasoning, time.monotonic(), uuid.uuid4().hex))
+        self._frontiers.append(_Frontier(user_request, answer, reasoning, time.monotonic(), uuid.uuid4().hex, owner_key))
         return True
 
-    def _matching_frontier(self, visible_history: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, str]], _Frontier | None]:
+    def _matching_frontier(self, visible_history: Sequence[Mapping[str, Any]],
+                           *, owner_key: str | None = None) -> tuple[list[dict[str, str]], _Frontier | None]:
         self._expire()
         visible: list[dict[str, str]] = []
         for msg in visible_history:
@@ -55,7 +62,9 @@ class OneHopSynthesisBridge:
         if len(visible) < 2 or [visible[-2]['role'], visible[-1]['role']] != ['user', 'assistant']:
             return visible, None
         user, answer = visible[-2]['content'], visible[-1]['content']
-        matched = [r for r in self._frontiers if r.user == user and r.answer == answer]
+        matched = [r for r in self._frontiers
+                   if r.user == user and r.answer == answer
+                   and (not self.require_owner or (owner_key is not None and r.owner_key == owner_key))]
         # Never choose a frontier under ambiguity or concurrent reservation.
         if len(matched) != 1 or matched[0].token in self._reserved:
             return visible, None
@@ -65,14 +74,15 @@ class OneHopSynthesisBridge:
     def _completed(record: _Frontier) -> CompletedSynthesis:
         return CompletedSynthesis(user_request=record.user, answer=record.answer, reasoning=record.reasoning)
 
-    def reserve(self, visible_history: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, str]], CompletedSynthesis | None, str | None]:
+    def reserve(self, visible_history: Sequence[Mapping[str, Any]],
+                *, owner_key: str | None = None) -> tuple[list[dict[str, str]], CompletedSynthesis | None, str | None]:
         """Lease the latest matching R3 without consuming it before Thesis succeeds.
 
         The caller must retire(token) after a *successful* next Thesis, or
         release(token) on failed/cancelled generation. A reserved record is
         unavailable to any competing claimant and expires under the same TTL.
         """
-        visible, record = self._matching_frontier(visible_history)
+        visible, record = self._matching_frontier(visible_history, owner_key=owner_key)
         if record is None:
             return visible, None, None
         self._reserved.add(record.token)
@@ -95,12 +105,13 @@ class OneHopSynthesisBridge:
         """A failed Thesis may retry the same one-hop frontier before TTL."""
         self._reserved.discard(token)
 
-    def claim(self, visible_history: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, str]], CompletedSynthesis | None]:
+    def claim(self, visible_history: Sequence[Mapping[str, Any]],
+              *, owner_key: str | None = None) -> tuple[list[dict[str, str]], CompletedSynthesis | None]:
         """Legacy immediate single-use claim kept for existing API callers.
 
         The integrated Deep Reasoning driver uses reserve/retire instead.
         """
-        visible, record = self._matching_frontier(visible_history)
+        visible, record = self._matching_frontier(visible_history, owner_key=owner_key)
         if record is None:
             return visible, None
         self._frontiers.remove(record)

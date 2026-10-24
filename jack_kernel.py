@@ -5375,6 +5375,9 @@ class OpenAICompatibleBackend:
             self._apply_tool_policy(payload, tools, tool_choice)
 
         _agentic_context_report_request(stage_messages, payload, profile)
+        if DEEP_REASONING_MODE:
+            from jack_tas_context_accounting import emit_tas_context_report
+            emit_tas_context_report(stage_messages, payload, profile.name, LOG)
         url = f"{self.cfg.backend_base_url}/chat/completions"
         current_payload = payload
         try:
@@ -5484,6 +5487,9 @@ class OpenAICompatibleBackend:
             self._apply_tool_policy(payload, tools, tool_choice)
 
         _agentic_context_report_request(stage_messages, payload, profile)
+        if DEEP_REASONING_MODE:
+            from jack_tas_context_accounting import emit_tas_context_report
+            emit_tas_context_report(stage_messages, payload, profile.name, LOG)
         url = f"{self.cfg.backend_base_url}/chat/completions"
 
         async def send_stream(current_payload: Dict[str, Any]) -> httpx.Response:
@@ -10448,6 +10454,18 @@ async def chat_completions(request: Request):
     # Agent Authority Boundary. Reconstruct from the allowlist before deciding
     # transport behavior; cognition-control fields are ignored, never forwarded.
     body = sanitize_agent_request(body)
+    # TAS R3 owner is a private per-session bearer capability, not conversation text.
+    tas_owner_enforced = (DEEP_REASONING_MODE and
+                          os.environ.get("JACK_TAS_R3_OWNER_ENFORCEMENT", "0") == "1")
+    tas_owner_key = None
+    if tas_owner_enforced:
+        from jack_tas_r3_owner import parse_session_capability, set_current_owner, reset_current_owner
+        try:
+            tas_owner_key = parse_session_capability(request.headers)
+            if tas_owner_key is None:
+                raise ValueError("Missing TAS session capability")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid TAS session capability") from exc
     executor_context = _phase4_executor_context_from_request(request)
     hint = None
     if AGENTIC_MODE:
@@ -10477,6 +10495,15 @@ async def chat_completions(request: Request):
                 finally:
                     _AGENTIC_TURN_HINT.reset(token)
             public_stream = _with_agentic_hint()
+        if tas_owner_enforced:
+            async def _with_tas_owner(source_stream=public_stream, owner=tas_owner_key):
+                tas_token = set_current_owner(owner)
+                try:
+                    async for chunk in source_stream:
+                        yield chunk
+                finally:
+                    reset_current_owner(tas_token)
+            public_stream = _with_tas_owner()
         return StreamingResponse(
             public_stream,
             media_type="text/event-stream",
@@ -10487,6 +10514,7 @@ async def chat_completions(request: Request):
             },
         )
     token = _AGENTIC_TURN_HINT.set(hint if AGENTIC_MODE else None)
+    tas_token = set_current_owner(tas_owner_key) if tas_owner_enforced else None
     try:
         if executor_context is None:
             result = await KERNEL.run(body)
@@ -10501,6 +10529,8 @@ async def chat_completions(request: Request):
             _agentic_mark_stage1_failure(type(exc).__name__)
         raise
     finally:
+        if tas_token is not None:
+            reset_current_owner(tas_token)
         _AGENTIC_TURN_HINT.reset(token)
         if AGENTIC_MODE:
             _AGENTIC_ACTIVE_TURN.set(None)

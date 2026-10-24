@@ -9,6 +9,7 @@ separately from client-provided conversation data. Pi live reasoning and a one-h
 from __future__ import annotations
 
 import copy
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,7 @@ class _Pending:
     secondary_system: str
     tools: list[dict[str, Any]]
     abandon: Callable[[], None] | None = None
+    owner_key: str | None = None
 
 
 def install_deep_reasoning(kernel: Any, namespace: Any) -> None:
@@ -50,6 +52,9 @@ def install_deep_reasoning(kernel: Any, namespace: Any) -> None:
         "antithesis": "deep_reasoning_antithesis",
         "synthesis": "deep_reasoning_synthesis",
     }
+    # Experimental strict capability binding; no user content authorizes ownership.
+    strict_owner = os.environ.get("JACK_TAS_R3_OWNER_ENFORCEMENT", "0") == "1"
+    from jack_tas_r3_owner import current_owner as current_tas_owner
 
     def error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=502, detail=f"Deep Reasoning protocol: {exc}")
@@ -89,7 +94,8 @@ def install_deep_reasoning(kernel: Any, namespace: Any) -> None:
             rid = live.resume_id
         if rid in pending_by_resume:
             raise HTTPException(status_code=409, detail="Deep Reasoning resume ID collision")
-        pending_by_resume[rid] = _Pending(orchestrator, value, usage, secondary_system, tools, abandon)
+        pending_by_resume[rid] = _Pending(orchestrator, value, usage, secondary_system, tools, abandon,
+                                          current_tas_owner() if strict_owner else None)
         # Jack's shared stage-resume function predates Deep Reasoning and may
         # attach a provisional stage message to its tool-call response. In TAS,
         # Thesis and Antithesis have zero user-facing answer authority. A tool
@@ -133,6 +139,7 @@ def install_deep_reasoning(kernel: Any, namespace: Any) -> None:
                 user_request=user_request,
                 answer=answer.answer,
                 reasoning=answer.synthesis_native_reasoning,
+                owner_key=current_tas_owner() if strict_owner else None,
             )
         return KernelResult(
             content=answer.answer,
@@ -168,6 +175,13 @@ def install_deep_reasoning(kernel: Any, namespace: Any) -> None:
             if item.get("tool_calls") or item.get("_jack_internal_stage_generation_trigger"):
                 continue
             content = item.get("content")
+            # Pi sends text turns as structured content parts. The active user
+            # request is canonically serialized by Jack's _content_to_text;
+            # use that SAME representation for historical user turns. Otherwise
+            # the host drops the preceding user turn and loses the one-hop R3
+            # eligibility pair, as well as ordinary historical user context.
+            if item["role"] == "user" and content is not None and not isinstance(content, str):
+                content = json.dumps(content, ensure_ascii=False, separators=(",", ":"))
             if isinstance(content, str) and content:
                 history.append({"role": item["role"], "content": content})
 
@@ -177,7 +191,11 @@ def install_deep_reasoning(kernel: Any, namespace: Any) -> None:
         prior_synthesis = None
         reservation_token = None
         if preserve_enabled:
-            history, prior_synthesis, reservation_token = bridge.reserve(history)
+            # Reserve the one-hop R3, but preserve complete committed history for
+            # every role; next_thesis_messages attaches R3 to the matching prior
+            # assistant without duplicating that user/answer pair.
+            _, prior_synthesis, reservation_token = bridge.reserve(
+                history, owner_key=current_tas_owner() if strict_owner else None)
             if prior_synthesis is not None:
                 namespace.LOG.info(
                     "Deep Reasoning one-hop R3 restored to next Thesis; chars=%d",
@@ -348,6 +366,8 @@ def install_deep_reasoning(kernel: Any, namespace: Any) -> None:
         active = pending_by_resume.get(state.resume_id)
         if active is None:
             raise HTTPException(status_code=409, detail="Deep Reasoning active tool session expired or unavailable")
+        if strict_owner and (not active.owner_key or active.owner_key != current_tas_owner()):
+            raise HTTPException(status_code=409, detail="Deep Reasoning tool checkpoint session owner mismatch")
         ids = [m.get("tool_call_id") for m in tool_messages]
         if len(ids) != len(set(ids)):
             raise HTTPException(status_code=409, detail="Deep Reasoning received repeated tool result IDs")
@@ -405,7 +425,7 @@ def install_deep_reasoning(kernel: Any, namespace: Any) -> None:
 
     from deep_reasoning_pi_stream import deep_reasoning_pi_stream
     from jack_deep_reasoning_bridge import OneHopSynthesisBridge
-    bridge = OneHopSynthesisBridge()
+    bridge = OneHopSynthesisBridge(require_owner=strict_owner)
     preserve_enabled = bool(getattr(getattr(namespace, "CFG", None), "preserve_thinking", False))
 
     # Pi receives native reasoning deltas live. It never receives provisional

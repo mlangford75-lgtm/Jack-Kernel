@@ -335,13 +335,23 @@ class DeepReasoningOrchestrator:
             return await self._advance(session, "auto")
         answer = self._content(result, "synthesis")
         session.closed = True
-        return CompletedAnswer(
+        completed = CompletedAnswer(
             answer=answer,
             synthesis_native_reasoning=self._reasoning(result),
             thesis_answer=session.thesis_answer,
             antithesis_findings=session.antithesis_findings,
             evidence=tuple(copy.deepcopy(session.evidence)),
         )
+        # Host-only terminal cleanup. No further model call is made for
+        # this session. The returned answer owns its independent evidence
+        # copy and R3. Preserve request for _finish() after tool resume.
+        # Do NOT alter active stage buffers or backend request ordering:
+        # this preserves LM Studio KV-prefix cache eligibility.
+        session.messages.clear()
+        session.conversation_history = ()
+        session.evidence.clear()
+        session.artifact_references.clear()
+        return completed
 
     async def resume(
         self,
