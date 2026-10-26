@@ -27,10 +27,21 @@ fs.writeFileSync(
 );
 
 let healthRuntimeId = "runtime-agentic-01";
+let activeThinking = true;
+let activeMode = "agentic";
 const server = http.createServer((req, res) => {
   res.setHeader("Content-Type", "application/json");
   if (req.url === "/health") {
-    res.end(JSON.stringify({ runtime_id: healthRuntimeId, lane_id: "lane-agentic-01" }));
+    res.end(JSON.stringify({
+      runtime_id: healthRuntimeId,
+      lane_id: "lane-agentic-01",
+      reasoning_level: activeMode === "agentic" ? "Agentic" : activeMode,
+      runtime_identity: {
+        mode: activeMode,
+        flow: ["extended_initial"],
+        stage_controls: { extended_initial: { thinking: activeThinking } },
+      },
+    }));
     return;
   }
   if (req.url === "/api/v1/models") {
@@ -88,6 +99,25 @@ assert.equal(
   `http://127.0.0.1:${actualPort}/v1/`
 );
 assert.equal(registrations[0].provider.models[0].contextWindow, 16384);
+assert.equal(registrations[0].provider.models[0].reasoning, true,
+  "Agentic must advertise native thinking to stock Pi");
+assert.equal(registrations[0].provider.compat.supportsDeveloperRole, false);
+assert.equal(registrations[0].provider.compat.supportsReasoningEffort, false);
+
+// Provider refresh follows host-owned stage capability, not display label.
+activeThinking = false;
+activeMode = "off";
+for (const fn of handlers.get("before_agent_start") || []) await fn({});
+assert.equal(registrations.at(-1).provider.models[0].reasoning, false,
+  "Off must not advertise thinking");
+
+activeThinking = true;
+activeMode = "x-high";
+for (const fn of handlers.get("before_agent_start") || []) await fn({});
+assert.equal(registrations.at(-1).provider.models[0].reasoning, true,
+  "Native X-High must advertise thinking");
+
+// The matching model may not be registered if the runtime identity changes.
 
 healthRuntimeId = "wrong-runtime";
 for (const fn of handlers.get("before_agent_start") || []) {
@@ -95,7 +125,7 @@ for (const fn of handlers.get("before_agent_start") || []) {
 }
 assert.equal(
   registrations.length,
-  1,
+  3,
   "provider must not re-register when the resolved endpoint reports the wrong runtime identity"
 );
 
