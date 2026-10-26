@@ -29,6 +29,7 @@ fs.writeFileSync(
 let healthRuntimeId = "runtime-agentic-01";
 let activeThinking = true;
 let activeMode = "agentic";
+let activeEffort = "xhigh";
 const server = http.createServer((req, res) => {
   res.setHeader("Content-Type", "application/json");
   if (req.url === "/health") {
@@ -39,7 +40,7 @@ const server = http.createServer((req, res) => {
       runtime_identity: {
         mode: activeMode,
         flow: ["extended_initial"],
-        stage_controls: { extended_initial: { thinking: activeThinking } },
+        stage_controls: { extended_initial: { thinking: activeThinking, reasoning_effort: activeEffort } },
       },
     }));
     return;
@@ -101,6 +102,10 @@ assert.equal(
 assert.equal(registrations[0].provider.models[0].contextWindow, 16384);
 assert.equal(registrations[0].provider.models[0].reasoning, true,
   "Agentic must advertise native thinking to stock Pi");
+assert.equal(registrations[0].provider.models[0].thinkingLevelMap.xhigh, "xhigh",
+  "Agentic xhigh must appear in the stock Pi thinking selector");
+assert.equal(registrations[0].provider.models[0].thinkingLevelMap.max, undefined,
+  "Do not advertise a distinct max stage effort Jack does not support");
 assert.equal(registrations[0].provider.models[0].compat.supportsDeveloperRole, false);
 assert.equal(registrations[0].provider.models[0].compat.supportsReasoningEffort, false);
 
@@ -110,12 +115,21 @@ activeMode = "off";
 for (const fn of handlers.get("before_agent_start") || []) await fn({});
 assert.equal(registrations.at(-1).provider.models[0].reasoning, false,
   "Off must not advertise thinking");
+assert.equal(registrations.at(-1).provider.models[0].thinkingLevelMap.xhigh, undefined);
 
 activeThinking = true;
 activeMode = "x-high";
 for (const fn of handlers.get("before_agent_start") || []) await fn({});
 assert.equal(registrations.at(-1).provider.models[0].reasoning, true,
   "Native X-High must advertise thinking");
+assert.equal(registrations.at(-1).provider.models[0].thinkingLevelMap.xhigh, "xhigh");
+
+activeMode = "medium";
+activeEffort = "medium";
+for (const fn of handlers.get("before_agent_start") || []) await fn({});
+assert.equal(registrations.at(-1).provider.models[0].reasoning, true);
+assert.equal(registrations.at(-1).provider.models[0].thinkingLevelMap.xhigh, undefined,
+  "Medium mode must not claim to support a host xhigh stage");
 
 // The matching model may not be registered if the runtime identity changes.
 
@@ -125,7 +139,7 @@ for (const fn of handlers.get("before_agent_start") || []) {
 }
 assert.equal(
   registrations.length,
-  3,
+  4,
   "provider must not re-register when the resolved endpoint reports the wrong runtime identity"
 );
 
