@@ -3739,6 +3739,68 @@ def normalize_usage(total: Dict[str, int]) -> Dict[str, int]:
     return total
 
 
+def _agentic_peak_stage_usage(*stage_usages: Any) -> Optional[Dict[str, int]]:
+    """Conservative peak *single-backend-request* usage; never sum stages.
+
+    Return None unless at least two complete positive stage usage records exist.
+    A missing/inconsistent backend token report must not silently lower Pi's
+    compaction estimate. This is NOT a billing or total-compute measurement.
+    """
+    if len(stage_usages) < 2:
+        return None
+    normalized: List[Dict[str, int]] = []
+    for raw in stage_usages:
+        if not isinstance(raw, dict):
+            return None
+        try:
+            prompt = int(raw.get("prompt_tokens") or 0)
+            completion = int(raw.get("completion_tokens") or 0)
+            total = int(raw.get("total_tokens") or 0)
+        except (ValueError, TypeError, OverflowError):
+            return None
+        if prompt < 0 or completion < 0 or total < 0:
+            return None
+        if total == 0:
+            total = prompt + completion
+        # Inconsistent usage data is not authority to undercount context.
+        if total < prompt + completion or total == 0:
+            return None
+        normalized.append({
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "total_tokens": total,
+        })
+    return max(normalized, key=lambda item: item["total_tokens"])
+
+
+def _agentic_usage_for_pi(
+    aggregate: Dict[str, int], peak: Optional[Dict[str, int]],
+) -> Dict[str, int]:
+    """Expose peak stage context only to the Pi adapter in Agentic mode.
+
+    Other clients keep honest summed inference accounting. Pi uses the most
+    recent completion's usage to estimate one context window, so adding two
+    independent backend prompt prefills makes it spuriously compact.
+    The Pi adapter is the existing request-scoped executor transport identity;
+    this informational projection confers no new tool/authorization authority.
+    """
+    context = _phase4_current_executor_context()
+    if not (AGENTIC_MODE and context is not None
+            and str(context.adapter).strip().casefold() == "pi"):
+        return aggregate
+    if peak is None:
+        return aggregate
+    if any(peak.get(k, 0) > aggregate.get(k, 0) for k in
+           ("prompt_tokens", "completion_tokens", "total_tokens")):
+        return aggregate
+    LOG.info(
+        "Agentic Pi context usage projection: aggregate_total=%d peak_request_total=%d",
+        int(aggregate.get("total_tokens") or 0),
+        int(peak.get("total_tokens") or 0),
+    )
+    return dict(peak)
+
+
 def usage_delta(current: Dict[str, int], baseline: Optional[Dict[str, int]] = None) -> Dict[str, int]:
     """Return response-local usage from a cumulative Jack transaction counter."""
     baseline = baseline or {}
@@ -5586,6 +5648,7 @@ class PreparedCommit:
     authoritative_source: str
     usage: Dict[str, int]
     stage2_reasoning: Optional[str] = None
+    context_usage: Optional[Dict[str, int]] = None
 
 
 @dataclass
@@ -7787,6 +7850,9 @@ class JackQwenKernel:
                     frozen_jack_xml,
                     stage2_reasoning=str(reasoning or "").strip() or None,
                 )
+                completed.context_usage = _agentic_peak_stage_usage(
+                    stage.get("usage"), xml_stage.get("usage")
+                )
             except Exception as exc:
                 detail = str(exc.detail) if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
                 completed = self._agentic_degraded_result(history, usage, frozen_stage1_answer, detail)
@@ -7903,7 +7969,7 @@ class JackQwenKernel:
                 msg = choice.get("message") or {}
                 reasoning = msg.get("_jack_stage2_reasoning_trace") or msg.get("reasoning_content") or msg.get("reasoning") or msg.get("thinking")
                 frozen_jack_xml = self._exact_frozen_answer_from_stage(second, "Agentic Stage 2 distillation")
-                return await self._complete_commit(
+                completed = await self._complete_commit(
                     history,
                     secondary_system,
                     usage,
@@ -7911,6 +7977,10 @@ class JackQwenKernel:
                     frozen_jack_xml,
                     stage2_reasoning=str(reasoning or "").strip() or None,
                 )
+                completed.context_usage = _agentic_peak_stage_usage(
+                    first.get("usage"), second.get("usage")
+                )
+                return completed
             except Exception as exc:
                 detail = str(exc.detail) if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
                 return self._agentic_degraded_result(history, usage, frozen_stage1_answer, detail)
@@ -8169,7 +8239,10 @@ class JackQwenKernel:
                 content=complete,
                 tool_calls=None,
                 finish_reason="stop",
-                usage=usage_delta(prepared.usage, response_usage_baseline),
+                usage=_agentic_usage_for_pi(
+                    usage_delta(prepared.usage, response_usage_baseline),
+                    prepared.context_usage,
+                ),
                 # Current-turn observability may expose Stage-2 thinking, but Jack
                 # never restores it on the next user turn.
                 reasoning_content=_stage2_reasoning_trace(prepared.stage2_reasoning),
@@ -8227,14 +8300,18 @@ class JackQwenKernel:
             }
             return ("data: " + json.dumps(obj, ensure_ascii=False) + "\n\n").encode("utf-8")
 
+        agentic_stage_usages: List[Dict[str, int]] = []
+
         def usage_event(usage: Dict[str, int]) -> bytes:
+            aggregate = normalize_usage(dict(usage))
+            peak = _agentic_peak_stage_usage(*agentic_stage_usages)
             obj = {
                 "id": response_id,
                 "object": "chat.completion.chunk",
                 "created": created,
                 "model": self.cfg.virtual_model,
                 "choices": [],
-                "usage": normalize_usage(usage),
+                "usage": _agentic_usage_for_pi(aggregate, peak),
             }
             return ("data: " + json.dumps(obj, ensure_ascii=False) + "\n\n").encode("utf-8")
 
@@ -8591,6 +8668,8 @@ class JackQwenKernel:
                             return
                         raise
                     stage_result = self_adversarial_results[stage_key]
+                    if AGENTIC_MODE and isinstance(stage_result.get("usage"), dict):
+                        agentic_stage_usages.append(stage_result["usage"])
                     if self._tool_interrupt(stage_result, usage):
                         if AGENTIC_MODE and stage_key == "extended_reflection":
                             raise HTTPException(status_code=502, detail="Agentic Stage 2 attempted a tool call even though XML-stage tools are disabled")
