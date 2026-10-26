@@ -183,6 +183,22 @@ function runtimeSupportsNativeThinking(health) {
   return level !== "" && level !== "off" && level !== "no reasoning";
 }
 
+// Pi hides xhigh/max unless each level is explicitly advertised by the model.
+// Advertise xhigh only when a Jack-owned active stage actually uses xhigh.
+// Jack has no distinct per-stage "max" effort, so do not advertise max.
+function runtimeThinkingLevelMap(health) {
+  const identity = health?.runtime_identity;
+  const stages = identity?.stage_controls;
+  const flow = identity?.flow;
+  if (!Array.isArray(flow) || !stages || typeof stages !== "object") return {};
+  const xhigh = flow.some((key) => {
+    const stage = stages[key];
+    return stage?.thinking === true &&
+      String(stage?.reasoning_effort || "").trim().toLowerCase() === "xhigh";
+  });
+  return xhigh ? { xhigh: "xhigh" } : {};
+}
+
 async function fetchJackModels(url, token, health) {
   const root = String(url || DEFAULT_JACK_URL).replace(/\/+$/, "").replace(/\/v1$/, "");
   const payload = await fetchJson(`${root}/api/v1/models`, token);
@@ -198,6 +214,7 @@ async function fetchJackModels(url, token, health) {
       id: model.key,
       name: model.display_name || model.key,
       reasoning: runtimeSupportsNativeThinking(health),
+      thinkingLevelMap: runtimeThinkingLevelMap(health),
       compat: { supportsDeveloperRole: false, supportsReasoningEffort: false },
       input: ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
