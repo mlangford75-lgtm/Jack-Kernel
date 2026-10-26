@@ -166,6 +166,39 @@ async function verifyRuntimeIdentity(url, token, expectedRuntimeId) {
   return health;
 }
 
+// Pi's reasoning capability describes whether the active Jack cognition program
+// uses native thinking. It is NOT the user-selected Pi thinking level: Jack's
+// host-owned stage profiles continue to control actual inference effort.
+function runtimeSupportsNativeThinking(health) {
+  const identity = health?.runtime_identity;
+  const stages = identity?.stage_controls;
+  const flow = identity?.flow;
+  if (Array.isArray(flow) && flow.length > 0 && stages && typeof stages === "object") {
+    return flow.some((key) => stages[key]?.thinking === true);
+  }
+
+  // Compatibility with earlier Jack runtimes that expose only the display
+  // label. Do not mistake the Agentic or native Medium/X-High modes for Off.
+  const level = String(health?.reasoning_level || "").trim().toLowerCase();
+  return level !== "" && level !== "off" && level !== "no reasoning";
+}
+
+// Pi hides xhigh/max unless each level is explicitly advertised by the model.
+// Advertise xhigh only when a Jack-owned active stage actually uses xhigh.
+// Jack has no distinct per-stage "max" effort, so do not advertise max.
+function runtimeThinkingLevelMap(health) {
+  const identity = health?.runtime_identity;
+  const stages = identity?.stage_controls;
+  const flow = identity?.flow;
+  if (!Array.isArray(flow) || !stages || typeof stages !== "object") return {};
+  const xhigh = flow.some((key) => {
+    const stage = stages[key];
+    return stage?.thinking === true &&
+      String(stage?.reasoning_effort || "").trim().toLowerCase() === "xhigh";
+  });
+  return xhigh ? { xhigh: "xhigh" } : {};
+}
+
 async function fetchJackModels(url, token, health) {
   const root = String(url || DEFAULT_JACK_URL).replace(/\/+$/, "").replace(/\/v1$/, "");
   const payload = await fetchJson(`${root}/api/v1/models`, token);
@@ -180,7 +213,9 @@ async function fetchJackModels(url, token, health) {
     return {
       id: model.key,
       name: model.display_name || model.key,
-      reasoning: String(health?.reasoning_level || "").trim().toLowerCase() === "deep reasoning",
+      reasoning: runtimeSupportsNativeThinking(health),
+      thinkingLevelMap: runtimeThinkingLevelMap(health),
+      compat: { supportsDeveloperRole: false, supportsReasoningEffort: false },
       input: ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow,
