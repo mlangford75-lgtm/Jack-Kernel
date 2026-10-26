@@ -198,6 +198,7 @@ async function fetchJackModels(url, token, health) {
       id: model.key,
       name: model.display_name || model.key,
       reasoning: runtimeSupportsNativeThinking(health),
+      compat: { supportsDeveloperRole: false, supportsReasoningEffort: false },
       input: ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow,
@@ -230,9 +231,6 @@ export default async function (pi) {
       const provider = {
         baseUrl: `${root}/v1/`,
         api: "openai-completions",
-        // Preserve Pi\u0027s caller system prompt as a leading system message.
-        // Jack owns stage effort: Pi\u0027s thinking menu must not override it.
-        compat: { supportsDeveloperRole: false, supportsReasoningEffort: false },
         apiKey: token || "jack-kernel",
         models,
       };
