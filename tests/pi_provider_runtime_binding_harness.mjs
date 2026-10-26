@@ -30,6 +30,8 @@ let healthRuntimeId = "runtime-agentic-01";
 let activeThinking = true;
 let activeMode = "agentic";
 let activeEffort = "xhigh";
+let mockLoadedContext = 16384;
+let mockMaxContext = 32768;
 const server = http.createServer((req, res) => {
   res.setHeader("Content-Type", "application/json");
   if (req.url === "/health") {
@@ -50,8 +52,8 @@ const server = http.createServer((req, res) => {
       models: [{
         key: "test-model",
         display_name: "Test Model",
-        max_context_length: 32768,
-        loaded_instances: [{ config: { context_length: 16384 } }],
+        max_context_length: mockMaxContext,
+        loaded_instances: [{ config: { context_length: mockLoadedContext } }],
       }],
     }));
     return;
@@ -100,6 +102,8 @@ assert.equal(
   `http://127.0.0.1:${actualPort}/v1/`
 );
 assert.equal(registrations[0].provider.models[0].contextWindow, 16384);
+assert.equal(registrations[0].provider.models[0].maxTokens, 16384,
+  "Output allowance must not inherit the theoretical 32768-token context maximum");
 assert.equal(registrations[0].provider.models[0].reasoning, true,
   "Agentic must advertise native thinking to stock Pi");
 assert.equal(registrations[0].provider.models[0].thinkingLevelMap.xhigh, "xhigh",
@@ -143,5 +147,50 @@ assert.equal(
   "provider must not re-register when the resolved endpoint reports the wrong runtime identity"
 );
 
+// Context-size boundary tests. Restore the matching runtime after the
+// intentionally rejected runtime-identity test above.
+healthRuntimeId = "runtime-agentic-01";
+activeThinking = true;
+activeMode = "agentic";
+activeEffort = "xhigh";
+
+for (const scenario of [
+  { loaded: 4096, theoretical: 32768, context: 4096, output: 4096 },
+  { loaded: 8192, theoretical: 32768, context: 8192, output: 8192 },
+  { loaded: 65536, theoretical: 131072, context: 65536, output: 16384 },
+  { loaded: 0, theoretical: 32768, context: 32768, output: 16384 },
+  { loaded: 0, theoretical: 4096, context: 4096, output: 4096 },
+]) {
+  mockLoadedContext = scenario.loaded;
+  mockMaxContext = scenario.theoretical;
+
+  const previousCount = registrations.length;
+  for (const fn of handlers.get("before_agent_start") || []) {
+    await fn({});
+  }
+
+  assert.equal(registrations.length, previousCount + 1,
+    "Expected provider registration for valid context metadata");
+
+  const model = registrations.at(-1).provider.models[0];
+
+  assert.equal(model.contextWindow, scenario.context);
+  assert.equal(model.maxTokens, scenario.output);
+  assert.ok(model.maxTokens <= model.contextWindow);
+}
+
+// Missing both context measurements must fail closed.
+mockLoadedContext = 0;
+mockMaxContext = 0;
+const previousCount = registrations.length;
+
+for (const fn of handlers.get("before_agent_start") || []) {
+  await fn({});
+}
+
+assert.equal(registrations.length, previousCount,
+  "Missing context metadata must not register an invalid model");
+
+console.log("Pi context boundary tests: PASS");
 await new Promise((resolve) => server.close(resolve));
 console.log("Pi provider runtime binding harness: PASS");

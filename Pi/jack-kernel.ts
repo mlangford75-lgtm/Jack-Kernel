@@ -5,6 +5,9 @@ import path from "path";
 
 const PROVIDER_NAME = "jack-kernel";
 const DEFAULT_JACK_URL = "http://127.0.0.1:8001";
+// Pi's documented default output allowance. LM Studio's model-list API
+// reports context capacity, not a separate generation-output ceiling.
+const PI_DEFAULT_MAX_TOKENS = 16384;
 const CONFIG_PATH = path.join(os.homedir(), ".pi", "agent", "jack-kernel.json");
 const EXECUTOR_ADMISSION_PROTOCOL_VERSION = 1;
 const STRUCTURED_PATH_TOOLS = new Set(["read", "edit", "write", "grep", "find", "ls"]);
@@ -219,9 +222,9 @@ async function fetchJackModels(url, token, health) {
       input: ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow,
-      // Jack owns generation ceilings by mode. Pi requires a maxTokens value;
-      // use the advertised backend context ceiling rather than a guessed static value.
-      maxTokens: maxContext > 0 ? maxContext : contextWindow,
+      // Pi maxTokens is an output allowance, not a context capacity.
+      // Jack retains authority over actual stage generation limits.
+      maxTokens: Math.min(contextWindow, PI_DEFAULT_MAX_TOKENS),
     };
   });
 }
