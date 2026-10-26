@@ -101,8 +101,8 @@ assert.equal(
 assert.equal(registrations[0].provider.models[0].contextWindow, 16384);
 assert.equal(registrations[0].provider.models[0].reasoning, true,
   "Agentic must advertise native thinking to stock Pi");
-assert.equal(registrations[0].provider.compat.supportsDeveloperRole, false);
-assert.equal(registrations[0].provider.compat.supportsReasoningEffort, false);
+assert.equal(registrations[0].provider.models[0].compat.supportsDeveloperRole, false);
+assert.equal(registrations[0].provider.models[0].compat.supportsReasoningEffort, false);
 
 // Provider refresh follows host-owned stage capability, not display label.
 activeThinking = false;
