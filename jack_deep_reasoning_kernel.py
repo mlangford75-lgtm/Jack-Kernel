@@ -434,5 +434,9 @@ def install_deep_reasoning(kernel: Any, namespace: Any) -> None:
         async for frame in deep_reasoning_pi_stream(kernel, request_body, namespace):
             yield frame
 
+    # Pi context accounting is a mode-local response projection, never a model input.
+    from jack_deep_reasoning_usage import install_deep_reasoning_usage
+    install_deep_reasoning_usage(kernel, namespace)
+
     kernel._deep_reasoning_pi_stream = pi_stream
     kernel._deep_reasoning_phase3_nonstream_enabled = True
