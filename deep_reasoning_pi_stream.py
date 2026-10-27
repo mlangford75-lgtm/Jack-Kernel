@@ -1,8 +1,9 @@
 """Live stage-aware TAS reasoning SSE for Pi, with tool-call release barriers.
 
-Model-native reasoning is an OBSERVATION stream; it never becomes the next
-stage's model input. Partial Thesis/Antithesis/Synthesis visible answers and
-unvalidated tool arguments are never forwarded. Tool calls only leave Jack
+Model-native reasoning and provisional stage-generated text are OBSERVATIONS
+on Pi's reasoning channel; they never become the next stage's model input.
+Provisional text never enters the authoritative assistant content channel.
+Unvalidated tool arguments never stream to Pi. Tool calls only leave Jack
 through its existing authorization + pending-resume checkpoint.
 """
 from __future__ import annotations
