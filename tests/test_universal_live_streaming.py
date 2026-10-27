@@ -85,5 +85,5 @@ def test_pi_stream_releases_only_final_committed_content_after_observations():
         assert "synthesis-body" in observed
         content = [d["content"] for d in deltas if "content" in d]
         assert content == ["synthesis-body"]
-        assert frames[-1] == b"data: [DONE]\\n\\n"
+        assert frames[-1] == b"data: [DONE]\n\n"
     asyncio.run(run())
