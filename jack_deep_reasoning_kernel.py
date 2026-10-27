@@ -250,21 +250,30 @@ def install_deep_reasoning(kernel: Any, namespace: Any) -> None:
                     tools=offered, tool_choice=choice, append=False, **extra,
                 )
             else:
-                # Reuse Jack's existing streaming stage engine, including its
-                # tool validation, filesystem policy, and release restrictions.
-                # All visible stage drafts stay private; only reasoning tokens
-                # enter Pi's observer channel until Synthesis commits.
+                # Reuse Jack's streaming stage engine and its existing tool
+                # validation, Phase-4 authorization, and release checkpoint.
+                # Stage text is provisional OBSERVATION over reasoning_content,
+                # never final-answer authority or executable tool fragments.
                 sink.offer("reasoning", "\n[" + stage.upper() + "]\n")
                 data = None
+                text_started = False
                 async for packet in kernel._run_stage_streamed(
                     params["messages"], secondary_system, stage_keys[stage], usage,
                     tools=offered, tool_choice=choice, append=False, **extra,
                 ):
-                    if packet.get("kind") == "reasoning":
+                    kind = packet.get("kind")
+                    if kind == "reasoning":
                         sink.offer("reasoning", str(packet.get("text") or ""))
-                    elif packet.get("kind") == "keepalive":
+                    elif kind == "content":
+                        text = str(packet.get("text") or "")
+                        if text:
+                            if not text_started:
+                                text_started = True
+                                sink.offer("reasoning", "\n[" + stage.upper() + " OUTPUT — PROVISIONAL]\n")
+                            sink.offer("reasoning", text)
+                    elif kind == "keepalive":
                         sink.offer("keepalive", ":")
-                    elif packet.get("kind") == "result":
+                    elif kind == "result":
                         data = packet["data"]
                 if data is None:
                     raise DeepReasoningProtocolError("streaming stage produced no authoritative result")
@@ -275,22 +284,9 @@ def install_deep_reasoning(kernel: Any, namespace: Any) -> None:
             message["_tas_finish_reason"] = choice_response.get("finish_reason")
             counted = (data.get("usage") or {}).get("completion_tokens")
             message["_tas_completion_tokens"] = counted if isinstance(counted, int) else None
-            # Show each completed stage report in Pi's *observation* channel.
-            # Use reasoning_content as transport-only display because publishing
-            # A1/A2 as normal assistant content would give interim drafts final
-            # answer authority in Pi's stored conversation. Never send these
-            # diagnostic copies into the following stage's model input; the
-            # orchestrator performs its existing explicit A1/A2 projections.
-            if sink is not None and stage in ("thesis", "antithesis"):
-                stage_output = message.get("content")
-                if (isinstance(stage_output, str) and stage_output.strip()
-                        and not message.get("tool_calls")
-                        and choice_response.get("finish_reason") in (None, "stop")):
-                    sink.offer(
-                        "reasoning",
-                        "\n[" + stage.upper() + " OUTPUT]\n"
-                        + stage_output.strip() + "\n",
-                    )
+            # Stage text was already observed incrementally; do not replay A1/A2
+            # after EOS. Only the orchestrator projects completed stage outputs
+            # to later model stages.
             # Retire the old R3 only after a successful, complete next Thesis.
             # Never let the bridge linger in the subsequent evaluator adapter.
             if stage == "thesis" and reservation_token is not None:
