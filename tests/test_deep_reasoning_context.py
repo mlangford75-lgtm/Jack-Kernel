@@ -112,3 +112,17 @@ def test_prior_history_rejects_tool_protocol_and_private_runtime_metadata():
             antithesis_messages(request="Q", thesis_answer="A1", visible_history=history)
         with pytest.raises(ValueError):
             synthesis_messages(request="Q", thesis_answer="A1", antithesis_findings="A2", visible_history=history)
+
+
+def test_static_source_inspection_not_equated_with_runtime_proof():
+    warning = "Source-code inspection is NOT proof of runtime correctness."
+    antithesis = antithesis_messages(request="Create an analog clock", thesis_answer="Wrote clock.html")
+    synthesis = synthesis_messages(request="Create an analog clock", thesis_answer="Wrote clock.html", antithesis_findings="Source reviewed")
+    assert antithesis[-1]["role"] == "user"
+    assert synthesis[-1]["role"] == "user"
+    assert antithesis[-1]["content"].count(warning) == 1
+    assert synthesis[-1]["content"].count(warning) == 1
+    assert "HOST_TOOL_TARGETS_JSON:" in antithesis[-1]["content"]
+    assert "HOST_EVIDENCE_JSON:" in synthesis[-1]["content"]
+    assert "reasoning_content" not in str(antithesis)
+    assert "reasoning_content" not in str(synthesis)
