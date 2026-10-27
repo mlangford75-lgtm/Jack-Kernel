@@ -51,8 +51,12 @@ def test_all_deep_reasoning_stages_stream_generated_text_without_premature_commi
         for stage in ("thesis", "antithesis", "synthesis"):
             assert stage + "-native" in view
             assert ("[" + stage.upper() + " OUTPUT — PROVISIONAL]") in view
-            assert view.count(stage + "-body") == 1  # one assembled live trace, no EOS replay
-            assert view.count(stage + "-") >= 2
+            # Verify each delimited stage body. "thesis" is a substring of
+            # "antithesis" and "synthesis", so counting the full trace is wrong.
+            marker = "[" + stage.upper() + " OUTPUT — PROVISIONAL]\n"
+            section = view.split(marker, 1)[1].split("\n[", 1)[0]
+            assert section == stage + "-body"
+            assert view.count(marker) == 1
         assert view.count("OUTPUT — PROVISIONAL") == 3
         assert completed.content == "synthesis-body"
         assert completed.finish_reason == "stop"
