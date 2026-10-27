@@ -284,9 +284,22 @@ def install_deep_reasoning(kernel: Any, namespace: Any) -> None:
             message["_tas_finish_reason"] = choice_response.get("finish_reason")
             counted = (data.get("usage") or {}).get("completion_tokens")
             message["_tas_completion_tokens"] = counted if isinstance(counted, int) else None
-            # Stage text was already observed incrementally; do not replay A1/A2
-            # after EOS. Only the orchestrator projects completed stage outputs
-            # to later model stages.
+            # Normally all stage text has already been observed incrementally.
+            # A backend can also produce a complete final message without any
+            # content deltas. Preserve the old end-of-stage observer fallback
+            # in that case only, without duplicating streamed text or releasing
+            # an incomplete/tool-generating candidate as final content.
+            if sink is not None and not text_started:
+                stage_output = message.get("content")
+                if (isinstance(stage_output, str) and stage_output.strip()
+                        and not message.get("tool_calls")
+                        and choice_response.get("finish_reason") in (None, "stop")):
+                    sink.offer(
+                        "reasoning",
+                        "\n[" + stage.upper() + " OUTPUT]\n" + stage_output.strip() + "\n",
+                    )
+            # Only the orchestrator projects completed stage outputs to later
+            # model stages; the Pi observer never supplies that authority.
             # Retire the old R3 only after a successful, complete next Thesis.
             # Never let the bridge linger in the subsequent evaluator adapter.
             if stage == "thesis" and reservation_token is not None:
