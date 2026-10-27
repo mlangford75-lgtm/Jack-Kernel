@@ -51,7 +51,7 @@ def test_all_deep_reasoning_stages_stream_generated_text_without_premature_commi
         for stage in ("thesis", "antithesis", "synthesis"):
             assert stage + "-native" in view
             assert ("[" + stage.upper() + " OUTPUT — PROVISIONAL]") in view
-            assert view.count(stage + "-body") == 0  # split token observations, not replayed at EOS
+            assert view.count(stage + "-body") == 1  # one assembled live trace, no EOS replay
             assert view.count(stage + "-") >= 2
         assert view.count("OUTPUT — PROVISIONAL") == 3
         assert completed.content == "synthesis-body"
@@ -65,8 +65,6 @@ def test_pi_stream_releases_only_final_committed_content_after_observations():
     async def run():
         kernel = StreamingFakeKernel()
         install_deep_reasoning(kernel, ns())
-        async def invoke(body):
-            return await kernel._run_impl(body)
         kernel._run_impl = lambda body: kernel._prepare_commit(body)
         model_ns = SimpleNamespace(CFG=SimpleNamespace(virtual_model="jack-kernel"),
                                    normalize_usage=lambda u: dict(u))
