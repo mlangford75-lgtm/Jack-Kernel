@@ -845,9 +845,40 @@ _STAGE_CONTINUATIONS = {
 def _stage_continuation(
     profile: "StageProfile", messages: Optional[Iterable[Dict[str, Any]]] = None
 ) -> str:
-    return _STAGE_CONTINUATIONS.get(
+    continuation = _STAGE_CONTINUATIONS.get(
         profile.name,
         "Continue the requested task using the preceding conversation.",
+    )
+    if not (AGENTIC_MODE and profile.name == "Agentic native pass 2" and messages is not None):
+        return continuation
+
+    # Append only: do not mutate Stage 1's cached prefix, prompt, tool schemas,
+    # historical U/M/A, or eligible previous-turn R2.
+    history = list(messages)
+    target = active_response_target(history)
+    frozen = history[-1] if history else None
+    if (target is None or not isinstance(frozen, dict)
+            or frozen.get("role") != "assistant"
+            or not _content_to_text(frozen.get("content")).strip()):
+        raise HTTPException(status_code=500, detail="Agentic Stage 2 missing current-turn U/A1 binding")
+
+    def excerpt(value: str) -> str:
+        return value if len(value) <= 800 else (
+            value[:400] + "\n[...middle omitted; full original remains in history...]\n"
+            + value[-400:]
+        )
+
+    return continuation + (
+        "\n\n[JACK STAGE-2 CURRENT-TURN TARGET - NOT NEW USER CONTENT]\n"
+        "Active user turn: " + target["id"] + "\n"
+        "User request for THIS turn (excerpt if long):\n"
+        + excerpt(target["content"]) + "\n"
+        "Frozen Stage-1 answer for THIS turn (excerpt if long):\n"
+        + excerpt(_content_to_text(frozen["content"])) + "\n"
+        "Generate the retrospective ONLY for Stage 1 of this active user turn. "
+        "Earlier user turns, their memories, and any preserved previous-turn R2 "
+        "are historical context, not the subject of this retrospective.\n"
+        "[END JACK STAGE-2 CURRENT-TURN TARGET]"
     )
 
 
