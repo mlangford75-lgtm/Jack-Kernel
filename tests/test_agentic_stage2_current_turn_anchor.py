@@ -1,4 +1,4 @@
-"""Agentic Stage-2 host binding: current U/A1, previous R2, cache-prefix parity."""
+"""Agentic: retain current R1, retire prior R2, preserve Stage-2 cache prefix."""
 import asyncio
 import importlib.util
 import json
@@ -34,7 +34,7 @@ def load(cache):
 def history():
     return [
         {"role": "user", "content": "Turn 1: inspect empty workspace"},
-        {"role": "assistant", "content": "Turn 1 retrospective", "reasoning_content": "R2_1 investigated empty workspace", "_jack_agentic_one_hop_r2": True},
+        {"role": "assistant", "content": "Turn 1 retrospective"},
         {"role": "assistant", "content": "Turn 1 frozen answer"},
         {"role": "user", "content": "Turn 2: generate cuckoo clock SVG"},
         {"role": "assistant", "content": "", "tool_calls": [{"id": "write-1", "type": "function", "function": {"name": "write", "arguments": "{}"}}]},
@@ -71,26 +71,24 @@ async def payloads(k, full_history, cache):
     return recorded[0]
 
 @pytest.mark.parametrize("cache", [True, False])
-def test_stage2_binding_targets_current_turn_not_previous(cache):
+def test_stage2_sees_current_r1_but_never_old_r2(cache):
     k = load(cache)
     h = history()
     original = json.dumps(h, sort_keys=True)
     p = asyncio.run(payloads(k, h, cache))
     assert json.dumps(h, sort_keys=True) == original
-    prompt = p["messages"][-1]["content"]
-    assert "Turn 2: generate cuckoo clock SVG" in prompt
-    assert "Turn 2 frozen answer: created cuckoo-clock.svg" in prompt
-    assert "R2_1 investigated empty workspace" not in prompt
-    assert "historical context, not the subject" in prompt
+    rendered = json.dumps(p["messages"], sort_keys=True)
+    assert "R2_1 investigated empty workspace" not in rendered
+    assert "R1_2 created SVG" in rendered
     assert p["messages"][-2]["content"] == h[-1]["content"]
     assert p["messages"][-2]["reasoning_content"] == "R1_2 created SVG"
-    assert p["messages"][2]["reasoning_content"] == "R2_1 investigated empty workspace"
+    assert p["messages"][-1]["role"] == "user"
     assert k.AGENTIC_STAGE1_PROMPT == STAGE1
     assert k.AGENTIC_36_STAGE2_PROMPT == STAGE2
     assert k.STAGES["extended_reflection"].allow_tools is False
     if cache:
         assert p["messages"][0]["content"] == STAGE1
-        assert prompt.startswith(STAGE2 + "\n\n")
+        assert p["messages"][-1]["content"].startswith(STAGE2 + "\\n\\n".replace("\\n", "\n"))
         assert p["tool_choice"] == "auto"
         assert len(p["tools"]) == 1
     else:
@@ -104,28 +102,33 @@ def test_stage1_prefix_unchanged_when_stage2_is_appended():
     stage2 = k.BACKEND._stage_messages_for_profile(h, k.STAGES["extended_reflection"])
     assert stage2[:len(stage1)] == stage1
     assert stage2[-1]["content"] == "Turn 2 frozen answer: created cuckoo-clock.svg"
-    continuation = k._stage_continuation(k.STAGES["extended_reflection"], h)
-    assert continuation.startswith("[JACK RUNTIME STAGE CONTINUATION")
-    assert "Turn 2: generate cuckoo clock SVG" in continuation
-    assert "Turn 2 frozen answer" in continuation
+    assert k._stage_continuation(k.STAGES["extended_reflection"], h).startswith(
+        "[JACK RUNTIME STAGE CONTINUATION"
+    )
 
-def test_stage2_anchor_moves_forward_without_rewriting_old_turns():
+def test_incoming_history_never_recovers_previous_r2():
+    k = load(True)
+    h = [
+        {"role": "user", "content": "workspace"},
+        {"role": "assistant", "content": "previous answer",
+         "reasoning_content": "===== JACK AGENTIC NATIVE PASS 2 =====\n"
+                              "[NATIVE REASONING]\nold private R2"},
+        {"role": "user", "content": "create svg"},
+    ]
+    original = json.dumps(h, sort_keys=True)
+    projected = k.compact_incoming_history(h)
+    assert json.dumps(h, sort_keys=True) == original
+    assert not any("reasoning_content" in item for item in projected)
+    assert "old private R2" not in json.dumps(projected)
+    assert projected[-1]["content"] == "create svg"
+
+def test_historical_u_m_a_is_still_available_without_r2():
     k = load(True)
     h = history()
-    first = k._stage_continuation(k.STAGES["extended_reflection"], h)
-    h.extend([
-        {"role": "user", "content": "Turn 3: what?"},
-        {"role": "assistant", "content": "Turn 3 frozen answer: verified prior file"},
-    ])
-    second = k._stage_continuation(k.STAGES["extended_reflection"], h)
-    assert "Turn 2: generate cuckoo clock SVG" in first
-    assert "Turn 3: what?" in second
-    assert "Turn 3 frozen answer" in second
-    assert "Turn 2: generate cuckoo clock SVG" not in second
-
-def test_stage2_without_current_user_or_frozen_answer_fails_closed():
-    k = load(True)
-    with pytest.raises(k.HTTPException):
-        k._stage_continuation(k.STAGES["extended_reflection"], [{"role": "assistant", "content": "not frozen"}])
-    with pytest.raises(k.HTTPException):
-        k._stage_continuation(k.STAGES["extended_reflection"], [{"role": "user", "content": "new request"}])
+    assert [m["role"] for m in h] == [
+        "user", "assistant", "assistant", "user", "assistant", "tool", "assistant"
+    ]
+    assert h[0]["content"] == "Turn 1: inspect empty workspace"
+    assert h[1]["content"] == "Turn 1 retrospective"
+    assert h[2]["content"] == "Turn 1 frozen answer"
+    assert h[-1]["reasoning_content"] == "R1_2 created SVG"
