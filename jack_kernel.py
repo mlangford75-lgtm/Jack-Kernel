@@ -78,6 +78,7 @@ import contextlib
 import contextvars
 import json
 import logging
+from jack_agentic_forensics import AgenticForensicJournal, ForensicConflict, attempt_id as _new_forensic_attempt_id
 import os
 import shutil
 import socket
@@ -845,10 +846,22 @@ _STAGE_CONTINUATIONS = {
 def _stage_continuation(
     profile: "StageProfile", messages: Optional[Iterable[Dict[str, Any]]] = None
 ) -> str:
-    return _STAGE_CONTINUATIONS.get(
-        profile.name,
-        "Continue the requested task using the preceding conversation.",
+    continuation = _STAGE_CONTINUATIONS.get(
+        profile.name, "Continue the requested task using the preceding conversation."
     )
+    if AGENTIC_MODE and profile.name == "Agentic native pass 2" and messages is not None:
+        binding = _agentic_current_forensic_binding(list(messages))
+        if binding is not None:
+            # Append only after the immutable Stage-1 prefix. Frozen prompts, A1,
+            # tool schemas and Preserve Thinking remain exactly as before.
+            return continuation + (
+                "\n[JACK FORENSIC TARGET | turn=" + binding["turn_id"]
+                + " | request=" + binding["request_sha256"][:16]
+                + " | frozen_A1=" + binding["a1_sha256"][:16]
+                + "]\nExplain ONLY this turn's completed Stage 1. "
+                "Previous memories and answers are historical, not the target."
+            )
+    return continuation
 
 ULTRA_STAGE2_TRANSITION_BRIDGE = "THESIS COMPLETE. PROCEED TO ANTITHESIS."
 ULTRA_STAGE3_TRANSITION_BRIDGE = "ANTITHESIS COMPLETE. PROCEED TO SYNTHESIS."
@@ -3655,6 +3668,8 @@ def append_extended_candidate_response(
     elif isinstance(thinking, str) and thinking:
         entry["thinking"] = thinking
 
+    if AGENTIC_MODE:
+        _agentic_forensic_freeze(history, candidate)
     history.append(entry)
     if AGENTIC_MODE:
         _agentic_turn_status(history, "response_frozen")
@@ -5868,6 +5883,8 @@ class JackQwenKernel:
         effective_tool_choice = tool_choice if (profile.allow_tools or cache_append) else None
         if AGENTIC_MODE and stage_key == "extended_initial":
             _agentic_begin_turn(history, fresh=not same_stage_resume)
+        elif AGENTIC_MODE and stage_key == "extended_reflection":
+            _agentic_forensic_start_stage2(history)
         await self._activity_update(
             stage_key=stage_key,
             stage_name=profile.name,
@@ -6081,6 +6098,8 @@ class JackQwenKernel:
         effective_tool_choice = tool_choice if (profile.allow_tools or cache_append) else None
         if AGENTIC_MODE and stage_key == "extended_initial":
             _agentic_begin_turn(history, fresh=not same_stage_resume)
+        elif AGENTIC_MODE and stage_key == "extended_reflection":
+            _agentic_forensic_start_stage2(history)
         content_parts: List[str] = []
         reasoning_content_parts: List[str] = []
         reasoning_parts: List[str] = []
@@ -7414,6 +7433,7 @@ class JackQwenKernel:
         unadorned_memory = memory
         tool_receipt = _agentic_tool_history_note(history)
         memory += tool_receipt
+        _agentic_forensic_commit(history, frozen_stage1_answer, unadorned_memory, tool_receipt)
         _archive_agentic_stage1_forensic(history, frozen_stage1_answer, memory)
         _agentic_shadow_record_commit(frozen_stage1_answer, unadorned_memory, tool_receipt, history=history)
         _agentic_finish_delayed_one_hop(history)
@@ -7431,6 +7451,7 @@ class JackQwenKernel:
     ) -> KernelResult:
         """Preserve exact frozen A1 when zero-authority semantic consolidation cannot complete."""
         _discard_agentic_stage1_forensic_snapshot(history)
+        _agentic_forensic_fail_memory(history, reason)
         _agentic_shadow_record_commit(frozen_stage1_answer, None, history=history)
         _agentic_finish_delayed_one_hop(history)
         history.clear()
@@ -8724,6 +8745,7 @@ class JackQwenKernel:
                     committed_output = _format_agentic_completed_response(
                         distilled_memory, agentic_frozen_stage1_answer
                     )
+                    _agentic_forensic_commit(history, agentic_frozen_stage1_answer, unadorned_memory, tool_receipt)
                     _archive_agentic_stage1_forensic(
                         history, agentic_frozen_stage1_answer, distilled_memory
                     )
