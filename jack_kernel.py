@@ -78,6 +78,7 @@ import contextlib
 import contextvars
 import json
 import logging
+from jack_agentic_forensics import AgenticForensicJournal, ForensicConflict, attempt_id as _new_forensic_attempt_id
 import os
 import shutil
 import socket
@@ -845,11 +846,22 @@ _STAGE_CONTINUATIONS = {
 def _stage_continuation(
     profile: "StageProfile", messages: Optional[Iterable[Dict[str, Any]]] = None
 ) -> str:
-    return _STAGE_CONTINUATIONS.get(
-        profile.name,
-        "Continue the requested task using the preceding conversation.",
+    continuation = _STAGE_CONTINUATIONS.get(
+        profile.name, "Continue the requested task using the preceding conversation."
     )
-
+    if AGENTIC_MODE and profile.name == "Agentic native pass 2" and messages is not None:
+        binding = _agentic_current_forensic_binding(list(messages))
+        if binding is not None:
+            # Append only after the immutable Stage-1 prefix. Frozen prompts, A1,
+            # tool schemas and Preserve Thinking remain exactly as before.
+            return continuation + (
+                "\n[JACK FORENSIC TARGET | turn=" + binding["turn_id"]
+                + " | request=" + binding["request_sha256"][:16]
+                + " | frozen_A1=" + binding["a1_sha256"][:16]
+                + "]\nExplain ONLY this turn's completed Stage 1. "
+                "Previous memories and answers are historical, not the target."
+            )
+    return continuation
 
 ULTRA_STAGE2_TRANSITION_BRIDGE = "THESIS COMPLETE. PROCEED TO ANTITHESIS."
 ULTRA_STAGE3_TRANSITION_BRIDGE = "ANTITHESIS COMPLETE. PROCEED TO SYNTHESIS."
@@ -3656,6 +3668,8 @@ def append_extended_candidate_response(
     elif isinstance(thinking, str) and thinking:
         entry["thinking"] = thinking
 
+    if AGENTIC_MODE:
+        _agentic_forensic_freeze(history, candidate)
     history.append(entry)
     if AGENTIC_MODE:
         _agentic_turn_status(history, "response_frozen")
@@ -4101,49 +4115,27 @@ def _agentic_project_committed_artifact_pair(
         {"role": "assistant", "content": "[Agentic Memory associated with the preceding user request and following frozen response]\n" + memory + receipt},
         {"role": "assistant", "content": answer},
     ]
+    forensic = _agentic_forensic_journal().match_visible(
+        _sha256_text(canonical_user), _sha256_text(assistant_text)
+    )
+    if forensic is not None:
+        latest_user["_jack_forensic_turn_id"] = forensic["turn_id"]
+        for item, label in zip(result, ("M", "A1")):
+            item["_jack_forensic_turn_id"] = forensic["turn_id"]
+            item["_jack_forensic_role"] = label
     LOG.info("Agentic Phase 3C projected supplied, validated M/A pair; no hidden ledger recall")
     return result
 
 
-# Phase 3D: native one-hop reasoning is a transport artifact, not a durable memory.
-# Only extract the host-delimited Stage-2 region carried BACK BY THE CLIENT.
-# Never reconstruct R2 from stored private state or infer ownership by similar text.
-def _agentic_extract_one_hop_stage2_reasoning(raw: Any) -> Optional[str]:
-    if not isinstance(raw, dict) or raw.get("role") != "assistant":
-        return None
-    reasoning = next((raw.get(key) for key in ("reasoning_content", "reasoning", "thinking")
-                      if isinstance(raw.get(key), str) and raw.get(key)), None)
-    if not reasoning:
-        return None
-    marker = "===== JACK AGENTIC NATIVE PASS 2 ====="
-    pos = reasoning.rfind(marker)
-    if pos < 0:
-        return None
-    start = pos + len(marker)
-    # Never reintroduce prior Stage-1 material or the explanatory Stage-2
-    # OUTPUT that is already in the separate Agentic Memory artifact.
-    native_label = "[NATIVE REASONING]"
-    if reasoning[start:].lstrip().startswith(native_label):
-        start += len(reasoning[start:]) - len(reasoning[start:].lstrip()) + len(native_label)
-    remaining = reasoning[start:]
-    ends = [i for sentinel in (
-        "[STAGE 2 REASONING DISTILLATION]",
-        "[END AGENTIC STAGE 2 â€” MEMORY COMPLETE; A1 COMMIT]",
-    ) if (i := remaining.find(sentinel)) >= 0]
-    end = min(ends) if ends else len(remaining)
-    native = remaining[:end].strip()
-    # Require both recognizable Stage-2 boundary and substantive content.
-    # A missing marker is not permission to treat the whole stream as R2.
-    if not native:
-        return None
-    return native
-
+# Agentic now retires native R2 at the completion of its own turn.
+# Pi may retain Stage-2 reasoning for current-turn display, but inbound
+# historical reasoning is NEVER reattached to the next model-facing context.
 
 def _agentic_retire_consumed_one_hop(history: List[Dict[str, Any]]) -> None:
-    """Retire previous R2 at the consuming turn's terminal boundary.
+    """Defensively retire legacy carried R2 if a pending old-format frame exists.
 
-    Tool suspensions and Stage 2 retain the bridge until terminal cleanup.
-    Older R2 must not survive into a second subsequent user turn.
+    New turns never reintroduce historical native reasoning. Existing terminal
+    cleanup remains scoped to the current transaction and handles old frames.
     """
     for item in history:
         if not isinstance(item, dict) or not item.get("_jack_agentic_one_hop_r2"):
@@ -4155,10 +4147,10 @@ def _agentic_retire_consumed_one_hop(history: List[Dict[str, Any]]) -> None:
 
 
 def _agentic_finish_delayed_one_hop(history: List[Dict[str, Any]]) -> None:
-    """Retire the consuming turn's bridge before terminal history clearance.
+    """Clear any legacy R2 from current transaction/checkpoint references.
 
-    Scope references cover aliased tool checkpoint dictionaries; no global
-    ledger or unrelated concurrent turn is consulted.
+    Normally a no-op for new Agentic turns; current R1 is left available through
+    the retrospective and historical U/M/A remains untouched.
     """
     if not AGENTIC_MODE:
         return
@@ -4339,7 +4331,7 @@ def _agentic_context_report_request(
 def _compact_agentic_completed_capsules(
     messages: List[Dict[str, Any]],
 ) -> Optional[List[Dict[str, Any]]]:
-    """Retain every completed visible turn capsule while pruning native cognition.
+    """Retain every completed visible turn capsule and retire all native R1/R2.
 
     A durable Agentic turn is represented in ordinary conversation order as:
         exact host-captured user message
@@ -4369,12 +4361,6 @@ def _compact_agentic_completed_capsules(
     opaque_unattributable_messages = 0
     pruned_tool_messages = 0
     pruned_reasoning_chars = 0
-
-    # One-hop eligibility: only the immediately preceding completed assistant
-    # response can carry native Stage-2 reasoning into the new Stage 1.
-    previous_commit_index = next((i for i in range(latest_user_index-1, -1, -1)
-        if isinstance(compact[i], dict) and compact[i].get("role") == "assistant"
-        and not compact[i].get("tool_calls") and _content_to_text(compact[i].get("content")).strip()), None)
 
     # Completed history: retain associated U/M/A while retiring old R1,
     # historical R2, and consumed raw tool protocol.
@@ -4416,6 +4402,8 @@ def _compact_agentic_completed_capsules(
         # incoming bytes. No lookup of hidden memory from A1 alone is possible.
         projected = _agentic_project_committed_artifact_pair(retained, text)
         if projected is None:
+            projected = _agentic_forensic_project_visible(retained, text)
+        if projected is None:
             if AGENTIC_CONTEXT_ACCOUNTING_ENABLED:
                 # Every attempted projection that cannot be authenticated is
                 # a safe, unchanged fallback. A tag-free A1/M artifact has
@@ -4427,14 +4415,8 @@ def _compact_agentic_completed_capsules(
         else:
             if AGENTIC_CONTEXT_ACCOUNTING_ENABLED:
                 projected_pairs += 1
-            if history_index == previous_commit_index:
-                bridge_r2 = _agentic_extract_one_hop_stage2_reasoning(raw)
-                if bridge_r2:
-                    projected[0]["reasoning_content"] = bridge_r2
-                    projected[0]["_jack_agentic_one_hop_r2"] = True
-                    LOG.info("Agentic one-hop R2 carried into next Stage 1: chars=%d", len(bridge_r2))
-                else:
-                    LOG.info("Agentic one-hop R2 unavailable from client; semantic memory retained")
+            # Historical assistant reasoning was stripped above. Do not recover
+            # R2 from Pi's persisted response or project it into a new turn.
             retained.extend(projected)
         frozen_xml, frozen_answer = _split_prior_jack_output(text)
         if frozen_xml and frozen_answer is not None:
@@ -5237,6 +5219,18 @@ class OpenAICompatibleBackend:
                 continue
 
             item = dict(message)
+            if (
+                AGENTIC_MODE and item.get("_jack_forensic_turn_id")
+                and item.get("_jack_forensic_role") in {"M", "A1"}
+                and isinstance(item.get("content"), str)
+            ):
+                # Only model-facing projection is labeled. Frozen A1 and user
+                # artifacts remain byte-exact in transport and the forensic DB.
+                item["content"] = (
+                    "[JACK LINK turn=" + item["_jack_forensic_turn_id"]
+                    + " | artifact=" + item["_jack_forensic_role"] + "]\n"
+                    + item["content"]
+                )
             if item.get("_jack_tool_evidence_receipt"):
                 evidence_lines = [
                     line
@@ -5911,6 +5905,8 @@ class JackQwenKernel:
         effective_tool_choice = tool_choice if (profile.allow_tools or cache_append) else None
         if AGENTIC_MODE and stage_key == "extended_initial":
             _agentic_begin_turn(history, fresh=not same_stage_resume)
+        elif AGENTIC_MODE and stage_key == "extended_reflection":
+            _agentic_forensic_start_stage2(history)
         await self._activity_update(
             stage_key=stage_key,
             stage_name=profile.name,
@@ -6124,6 +6120,8 @@ class JackQwenKernel:
         effective_tool_choice = tool_choice if (profile.allow_tools or cache_append) else None
         if AGENTIC_MODE and stage_key == "extended_initial":
             _agentic_begin_turn(history, fresh=not same_stage_resume)
+        elif AGENTIC_MODE and stage_key == "extended_reflection":
+            _agentic_forensic_start_stage2(history)
         content_parts: List[str] = []
         reasoning_content_parts: List[str] = []
         reasoning_parts: List[str] = []
@@ -7427,6 +7425,17 @@ class JackQwenKernel:
         return answer
 
     @staticmethod
+    def _agentic_require_completed_stage(data: Dict[str, Any], stage_name: str) -> None:
+        # Partial text from token-limit/timeout is not a completed frozen answer.
+        choice = (data.get("choices") or [{}])[0] or {}
+        reason = choice.get("finish_reason")
+        if reason not in (None, "stop"):
+            raise HTTPException(
+                status_code=502,
+                detail=f"{stage_name} did not finish successfully: {reason}",
+            )
+
+    @staticmethod
     def _exact_frozen_answer_from_stage(data: Dict[str, Any], stage_name: str) -> str:
         """Freeze the exact completed stage answer bytes without a rewrite/cleanup pass."""
         return JackQwenKernel._required_completed_answer_from_stage(data, stage_name)
@@ -7457,6 +7466,7 @@ class JackQwenKernel:
         unadorned_memory = memory
         tool_receipt = _agentic_tool_history_note(history)
         memory += tool_receipt
+        _agentic_forensic_commit(history, frozen_stage1_answer, unadorned_memory, tool_receipt)
         _archive_agentic_stage1_forensic(history, frozen_stage1_answer, memory)
         _agentic_shadow_record_commit(frozen_stage1_answer, unadorned_memory, tool_receipt, history=history)
         _agentic_finish_delayed_one_hop(history)
@@ -7474,6 +7484,7 @@ class JackQwenKernel:
     ) -> KernelResult:
         """Preserve exact frozen A1 when zero-authority semantic consolidation cannot complete."""
         _discard_agentic_stage1_forensic_snapshot(history)
+        _agentic_forensic_fail_memory(history, reason)
         _agentic_shadow_record_commit(frozen_stage1_answer, None, history=history)
         _agentic_finish_delayed_one_hop(history)
         history.clear()
@@ -7824,6 +7835,7 @@ class JackQwenKernel:
             if stage_key != "extended_initial":
                 raise HTTPException(status_code=500, detail="Agentic Stage 2 cannot resume tools because XML-stage tools are disabled")
 
+            self._agentic_require_completed_stage(stage, "Agentic Stage 1")
             first_msg = ((stage.get("choices") or [{}])[0].get("message") or {})
             frozen_stage1_answer = append_extended_candidate_response(history, first_msg)
             try:
@@ -7951,6 +7963,7 @@ class JackQwenKernel:
                     data=first,
                 )
 
+            self._agentic_require_completed_stage(first, "Agentic Stage 1")
             first_msg = ((first.get("choices") or [{}])[0].get("message") or {})
             frozen_stage1_answer = append_extended_candidate_response(history, first_msg)
             try:
@@ -8139,7 +8152,10 @@ class JackQwenKernel:
                 _agentic_retire_consumed_one_hop(state.history)
                 await self._retire_pending_tool_resume(state)
         finally:
-            _AGENTIC_DELAY_R2_SCOPE.reset(scope_token)
+            try:
+                _agentic_forensic_close_request()
+            finally:
+                _AGENTIC_DELAY_R2_SCOPE.reset(scope_token)
 
     async def run(
         self,
@@ -8711,6 +8727,7 @@ class JackQwenKernel:
                             append_extended_candidate_response(history, first_msg)
                             yield event({"reasoning_content": "\n[END DEEP RESEARCH STAGE 1 — THESIS COMPLETE]\n"})
                         else:
+                            self._agentic_require_completed_stage(stage_result, "Agentic Stage 1")
                             agentic_frozen_stage1_answer = append_extended_candidate_response(history, first_msg)
                             yield event({"reasoning_content": "\n[END STAGE 1 — A1 FROZEN]\n"})
                     elif ULTRA_MODE and stage_key == "extended_reflection":
@@ -8767,6 +8784,7 @@ class JackQwenKernel:
                     committed_output = _format_agentic_completed_response(
                         distilled_memory, agentic_frozen_stage1_answer
                     )
+                    _agentic_forensic_commit(history, agentic_frozen_stage1_answer, unadorned_memory, tool_receipt)
                     _archive_agentic_stage1_forensic(
                         history, agentic_frozen_stage1_answer, distilled_memory
                     )
@@ -9826,14 +9844,174 @@ def _agentic_shadow_capture_user_request(
 
 @dataclass
 class AgenticTurnLifecycle:
-    """Write-only, bounded, host-owned turn lifecycle. Never authorizes memory replay."""
+    """Host-owned current-turn identity. The durable SQLite record owns provenance."""
     turn_id: str
     user_request: AgenticUserRequestArtifact
     status: str = "stage1_active"
     failure: str = ""
+    stage1_attempt_id: str = ""
+    stage2_attempt_id: str = ""
+    frozen_a1_sha256: str = ""
 
 
 _AGENTIC_TURN_LIFECYCLES: Dict[str, AgenticTurnLifecycle] = {}
+_AGENTIC_FORENSIC_JOURNAL: Optional[AgenticForensicJournal] = None
+
+
+def _agentic_forensic_journal() -> AgenticForensicJournal:
+    global _AGENTIC_FORENSIC_JOURNAL
+    if _AGENTIC_FORENSIC_JOURNAL is None:
+        _AGENTIC_FORENSIC_JOURNAL = AgenticForensicJournal()
+    return _AGENTIC_FORENSIC_JOURNAL
+
+
+def _agentic_forensic_project_visible(
+    retained: List[Dict[str, Any]], assistant_text: str
+) -> Optional[List[Dict[str, Any]]]:
+    """Recover M/A boundaries from exact caller content after process restart.
+
+    No hidden text is stored; ambiguous duplicate U/M/A records remain opaque.
+    """
+    latest_user = next(
+        (m for m in reversed(retained)
+         if isinstance(m, dict) and m.get("role") == "user"), None
+    )
+    if latest_user is None:
+        return None
+    try:
+        original = {
+            k: v for k, v in latest_user.items()
+            if not (isinstance(k, str) and k.startswith("_jack_"))
+        }
+        canonical = json.dumps(
+            original, ensure_ascii=False, sort_keys=True,
+            separators=(",", ":"), allow_nan=False
+        )
+    except (TypeError, ValueError):
+        return None
+    record = _agentic_forensic_journal().match_visible(
+        _sha256_text(canonical), _sha256_text(assistant_text)
+    )
+    if record is None:
+        return None
+    n_a = record["answer_chars"]
+    n_m = record["memory_chars"]
+    n_r = record["receipt_chars"]
+    if not all(isinstance(n, int) and n >= 0 for n in (n_a, n_m, n_r)):
+        return None
+    if len(assistant_text) != n_a + n_m + n_r + 2:
+        return None
+    memory = assistant_text[:n_m]
+    receipt = assistant_text[n_m:n_m + n_r]
+    answer = assistant_text[n_m + n_r + 2:]
+    if (
+        assistant_text[n_m + n_r:n_m + n_r + 2] != "\n\n"
+        or _sha256_text(memory) != record["memory_sha256"]
+        or _sha256_text(receipt) != record["tool_sha256"]
+        or _sha256_text(answer) != record["a1_sha256"]
+    ):
+        return None
+    latest_user["_jack_forensic_turn_id"] = record["turn_id"]
+    return [
+        {
+            "role": "assistant",
+            "content": "[Agentic Memory associated with the preceding user request and following frozen response]\n"
+                       + memory + receipt,
+            "_jack_forensic_turn_id": record["turn_id"],
+            "_jack_forensic_role": "M",
+        },
+        {
+            "role": "assistant", "content": answer,
+            "_jack_forensic_turn_id": record["turn_id"],
+            "_jack_forensic_role": "A1",
+        },
+    ]
+
+
+def _agentic_forensic_turn(history: List[Dict[str, Any]]) -> Optional[AgenticTurnLifecycle]:
+    target = active_response_target(history)
+    if target is None:
+        return None
+    user = history[int(target["history_index"])]
+    turn_id = user.get("_jack_agentic_turn_id") if isinstance(user, dict) else None
+    return _AGENTIC_TURN_LIFECYCLES.get(turn_id or "")
+
+
+def _agentic_forensic_freeze(history: List[Dict[str, Any]], answer: str) -> None:
+    record = _agentic_forensic_turn(history)
+    if record is None:
+        return  # Legacy direct helper calls do not claim a journalled transaction.
+    if not record.stage1_attempt_id:
+        raise ForensicConflict("missing owned Stage-1 execution attempt")
+    fingerprint = _agentic_forensic_journal().freeze(
+        record.turn_id, record.stage1_attempt_id, answer
+    )
+    record.frozen_a1_sha256 = fingerprint
+
+
+def _agentic_forensic_start_stage2(history: List[Dict[str, Any]]) -> None:
+    record = _agentic_forensic_turn(history)
+    if record is None or not record.frozen_a1_sha256:
+        return  # Tests may invoke an unowned standalone backend stage.
+    if not record.stage2_attempt_id:
+        record.stage2_attempt_id = _new_forensic_attempt_id()
+    _agentic_forensic_journal().stage2(
+        record.turn_id, record.stage1_attempt_id,
+        record.stage2_attempt_id, record.frozen_a1_sha256,
+    )
+    record.status = "stage2_active"
+
+
+def _agentic_current_forensic_binding(history: List[Dict[str, Any]]) -> Optional[Dict[str, str]]:
+    record = _agentic_forensic_turn(history)
+    if record is None or not record.frozen_a1_sha256:
+        return None
+    frozen = history[-1] if history else None
+    if not isinstance(frozen, dict) or frozen.get("role") != "assistant":
+        raise ForensicConflict("Stage 2 missing the final frozen Stage-1 assistant message")
+    if _sha256_text(_content_to_text(frozen.get("content"))) != record.frozen_a1_sha256:
+        raise ForensicConflict("Stage-2 target differs from owned frozen A1")
+    return {
+        "turn_id": record.turn_id,
+        "request_sha256": record.user_request.sha256,
+        "a1_sha256": record.frozen_a1_sha256,
+    }
+
+
+def _agentic_forensic_commit(
+    history: List[Dict[str, Any]], answer: str, memory: str, receipt: str
+) -> None:
+    record = _agentic_forensic_turn(history)
+    if record is None or not record.frozen_a1_sha256:
+        return  # Backward-compatible private direct-commit test path.
+    if not record.stage2_attempt_id:
+        raise ForensicConflict("Stage 2 was never started for frozen Stage 1")
+    _agentic_forensic_journal().commit(
+        record.turn_id, record.stage2_attempt_id, answer, memory, receipt
+    )
+
+
+def _agentic_forensic_fail_memory(history: List[Dict[str, Any]], reason: str) -> None:
+    record = _agentic_forensic_turn(history)
+    if record is None or not record.frozen_a1_sha256:
+        return
+    _agentic_forensic_journal().fail(
+        record.turn_id, record.stage2_attempt_id or record.stage1_attempt_id, reason
+    )
+
+
+def _agentic_forensic_close_request() -> None:
+    turn_id = _AGENTIC_ACTIVE_TURN.get()
+    record = _AGENTIC_TURN_LIFECYCLES.get(turn_id or "")
+    if record is None:
+        return
+    if record.status in ("stage1_active", "response_frozen", "stage2_active"):
+        attempt = record.stage2_attempt_id or record.stage1_attempt_id
+        _agentic_forensic_journal().fail(
+            record.turn_id, attempt, "request_interrupted_before_commit"
+        )
+        record.status = "memory_failed" if record.frozen_a1_sha256 else "stage1_failed"
+
 _AGENTIC_ACTIVE_TURN: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "jack_agentic_active_turn", default=None,
 )
@@ -9873,11 +10051,19 @@ def _agentic_begin_turn(history: List[Dict[str, Any]], *, fresh: bool) -> Option
         return None
     previous = _AGENTIC_TURN_LIFECYCLES.get(turn_id)
     if previous is None:
-        _AGENTIC_TURN_LIFECYCLES[turn_id] = AgenticTurnLifecycle(turn_id, artifact)
+        new_attempt = _new_forensic_attempt_id()
+        _agentic_forensic_journal().begin(turn_id, artifact.sha256, new_attempt)
+        _AGENTIC_TURN_LIFECYCLES[turn_id] = AgenticTurnLifecycle(
+            turn_id, artifact, stage1_attempt_id=new_attempt
+        )
     elif previous.user_request != artifact:
-        LOG.error("Agentic turn/request mismatch: refusing to rebind existing identity")
-        return None
+        raise ForensicConflict("Agentic turn identity/request fingerprint mismatch")
+    elif not fresh and previous.status not in {"stage1_active", "awaiting_tool"}:
+        raise ForensicConflict("Cannot re-enter a completed/failed Stage-1 attempt")
     elif previous.status == "awaiting_tool":
+        _agentic_forensic_journal().begin(
+            turn_id, artifact.sha256, previous.stage1_attempt_id
+        )
         previous.status = "stage1_active"
     _AGENTIC_ACTIVE_TURN.set(turn_id)
     while len(_AGENTIC_TURN_LIFECYCLES) > _AGENTIC_SHADOW_LIMIT:
@@ -9900,6 +10086,8 @@ def _agentic_turn_status(history: Optional[List[Dict[str, Any]]], status: str) -
         return
     if record.status in {"complete", "memory_failed", "stage1_failed"}:
         return
+    if status == "awaiting_tool" and record.stage1_attempt_id:
+        _agentic_forensic_journal().awaiting_tool(record.turn_id, record.stage1_attempt_id)
     record.status = status
 
 
@@ -9908,6 +10096,10 @@ def _agentic_mark_stage1_failure(reason: str) -> None:
     active = _AGENTIC_ACTIVE_TURN.get()
     entry = _AGENTIC_TURN_LIFECYCLES.get(active or "")
     if entry is not None and entry.status in {"stage1_active", "awaiting_tool"}:
+        if entry.stage1_attempt_id:
+            _agentic_forensic_journal().fail(
+                entry.turn_id, entry.stage1_attempt_id, reason
+            )
         entry.status = "stage1_failed"
         entry.failure = str(reason)[:256]
 
@@ -9938,7 +10130,9 @@ def _agentic_shadow_record_commit(
             entry = history[int(target["history_index"])]
             claimed_id = entry.get("_jack_agentic_turn_id") if isinstance(entry, dict) else None
         if claimed_id not in _AGENTIC_TURN_LIFECYCLES:
-            claimed_id = _agentic_begin_turn(history, fresh=True)
+            # Legacy direct helper call has no journalled Stage-1 attempt.
+            # Do not invent a completed forensic transaction for it.
+            claimed_id = None
     hint = _AGENTIC_TURN_HINT.get()
     if hint is None:
         turn_id = claimed_id or "jack-turn-" + uuid.uuid4().hex
@@ -9950,7 +10144,9 @@ def _agentic_shadow_record_commit(
         key = (hint.session_id, hint.user_entry_id, hint.turn_ordinal)
         session, user_entry, ordinal = key
         previous = _AGENTIC_SHADOW_LEDGER.get(key)
-        turn_id = previous.turn_id if previous is not None else (claimed_id or "jack-turn-" + uuid.uuid4().hex)
+        # Caller hints never override the host-minted identity. A reused hint is
+        # a collision and must not associate this turn with a previous record.
+        turn_id = claimed_id or (previous.turn_id if previous is not None else "jack-turn-" + uuid.uuid4().hex)
     answer = AgenticResponseArtifact(frozen_answer, _sha256_text(frozen_answer))
     memory = (
         AgenticMemoryArtifact(distilled_memory, _sha256_text(distilled_memory))

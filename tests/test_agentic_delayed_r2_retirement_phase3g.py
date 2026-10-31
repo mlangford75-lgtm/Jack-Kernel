@@ -1,4 +1,4 @@
-"""Phase 3G: canonical full-turn one-hop R2 retirement.
+"""Agentic within-turn reasoning retention and legacy R2 cleanup.
 
 Run with: python -m pytest -q tests/test_agentic_delayed_r2_retirement_phase3g.py
 """
@@ -69,32 +69,47 @@ def freeze(k, history):
     )
 
 
-def test_freeze_retains_prior_r2_through_stage2_and_answer_authority():
+def test_current_stage1_reasoning_survives_through_stage2_and_freeze():
     k = load()
-    history = bridge_history()
+    history = [
+        {"role": "user", "content": "create SVG"},
+    ]
     scope = {"stage1_frozen": False, "bridge_messages": [], "pending_state": None}
     token = k._AGENTIC_DELAY_R2_SCOPE.set(scope)
     try:
         assert freeze(k, history) == " A1 exact \n"
-        assert "reasoning_content" in history[1]
         assert history[-1]["content"] == " A1 exact \n"
         assert history[-1]["reasoning_content"] == "current R1"
         assert scope["stage1_frozen"]
         k._agentic_finish_delayed_one_hop(history)
-        assert "reasoning_content" not in history[1]
-        assert "reasoning" not in history[1]
-        assert "_jack_agentic_one_hop_r2" not in history[1]
+        assert history[-1]["reasoning_content"] == "current R1"
+        assert scope["bridge_messages"] == []
     finally:
         k._AGENTIC_DELAY_R2_SCOPE.reset(token)
 
 
-@pytest.mark.parametrize("cache_enabled",[False, True])
-def test_previous_r2_reaches_backend_stage2_with_either_cache_profile(cache_enabled):
+@pytest.mark.parametrize("cache_enabled", [False, True])
+def test_previous_r2_is_absent_from_stage2_on_both_cache_profiles(cache_enabled):
     async def exercise():
         k = load(cache_enabled=cache_enabled)
-        history = bridge_history()
-        scope = {"stage1_frozen": False, "bridge_messages": [], "pending_state": None}
-        token = k._AGENTIC_DELAY_R2_SCOPE.set(scope)
+        # Caller may persist past native R2 in its displayed message, but
+        # Jack strips it during historical projection before BOTH stages.
+        old = await k.KERNEL._complete_commit(
+            [{"role": "user", "content": "previous"}], "", {},
+            "previous A", "previous memory"
+        )
+        visible = k._format_agentic_completed_response(
+            old.frozen_xml, old.frozen_answer
+        )
+        incoming = [
+            {"role": "user", "content": "previous"},
+            {"role": "assistant", "content": visible,
+             "reasoning_content": MARKER + "expired R2"},
+            {"role": "user", "content": "current"},
+        ]
+        history = k.compact_incoming_history(incoming)
+        assert all("reasoning_content" not in m for m in history)
+        freeze(k, history)
         backend = k.OpenAICompatibleBackend(k.CFG)
         payloads = []
         def respond(request):
@@ -110,26 +125,30 @@ def test_previous_r2_reaches_backend_stage2_with_either_cache_profile(cache_enab
         async def model(): return "test-model"
         backend.resolve_model = model
         try:
-            freeze(k, history)
-            await backend.chat(messages=history, secondary_system="",
-                               profile=k.STAGES["extended_reflection"],
-                               tool_choice="auto")
+            await backend.chat(
+                messages=history, secondary_system="",
+                profile=k.STAGES["extended_reflection"], tool_choice="auto"
+            )
             assert len(payloads) == 1
             model_messages = payloads[0]["messages"]
-            bridge = next(m for m in model_messages if m.get("content") == "previous memory")
-            assert "reasoning_content" in bridge
+            assert "expired R2" not in json.dumps(model_messages)
+            assert "current R1" in json.dumps(model_messages)
+            assert "previous memory" in json.dumps(model_messages)
+            assert "previous A" in json.dumps(model_messages)
             if cache_enabled:
-                assert model_messages[-1]["content"].startswith(k.AGENTIC_36_STAGE2_PROMPT)
+                assert model_messages[-1]["content"].startswith(
+                    k.AGENTIC_36_STAGE2_PROMPT
+                )
             assert k.AGENTIC_STAGE1_PROMPT == (
                 "Reasoning effort is set to xhigh. Please think carefully through the task, "
                 "validate key assumptions, consider plausible alternatives, and prioritize "
                 "correctness, consistency, and clarity in the final answer."
             )
-            assert k.AGENTIC_36_STAGE2_PROMPT == "Generate a detailed summary of why you came to this conclusion."
+            assert k.AGENTIC_36_STAGE2_PROMPT == (
+                "Generate a detailed summary of why you came to this conclusion."
+            )
         finally:
             await backend._client.aclose()
-            k._AGENTIC_DELAY_R2_SCOPE.reset(token)
-
     asyncio.run(exercise())
 
 

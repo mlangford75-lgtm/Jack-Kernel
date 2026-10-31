@@ -78,6 +78,8 @@ def test_summary_only_cannot_recreate_historical_memory_or_reasoning(monkeypatch
         projected, {"content": "new A1 exact\n", "reasoning_content": "new R1"}
     )
     assert frozen == "new A1 exact\n"
+    # Forensic contract requires the actual Stage-2 boundary before commit.
+    k._agentic_forensic_start_stage2(projected)
     result = asyncio.run(k.KERNEL._complete_commit(projected, "", {}, frozen, "new M"))
     assert result.frozen_answer == frozen
     assert result.frozen_xml == "new M"
@@ -118,7 +120,7 @@ def test_summary_cannot_impersonate_original_user_for_artifact_projection(monkey
     assert all("reasoning_content" not in m for m in projected)
 
 
-def test_retained_one_hop_r2_only_for_immediate_predecessor(monkeypatch):
+def test_compaction_discards_all_historical_r2_and_preserves_u_m_a(monkeypatch):
     k = load(monkeypatch)
     old_visible = committed(k, "old U", "old A", "old M")
     recent_visible = committed(k, "recent U", "recent A", "recent M")
@@ -139,10 +141,9 @@ def test_retained_one_hop_r2_only_for_immediate_predecessor(monkeypatch):
     ]
     assert "stale old R2" not in json.dumps(projected)
     assert projected[5]["content"] == MEMORY_PREFIX + "recent M"
-    assert projected[5]["reasoning_content"] == "one-hop recent R2"
-    assert projected[5]["_jack_agentic_one_hop_r2"] is True
+    assert all("reasoning_content" not in m for m in projected)
+    assert "one-hop recent R2" not in json.dumps(projected)
     assert projected[6]["content"] == "recent A"
-    k._agentic_finish_delayed_one_hop(projected)
     assert not any("reasoning_content" in m for m in projected)
     assert not any(m.get("_jack_agentic_one_hop_r2") for m in projected)
     assert projected[5]["content"] == MEMORY_PREFIX + "recent M"

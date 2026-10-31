@@ -1,4 +1,4 @@
-"""Phase 3D: Preserve Thinking one-hop bridge and evidence retention."""
+"""Agentic historical R2 retirement and evidence retention."""
 import asyncio
 import hashlib
 import importlib.util
@@ -40,56 +40,65 @@ def carry(k, u, answer, memory, reasoning=None):
     assert json.dumps(incoming,sort_keys=True)==before
     return prepared
 
-def test_one_hop_only_r2_reaches_backend_stage1():
-    k=load()
-    huge_r1="massive original private reasoning"*1000
-    r2="short retrospective native thought, not included in M"
-    reasoning="[STAGE 1 PROPOSED RESPONSE]\n"+huge_r1+"\n[END STAGE 1 â€” A1 FROZEN]\n"+MARKER+r2+"\n[STAGE 2 REASONING DISTILLATION]\nmodel output M\n[END AGENTIC STAGE 2 â€” MEMORY COMPLETE; A1 COMMIT]"
-    ctx=carry(k,"U","A","M",reasoning)
-    assert [m["role"] for m in ctx]==["user","assistant","assistant","user"]
-    assert ctx[1]["content"]==PREFIX+"M"
-    assert ctx[1]["reasoning_content"]==r2
-    assert ctx[2]["content"]=="A"
-    assert "massive original private reasoning" not in json.dumps(ctx)
-    profile=k.STAGES["extended_initial"]
-    model=k.BACKEND._stage_messages_for_profile(ctx,profile)
-    assert model[1]["reasoning_content"]==r2
-    assert "_jack_agentic_one_hop_r2" not in model[1]
-    assert "massive original private reasoning" not in json.dumps(model)
-    a2=k.append_extended_candidate_response(ctx,{"content":"A2","reasoning_content":"fresh R1_2"})
-    assert a2=="A2"
-    assert ctx[1]["reasoning_content"]==r2
-    k._agentic_finish_delayed_one_hop(ctx)
+def test_completed_turn_discards_r2_before_next_stage1():
+    k = load()
+    old_r1 = "expired Stage-1 thinking " * 100
+    r2 = "retired prior Stage-2 reasoning"
+    raw = "[STAGE 1 PROPOSED RESPONSE]\\n" + old_r1 + "\\n" + MARKER + r2
+    ctx = carry(k, "U", "A", "M", raw)
+    assert [m["role"] for m in ctx] == ["user", "assistant", "assistant", "user"]
+    assert ctx[1]["content"] == PREFIX + "M"
+    assert ctx[2]["content"] == "A"
     assert "reasoning_content" not in ctx[1]
-    assert ctx[-1]["reasoning_content"]=="fresh R1_2"
-    assert ctx[1]["content"]==PREFIX+"M"
-
-def test_one_hop_survives_tool_continuation_until_frozen():
-    k=load()
-    ctx=carry(k,"U","A","M",MARKER+"valuable R2"+"\n[STAGE 2 REASONING DISTILLATION]")
-    ctx.extend([{"role":"assistant","content":"","tool_calls":[{"id":"abc","type":"function","function":{"name":"read","arguments":"{}"}}]},
-                {"role":"tool","tool_call_id":"abc","name":"read","content":"observed"}])
-    assert ctx[1]["reasoning_content"]=="valuable R2"
-    _=k.BACKEND._stage_messages_for_profile(ctx,k.STAGES["extended_initial"])
-    assert ctx[1]["reasoning_content"]=="valuable R2"
-    k.append_extended_candidate_response(ctx,{"content":"done"})
-    assert ctx[1]["reasoning_content"]=="valuable R2"
-    k._agentic_finish_delayed_one_hop(ctx)
+    assert old_r1 not in json.dumps(ctx)
+    assert r2 not in json.dumps(ctx)
+    current = k.append_extended_candidate_response(
+        ctx, {"content": "A2", "reasoning_content": "current R1_2"}
+    )
+    assert current == "A2"
+    assert ctx[-1]["reasoning_content"] == "current R1_2"
     assert "reasoning_content" not in ctx[1]
 
-def test_only_immediately_preceding_r2_is_kept():
-    k=load()
-    v1=committed(k,"U1","A1","M1")
-    v2=committed(k,"U2","A2","M2")
-    ctx=k.compact_incoming_history([
-        {"role":"user","content":"U1"},{"role":"assistant","content":v1,"reasoning_content":MARKER+"R2_1"},
-        {"role":"user","content":"U2"},{"role":"assistant","content":v2,"reasoning_content":MARKER+"R2_2"},
-        {"role":"user","content":"U3"},
+
+def test_completed_turn_does_not_reintroduce_r2_during_tool_continuation():
+    k = load()
+    ctx = carry(k, "U", "A", "M", MARKER + "expired R2")
+    ctx.extend([
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "abc", "type": "function",
+             "function": {"name": "read", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "abc", "name": "read", "content": "observed"},
     ])
-    assert [m["role"] for m in ctx]==["user","assistant","assistant","user","assistant","assistant","user"]
-    assert "reasoning_content" not in ctx[1]
-    assert ctx[4]["reasoning_content"]=="R2_2"
+    assert all("reasoning_content" not in m for m in ctx)
+    _ = k.BACKEND._stage_messages_for_profile(ctx, k.STAGES["extended_initial"])
+    assert all("reasoning_content" not in m for m in ctx)
+    k.append_extended_candidate_response(ctx, {"content": "done"})
+    assert all("reasoning_content" not in m for m in ctx[:-1])
+
+
+def test_all_historical_r2_is_pruned_even_immediately_preceding():
+    k = load()
+    v1 = committed(k, "U1", "A1", "M1")
+    v2 = committed(k, "U2", "A2", "M2")
+    ctx = k.compact_incoming_history([
+        {"role": "user", "content": "U1"},
+        {"role": "assistant", "content": v1,
+         "reasoning_content": MARKER + "R2_1"},
+        {"role": "user", "content": "U2"},
+        {"role": "assistant", "content": v2,
+         "reasoning_content": MARKER + "R2_2"},
+        {"role": "user", "content": "U3"},
+    ])
+    assert [m["role"] for m in ctx] == [
+        "user", "assistant", "assistant", "user",
+        "assistant", "assistant", "user",
+    ]
+    assert not any("reasoning_content" in m for m in ctx)
     assert "R2_1" not in json.dumps(ctx)
+    assert "R2_2" not in json.dumps(ctx)
+    assert ctx[1]["content"] == PREFIX + "M1"
+    assert ctx[4]["content"] == PREFIX + "M2"
+
 
 def test_unknown_or_tampered_memory_never_gets_bridge():
     k=load()
