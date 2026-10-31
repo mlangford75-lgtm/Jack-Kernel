@@ -78,6 +78,8 @@ def test_summary_only_cannot_recreate_historical_memory_or_reasoning(monkeypatch
         projected, {"content": "new A1 exact\n", "reasoning_content": "new R1"}
     )
     assert frozen == "new A1 exact\n"
+    # Forensic contract requires the actual Stage-2 boundary before commit.
+    k._agentic_forensic_start_stage2(projected)
     result = asyncio.run(k.KERNEL._complete_commit(projected, "", {}, frozen, "new M"))
     assert result.frozen_answer == frozen
     assert result.frozen_xml == "new M"
