@@ -8117,7 +8117,10 @@ class JackQwenKernel:
                 _agentic_retire_consumed_one_hop(state.history)
                 await self._retire_pending_tool_resume(state)
         finally:
-            _AGENTIC_DELAY_R2_SCOPE.reset(scope_token)
+            try:
+                _agentic_forensic_close_request()
+            finally:
+                _AGENTIC_DELAY_R2_SCOPE.reset(scope_token)
 
     async def run(
         self,
@@ -9805,14 +9808,111 @@ def _agentic_shadow_capture_user_request(
 
 @dataclass
 class AgenticTurnLifecycle:
-    """Write-only, bounded, host-owned turn lifecycle. Never authorizes memory replay."""
+    """Host-owned current-turn identity. The durable SQLite record owns provenance."""
     turn_id: str
     user_request: AgenticUserRequestArtifact
     status: str = "stage1_active"
     failure: str = ""
+    stage1_attempt_id: str = ""
+    stage2_attempt_id: str = ""
+    frozen_a1_sha256: str = ""
 
 
 _AGENTIC_TURN_LIFECYCLES: Dict[str, AgenticTurnLifecycle] = {}
+_AGENTIC_FORENSIC_JOURNAL: Optional[AgenticForensicJournal] = None
+
+
+def _agentic_forensic_journal() -> AgenticForensicJournal:
+    global _AGENTIC_FORENSIC_JOURNAL
+    if _AGENTIC_FORENSIC_JOURNAL is None:
+        _AGENTIC_FORENSIC_JOURNAL = AgenticForensicJournal()
+    return _AGENTIC_FORENSIC_JOURNAL
+
+
+def _agentic_forensic_turn(history: List[Dict[str, Any]]) -> Optional[AgenticTurnLifecycle]:
+    target = active_response_target(history)
+    if target is None:
+        return None
+    user = history[int(target["history_index"])]
+    turn_id = user.get("_jack_agentic_turn_id") if isinstance(user, dict) else None
+    return _AGENTIC_TURN_LIFECYCLES.get(turn_id or "")
+
+
+def _agentic_forensic_freeze(history: List[Dict[str, Any]], answer: str) -> None:
+    record = _agentic_forensic_turn(history)
+    if record is None:
+        return  # Legacy direct helper calls do not claim a journalled transaction.
+    if not record.stage1_attempt_id:
+        raise ForensicConflict("missing owned Stage-1 execution attempt")
+    fingerprint = _agentic_forensic_journal().freeze(
+        record.turn_id, record.stage1_attempt_id, answer
+    )
+    record.frozen_a1_sha256 = fingerprint
+
+
+def _agentic_forensic_start_stage2(history: List[Dict[str, Any]]) -> None:
+    record = _agentic_forensic_turn(history)
+    if record is None or not record.frozen_a1_sha256:
+        return  # Tests may invoke an unowned standalone backend stage.
+    if not record.stage2_attempt_id:
+        record.stage2_attempt_id = _new_forensic_attempt_id()
+    _agentic_forensic_journal().stage2(
+        record.turn_id, record.stage1_attempt_id,
+        record.stage2_attempt_id, record.frozen_a1_sha256,
+    )
+    record.status = "stage2_active"
+
+
+def _agentic_current_forensic_binding(history: List[Dict[str, Any]]) -> Optional[Dict[str, str]]:
+    record = _agentic_forensic_turn(history)
+    if record is None or not record.frozen_a1_sha256:
+        return None
+    frozen = history[-1] if history else None
+    if not isinstance(frozen, dict) or frozen.get("role") != "assistant":
+        raise ForensicConflict("Stage 2 missing the final frozen Stage-1 assistant message")
+    if _sha256_text(_content_to_text(frozen.get("content"))) != record.frozen_a1_sha256:
+        raise ForensicConflict("Stage-2 target differs from owned frozen A1")
+    return {
+        "turn_id": record.turn_id,
+        "request_sha256": record.user_request.sha256,
+        "a1_sha256": record.frozen_a1_sha256,
+    }
+
+
+def _agentic_forensic_commit(
+    history: List[Dict[str, Any]], answer: str, memory: str, receipt: str
+) -> None:
+    record = _agentic_forensic_turn(history)
+    if record is None or not record.frozen_a1_sha256:
+        return  # Backward-compatible private direct-commit test path.
+    if not record.stage2_attempt_id:
+        raise ForensicConflict("Stage 2 was never started for frozen Stage 1")
+    _agentic_forensic_journal().commit(
+        record.turn_id, record.stage2_attempt_id, answer, memory, receipt
+    )
+
+
+def _agentic_forensic_fail_memory(history: List[Dict[str, Any]], reason: str) -> None:
+    record = _agentic_forensic_turn(history)
+    if record is None or not record.frozen_a1_sha256:
+        return
+    _agentic_forensic_journal().fail(
+        record.turn_id, record.stage2_attempt_id or record.stage1_attempt_id, reason
+    )
+
+
+def _agentic_forensic_close_request() -> None:
+    turn_id = _AGENTIC_ACTIVE_TURN.get()
+    record = _AGENTIC_TURN_LIFECYCLES.get(turn_id or "")
+    if record is None:
+        return
+    if record.status in ("stage1_active", "response_frozen", "stage2_active"):
+        attempt = record.stage2_attempt_id or record.stage1_attempt_id
+        _agentic_forensic_journal().fail(
+            record.turn_id, attempt, "request_interrupted_before_commit"
+        )
+        record.status = "memory_failed" if record.frozen_a1_sha256 else "stage1_failed"
+
 _AGENTIC_ACTIVE_TURN: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "jack_agentic_active_turn", default=None,
 )
@@ -9852,11 +9952,17 @@ def _agentic_begin_turn(history: List[Dict[str, Any]], *, fresh: bool) -> Option
         return None
     previous = _AGENTIC_TURN_LIFECYCLES.get(turn_id)
     if previous is None:
-        _AGENTIC_TURN_LIFECYCLES[turn_id] = AgenticTurnLifecycle(turn_id, artifact)
+        new_attempt = _new_forensic_attempt_id()
+        _agentic_forensic_journal().begin(turn_id, artifact.sha256, new_attempt)
+        _AGENTIC_TURN_LIFECYCLES[turn_id] = AgenticTurnLifecycle(
+            turn_id, artifact, stage1_attempt_id=new_attempt
+        )
     elif previous.user_request != artifact:
-        LOG.error("Agentic turn/request mismatch: refusing to rebind existing identity")
-        return None
+        raise ForensicConflict("Agentic turn identity/request fingerprint mismatch")
     elif previous.status == "awaiting_tool":
+        _agentic_forensic_journal().begin(
+            turn_id, artifact.sha256, previous.stage1_attempt_id
+        )
         previous.status = "stage1_active"
     _AGENTIC_ACTIVE_TURN.set(turn_id)
     while len(_AGENTIC_TURN_LIFECYCLES) > _AGENTIC_SHADOW_LIMIT:
@@ -9879,6 +9985,8 @@ def _agentic_turn_status(history: Optional[List[Dict[str, Any]]], status: str) -
         return
     if record.status in {"complete", "memory_failed", "stage1_failed"}:
         return
+    if status == "awaiting_tool" and record.stage1_attempt_id:
+        _agentic_forensic_journal().awaiting_tool(record.turn_id, record.stage1_attempt_id)
     record.status = status
 
 
@@ -9887,6 +9995,10 @@ def _agentic_mark_stage1_failure(reason: str) -> None:
     active = _AGENTIC_ACTIVE_TURN.get()
     entry = _AGENTIC_TURN_LIFECYCLES.get(active or "")
     if entry is not None and entry.status in {"stage1_active", "awaiting_tool"}:
+        if entry.stage1_attempt_id:
+            _agentic_forensic_journal().fail(
+                entry.turn_id, entry.stage1_attempt_id, reason
+            )
         entry.status = "stage1_failed"
         entry.failure = str(reason)[:256]
 
