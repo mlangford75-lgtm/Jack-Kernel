@@ -845,42 +845,10 @@ _STAGE_CONTINUATIONS = {
 def _stage_continuation(
     profile: "StageProfile", messages: Optional[Iterable[Dict[str, Any]]] = None
 ) -> str:
-    continuation = _STAGE_CONTINUATIONS.get(
+    return _STAGE_CONTINUATIONS.get(
         profile.name,
         "Continue the requested task using the preceding conversation.",
     )
-    if not (AGENTIC_MODE and profile.name == "Agentic native pass 2" and messages is not None):
-        return continuation
-
-    # Append only: do not mutate Stage 1's cached prefix, prompt, tool schemas,
-    # historical U/M/A, or eligible previous-turn R2.
-    history = list(messages)
-    target = active_response_target(history)
-    frozen = history[-1] if history else None
-    if (target is None or not isinstance(frozen, dict)
-            or frozen.get("role") != "assistant"
-            or not _content_to_text(frozen.get("content")).strip()):
-        raise HTTPException(status_code=500, detail="Agentic Stage 2 missing current-turn U/A1 binding")
-
-    def excerpt(value: str) -> str:
-        return value if len(value) <= 800 else (
-            value[:400] + "\n[...middle omitted; full original remains in history...]\n"
-            + value[-400:]
-        )
-
-    return continuation + (
-        "\n\n[JACK STAGE-2 CURRENT-TURN TARGET - NOT NEW USER CONTENT]\n"
-        "Active user turn: " + target["id"] + "\n"
-        "User request for THIS turn (excerpt if long):\n"
-        + excerpt(target["content"]) + "\n"
-        "Frozen Stage-1 answer for THIS turn (excerpt if long):\n"
-        + excerpt(_content_to_text(frozen["content"])) + "\n"
-        "Generate the retrospective ONLY for Stage 1 of this active user turn. "
-        "Earlier user turns, their memories, and any preserved previous-turn R2 "
-        "are historical context, not the subject of this retrospective.\n"
-        "[END JACK STAGE-2 CURRENT-TURN TARGET]"
-    )
-
 
 ULTRA_STAGE2_TRANSITION_BRIDGE = "THESIS COMPLETE. PROCEED TO ANTITHESIS."
 ULTRA_STAGE3_TRANSITION_BRIDGE = "ANTITHESIS COMPLETE. PROCEED TO SYNTHESIS."
@@ -4136,45 +4104,15 @@ def _agentic_project_committed_artifact_pair(
     return result
 
 
-# Phase 3D: native one-hop reasoning is a transport artifact, not a durable memory.
-# Only extract the host-delimited Stage-2 region carried BACK BY THE CLIENT.
-# Never reconstruct R2 from stored private state or infer ownership by similar text.
-def _agentic_extract_one_hop_stage2_reasoning(raw: Any) -> Optional[str]:
-    if not isinstance(raw, dict) or raw.get("role") != "assistant":
-        return None
-    reasoning = next((raw.get(key) for key in ("reasoning_content", "reasoning", "thinking")
-                      if isinstance(raw.get(key), str) and raw.get(key)), None)
-    if not reasoning:
-        return None
-    marker = "===== JACK AGENTIC NATIVE PASS 2 ====="
-    pos = reasoning.rfind(marker)
-    if pos < 0:
-        return None
-    start = pos + len(marker)
-    # Never reintroduce prior Stage-1 material or the explanatory Stage-2
-    # OUTPUT that is already in the separate Agentic Memory artifact.
-    native_label = "[NATIVE REASONING]"
-    if reasoning[start:].lstrip().startswith(native_label):
-        start += len(reasoning[start:]) - len(reasoning[start:].lstrip()) + len(native_label)
-    remaining = reasoning[start:]
-    ends = [i for sentinel in (
-        "[STAGE 2 REASONING DISTILLATION]",
-        "[END AGENTIC STAGE 2 â€” MEMORY COMPLETE; A1 COMMIT]",
-    ) if (i := remaining.find(sentinel)) >= 0]
-    end = min(ends) if ends else len(remaining)
-    native = remaining[:end].strip()
-    # Require both recognizable Stage-2 boundary and substantive content.
-    # A missing marker is not permission to treat the whole stream as R2.
-    if not native:
-        return None
-    return native
-
+# Agentic now retires native R2 at the completion of its own turn.
+# Pi may retain Stage-2 reasoning for current-turn display, but inbound
+# historical reasoning is NEVER reattached to the next model-facing context.
 
 def _agentic_retire_consumed_one_hop(history: List[Dict[str, Any]]) -> None:
-    """Retire previous R2 at the consuming turn's terminal boundary.
+    """Defensively retire legacy carried R2 if a pending old-format frame exists.
 
-    Tool suspensions and Stage 2 retain the bridge until terminal cleanup.
-    Older R2 must not survive into a second subsequent user turn.
+    New turns never reintroduce historical native reasoning. Existing terminal
+    cleanup remains scoped to the current transaction and handles old frames.
     """
     for item in history:
         if not isinstance(item, dict) or not item.get("_jack_agentic_one_hop_r2"):
@@ -4186,10 +4124,10 @@ def _agentic_retire_consumed_one_hop(history: List[Dict[str, Any]]) -> None:
 
 
 def _agentic_finish_delayed_one_hop(history: List[Dict[str, Any]]) -> None:
-    """Retire the consuming turn's bridge before terminal history clearance.
+    """Clear any legacy R2 from current transaction/checkpoint references.
 
-    Scope references cover aliased tool checkpoint dictionaries; no global
-    ledger or unrelated concurrent turn is consulted.
+    Normally a no-op for new Agentic turns; current R1 is left available through
+    the retrospective and historical U/M/A remains untouched.
     """
     if not AGENTIC_MODE:
         return
@@ -4370,7 +4308,7 @@ def _agentic_context_report_request(
 def _compact_agentic_completed_capsules(
     messages: List[Dict[str, Any]],
 ) -> Optional[List[Dict[str, Any]]]:
-    """Retain every completed visible turn capsule while pruning native cognition.
+    """Retain every completed visible turn capsule and retire all native R1/R2.
 
     A durable Agentic turn is represented in ordinary conversation order as:
         exact host-captured user message
@@ -4400,12 +4338,6 @@ def _compact_agentic_completed_capsules(
     opaque_unattributable_messages = 0
     pruned_tool_messages = 0
     pruned_reasoning_chars = 0
-
-    # One-hop eligibility: only the immediately preceding completed assistant
-    # response can carry native Stage-2 reasoning into the new Stage 1.
-    previous_commit_index = next((i for i in range(latest_user_index-1, -1, -1)
-        if isinstance(compact[i], dict) and compact[i].get("role") == "assistant"
-        and not compact[i].get("tool_calls") and _content_to_text(compact[i].get("content")).strip()), None)
 
     # Completed history: retain associated U/M/A while retiring old R1,
     # historical R2, and consumed raw tool protocol.
@@ -4458,14 +4390,8 @@ def _compact_agentic_completed_capsules(
         else:
             if AGENTIC_CONTEXT_ACCOUNTING_ENABLED:
                 projected_pairs += 1
-            if history_index == previous_commit_index:
-                bridge_r2 = _agentic_extract_one_hop_stage2_reasoning(raw)
-                if bridge_r2:
-                    projected[0]["reasoning_content"] = bridge_r2
-                    projected[0]["_jack_agentic_one_hop_r2"] = True
-                    LOG.info("Agentic one-hop R2 carried into next Stage 1: chars=%d", len(bridge_r2))
-                else:
-                    LOG.info("Agentic one-hop R2 unavailable from client; semantic memory retained")
+            # Historical assistant reasoning was stripped above. Do not recover
+            # R2 from Pi's persisted response or project it into a new turn.
             retained.extend(projected)
         frozen_xml, frozen_answer = _split_prior_jack_output(text)
         if frozen_xml and frozen_answer is not None:
