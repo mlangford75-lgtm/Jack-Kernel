@@ -7425,6 +7425,17 @@ class JackQwenKernel:
         return answer
 
     @staticmethod
+    def _agentic_require_completed_stage(data: Dict[str, Any], stage_name: str) -> None:
+        # Partial text from token-limit/timeout is not a completed frozen answer.
+        choice = (data.get("choices") or [{}])[0] or {}
+        reason = choice.get("finish_reason")
+        if reason not in (None, "stop"):
+            raise HTTPException(
+                status_code=502,
+                detail=f"{stage_name} did not finish successfully: {reason}",
+            )
+
+    @staticmethod
     def _exact_frozen_answer_from_stage(data: Dict[str, Any], stage_name: str) -> str:
         """Freeze the exact completed stage answer bytes without a rewrite/cleanup pass."""
         return JackQwenKernel._required_completed_answer_from_stage(data, stage_name)
@@ -7824,6 +7835,7 @@ class JackQwenKernel:
             if stage_key != "extended_initial":
                 raise HTTPException(status_code=500, detail="Agentic Stage 2 cannot resume tools because XML-stage tools are disabled")
 
+            self._agentic_require_completed_stage(stage, "Agentic Stage 1")
             first_msg = ((stage.get("choices") or [{}])[0].get("message") or {})
             frozen_stage1_answer = append_extended_candidate_response(history, first_msg)
             try:
@@ -7951,6 +7963,7 @@ class JackQwenKernel:
                     data=first,
                 )
 
+            self._agentic_require_completed_stage(first, "Agentic Stage 1")
             first_msg = ((first.get("choices") or [{}])[0].get("message") or {})
             frozen_stage1_answer = append_extended_candidate_response(history, first_msg)
             try:
@@ -8714,6 +8727,7 @@ class JackQwenKernel:
                             append_extended_candidate_response(history, first_msg)
                             yield event({"reasoning_content": "\n[END DEEP RESEARCH STAGE 1 — THESIS COMPLETE]\n"})
                         else:
+                            self._agentic_require_completed_stage(stage_result, "Agentic Stage 1")
                             agentic_frozen_stage1_answer = append_extended_candidate_response(history, first_msg)
                             yield event({"reasoning_content": "\n[END STAGE 1 — A1 FROZEN]\n"})
                     elif ULTRA_MODE and stage_key == "extended_reflection":
@@ -10044,6 +10058,8 @@ def _agentic_begin_turn(history: List[Dict[str, Any]], *, fresh: bool) -> Option
         )
     elif previous.user_request != artifact:
         raise ForensicConflict("Agentic turn identity/request fingerprint mismatch")
+    elif not fresh and previous.status not in {"stage1_active", "awaiting_tool"}:
+        raise ForensicConflict("Cannot re-enter a completed/failed Stage-1 attempt")
     elif previous.status == "awaiting_tool":
         _agentic_forensic_journal().begin(
             turn_id, artifact.sha256, previous.stage1_attempt_id
@@ -10128,7 +10144,9 @@ def _agentic_shadow_record_commit(
         key = (hint.session_id, hint.user_entry_id, hint.turn_ordinal)
         session, user_entry, ordinal = key
         previous = _AGENTIC_SHADOW_LEDGER.get(key)
-        turn_id = previous.turn_id if previous is not None else (claimed_id or "jack-turn-" + uuid.uuid4().hex)
+        # Caller hints never override the host-minted identity. A reused hint is
+        # a collision and must not associate this turn with a previous record.
+        turn_id = claimed_id or (previous.turn_id if previous is not None else "jack-turn-" + uuid.uuid4().hex)
     answer = AgenticResponseArtifact(frozen_answer, _sha256_text(frozen_answer))
     memory = (
         AgenticMemoryArtifact(distilled_memory, _sha256_text(distilled_memory))
