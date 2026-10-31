@@ -4115,6 +4115,14 @@ def _agentic_project_committed_artifact_pair(
         {"role": "assistant", "content": "[Agentic Memory associated with the preceding user request and following frozen response]\n" + memory + receipt},
         {"role": "assistant", "content": answer},
     ]
+    forensic = _agentic_forensic_journal().match_visible(
+        _sha256_text(canonical_user), _sha256_text(assistant_text)
+    )
+    if forensic is not None:
+        latest_user["_jack_forensic_turn_id"] = forensic["turn_id"]
+        for item, label in zip(result, ("M", "A1")):
+            item["_jack_forensic_turn_id"] = forensic["turn_id"]
+            item["_jack_forensic_role"] = label
     LOG.info("Agentic Phase 3C projected supplied, validated M/A pair; no hidden ledger recall")
     return result
 
@@ -4393,6 +4401,8 @@ def _compact_agentic_completed_capsules(
         # Split it only when host-recorded U, M, and A exactly agree with those
         # incoming bytes. No lookup of hidden memory from A1 alone is possible.
         projected = _agentic_project_committed_artifact_pair(retained, text)
+        if projected is None:
+            projected = _agentic_forensic_project_visible(retained, text)
         if projected is None:
             if AGENTIC_CONTEXT_ACCOUNTING_ENABLED:
                 # Every attempted projection that cannot be authenticated is
@@ -5209,6 +5219,18 @@ class OpenAICompatibleBackend:
                 continue
 
             item = dict(message)
+            if (
+                AGENTIC_MODE and item.get("_jack_forensic_turn_id")
+                and item.get("_jack_forensic_role") in {"M", "A1"}
+                and isinstance(item.get("content"), str)
+            ):
+                # Only model-facing projection is labeled. Frozen A1 and user
+                # artifacts remain byte-exact in transport and the forensic DB.
+                item["content"] = (
+                    "[JACK LINK turn=" + item["_jack_forensic_turn_id"]
+                    + " | artifact=" + item["_jack_forensic_role"] + "]\n"
+                    + item["content"]
+                )
             if item.get("_jack_tool_evidence_receipt"):
                 evidence_lines = [
                     line
@@ -9829,6 +9851,69 @@ def _agentic_forensic_journal() -> AgenticForensicJournal:
     return _AGENTIC_FORENSIC_JOURNAL
 
 
+def _agentic_forensic_project_visible(
+    retained: List[Dict[str, Any]], assistant_text: str
+) -> Optional[List[Dict[str, Any]]]:
+    """Recover M/A boundaries from exact caller content after process restart.
+
+    No hidden text is stored; ambiguous duplicate U/M/A records remain opaque.
+    """
+    latest_user = next(
+        (m for m in reversed(retained)
+         if isinstance(m, dict) and m.get("role") == "user"), None
+    )
+    if latest_user is None:
+        return None
+    try:
+        original = {
+            k: v for k, v in latest_user.items()
+            if not (isinstance(k, str) and k.startswith("_jack_"))
+        }
+        canonical = json.dumps(
+            original, ensure_ascii=False, sort_keys=True,
+            separators=(",", ":"), allow_nan=False
+        )
+    except (TypeError, ValueError):
+        return None
+    record = _agentic_forensic_journal().match_visible(
+        _sha256_text(canonical), _sha256_text(assistant_text)
+    )
+    if record is None:
+        return None
+    n_a = record["answer_chars"]
+    n_m = record["memory_chars"]
+    n_r = record["receipt_chars"]
+    if not all(isinstance(n, int) and n >= 0 for n in (n_a, n_m, n_r)):
+        return None
+    if len(assistant_text) != n_a + n_m + n_r + 2:
+        return None
+    memory = assistant_text[:n_m]
+    receipt = assistant_text[n_m:n_m + n_r]
+    answer = assistant_text[n_m + n_r + 2:]
+    if (
+        assistant_text[n_m + n_r:n_m + n_r + 2] != "\n\n"
+        or _sha256_text(memory) != record["memory_sha256"]
+        or _sha256_text(receipt) != record["tool_sha256"]
+        or _sha256_text(answer) != record["a1_sha256"]
+    ):
+        return None
+    latest_user["_jack_forensic_turn_id"] = record["turn_id"]
+    return [
+        {
+            "role": "assistant",
+            "content": "[Agentic Memory associated with the preceding user request and following frozen response]\n"
+                       + memory + receipt,
+            "_jack_forensic_turn_id": record["turn_id"],
+            "_jack_forensic_role": "M",
+        },
+        {
+            "role": "assistant", "content": answer,
+            "_jack_forensic_turn_id": record["turn_id"],
+            "_jack_forensic_role": "A1",
+        },
+    ]
+
+
 def _agentic_forensic_turn(history: List[Dict[str, Any]]) -> Optional[AgenticTurnLifecycle]:
     target = active_response_target(history)
     if target is None:
@@ -10029,7 +10114,9 @@ def _agentic_shadow_record_commit(
             entry = history[int(target["history_index"])]
             claimed_id = entry.get("_jack_agentic_turn_id") if isinstance(entry, dict) else None
         if claimed_id not in _AGENTIC_TURN_LIFECYCLES:
-            claimed_id = _agentic_begin_turn(history, fresh=True)
+            # Legacy direct helper call has no journalled Stage-1 attempt.
+            # Do not invent a completed forensic transaction for it.
+            claimed_id = None
     hint = _AGENTIC_TURN_HINT.get()
     if hint is None:
         turn_id = claimed_id or "jack-turn-" + uuid.uuid4().hex
