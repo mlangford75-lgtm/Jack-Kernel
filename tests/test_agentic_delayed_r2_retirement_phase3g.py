@@ -77,8 +77,8 @@ def test_current_stage1_reasoning_survives_through_stage2_and_freeze():
     scope = {"stage1_frozen": False, "bridge_messages": [], "pending_state": None}
     token = k._AGENTIC_DELAY_R2_SCOPE.set(scope)
     try:
-        assert freeze(k, history) == " A1 exact \\n"
-        assert history[-1]["content"] == " A1 exact \\n"
+        assert freeze(k, history) == " A1 exact \n"
+        assert history[-1]["content"] == " A1 exact \n"
         assert history[-1]["reasoning_content"] == "current R1"
         assert scope["stage1_frozen"]
         k._agentic_finish_delayed_one_hop(history)
