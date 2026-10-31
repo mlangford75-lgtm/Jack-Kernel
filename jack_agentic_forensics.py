@@ -37,7 +37,7 @@ class AgenticForensicJournal:
         )
         self.path.parent.mkdir(parents=True, exist_ok=True)
         was_absent = not self.path.exists()
-        with self._connect() as db:
+        with self._read() as db:
             db.execute(
                 """CREATE TABLE IF NOT EXISTS turns (
                 turn_id TEXT PRIMARY KEY,
@@ -85,6 +85,14 @@ class AgenticForensicJournal:
         db.execute("PRAGMA synchronous=FULL")
         db.execute("PRAGMA foreign_keys=ON")
         return db
+
+    @contextmanager
+    def _read(self):
+        db = self._connect()
+        try:
+            yield db
+        finally:
+            db.close()
 
     @contextmanager
     def _write(self):
@@ -252,7 +260,7 @@ class AgenticForensicJournal:
             self._event(db, turn_id, attempt, state)
 
     def get(self, turn_id):
-        with self._connect() as db:
+        with self._read() as db:
             obj = self._get(db, turn_id)
             return dict(obj) if obj is not None else None
 
@@ -261,7 +269,7 @@ class AgenticForensicJournal:
 
         Neither prompt content nor assistant content is retrieved from this DB.
         """
-        with self._connect() as db:
+        with self._read() as db:
             rows = db.execute(
                 "SELECT * FROM turns WHERE request_sha256=? AND wire_sha256=? "
                 "AND status='complete' LIMIT 2",
@@ -270,7 +278,7 @@ class AgenticForensicJournal:
             return dict(rows[0]) if len(rows) == 1 else None
 
     def events(self, turn_id):
-        with self._connect() as db:
+        with self._read() as db:
             return [dict(x) for x in db.execute(
                 "SELECT * FROM events WHERE turn_id=? ORDER BY seq",
                 (turn_id,),
