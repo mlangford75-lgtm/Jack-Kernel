@@ -23,7 +23,7 @@ if not errorlevel 1 (
 echo.
 echo Jack Kernel requires Python 3.
 echo Install Python 3, then install dependencies with:
-echo   py -3 -m pip install -r requirements.txt
+echo   setup.bat
 echo.
 pause
 exit /b 1
@@ -34,7 +34,7 @@ if "%RC%"=="0" exit /b 0
 echo.
 echo Jack Kernel exited with error code %RC%.
 echo If dependencies are missing, run:
-echo   py -3 -m pip install -r requirements.txt
+echo   setup.bat
 echo.
 pause
 exit /b %RC%
