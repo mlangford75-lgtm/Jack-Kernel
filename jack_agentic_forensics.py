@@ -277,6 +277,21 @@ class AgenticForensicJournal:
             ).fetchall()
             return dict(rows[0]) if len(rows) == 1 else None
 
+    def match_visible_turn(self, turn_id, request_hash, wire_hash):
+        """Verify exact owner, user and committed capsule after process restart.
+
+        The caller's visible ID is a locator, NEVER authority: all three values
+        must match a successfully completed immutable journal transaction.
+        Content is not retrieved from the database.
+        """
+        with self._read() as db:
+            row = db.execute(
+                "SELECT * FROM turns WHERE turn_id=? AND request_sha256=? "
+                "AND wire_sha256=? AND status='complete'",
+                (turn_id, request_hash, wire_hash),
+            ).fetchone()
+            return dict(row) if row is not None else None
+
     def events(self, turn_id):
         with self._read() as db:
             return [dict(x) for x in db.execute(
