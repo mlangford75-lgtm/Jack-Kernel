@@ -2,6 +2,11 @@
 setlocal
 cd /d "%~dp0"
 title Jack Kernel
+REM Isolated Agentic memory-projection experiment: normal launcher, normal
+REM Preserve Thinking flow; only opt in the transaction-link projection.
+set "JACK_AGENTIC_TRANSACTION_LINKS=1"
+set "JACK_AGENTIC_MODEL_TURN_ID=1"
+set "JACK_AGENTIC_TASK_ANCHOR=0"
 
 if exist ".venv\Scripts\python.exe" (
     ".venv\Scripts\python.exe" "jack_secure_entrypoint.py"
