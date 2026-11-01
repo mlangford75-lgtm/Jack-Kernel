@@ -850,7 +850,8 @@ def _stage_continuation(
         profile.name, "Continue the requested task using the preceding conversation."
     )
     if AGENTIC_MODE and profile.name == "Agentic native pass 2" and messages is not None:
-        binding = _agentic_current_forensic_binding(list(messages))
+        history = list(messages)
+        binding = _agentic_current_forensic_binding(history)
         if binding is not None:
             # Only append after frozen A1. Never restate the request/codebase or
             # mutate the cached Stage-1 message prefix.
@@ -861,7 +862,7 @@ def _stage_continuation(
                 + "]\nExplain ONLY this turn's completed Stage 1. "
                 "Previous memories and answers are historical, not the target."
             )
-            if AGENTIC_TASK_ANCHOR_ENABLED:
+            if AGENTIC_TASK_ANCHOR_ENABLED and _agentic_current_task_marker_supported(history, binding["turn_id"]):
                 target += (
                     "\n[JACK TASK SCOPE | turn=" + binding["turn_id"] + "]\n"
                     "Retrospect only on the Stage-1 execution for the user message "
@@ -3338,6 +3339,41 @@ def _jack_is_authentic_user_message(message: Any) -> bool:
     )
 
 
+def _agentic_task_marker_supported(content: Any) -> bool:
+    """Whether a trailing model-facing text marker can be projected safely.
+
+    OpenAI-compatible text arrays may contain images or other blocks. A new
+    bounded text block is appended *after* existing content so no original
+    block is rewritten or duplicated. Non-text-only or opaque payloads stay
+    unmodified; Stage 2 does not claim a nonexistent marker for those cases.
+    """
+    return (
+        isinstance(content, str)
+        or (
+            isinstance(content, list)
+            and any(
+                isinstance(block, dict)
+                and block.get("type") in {"text", "input_text"}
+                and isinstance(block.get("text"), str)
+                for block in content
+            )
+        )
+    )
+
+
+def _agentic_current_task_marker_supported(history: List[Dict[str, Any]], turn_id: str) -> bool:
+    """Only reference a marker actually projectable on the owned current U."""
+    target = active_response_target(history)
+    if target is None:
+        return False
+    user = history[int(target["history_index"])]
+    return bool(
+        isinstance(user, dict)
+        and (user.get("_jack_agentic_turn_id") or user.get("_jack_forensic_turn_id")) == turn_id
+        and _agentic_task_marker_supported(user.get("content"))
+    )
+
+
 def active_response_target(messages: Iterable[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """Bind the response transaction to the latest user-role turn in its frozen history.
 
@@ -5265,13 +5301,21 @@ class OpenAICompatibleBackend:
             if (
                 AGENTIC_MODE and AGENTIC_TASK_ANCHOR_ENABLED
                 and item.get("role") == "user"
-                and isinstance(item.get("content"), str)
+                and _agentic_task_marker_supported(item.get("content"))
             ):
                 task_id = item.get("_jack_agentic_turn_id") or item.get("_jack_forensic_turn_id")
                 if isinstance(task_id, str) and task_id.startswith("jack-turn-"):
                     # Trailing U marker is stable in Stage 1, tool resumes,
                     # Stage 2 and authenticated later history projections.
-                    item["content"] += "\n[JACK LINK turn=" + task_id + " | artifact=U]"
+                    # The source U and every existing text/image block stay
+                    # byte-exact; only the model-facing tail gains a small label.
+                    marker = "[JACK LINK turn=" + task_id + " | artifact=U]"
+                    if isinstance(item["content"], str):
+                        item["content"] += "\n" + marker
+                    else:
+                        item["content"] = list(item["content"]) + [
+                            {"type": "text", "text": "\n" + marker}
+                        ]
             if (
                 AGENTIC_MODE and item.get("_jack_forensic_turn_id")
                 and item.get("_jack_forensic_role") in {"M", "A1"}
@@ -5666,7 +5710,11 @@ class OpenAICompatibleBackend:
                     continue
                 try:
                     chunk = json.loads(data_text)
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as exc:
+                    if AGENTIC_MODE:
+                        raise HTTPException(
+                            status_code=502, detail="Malformed backend SSE chunk during Agentic stage."
+                        ) from exc
                     LOG.warning("Ignoring malformed backend SSE chunk: %r", data_text[:500])
                     continue
                 yield chunk
@@ -6181,7 +6229,9 @@ class JackQwenKernel:
         tool_state: Dict[int, Dict[str, Any]] = {}
         tool_call_fragments_streamed = False
         stage_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-        finish_reason = "stop"
+        # An Agentic stream is incomplete until the backend explicitly reports
+        # a terminal finish reason. Never manufacture a successful stop.
+        finish_reason = None if AGENTIC_MODE and stage_key in {"extended_initial", "extended_reflection"} else "stop"
 
         await self._activity_update(
             stage_key=stage_key,
@@ -6283,6 +6333,11 @@ class JackQwenKernel:
             "content": "".join(content_parts),
         }
         if not message["content"] and not reasoning_content_parts and not reasoning_parts and not tool_state:
+            if AGENTIC_MODE and stage_key in {"extended_initial", "extended_reflection"}:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Agentic stage {profile.name} returned an empty streamed response; refusing non-streaming fallback.",
+                )
             LOG.warning(
                 "Stage %s completed with an empty streamed backend response; retrying once non-streaming",
                 profile.name,
@@ -6338,6 +6393,11 @@ class JackQwenKernel:
                 "role": "assistant",
                 "content": "".join(content_parts),
             }
+        if AGENTIC_MODE and stage_key in {"extended_initial", "extended_reflection"} and finish_reason is None:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Agentic stage {profile.name} ended without a backend terminal finish reason.",
+            )
         if reasoning_content_parts:
             joined = "".join(reasoning_content_parts)
             message["reasoning_content"] = joined
@@ -7482,7 +7542,7 @@ class JackQwenKernel:
         # Partial text from token-limit/timeout is not a completed frozen answer.
         choice = (data.get("choices") or [{}])[0] or {}
         reason = choice.get("finish_reason")
-        if reason not in (None, "stop"):
+        if reason != "stop":
             raise HTTPException(
                 status_code=502,
                 detail=f"{stage_name} did not finish successfully: {reason}",
@@ -7546,7 +7606,10 @@ class JackQwenKernel:
         """Preserve exact frozen A1 when zero-authority semantic consolidation cannot complete."""
         _discard_agentic_stage1_forensic_snapshot(history)
         _agentic_forensic_fail_memory(history, reason)
-        _agentic_shadow_record_commit(frozen_stage1_answer, None, history=history)
+        try:
+            _agentic_shadow_record_commit(frozen_stage1_answer, None, history=history)
+        except Exception:
+            LOG.exception("Agentic optional shadow record failed during A1-only degraded result")
         _agentic_finish_delayed_one_hop(history)
         history.clear()
         LOG.warning("Agentic degraded commit: exact frozen A1 preserved without distilled memory: %s", reason)
