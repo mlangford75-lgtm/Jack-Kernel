@@ -10167,7 +10167,7 @@ def _agentic_forensic_project_visible(
         return None
     claimed_turn, unwrapped_text = _agentic_unwrap_visible_memory(assistant_text)
     if assistant_text.startswith("[") and claimed_turn is None and re.match(
-        r"^\\[[A-Za-z0-9_-]{22}\\] Memory", assistant_text
+        r"^\[[A-Za-z0-9_-]{22}\] Memory", assistant_text
     ):
         # Malformed/forged owner label is not a legacy record.
         return None
