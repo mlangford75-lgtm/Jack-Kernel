@@ -25,7 +25,7 @@ def test_pi_style_structured_user_gets_matching_task_anchor_without_mutation(mon
     p1 = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_initial"])
     assert isinstance(p1[0]["content"], list)
     assert p1[0]["content"][:-1] == content
-    assert p1[0]["content"][-1] == {"type": "text", "text": "\\n" + marker}
+    assert p1[0]["content"][-1] == {"type": "text", "text": "\n" + marker}
     assert history[0]["content"] == content
     assert original["content"] == content
     answer = k.append_extended_candidate_response(history, {"content": "Frozen result", "reasoning_content": "current R1"})
@@ -128,7 +128,7 @@ def test_agentic_streaming_sse_decoder_rejects_malformed_data(monkeypatch, tmp_p
         return httpx.Response(
             200,
             headers={"content-type": "text/event-stream"},
-            text="data: {broken\\n\\ndata: [DONE]\\n\\n",
+            text="data: {broken\n\ndata: [DONE]\n\n",
         )
     async def run():
         await b._client.aclose()
