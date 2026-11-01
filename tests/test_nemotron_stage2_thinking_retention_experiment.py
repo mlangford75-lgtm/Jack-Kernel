@@ -53,7 +53,7 @@ async def capture(k, *, stream, stage2=True):
                 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}',
                 'data: [DONE]',
             ]
-            return httpx.Response(200, text="\\n\\n".join(chunks) + "\\n\\n", headers={"content-type": "text/event-stream"})
+            return httpx.Response(200, text="\n\n".join(chunks) + "\n\n", headers={"content-type": "text/event-stream"})
         return httpx.Response(200, json={"choices":[{"message":{"role":"assistant","content":"retained"},"finish_reason":"stop"}],"usage":{}})
     b = k.OpenAICompatibleBackend(k.CFG)
     await b._client.aclose()
