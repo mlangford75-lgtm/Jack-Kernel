@@ -1013,13 +1013,12 @@ AGENTIC_TASK_ANCHOR_ENABLED = (
     in {"1", "true", "yes", "on"}
 )
 
-# Isolated experimental branch: enable transaction-linked Agentic memory on
-# ordinary Jack startup, without requiring a special launcher or changing
-# native-reasoning/preserve-thinking configuration. Set the environment
-# variable to 0 to compare the original Phase-3G projection.
-# The old forensic-label experiment is mutually exclusive if enabled.
+# Keep the default identical to the Phase-3G runtime. The isolated
+# experimental start.bat explicitly opts into this feature, preventing
+# unrelated programmatic consumers and regression tests from changing behavior.
+# The old forensic-label experiment remains mutually exclusive.
 AGENTIC_TRANSACTION_LINKS_ENABLED = (
-    os.environ.get("JACK_AGENTIC_TRANSACTION_LINKS", "1").strip().lower()
+    os.environ.get("JACK_AGENTIC_TRANSACTION_LINKS", "0").strip().lower()
     in {"1", "true", "yes", "on"}
 ) and not AGENTIC_TASK_ANCHOR_ENABLED
 
