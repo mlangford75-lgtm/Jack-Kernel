@@ -837,7 +837,7 @@ _STAGE_CONTINUATIONS = {
     "Agentic native pass 1": "Continue the current user turn.",
     "Agentic native pass 2": (
         "[JACK RUNTIME STAGE CONTINUATION - NOT USER CONTENT - SAME USER TURN]\n"
-        "The immediately preceding assistant response is the completed, frozen Response for the current Request. Produce a retrospective Memory of that Response using available reasoning and observed tool outcomes. Earlier Responses and Memories are historical context, not the target. Do not continue the task, address the user, ask questions, offer revisions, or emit tool calls."
+        "The immediately preceding assistant response is the completed, frozen Response for the current Request. This is a retrospective memory pass, not a new user request. Produce a Memory of that Response using available reasoning and observed tool outcomes. Earlier Responses and Memories are historical context, not the target. Do not continue the task, address the user, ask questions, offer revisions, or emit tool calls."
         "\nPreserve the Response's actual rationale, but do not elevate assumptions, predictions, or tool-reported results into independently verified facts. Distinguish what was intended, what tools reported, and what was actually observed."
     ),
 }
@@ -1009,10 +1009,10 @@ AGENTIC_TASK_ANCHOR_ENABLED = (
 
 # Model-visible per-turn Request/Response/Memory associations. This reuses the
 # existing durable host-minted UUID, so no second identity system is created.
-# Set to 0 for a clean Phase-3G comparison. The old forensic-label experiment
+# Set to 1 to opt into the live A/B experiment; 0 preserves Phase-3G.\n# The old forensic-label experiment
 # is mutually exclusive when explicitly enabled for historical A/B testing.
 AGENTIC_TRANSACTION_LINKS_ENABLED = (
-    os.environ.get("JACK_AGENTIC_TRANSACTION_LINKS", "1").strip().lower()
+    os.environ.get("JACK_AGENTIC_TRANSACTION_LINKS", "0").strip().lower()
     in {"1", "true", "yes", "on"}
 ) and not AGENTIC_TASK_ANCHOR_ENABLED
 
