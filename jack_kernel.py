@@ -855,6 +855,13 @@ _AGENTIC_STAGE2_LINKED_CONTINUATION = (
     "or address the user. Write the retained details directly."
 )
 
+# Experimental one-sentence append: the baseline above must remain byte-exact.
+# This is a model-instruction A/B test, not a production compression policy.
+_AGENTIC_DIFFERENTIAL_MEMORY_SENTENCE = (
+    "Prioritize important reasoning, decisions, tool evidence, and unresolved "
+    "details that are not already clear from the completed answer."
+)
+
 
 def _stage_continuation(
     profile: "StageProfile", messages: Optional[Iterable[Dict[str, Any]]] = None
@@ -864,6 +871,8 @@ def _stage_continuation(
     )
     if AGENTIC_MODE and AGENTIC_TRANSACTION_LINKS_ENABLED and profile.name == "Agentic native pass 2":
         continuation = _AGENTIC_STAGE2_LINKED_CONTINUATION
+        if AGENTIC_DIFFERENTIAL_MEMORY_EXPERIMENT:
+            continuation += " " + _AGENTIC_DIFFERENTIAL_MEMORY_SENTENCE
     if AGENTIC_MODE and AGENTIC_TASK_ANCHOR_ENABLED and profile.name == "Agentic native pass 2" and messages is not None:
         # Experimental forensic labels may be re-enabled, but the default
         # retrospective is the proven Phase-3G short continuation. The
@@ -1017,6 +1026,13 @@ AGENTIC_TRANSACTION_LINKS_ENABLED = (
     os.environ.get("JACK_AGENTIC_TRANSACTION_LINKS", "0").strip().lower()
     in {"1", "true", "yes", "on"}
 ) and not AGENTIC_TASK_ANCHOR_ENABLED
+
+# Disabled by default, including on the experimental branch. A/B without
+# changing the launcher, frozen prompts, cache topology, or persistent history.
+AGENTIC_DIFFERENTIAL_MEMORY_EXPERIMENT = (
+    os.environ.get("JACK_AGENTIC_DIFFERENTIAL_MEMORY", "0").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
 
 
 def _agentic_visible_turn_label(turn_id: Any) -> Optional[str]:
