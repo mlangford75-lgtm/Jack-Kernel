@@ -61,8 +61,11 @@ def test_request_response_memory_same_unique_id_without_rewriting_frozen_a1(monk
     continuation = k._stage_continuation(k.STAGES["extended_reflection"], history)
     assert continuation.count(label) == 1
     assert "Current transaction: [" + label + "]" in continuation
-    assert "Earlier transactions are context, not subjects" in continuation
-    assert "Do not revise it" in continuation
+    assert "Earlier transactions are context, not work performed" in continuation
+    assert "Do not re-solve the task" in continuation
+    assert "Stage 1 native reasoning and frozen response" in continuation
+    assert "current-turn tool evidence" in continuation
+    assert "Do not generate transaction identifiers" in continuation
     assert "Stage 1" not in continuation and "Stage-1" not in continuation
     assert k.AGENTIC_36_STAGE2_PROMPT == "Generate a detailed summary of why you came to this conclusion."
     assert k.AGENTIC_STAGE1_PROMPT.startswith("Reasoning effort is set to xhigh.")
