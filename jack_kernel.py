@@ -1011,13 +1011,13 @@ AGENTIC_TASK_ANCHOR_ENABLED = (
     in {"1", "true", "yes", "on"}
 )
 
-# Model-visible per-turn Request/Response/Memory associations. This reuses the
-# existing durable host-minted UUID, so no second identity system is created.
-# Set to 1 to opt into the live A/B experiment; 0 preserves Phase-3G.
-# The old forensic-label experiment
-# is mutually exclusive when explicitly enabled for historical A/B testing.
+# Isolated experimental branch: enable transaction-linked Agentic memory on
+# ordinary Jack startup, without requiring a special launcher or changing
+# native-reasoning/preserve-thinking configuration. Set the environment
+# variable to 0 to compare the original Phase-3G projection.
+# The old forensic-label experiment is mutually exclusive if enabled.
 AGENTIC_TRANSACTION_LINKS_ENABLED = (
-    os.environ.get("JACK_AGENTIC_TRANSACTION_LINKS", "0").strip().lower()
+    os.environ.get("JACK_AGENTIC_TRANSACTION_LINKS", "1").strip().lower()
     in {"1", "true", "yes", "on"}
 ) and not AGENTIC_TASK_ANCHOR_ENABLED
 
