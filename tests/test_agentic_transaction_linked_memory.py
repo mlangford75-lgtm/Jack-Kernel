@@ -1,7 +1,7 @@
-"""Agentic transaction identity: one UUID links Request, Response and Memory.
+"""Unique durable Agentic identities without model-facing transaction patterns.
 
-All labels are projection-only. The actual user request, frozen answer, model
-reasoning and journal hashes remain untouched.
+The authenticated caller artifact carries identity for restart recovery;
+model requests preserve original U, historical M and A1 without ID labels.
 """
 import importlib.util
 import re
@@ -31,7 +31,7 @@ def kernel(monkeypatch, tmp_path, *, links=True):
 
 
 @pytest.mark.parametrize("structured", [False, True])
-def test_request_response_memory_same_unique_id_without_rewriting_frozen_a1(monkeypatch, tmp_path, structured):
+def test_exact_user_and_frozen_answer_with_host_owned_id(monkeypatch, tmp_path, structured):
     k = kernel(monkeypatch, tmp_path)
     raw = [{"type": "text", "text": "Create a clock SVG"}] if structured else "Create a clock SVG"
     history = [{"role": "user", "content": raw}]
@@ -40,12 +40,8 @@ def test_request_response_memory_same_unique_id_without_rewriting_frozen_a1(monk
     assert len(label) == 22
     assert re.fullmatch(r"[A-Za-z0-9_-]{22}", label)
     request_view = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_initial"])
-    if structured:
-        assert request_view[0]["content"][0]["text"] == "[" + label + "] Request\n"
-        assert request_view[0]["content"][1:] == raw
-    else:
-        assert request_view[0]["content"].startswith("[" + label + "] Request\n")
-        assert request_view[0]["content"].endswith("Create a clock SVG")
+    assert request_view[0]["content"] == raw
+    assert label not in str(request_view)
     assert history[0]["content"] == raw
 
     frozen = k.append_extended_candidate_response(history, {
@@ -55,26 +51,26 @@ def test_request_response_memory_same_unique_id_without_rewriting_frozen_a1(monk
     k._agentic_forensic_start_stage2(history)
     memory_view = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_reflection"])
     assert memory_view[:len(request_view)] == request_view
-    assert memory_view[-1]["content"] == frozen + "\n[" + label + "] Response"
+    assert memory_view[-1]["content"] == frozen
     assert memory_view[-1]["reasoning_content"] == "Clock face and bird were required."
     assert history[-1]["content"] == frozen
     continuation = k._stage_continuation(k.STAGES["extended_reflection"], history)
-    assert continuation.count(label) == 1
-    assert "Current transaction: [" + label + "]" in continuation
-    assert "Earlier transactions are context, not subjects" in continuation
-    assert "Do not revise it" in continuation
-    assert "Stage 1" not in continuation and "Stage-1" not in continuation
+    assert "immediately above" in continuation
+    assert "tool results" in continuation
+    assert "Older conversation matters only where" in continuation
+    assert not re.search(r"stage[\s-]*[12]|frozen|transaction|current turn|turn=", continuation, re.IGNORECASE)
+    assert label not in continuation
     assert k.AGENTIC_36_STAGE2_PROMPT == "Generate a detailed summary of why you came to this conclusion."
     assert k.AGENTIC_STAGE1_PROMPT.startswith("Reasoning effort is set to xhigh.")
+    assert k._agentic_cache_append_enabled(k.STAGES["extended_reflection"])
 
 
-def test_two_turns_distinct_labels_and_historical_projection(monkeypatch, tmp_path):
+def test_independent_repeated_requests_have_unique_host_identifiers_but_no_model_labels(monkeypatch, tmp_path):
     k = kernel(monkeypatch, tmp_path)
-    hist = [{"role": "user", "content": "Change bird to blue"}]
-    a = k._agentic_begin_turn(hist, fresh=True)
-    label_a = k._agentic_visible_turn_label(a)
-    k.append_extended_candidate_response(hist, {"content": "Bird turned blue"})
-    k._agentic_forensic_start_stage2(hist)
+    old = [{"role": "user", "content": "Change bird to blue"}]
+    a = k._agentic_begin_turn(old, fresh=True)
+    k.append_extended_candidate_response(old, {"content": "Bird turned blue"})
+    k._agentic_forensic_start_stage2(old)
     older = [
         {"role": "user", "content": "Change bird to blue", "_jack_forensic_turn_id": a},
         {"role": "assistant", "content": "Changed bird only", "_jack_forensic_turn_id": a, "_jack_forensic_role": "M"},
@@ -82,14 +78,13 @@ def test_two_turns_distinct_labels_and_historical_projection(monkeypatch, tmp_pa
     ]
     new = [{"role": "user", "content": "Change bird to blue"}]
     b = k._agentic_begin_turn(new, fresh=True)
-    label_b = k._agentic_visible_turn_label(b)
-    assert a != b and label_a != label_b
-    view = k.BACKEND._stage_messages_for_profile(older + new, k.STAGES["extended_initial"])
-    assert "[" + label_a + "] Request" in view[0]["content"]
-    assert view[1]["content"].startswith("[" + label_a + "] Memory\n")
-    assert view[2]["content"].endswith("\n[" + label_a + "] Response")
-    assert "[" + label_b + "] Request" in view[3]["content"]
-    assert label_b not in str(view[:3])
+    assert a != b
+    rendered = k.BACKEND._stage_messages_for_profile(older + new, k.STAGES["extended_initial"])
+    assert [x["content"] for x in rendered] == [
+        "Change bird to blue", "Changed bird only", "Bird turned blue", "Change bird to blue"
+    ]
+    assert k._agentic_visible_turn_label(a) not in str(rendered)
+    assert k._agentic_visible_turn_label(b) not in str(rendered)
 
 
 def test_feature_flag_restores_phase3g_text_and_prefix(monkeypatch, tmp_path):
@@ -162,12 +157,11 @@ def test_identical_completed_turns_recover_distinct_ids_after_restart(monkeypatc
     ]
     rendered = k.BACKEND._stage_messages_for_profile(projected, k.STAGES["extended_initial"])
     label_a, label_b = k._agentic_visible_turn_label(a), k._agentic_visible_turn_label(b)
-    assert rendered[0]["content"].startswith("[" + label_a + "] Request\n")
-    assert rendered[1]["content"].startswith("[" + label_a + "] Memory\n")
-    assert rendered[2]["content"].endswith("\n[" + label_a + "] Response")
-    assert rendered[3]["content"].startswith("[" + label_b + "] Request\n")
-    assert rendered[4]["content"].startswith("[" + label_b + "] Memory\n")
-    assert rendered[5]["content"].endswith("\n[" + label_b + "] Response")
+    assert [m["content"] for m in rendered[:6]] == [
+        identical_user, identical_memory, identical_answer,
+        identical_user, identical_memory, identical_answer,
+    ]
+    assert all(label not in str(rendered) for label in (label_a, label_b))
     assert not any("Reasoned about this turn." in str(item) for item in rendered)
     assert rendered[2]["content"].startswith(identical_answer)
     assert rendered[5]["content"].startswith(identical_answer)
