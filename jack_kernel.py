@@ -3975,7 +3975,7 @@ def _agentic_visible_memory_header(turn_id: Optional[str]) -> str:
 
 def _agentic_unwrap_visible_memory(assistant_text: str) -> Tuple[Optional[str], str]:
     """Recover an optional host-written turn ID without trusting model content."""
-    match = re.match(r"^\\[([A-Za-z0-9_-]{22})\\] Memory\\n", assistant_text)
+    match = re.match(r"^\[([A-Za-z0-9_-]{22})\] Memory\n", assistant_text)
     if match is None:
         return None, assistant_text
     label = match.group(1)
@@ -4213,6 +4213,10 @@ def _agentic_project_committed_artifact_pair(
     or ambiguous records. No Pi integration or backend reasoning replay required.
     """
     if not AGENTIC_MODE or not isinstance(assistant_text, str) or not assistant_text:
+        return None
+    # Identity-bearing committed capsules are validated through the durable
+    # journal, not through process-local records or content-based matching.
+    if _agentic_unwrap_visible_memory(assistant_text)[0] is not None:
         return None
     latest_user = next(
         (item for item in reversed(retained)
@@ -10161,23 +10165,37 @@ def _agentic_forensic_project_visible(
         )
     except (TypeError, ValueError):
         return None
-    record = _agentic_forensic_journal().match_visible(
-        _sha256_text(canonical), _sha256_text(assistant_text)
-    )
-    if record is None:
+    claimed_turn, unwrapped_text = _agentic_unwrap_visible_memory(assistant_text)
+    if assistant_text.startswith("[") and claimed_turn is None and re.match(
+        r"^\\[[A-Za-z0-9_-]{22}\\] Memory", assistant_text
+    ):
+        # Malformed/forged owner label is not a legacy record.
         return None
+    if claimed_turn is not None:
+        record = _agentic_forensic_journal().match_visible_turn(
+            claimed_turn, _sha256_text(canonical), _sha256_text(unwrapped_text)
+        )
+        if record is None:
+            return None
+    else:
+        # Old, unmarked sessions retain the conservative unambiguous fallback.
+        record = _agentic_forensic_journal().match_visible(
+            _sha256_text(canonical), _sha256_text(assistant_text)
+        )
+        if record is None:
+            return None
     n_a = record["answer_chars"]
     n_m = record["memory_chars"]
     n_r = record["receipt_chars"]
     if not all(isinstance(n, int) and n >= 0 for n in (n_a, n_m, n_r)):
         return None
-    if len(assistant_text) != n_a + n_m + n_r + 2:
+    if len(unwrapped_text) != n_a + n_m + n_r + 2:
         return None
-    memory = assistant_text[:n_m]
-    receipt = assistant_text[n_m:n_m + n_r]
-    answer = assistant_text[n_m + n_r + 2:]
+    memory = unwrapped_text[:n_m]
+    receipt = unwrapped_text[n_m:n_m + n_r]
+    answer = unwrapped_text[n_m + n_r + 2:]
     if (
-        assistant_text[n_m + n_r:n_m + n_r + 2] != "\n\n"
+        unwrapped_text[n_m + n_r:n_m + n_r + 2] != "\n\n"
         or _sha256_text(memory) != record["memory_sha256"]
         or _sha256_text(receipt) != record["tool_sha256"]
         or _sha256_text(answer) != record["a1_sha256"]
