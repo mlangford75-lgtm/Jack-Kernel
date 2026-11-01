@@ -849,7 +849,10 @@ def _stage_continuation(
     continuation = _STAGE_CONTINUATIONS.get(
         profile.name, "Continue the requested task using the preceding conversation."
     )
-    if AGENTIC_MODE and profile.name == "Agentic native pass 2" and messages is not None:
+    if AGENTIC_MODE and AGENTIC_TASK_ANCHOR_ENABLED and profile.name == "Agentic native pass 2" and messages is not None:
+        # Experimental forensic labels may be re-enabled, but the default
+        # retrospective is the proven Phase-3G short continuation. The
+        # immutable host-side U/A1 binding is enforced independently.
         history = list(messages)
         binding = _agentic_current_forensic_binding(history)
         if binding is not None:
@@ -980,11 +983,13 @@ AGENTIC_CACHE_APPEND_EXPERIMENT = (
     in {"1", "true", "yes", "on"}
 )
 
-# Introduce U identity at the tail of its model-facing content, never before a
-# potentially massive input. Keep both frozen cognition prompts unchanged.
-# Set to 0 for a clean hardware A/B or to roll back the model-facing projection.
+# Phase-3G recovery: model-visible U/M/A forensic labels are OFF by default.
+# The durable host-side turn journal, U/A1 hash checks, stage completion gates,
+# and Stage-2 cached-prefix topology remain active regardless of this switch.
+# Set JACK_AGENTIC_TASK_ANCHOR=1 only for explicit comparison with PR #72.
+# Neither frozen cognition prompt is changed.
 AGENTIC_TASK_ANCHOR_ENABLED = (
-    os.environ.get("JACK_AGENTIC_TASK_ANCHOR", "1").strip().lower()
+    os.environ.get("JACK_AGENTIC_TASK_ANCHOR", "0").strip().lower()
     in {"1", "true", "yes", "on"}
 )
 
@@ -5317,7 +5322,8 @@ class OpenAICompatibleBackend:
                             {"type": "text", "text": "\n" + marker}
                         ]
             if (
-                AGENTIC_MODE and item.get("_jack_forensic_turn_id")
+                AGENTIC_MODE and AGENTIC_TASK_ANCHOR_ENABLED
+                and item.get("_jack_forensic_turn_id")
                 and item.get("_jack_forensic_role") in {"M", "A1"}
                 and isinstance(item.get("content"), str)
             ):
