@@ -7516,8 +7516,16 @@ class JackQwenKernel:
         tool_receipt = _agentic_tool_history_note(history)
         memory += tool_receipt
         _agentic_forensic_commit(history, frozen_stage1_answer, unadorned_memory, tool_receipt)
-        _archive_agentic_stage1_forensic(history, frozen_stage1_answer, memory)
-        _agentic_shadow_record_commit(frozen_stage1_answer, unadorned_memory, tool_receipt, history=history)
+        # The journal is authoritative. Optional archival must never turn a
+        # successful durable commit into a degraded result with contradictory state.
+        try:
+            _archive_agentic_stage1_forensic(history, frozen_stage1_answer, memory)
+        except Exception:
+            LOG.exception("Agentic optional Stage-1 forensic archive failed after durable commit")
+        try:
+            _agentic_shadow_record_commit(frozen_stage1_answer, unadorned_memory, tool_receipt, history=history)
+        except Exception:
+            LOG.exception("Agentic optional shadow record failed after durable commit")
         _agentic_finish_delayed_one_hop(history)
         history.clear()
         return PreparedCommit(
@@ -7902,6 +7910,7 @@ class JackQwenKernel:
                 choice = (xml_stage.get("choices") or [{}])[0] or {}
                 msg = choice.get("message") or {}
                 reasoning = msg.get("_jack_stage2_reasoning_trace") or msg.get("reasoning_content") or msg.get("reasoning") or msg.get("thinking")
+                self._agentic_require_completed_stage(xml_stage, "Agentic Stage 2")
                 frozen_jack_xml = self._exact_frozen_answer_from_stage(xml_stage, "Agentic Stage 2 distillation")
                 completed = await self._complete_commit(
                     history,
@@ -8030,6 +8039,7 @@ class JackQwenKernel:
                 choice = (second.get("choices") or [{}])[0] or {}
                 msg = choice.get("message") or {}
                 reasoning = msg.get("_jack_stage2_reasoning_trace") or msg.get("reasoning_content") or msg.get("reasoning") or msg.get("thinking")
+                self._agentic_require_completed_stage(second, "Agentic Stage 2")
                 frozen_jack_xml = self._exact_frozen_answer_from_stage(second, "Agentic Stage 2 distillation")
                 completed = await self._complete_commit(
                     history,
@@ -8820,6 +8830,7 @@ class JackQwenKernel:
                         or final_msg.get("thinking")
                         or ""
                     )
+                    self._agentic_require_completed_stage(final_result, "Agentic Stage 2")
                     frozen_jack_xml = self._exact_frozen_answer_from_stage(final_result, "Agentic Stage 2 distillation")
                     if agentic_frozen_stage1_answer is None:
                         raise HTTPException(status_code=500, detail="Agentic Stage-1 frozen answer was unavailable at commit")
@@ -8834,10 +8845,18 @@ class JackQwenKernel:
                         distilled_memory, agentic_frozen_stage1_answer
                     )
                     _agentic_forensic_commit(history, agentic_frozen_stage1_answer, unadorned_memory, tool_receipt)
-                    _archive_agentic_stage1_forensic(
-                        history, agentic_frozen_stage1_answer, distilled_memory
-                    )
-                    _agentic_shadow_record_commit(agentic_frozen_stage1_answer, unadorned_memory, tool_receipt, history=history)
+                    # A committed forensic transaction cannot be downgraded by
+                    # non-authoritative archival/shadow telemetry failures.
+                    try:
+                        _archive_agentic_stage1_forensic(
+                            history, agentic_frozen_stage1_answer, distilled_memory
+                        )
+                    except Exception:
+                        LOG.exception("Agentic optional Stage-1 forensic archive failed after durable commit")
+                    try:
+                        _agentic_shadow_record_commit(agentic_frozen_stage1_answer, unadorned_memory, tool_receipt, history=history)
+                    except Exception:
+                        LOG.exception("Agentic optional shadow record failed after durable commit")
                     _agentic_finish_delayed_one_hop(history)
                     history.clear()
                 except Exception as exc:
