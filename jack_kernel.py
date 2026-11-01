@@ -845,20 +845,20 @@ _STAGE_CONTINUATIONS = {
 # The opt-in linked-transaction retrospective replaces only Jack's auxiliary
 # continuation, not either frozen cognition prompt or the Stage-2 cache path.
 _AGENTIC_STAGE2_LINKED_CONTINUATION = (
-        "[JACK MEMORY CONTINUATION - SAME TURN]\n"
-        "This conclusion means the frozen Response of the current transaction. "
-        "Create a Memory of what this transaction accomplished and why. "
-        "Preserve material reasoning, decisions, actions, results, constraints, "
-        "and unresolved issues useful to later turns.\n"
-        "Use this transaction's available native reasoning and tool evidence. "
-        "If reasoning is unavailable, rely on the completed Response and observed results. "
-        "Do not invent rationale or treat tool-reported outcomes as independently verified facts.\n"
-        "Earlier transactions are context, not subjects of this Memory. "
-        "Include earlier facts or dependencies only if necessary to explain the current Response; "
-        "do not recount earlier work or reproduce earlier Memories.\n"
-        "The Response is frozen. Do not revise it, continue execution, address the user, or call tools. "
-        "Do not repeat the transaction identifier in the Memory text: Jack owns the identity, "
-        "tool receipts, and Request/Response/Memory association."
+    "[JACK MEMORY CONTINUATION - SAME TURN]\n"
+    "Review the current transaction's Stage 1 native reasoning and frozen response "
+    "in relation to its user request.\n\n"
+    "Preserve the decisions, rationale, important discoveries, constraints, and "
+    "unresolved issues that may benefit future turns.\n\n"
+    "Use the frozen response and current-turn tool evidence to distinguish actual "
+    "outcomes from intentions and speculation.\n\n"
+    "Earlier transactions are context, not work performed during this transaction. "
+    "Reference them only when necessary to explain the current response or when "
+    "the current request specifically concerns earlier work.\n\n"
+    "Do not re-solve the task, reconsider its conclusions, summarize unrelated "
+    "transactions, or revise the frozen response.\n\n"
+    "Produce only the retrospective memory. Do not generate transaction identifiers "
+    "or runtime labels."
 )
 
 
