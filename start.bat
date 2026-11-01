@@ -2,6 +2,10 @@
 setlocal
 cd /d "%~dp0"
 title Jack Kernel
+REM Restore branch only: enable host-linked memory in the normal launcher.
+REM Does not modify reasoning, Preserve Thinking, tool policy, or cache config.
+set "JACK_AGENTIC_TRANSACTION_LINKS=1"
+set "JACK_AGENTIC_TASK_ANCHOR=0"
 
 if exist ".venv\Scripts\python.exe" (
     ".venv\Scripts\python.exe" "jack_secure_entrypoint.py"
