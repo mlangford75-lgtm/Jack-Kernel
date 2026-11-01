@@ -70,13 +70,12 @@ async def capture_payload(kernel, *, stream):
         data = json.loads(request.content)
         payloads.append(data)
         if stream:
-            body = (
-                'data: {"choices":[{"index":0,"delta":{"content":"Memory"},"finish_reason":null}]}\\n\\n'
-                'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\\n\\n'
-                'data: [DONE]\\n\\n'
-            )
-            return httpx.Response(200, text=body.replace("\\\\n", "\\n"),
-                                  headers={"content-type": "text/event-stream"})
+            body = "\n\n".join([
+                'data: {"choices":[{"index":0,"delta":{"content":"Memory"},"finish_reason":null}]}',
+                'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}',
+                'data: [DONE]',
+            ]) + "\n\n"
+            return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
         return httpx.Response(200, json={
             "choices": [{"message": {"role": "assistant", "content": "Memory"}, "finish_reason": "stop"}],
             "usage": {},
