@@ -859,8 +859,7 @@ _AGENTIC_STAGE2_LINKED_CONTINUATION = (
         "The Response is frozen. Do not revise it, continue execution, address the user, or call tools. "
         "Do not repeat the transaction identifier in the Memory text: Jack owns the identity, "
         "tool receipts, and Request/Response/Memory association."
-    ),
-}
+)
 
 
 def _stage_continuation(
