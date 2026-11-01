@@ -1023,10 +1023,11 @@ AGENTIC_TRANSACTION_LINKS_ENABLED = (
 
 # Experimental A/B: expose at most one opaque turn ID on the user message,
 # without repeating Request/Memory/Response labels on historical artifacts.
-# The default keeps identifiers entirely in the authenticated host journal.
+# One compact opaque ID on each user turn is the default for cognitive linkage;
+# set to 0 to compare purely host-owned attribution without model-visible IDs.
 AGENTIC_MODEL_TURN_ID_ENABLED = (
     AGENTIC_TRANSACTION_LINKS_ENABLED
-    and os.environ.get("JACK_AGENTIC_MODEL_TURN_ID", "0").strip().lower()
+    and os.environ.get("JACK_AGENTIC_MODEL_TURN_ID", "1").strip().lower()
     in {"1", "true", "yes", "on"}
 )
 
