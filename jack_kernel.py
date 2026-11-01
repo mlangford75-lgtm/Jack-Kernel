@@ -845,20 +845,17 @@ _STAGE_CONTINUATIONS = {
 # The opt-in linked-transaction retrospective replaces only Jack's auxiliary
 # continuation, not either frozen cognition prompt or the Stage-2 cache path.
 _AGENTIC_STAGE2_LINKED_CONTINUATION = (
-        "[JACK MEMORY CONTINUATION - SAME TURN]\n"
-        "This conclusion means the frozen Response of the current transaction. "
-        "Create a Memory of what this transaction accomplished and why. "
-        "Preserve material reasoning, decisions, actions, results, constraints, "
-        "and unresolved issues useful to later turns.\n"
-        "Use this transaction's available native reasoning and tool evidence. "
-        "If reasoning is unavailable, rely on the completed Response and observed results. "
-        "Do not invent rationale or treat tool-reported outcomes as independently verified facts.\n"
-        "Earlier transactions are context, not subjects of this Memory. "
-        "Include earlier facts or dependencies only if necessary to explain the current Response; "
-        "do not recount earlier work or reproduce earlier Memories.\n"
-        "The Response is frozen. Do not revise it, continue execution, address the user, or call tools. "
-        "Do not repeat the transaction identifier in the Memory text: Jack owns the identity, "
-        "tool receipts, and Request/Response/Memory association."
+    "Distill the available native reasoning and material tool observations "
+    "from the immediately preceding completed answer, including this "
+    "user turn's tool continuations. Preserve what will matter in downstream "
+    "work and after context compaction: decisions and why, discoveries, "
+    "constraints, failed attempts and corrections, important evidence, "
+    "unresolved issues, and dependencies. Do not merely repeat the frozen "
+    "answer or recount earlier turns. Earlier work matters only where it "
+    "influenced a decision in this turn. Distinguish reported tool results "
+    "from independently verified effects. Keep as much detail as is useful, "
+    "without a required template. Do not continue the task, invoke tools, "
+    "or revise the completed answer."
 )
 
 
@@ -870,19 +867,6 @@ def _stage_continuation(
     )
     if AGENTIC_MODE and AGENTIC_TRANSACTION_LINKS_ENABLED and profile.name == "Agentic native pass 2":
         continuation = _AGENTIC_STAGE2_LINKED_CONTINUATION
-    if AGENTIC_MODE and AGENTIC_TRANSACTION_LINKS_ENABLED and profile.name == "Agentic native pass 2" and messages is not None:
-        # The ID comes from Jack's immutable current U/A1 journal binding, not
-        # text similarity, a client-provided ID, or a copied historical memory.
-        binding = _agentic_current_forensic_binding(list(messages))
-        if binding is not None:
-            label = _agentic_visible_turn_label(binding["turn_id"])
-            if label is not None:
-                # One ID, immediately after the continuation header. The Request,
-                # Response and historical Memory carry this same label in their
-                # model-facing projections; no repeated UUID prose is needed.
-                return continuation.replace(
-                    "\n", "\nCurrent transaction: [" + label + "].\n", 1
-                )
     if AGENTIC_MODE and AGENTIC_TASK_ANCHOR_ENABLED and profile.name == "Agentic native pass 2" and messages is not None:
         # Experimental forensic labels may be re-enabled, but the default
         # retrospective is the proven Phase-3G short continuation. The
@@ -4209,6 +4193,21 @@ def _stage2_reasoning_trace(reasoning: Optional[str]) -> Optional[str]:
     label = "AGENTIC NATIVE PASS 2" if AGENTIC_MODE else "DEEP RESEARCH RE-EVALUATION PASS 2"
     return f"===== JACK {label} =====\n[NATIVE REASONING]\n" + text
 
+def _agentic_historical_memory_view(memory: str, receipt: str) -> str:
+    """Keep forensic receipts and identity in the host, not repeated model text.
+
+    For linked turns the authenticated historical message sequence itself
+    establishes U -> M -> A1, while the journal retains exact owner and receipts.
+    Legacy history uses its prior annotated projection unchanged.
+    """
+    if AGENTIC_MODE and AGENTIC_TRANSACTION_LINKS_ENABLED:
+        return memory
+    return (
+        "[Agentic Memory associated with the preceding user request and following frozen response]\n"
+        + memory + receipt
+    )
+
+
 def _agentic_project_committed_artifact_pair(
     retained: List[Dict[str, Any]], assistant_text: str,
 ) -> Optional[List[Dict[str, Any]]]:
@@ -4277,7 +4276,7 @@ def _agentic_project_committed_artifact_pair(
     # Retrospective appears first; exact frozen A1 ends the old user turn.
     # This avoids priming the model to treat old memory as the latest answer.
     result = [
-        {"role": "assistant", "content": "[Agentic Memory associated with the preceding user request and following frozen response]\n" + memory + receipt},
+        {"role": "assistant", "content": _agentic_historical_memory_view(memory, receipt)},
         {"role": "assistant", "content": answer},
     ]
     forensic = _agentic_forensic_journal().match_visible(
@@ -5399,46 +5398,6 @@ class OpenAICompatibleBackend:
                 continue
 
             item = dict(message)
-            if AGENTIC_MODE and AGENTIC_TRANSACTION_LINKS_ENABLED:
-                # Labels are model-facing presentation only. Canonical user,
-                # frozen response, and memory remain byte-exact in the journal.
-                request_owner = item.get("_jack_agentic_turn_id") or item.get("_jack_forensic_turn_id")
-                historical_owner = item.get("_jack_forensic_turn_id")
-                if item.get("role") == "user":
-                    label = _agentic_visible_turn_label(request_owner)
-                    if label is not None and _agentic_task_marker_supported(item.get("content")):
-                        # Put host metadata BEFORE user content, so a model
-                        # cannot mistake a trailing marker for extra user intent.
-                        # Stable from Stage 1 through its tool continuations and
-                        # Stage 2; only the new turn's uncached suffix changes.
-                        head = "[" + label + "] Request\n"
-                        if isinstance(item.get("content"), str):
-                            item["content"] = head + item["content"]
-                        else:
-                            item["content"] = [
-                                {"type": "text", "text": head}
-                            ] + list(item["content"])
-                elif item.get("role") == "assistant" and isinstance(item.get("content"), str):
-                    if (
-                        profile.name == "Agentic native pass 2"
-                        and item.get("_jack_extended_candidate_response")
-                    ):
-                        # Append only at the completed-response boundary. Never
-                        # prefix/rewrite A1 or copy large inputs: Stage 1's
-                        # generated tokens can still form Stage 2's KV prefix.
-                        binding = _agentic_current_forensic_binding(source_messages)
-                        label = _agentic_visible_turn_label(binding["turn_id"]) if binding else None
-                        if label is not None:
-                            item["content"] += "\n[" + label + "] Response"
-                    elif item.get("_jack_forensic_role") in {"M", "A1"}:
-                        label = _agentic_visible_turn_label(historical_owner)
-                        if label is not None:
-                            if item["_jack_forensic_role"] == "M":
-                                item["content"] = "[" + label + "] Memory\n" + item["content"]
-                            else:
-                                # Stable tail matches the current Response
-                                # projection when this turn becomes historical.
-                                item["content"] += "\n[" + label + "] Response"
             if (
                 AGENTIC_MODE and AGENTIC_TASK_ANCHOR_ENABLED
                 and item.get("role") == "user"
@@ -10215,8 +10174,7 @@ def _agentic_forensic_project_visible(
     return [
         {
             "role": "assistant",
-            "content": "[Agentic Memory associated with the preceding user request and following frozen response]\n"
-                       + memory + receipt,
+            "content": _agentic_historical_memory_view(memory, receipt),
             "_jack_forensic_turn_id": record["turn_id"],
             "_jack_forensic_role": "M",
         },
