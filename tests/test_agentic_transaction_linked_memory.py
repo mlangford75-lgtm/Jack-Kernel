@@ -240,4 +240,3 @@ def test_authenticated_restart_recovery_keeps_cognitive_id_off_user_turn(monkeyp
     journal = k._agentic_forensic_journal().get(turn)
     assert journal["status"] == "complete"
     assert journal["a1_sha256"] == k._sha256_text("Created clock.svg")
-
