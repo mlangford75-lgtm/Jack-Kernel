@@ -128,7 +128,7 @@ def _commit_owned(k, user_text, answer, memory):
     wire = k._format_agentic_completed_response(
         committed.frozen_xml, committed.frozen_answer, turn_id=committed.agentic_turn_id
     )
-    assert wire.endswith("\\n\\n" + answer)
+    assert wire.endswith("\n\n" + answer)
     return turn, original_user, wire
 
 
@@ -142,10 +142,10 @@ def test_identical_completed_turns_recover_distinct_ids_after_restart(monkeypatc
     assert a != b
     assert wire_a != wire_b
     assert k._agentic_unwrap_visible_memory(wire_a) == (
-        a, identical_memory + "\\n\\n" + identical_answer
+        a, identical_memory + "\n\n" + identical_answer
     )
     assert k._agentic_unwrap_visible_memory(wire_b) == (
-        b, identical_memory + "\\n\\n" + identical_answer
+        b, identical_memory + "\n\n" + identical_answer
     )
 
     # Simulate restart: no process-local shadow records/lifecycles remain.
@@ -162,12 +162,12 @@ def test_identical_completed_turns_recover_distinct_ids_after_restart(monkeypatc
     ]
     rendered = k.BACKEND._stage_messages_for_profile(projected, k.STAGES["extended_initial"])
     label_a, label_b = k._agentic_visible_turn_label(a), k._agentic_visible_turn_label(b)
-    assert rendered[0]["content"].startswith("[" + label_a + "] Request\\n")
-    assert rendered[1]["content"].startswith("[" + label_a + "] Memory\\n")
-    assert rendered[2]["content"].endswith("\\n[" + label_a + "] Response")
-    assert rendered[3]["content"].startswith("[" + label_b + "] Request\\n")
-    assert rendered[4]["content"].startswith("[" + label_b + "] Memory\\n")
-    assert rendered[5]["content"].endswith("\\n[" + label_b + "] Response")
+    assert rendered[0]["content"].startswith("[" + label_a + "] Request\n")
+    assert rendered[1]["content"].startswith("[" + label_a + "] Memory\n")
+    assert rendered[2]["content"].endswith("\n[" + label_a + "] Response")
+    assert rendered[3]["content"].startswith("[" + label_b + "] Request\n")
+    assert rendered[4]["content"].startswith("[" + label_b + "] Memory\n")
+    assert rendered[5]["content"].endswith("\n[" + label_b + "] Response")
     assert not any("Reasoned about this turn." in str(item) for item in rendered)
     assert rendered[2]["content"].startswith(identical_answer)
     assert rendered[5]["content"].startswith(identical_answer)
