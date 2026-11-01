@@ -837,8 +837,8 @@ _STAGE_CONTINUATIONS = {
     "Agentic native pass 1": "Continue the current user turn.",
     "Agentic native pass 2": (
         "[JACK RUNTIME STAGE CONTINUATION - NOT USER CONTENT - SAME USER TURN]\n"
-        "The immediately preceding assistant response is the completed, frozen Stage-1 answer. This is a retrospective memory pass, not a new user request. Explain why Stage 1 reached that answer using available Stage-1 reasoning and observed tool outcomes. Do not continue the task, address the user, ask questions, offer revisions, or emit tool calls."
-        "\nPreserve Stage 1's actual reasoning and rationale, but do not elevate assumptions, predictions, or tool-reported results into independently verified facts. Distinguish what was intended, what tools reported, and what was actually observed."
+        "The immediately preceding assistant response is the completed, frozen Response for the current Request. Produce a retrospective Memory of that Response using available reasoning and observed tool outcomes. Earlier Responses and Memories are historical context, not the target. Do not continue the task, address the user, ask questions, offer revisions, or emit tool calls."
+        "\nPreserve the Response's actual rationale, but do not elevate assumptions, predictions, or tool-reported results into independently verified facts. Distinguish what was intended, what tools reported, and what was actually observed."
     ),
 }
 
@@ -849,6 +849,20 @@ def _stage_continuation(
     continuation = _STAGE_CONTINUATIONS.get(
         profile.name, "Continue the requested task using the preceding conversation."
     )
+    if AGENTIC_MODE and AGENTIC_TRANSACTION_LINKS_ENABLED and profile.name == "Agentic native pass 2" and messages is not None:
+        # The ID comes from Jack's immutable current U/A1 journal binding, not
+        # text similarity, a client-provided ID, or a copied historical memory.
+        binding = _agentic_current_forensic_binding(list(messages))
+        if binding is not None:
+            label = _agentic_visible_turn_label(binding["turn_id"])
+            if label is not None:
+                return (
+                    continuation
+                    + "\n[" + label + "] Memory must describe [" + label
+                    + "] Response for [" + label + "] Request. "
+                    + "Only the completed Response directly before this instruction "
+                    + "is the retrospective target."
+                )
     if AGENTIC_MODE and AGENTIC_TASK_ANCHOR_ENABLED and profile.name == "Agentic native pass 2" and messages is not None:
         # Experimental forensic labels may be re-enabled, but the default
         # retrospective is the proven Phase-3G short continuation. The
@@ -992,6 +1006,30 @@ AGENTIC_TASK_ANCHOR_ENABLED = (
     os.environ.get("JACK_AGENTIC_TASK_ANCHOR", "0").strip().lower()
     in {"1", "true", "yes", "on"}
 )
+
+# Model-visible per-turn Request/Response/Memory associations. This reuses the
+# existing durable host-minted UUID, so no second identity system is created.
+# Set to 0 for a clean Phase-3G comparison. The old forensic-label experiment
+# is mutually exclusive when explicitly enabled for historical A/B testing.
+AGENTIC_TRANSACTION_LINKS_ENABLED = (
+    os.environ.get("JACK_AGENTIC_TRANSACTION_LINKS", "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+) and not AGENTIC_TASK_ANCHOR_ENABLED
+
+
+def _agentic_visible_turn_label(turn_id: Any) -> Optional[str]:
+    """Compact lossless representation of the full host-owned UUID (128 bits).
+
+    No truncated/random alias, sequence number or user-provided marker can
+    collide with another valid UUID in the model-facing turn history.
+    """
+    if not (isinstance(turn_id, str) and turn_id.startswith("jack-turn-")):
+        return None
+    try:
+        value = uuid.UUID(hex=turn_id[len("jack-turn-"):])
+    except (ValueError, AttributeError):
+        return None
+    return base64.urlsafe_b64encode(value.bytes).decode("ascii").rstrip("=")
 
 
 # Canonical Agentic lifecycle: previous-turn R2 remains throughout the
@@ -5303,6 +5341,42 @@ class OpenAICompatibleBackend:
                 continue
 
             item = dict(message)
+            if AGENTIC_MODE and AGENTIC_TRANSACTION_LINKS_ENABLED:
+                # Labels are model-facing presentation only. Canonical user,
+                # frozen response, and memory remain byte-exact in the journal.
+                request_owner = item.get("_jack_agentic_turn_id") or item.get("_jack_forensic_turn_id")
+                historical_owner = item.get("_jack_forensic_turn_id")
+                if item.get("role") == "user":
+                    label = _agentic_visible_turn_label(request_owner)
+                    if label is not None and _agentic_task_marker_supported(item.get("content")):
+                        tail = "\n[" + label + "] Request"
+                        if isinstance(item.get("content"), str):
+                            item["content"] += tail
+                        else:
+                            item["content"] = list(item["content"]) + [
+                                {"type": "text", "text": tail}
+                            ]
+                elif item.get("role") == "assistant" and isinstance(item.get("content"), str):
+                    if (
+                        profile.name == "Agentic native pass 2"
+                        and item.get("_jack_extended_candidate_response")
+                    ):
+                        # Append only at the completed-response boundary. Never
+                        # prefix/rewrite A1 or copy large inputs: Stage 1's
+                        # generated tokens can still form Stage 2's KV prefix.
+                        binding = _agentic_current_forensic_binding(source_messages)
+                        label = _agentic_visible_turn_label(binding["turn_id"]) if binding else None
+                        if label is not None:
+                            item["content"] += "\n[" + label + "] Response"
+                    elif item.get("_jack_forensic_role") in {"M", "A1"}:
+                        label = _agentic_visible_turn_label(historical_owner)
+                        if label is not None:
+                            if item["_jack_forensic_role"] == "M":
+                                item["content"] = "[" + label + "] Memory\n" + item["content"]
+                            else:
+                                # Stable tail matches the current Response
+                                # projection when this turn becomes historical.
+                                item["content"] += "\n[" + label + "] Response"
             if (
                 AGENTIC_MODE and AGENTIC_TASK_ANCHOR_ENABLED
                 and item.get("role") == "user"
