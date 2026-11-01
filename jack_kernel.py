@@ -1034,6 +1034,14 @@ AGENTIC_DIFFERENTIAL_MEMORY_EXPERIMENT = (
     in {"1", "true", "yes", "on"}
 )
 
+# Experimental Nemotron chat-template compatibility switch. Off by default;
+# apply only to Agentic Stage 2 on LM Studio with a Nemotron backend model.
+# The template normally discards reasoning before the latest user message.
+NEMOTRON_STAGE2_RETAIN_THINKING_EXPERIMENT = (
+    os.environ.get("JACK_NEMOTRON_STAGE2_RETAIN_THINKING", "0").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+
 
 def _agentic_visible_turn_label(turn_id: Any) -> Optional[str]:
     """Compact lossless representation of the full host-owned UUID (128 bits).
@@ -5510,6 +5518,22 @@ class OpenAICompatibleBackend:
             )
         if profile.thinking and profile.reasoning_effort:
             kwargs["reasoning_effort"] = profile.reasoning_effort
+
+        # Nemotron 3.5's official template defaults to truncating historical
+        # reasoning before the most recent user message. Agentic Stage 2's
+        # cache-friendly appended instruction is such a user message, so the
+        # frozen Stage-1 reasoning would otherwise be invisible to Stage 2.
+        # Opt-in only: the rendered KV prefix may change; measure live TTFT.
+        if (
+            NEMOTRON_STAGE2_RETAIN_THINKING_EXPERIMENT
+            and AGENTIC_MODE
+            and profile.name == "Agentic native pass 2"
+            and profile.thinking
+            and self.cfg.backend_profile == "lmstudio"
+            and "nemotron" in str(payload.get("model", "")).lower()
+            and self.cfg.qwen_control_shape in {"template_kwargs", "hybrid"}
+        ):
+            kwargs["truncate_history_thinking"] = False
 
         shape = self.cfg.qwen_control_shape
         if shape in {"template_kwargs", "hybrid"}:
