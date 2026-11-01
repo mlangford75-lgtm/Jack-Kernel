@@ -852,15 +852,25 @@ def _stage_continuation(
     if AGENTIC_MODE and profile.name == "Agentic native pass 2" and messages is not None:
         binding = _agentic_current_forensic_binding(list(messages))
         if binding is not None:
-            # Append only after the immutable Stage-1 prefix. Frozen prompts, A1,
-            # tool schemas and Preserve Thinking remain exactly as before.
-            return continuation + (
+            # Only append after frozen A1. Never restate the request/codebase or
+            # mutate the cached Stage-1 message prefix.
+            target = (
                 "\n[JACK FORENSIC TARGET | turn=" + binding["turn_id"]
                 + " | request=" + binding["request_sha256"][:16]
                 + " | frozen_A1=" + binding["a1_sha256"][:16]
                 + "]\nExplain ONLY this turn's completed Stage 1. "
                 "Previous memories and answers are historical, not the target."
             )
+            if AGENTIC_TASK_ANCHOR_ENABLED:
+                target += (
+                    "\n[JACK TASK SCOPE | turn=" + binding["turn_id"] + "]\n"
+                    "Retrospect only on the Stage-1 execution for the user message "
+                    "marked [JACK LINK turn=" + binding["turn_id"] + " | artifact=U] "
+                    "and its frozen Stage-1 answer. Other tasks and their memories "
+                    "are background, not the subject of this retrospective. "
+                    "This control message is not a separate task."
+                )
+            return continuation + target
     return continuation
 
 ULTRA_STAGE2_TRANSITION_BRIDGE = "THESIS COMPLETE. PROCEED TO ANTITHESIS."
@@ -966,6 +976,14 @@ def _append_ultra_stage_generation_trigger(
 # (from system to appended user), so results must be evaluated empirically.
 AGENTIC_CACHE_APPEND_EXPERIMENT = (
     os.environ.get("JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT", "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+
+# Introduce U identity at the tail of its model-facing content, never before a
+# potentially massive input. Keep both frozen cognition prompts unchanged.
+# Set to 0 for a clean hardware A/B or to roll back the model-facing projection.
+AGENTIC_TASK_ANCHOR_ENABLED = (
+    os.environ.get("JACK_AGENTIC_TASK_ANCHOR", "1").strip().lower()
     in {"1", "true", "yes", "on"}
 )
 
@@ -3308,6 +3326,18 @@ def has_user_message(messages: Iterable[Dict[str, Any]]) -> bool:
     return any(m.get("role") == "user" for m in messages)
 
 
+def _jack_is_authentic_user_message(message: Any) -> bool:
+    """Exclude host-generated user-role stage/repair controls from task ownership."""
+    return bool(
+        isinstance(message, dict)
+        and message.get("role") == "user"
+        and not any(
+            isinstance(key, str) and key.startswith("_jack_internal_") and bool(value)
+            for key, value in message.items()
+        )
+    )
+
+
 def active_response_target(messages: Iterable[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """Bind the response transaction to the latest user-role turn in its frozen history.
 
@@ -3321,9 +3351,7 @@ def active_response_target(messages: Iterable[Dict[str, Any]]) -> Optional[Dict[
     sequence = list(messages)
     for index in range(len(sequence) - 1, -1, -1):
         message = sequence[index]
-        if not isinstance(message, dict) or message.get("role") != "user":
-            continue
-        if message.get("_jack_internal_stage_generation_trigger"):
+        if not _jack_is_authentic_user_message(message):
             continue
         content = message.get("content")
         text = _content_to_text(content)
@@ -4065,7 +4093,7 @@ def _agentic_project_committed_artifact_pair(
         return None
     latest_user = next(
         (item for item in reversed(retained)
-         if isinstance(item, dict) and item.get("role") == "user"),
+         if _jack_is_authentic_user_message(item)),
         None,
     )
     if latest_user is None:
@@ -4347,7 +4375,7 @@ def _compact_agentic_completed_capsules(
     compact = strip_secondary_system_messages(messages)
     latest_user_index: Optional[int] = None
     for index in range(len(compact) - 1, -1, -1):
-        if isinstance(compact[index], dict) and compact[index].get("role") == "user":
+        if _jack_is_authentic_user_message(compact[index]):
             latest_user_index = index
             break
     if latest_user_index is None:
@@ -4368,7 +4396,7 @@ def _compact_agentic_completed_capsules(
         if not isinstance(raw, dict):
             continue
         role = raw.get("role")
-        if role == "user":
+        if role == "user" and _jack_is_authentic_user_message(raw):
             item = dict(raw)
             for key in tuple(item.keys()):
                 if isinstance(key, str) and key.startswith("_jack_"):
@@ -4778,6 +4806,17 @@ def sanitize_agent_request(request_body: Dict[str, Any]) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail="Request body must be a JSON object")
 
     messages = request_body.get("messages")
+    # Client-provided _jack_ fields cannot impersonate host-owned messages or
+    # select/erase the task. The shallow copy never duplicates large code/text.
+    if isinstance(messages, list):
+        messages = [
+            {k: v for k, v in message.items()
+             if not (isinstance(k, str) and k.startswith("_jack_"))}
+            if isinstance(message, dict)
+            and any(isinstance(k, str) and k.startswith("_jack_") for k in message)
+            else message
+            for message in messages
+        ]
     tools = request_body.get("tools") if isinstance(request_body.get("tools"), list) else None
     sanitized: Dict[str, Any] = {
         # Request payloads are treated as immutable after validation. Downstream
@@ -5219,6 +5258,16 @@ class OpenAICompatibleBackend:
                 continue
 
             item = dict(message)
+            if (
+                AGENTIC_MODE and AGENTIC_TASK_ANCHOR_ENABLED
+                and item.get("role") == "user"
+                and isinstance(item.get("content"), str)
+            ):
+                task_id = item.get("_jack_agentic_turn_id") or item.get("_jack_forensic_turn_id")
+                if isinstance(task_id, str) and task_id.startswith("jack-turn-"):
+                    # Trailing U marker is stable in Stage 1, tool resumes,
+                    # Stage 2 and authenticated later history projections.
+                    item["content"] += "\n[JACK LINK turn=" + task_id + " | artifact=U]"
             if (
                 AGENTIC_MODE and item.get("_jack_forensic_turn_id")
                 and item.get("_jack_forensic_role") in {"M", "A1"}
@@ -9873,8 +9922,7 @@ def _agentic_forensic_project_visible(
     No hidden text is stored; ambiguous duplicate U/M/A records remain opaque.
     """
     latest_user = next(
-        (m for m in reversed(retained)
-         if isinstance(m, dict) and m.get("role") == "user"), None
+        (m for m in reversed(retained) if _jack_is_authentic_user_message(m)), None
     )
     if latest_user is None:
         return None
