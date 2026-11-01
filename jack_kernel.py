@@ -846,19 +846,20 @@ _STAGE_CONTINUATIONS = {
 # continuation, not either frozen cognition prompt or the Stage-2 cache path.
 _AGENTIC_STAGE2_LINKED_CONTINUATION = (
     "[JACK MEMORY CONTINUATION - SAME TURN]\n"
-    "Review the current transaction's Stage 1 native reasoning and frozen response "
-    "in relation to its user request.\n\n"
-    "Preserve the decisions, rationale, important discoveries, constraints, and "
-    "unresolved issues that may benefit future turns.\n\n"
-    "Use the frozen response and current-turn tool evidence to distinguish actual "
-    "outcomes from intentions and speculation.\n\n"
-    "Earlier transactions are context, not work performed during this transaction. "
-    "Reference them only when necessary to explain the current response or when "
-    "the current request specifically concerns earlier work.\n\n"
-    "Do not re-solve the task, reconsider its conclusions, summarize unrelated "
-    "transactions, or revise the frozen response.\n\n"
-    "Produce only the retrospective memory. Do not generate transaction identifiers "
-    "or runtime labels."
+    "Distill ONLY the Stage 1 native reasoning of THIS transaction, including "
+    "reasoning across its tool continuations. Do not review the conversation.\n"
+    "Keep decisions and why, useful discoveries, constraints, failed approaches, "
+    "and unresolved issues for later turns. Use the frozen Stage 1 response to "
+    "identify what THIS turn delivered; ground actions and results ONLY in this "
+    "turn's tool calls and results. Distinguish intentions, tool reports, "
+    "and verified outcomes.\n"
+    "Do not summarize any previous turn's reasoning, tools, Memory, or Response. "
+    "If current Stage 1 relied on prior work, note only the specific dependency "
+    "and its effect on THIS turn's decision. If the current task asked about "
+    "history, capture the comparison or inference performed NOW, not the "
+    "earlier turns' narratives.\n"
+    "Do not re-solve the task, revise the frozen response, call tools, or produce "
+    "runtime identifiers/labels. Output only the current Stage 1 reasoning distillation."
 )
 
 
