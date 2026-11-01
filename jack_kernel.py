@@ -4808,7 +4808,11 @@ def sanitize_agent_request(request_body: Dict[str, Any]) -> Dict[str, Any]:
     messages = request_body.get("messages")
     # Client-provided _jack_ fields cannot impersonate host-owned messages or
     # select/erase the task. The shallow copy never duplicates large code/text.
-    if isinstance(messages, list):
+    if isinstance(messages, list) and any(
+        isinstance(message, dict)
+        and any(isinstance(k, str) and k.startswith("_jack_") for k in message)
+        for message in messages
+    ):
         messages = [
             {k: v for k, v in message.items()
              if not (isinstance(k, str) and k.startswith("_jack_"))}
