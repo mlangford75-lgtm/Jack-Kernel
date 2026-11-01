@@ -1021,6 +1021,15 @@ AGENTIC_TRANSACTION_LINKS_ENABLED = (
     in {"1", "true", "yes", "on"}
 ) and not AGENTIC_TASK_ANCHOR_ENABLED
 
+# Experimental A/B: expose at most one opaque turn ID on the user message,
+# without repeating Request/Memory/Response labels on historical artifacts.
+# The default keeps identifiers entirely in the authenticated host journal.
+AGENTIC_MODEL_TURN_ID_ENABLED = (
+    AGENTIC_TRANSACTION_LINKS_ENABLED
+    and os.environ.get("JACK_AGENTIC_MODEL_TURN_ID", "0").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+
 
 def _agentic_visible_turn_label(turn_id: Any) -> Optional[str]:
     """Compact lossless representation of the full host-owned UUID (128 bits).
@@ -5398,6 +5407,17 @@ class OpenAICompatibleBackend:
                 continue
 
             item = dict(message)
+            if AGENTIC_MODEL_TURN_ID_ENABLED and item.get("role") == "user":
+                turn_id = item.get("_jack_agentic_turn_id") or item.get("_jack_forensic_turn_id")
+                label = _agentic_visible_turn_label(turn_id)
+                if label is not None and _agentic_task_marker_supported(item.get("content")):
+                    # Exactly one compact identity, attached to U. The following
+                    # M/A messages are paired by ordering, not repeated labels.
+                    head = "[" + label + "]\n"
+                    if isinstance(item["content"], str):
+                        item["content"] = head + item["content"]
+                    else:
+                        item["content"] = [{"type": "text", "text": head}] + list(item["content"])
             if (
                 AGENTIC_MODE and AGENTIC_TASK_ANCHOR_ENABLED
                 and item.get("role") == "user"
