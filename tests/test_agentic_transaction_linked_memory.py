@@ -13,12 +13,13 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def kernel(monkeypatch, tmp_path, *, links=True):
+def kernel(monkeypatch, tmp_path, *, links=True, model_id=False):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
     monkeypatch.setenv("JACK_BACKEND_MODEL", "test-model")
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT", "1")
     monkeypatch.setenv("JACK_AGENTIC_TRANSACTION_LINKS", "1" if links else "0")
+    monkeypatch.setenv("JACK_AGENTIC_MODEL_TURN_ID", "1" if model_id else "0")
     monkeypatch.setenv("JACK_AGENTIC_TASK_ANCHOR", "0")
     monkeypatch.setenv("JACK_FORENSIC_ARCHIVE_MODE", "off")
     monkeypatch.setenv("JACK_AGENTIC_FORENSIC_DB", str(tmp_path / (uuid.uuid4().hex + ".sqlite")))
@@ -30,51 +31,54 @@ def kernel(monkeypatch, tmp_path, *, links=True):
     return mod
 
 
+
 @pytest.mark.parametrize("structured", [False, True])
-def test_request_response_memory_same_unique_id_without_rewriting_frozen_a1(monkeypatch, tmp_path, structured):
-    k = kernel(monkeypatch, tmp_path)
+@pytest.mark.parametrize("model_id", [False, True])
+def test_current_turn_reasoning_and_cache_prefix_without_role_labels(monkeypatch, tmp_path, structured, model_id):
+    k = kernel(monkeypatch, tmp_path, model_id=model_id)
     raw = [{"type": "text", "text": "Create a clock SVG"}] if structured else "Create a clock SVG"
     history = [{"role": "user", "content": raw}]
     turn = k._agentic_begin_turn(history, fresh=True)
     label = k._agentic_visible_turn_label(turn)
     assert len(label) == 22
-    assert re.fullmatch(r"[A-Za-z0-9_-]{22}", label)
-    request_view = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_initial"])
-    if structured:
-        assert request_view[0]["content"][0]["text"] == "[" + label + "] Request\n"
-        assert request_view[0]["content"][1:] == raw
+    stage1 = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_initial"])
+    if model_id:
+        if structured:
+            assert stage1[0]["content"] == [{"type": "text", "text": "[" + label + "]\n"}] + raw
+        else:
+            assert stage1[0]["content"] == "[" + label + "]\n" + raw
     else:
-        assert request_view[0]["content"].startswith("[" + label + "] Request\n")
-        assert request_view[0]["content"].endswith("Create a clock SVG")
+        assert stage1[0]["content"] == raw
     assert history[0]["content"] == raw
-
     frozen = k.append_extended_candidate_response(history, {
         "content": "Created clock.svg",
         "reasoning_content": "Clock face and bird were required.",
     })
     k._agentic_forensic_start_stage2(history)
-    memory_view = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_reflection"])
-    assert memory_view[:len(request_view)] == request_view
-    assert memory_view[-1]["content"] == frozen + "\n[" + label + "] Response"
-    assert memory_view[-1]["reasoning_content"] == "Clock face and bird were required."
+    stage2 = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_reflection"])
+    assert stage2[:len(stage1)] == stage1
+    assert stage2[-1]["content"] == frozen
+    assert stage2[-1]["reasoning_content"] == "Clock face and bird were required."
     assert history[-1]["content"] == frozen
     continuation = k._stage_continuation(k.STAGES["extended_reflection"], history)
-    assert continuation.count(label) == 1
-    assert "Current transaction: [" + label + "]" in continuation
-    assert "Earlier transactions are context, not subjects" in continuation
-    assert "Do not revise it" in continuation
-    assert "Stage 1" not in continuation and "Stage-1" not in continuation
+    assert "native reasoning" in continuation
+    assert "tool observations" in continuation
+    assert "context compaction" in continuation
+    assert "decisions and why" in continuation
+    assert "Do not continue the task" in continuation
+    assert label not in continuation
+    assert "[JACK" not in continuation
     assert k.AGENTIC_36_STAGE2_PROMPT == "Generate a detailed summary of why you came to this conclusion."
     assert k.AGENTIC_STAGE1_PROMPT.startswith("Reasoning effort is set to xhigh.")
+    assert k._agentic_cache_append_enabled(k.STAGES["extended_reflection"])
 
 
-def test_two_turns_distinct_labels_and_historical_projection(monkeypatch, tmp_path):
-    k = kernel(monkeypatch, tmp_path)
-    hist = [{"role": "user", "content": "Change bird to blue"}]
-    a = k._agentic_begin_turn(hist, fresh=True)
+@pytest.mark.parametrize("model_id", [False, True])
+def test_unique_ids_and_natural_historical_projection(monkeypatch, tmp_path, model_id):
+    k = kernel(monkeypatch, tmp_path, model_id=model_id)
+    older_turn = [{"role": "user", "content": "Change bird to blue"}]
+    a = k._agentic_begin_turn(older_turn, fresh=True)
     label_a = k._agentic_visible_turn_label(a)
-    k.append_extended_candidate_response(hist, {"content": "Bird turned blue"})
-    k._agentic_forensic_start_stage2(hist)
     older = [
         {"role": "user", "content": "Change bird to blue", "_jack_forensic_turn_id": a},
         {"role": "assistant", "content": "Changed bird only", "_jack_forensic_turn_id": a, "_jack_forensic_role": "M"},
@@ -85,11 +89,18 @@ def test_two_turns_distinct_labels_and_historical_projection(monkeypatch, tmp_pa
     label_b = k._agentic_visible_turn_label(b)
     assert a != b and label_a != label_b
     view = k.BACKEND._stage_messages_for_profile(older + new, k.STAGES["extended_initial"])
-    assert "[" + label_a + "] Request" in view[0]["content"]
-    assert view[1]["content"].startswith("[" + label_a + "] Memory\n")
-    assert view[2]["content"].endswith("\n[" + label_a + "] Response")
-    assert "[" + label_b + "] Request" in view[3]["content"]
-    assert label_b not in str(view[:3])
+    assert [v["role"] for v in view] == ["user", "assistant", "assistant", "user"]
+    assert view[1]["content"] == "Changed bird only"
+    assert view[2]["content"] == "Bird turned blue"
+    if model_id:
+        assert view[0]["content"] == "[" + label_a + "]\nChange bird to blue"
+        assert view[3]["content"] == "[" + label_b + "]\nChange bird to blue"
+    else:
+        assert view[0]["content"] == "Change bird to blue"
+        assert view[3]["content"] == "Change bird to blue"
+    assert "] Request" not in str(view)
+    assert "] Memory" not in str(view)
+    assert "] Response" not in str(view)
 
 
 def test_feature_flag_restores_phase3g_text_and_prefix(monkeypatch, tmp_path):
@@ -162,12 +173,12 @@ def test_identical_completed_turns_recover_distinct_ids_after_restart(monkeypatc
     ]
     rendered = k.BACKEND._stage_messages_for_profile(projected, k.STAGES["extended_initial"])
     label_a, label_b = k._agentic_visible_turn_label(a), k._agentic_visible_turn_label(b)
-    assert rendered[0]["content"].startswith("[" + label_a + "] Request\n")
-    assert rendered[1]["content"].startswith("[" + label_a + "] Memory\n")
-    assert rendered[2]["content"].endswith("\n[" + label_a + "] Response")
-    assert rendered[3]["content"].startswith("[" + label_b + "] Request\n")
-    assert rendered[4]["content"].startswith("[" + label_b + "] Memory\n")
-    assert rendered[5]["content"].endswith("\n[" + label_b + "] Response")
+    assert [m["content"] for m in rendered[:6]] == [
+        identical_user, identical_memory, identical_answer,
+        identical_user, identical_memory, identical_answer,
+    ]
+    assert all(label not in str(rendered) for label in (label_a, label_b))
+    assert "Host-Recorded Receipt" not in str(rendered)
     assert not any("Reasoned about this turn." in str(item) for item in rendered)
     assert rendered[2]["content"].startswith(identical_answer)
     assert rendered[5]["content"].startswith(identical_answer)
@@ -206,3 +217,25 @@ def test_legacy_visible_capsule_remains_unmarked_and_compatible(monkeypatch, tmp
     assert [m["role"] for m in view] == ["user", "assistant", "assistant", "user"]
     assert view[2]["content"] == "Legacy answer"
     assert k._agentic_forensic_journal().get(turn)["status"] == "complete"
+
+def test_authenticated_restart_recovery_without_model_visible_labels(monkeypatch, tmp_path):
+    k = kernel(monkeypatch, tmp_path)
+    turn, user, wire = _commit_owned(
+        k, "Build clock", "Created clock.svg", "Chose SVG to preserve scaling."
+    )
+    assert "[" + k._agentic_visible_turn_label(turn) + "] Memory" in wire
+    k._AGENTIC_SHADOW_LEDGER.clear()
+    k._AGENTIC_TURN_LIFECYCLES.clear()
+    projected = k.compact_incoming_history([
+        user, {"role": "assistant", "content": wire},
+        {"role": "user", "content": "Why SVG?"},
+    ])
+    assert [m.get("_jack_forensic_turn_id") for m in projected[:3]] == [turn] * 3
+    assert projected[1]["content"] == "Chose SVG to preserve scaling."
+    rendered = k.BACKEND._stage_messages_for_profile(projected, k.STAGES["extended_initial"])
+    assert [m["content"] for m in rendered[:3]] == [
+        "Build clock", "Chose SVG to preserve scaling.", "Created clock.svg",
+    ]
+    journal = k._agentic_forensic_journal().get(turn)
+    assert journal["status"] == "complete"
+    assert journal["a1_sha256"] == k._sha256_text("Created clock.svg")
