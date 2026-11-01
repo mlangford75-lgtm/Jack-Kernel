@@ -34,7 +34,7 @@ def kernel(monkeypatch, tmp_path, *, links=True, model_id=False):
 
 @pytest.mark.parametrize("structured", [False, True])
 @pytest.mark.parametrize("model_id", [False, True])
-def test_current_turn_reasoning_and_cache_prefix_without_role_labels(monkeypatch, tmp_path, structured, model_id):
+def test_current_turn_reasoning_and_cache_prefix_without_user_id_injection(monkeypatch, tmp_path, structured, model_id):
     k = kernel(monkeypatch, tmp_path, model_id=model_id)
     raw = [{"type": "text", "text": "Create a clock SVG"}] if structured else "Create a clock SVG"
     history = [{"role": "user", "content": raw}]
@@ -42,13 +42,9 @@ def test_current_turn_reasoning_and_cache_prefix_without_role_labels(monkeypatch
     label = k._agentic_visible_turn_label(turn)
     assert len(label) == 22
     stage1 = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_initial"])
-    if model_id:
-        if structured:
-            assert stage1[0]["content"] == [{"type": "text", "text": "[" + label + "]\n"}] + raw
-        else:
-            assert stage1[0]["content"] == "[" + label + "]\n" + raw
-    else:
-        assert stage1[0]["content"] == raw
+    # Even the cognitive-ID variant MUST NOT contaminate live user intent.
+    assert stage1[0]["content"] == raw
+    assert label not in str(stage1)
     assert history[0]["content"] == raw
     frozen = k.append_extended_candidate_response(history, {
         "content": "Created clock.svg",
@@ -62,9 +58,10 @@ def test_current_turn_reasoning_and_cache_prefix_without_role_labels(monkeypatch
     assert history[-1]["content"] == frozen
     continuation = k._stage_continuation(k.STAGES["extended_reflection"], history)
     assert "native reasoning" in continuation
-    assert "tool observations" in continuation
+    assert "tool continuations" in continuation
     assert "context compaction" in continuation
-    assert "decisions and why" in continuation
+    assert "Earlier tasks and their memories are background" in continuation
+    assert "Do not reconstruct the conversation" in continuation
     assert "Do not continue the task" in continuation
     assert label not in continuation
     assert "[JACK" not in continuation
@@ -81,8 +78,10 @@ def test_unique_ids_and_natural_historical_projection(monkeypatch, tmp_path, mod
     label_a = k._agentic_visible_turn_label(a)
     older = [
         {"role": "user", "content": "Change bird to blue", "_jack_forensic_turn_id": a},
-        {"role": "assistant", "content": "Changed bird only", "_jack_forensic_turn_id": a, "_jack_forensic_role": "M"},
-        {"role": "assistant", "content": "Bird turned blue", "_jack_forensic_turn_id": a, "_jack_forensic_role": "A1"},
+        {"role": "assistant", "content": k._agentic_historical_memory_view("Changed bird only", "", a),
+         "_jack_forensic_turn_id": a, "_jack_forensic_role": "M"},
+        {"role": "assistant", "content": "Bird turned blue",
+         "_jack_forensic_turn_id": a, "_jack_forensic_role": "A1"},
     ]
     new = [{"role": "user", "content": "Change bird to blue"}]
     b = k._agentic_begin_turn(new, fresh=True)
@@ -90,14 +89,13 @@ def test_unique_ids_and_natural_historical_projection(monkeypatch, tmp_path, mod
     assert a != b and label_a != label_b
     view = k.BACKEND._stage_messages_for_profile(older + new, k.STAGES["extended_initial"])
     assert [v["role"] for v in view] == ["user", "assistant", "assistant", "user"]
-    assert view[1]["content"] == "Changed bird only"
+    assert view[0]["content"] == "Change bird to blue"
+    assert view[3]["content"] == "Change bird to blue"
     assert view[2]["content"] == "Bird turned blue"
-    if model_id:
-        assert view[0]["content"] == "[" + label_a + "]\nChange bird to blue"
-        assert view[3]["content"] == "[" + label_b + "]\nChange bird to blue"
-    else:
-        assert view[0]["content"] == "Change bird to blue"
-        assert view[3]["content"] == "Change bird to blue"
+    assert view[1]["content"] == (
+        "Changed bird only\n[" + label_a + "]" if model_id else "Changed bird only"
+    )
+    assert label_b not in str(view)
     assert "] Request" not in str(view)
     assert "] Memory" not in str(view)
     assert "] Response" not in str(view)
@@ -218,8 +216,8 @@ def test_legacy_visible_capsule_remains_unmarked_and_compatible(monkeypatch, tmp
     assert view[2]["content"] == "Legacy answer"
     assert k._agentic_forensic_journal().get(turn)["status"] == "complete"
 
-def test_authenticated_restart_recovery_without_model_visible_labels(monkeypatch, tmp_path):
-    k = kernel(monkeypatch, tmp_path)
+def test_authenticated_restart_recovery_keeps_cognitive_id_off_user_turn(monkeypatch, tmp_path):
+    k = kernel(monkeypatch, tmp_path, model_id=True)
     turn, user, wire = _commit_owned(
         k, "Build clock", "Created clock.svg", "Chose SVG to preserve scaling."
     )
@@ -231,11 +229,15 @@ def test_authenticated_restart_recovery_without_model_visible_labels(monkeypatch
         {"role": "user", "content": "Why SVG?"},
     ])
     assert [m.get("_jack_forensic_turn_id") for m in projected[:3]] == [turn] * 3
-    assert projected[1]["content"] == "Chose SVG to preserve scaling."
+    assert projected[1]["content"] == (
+        "Chose SVG to preserve scaling.\n[" + k._agentic_visible_turn_label(turn) + "]"
+    )
     rendered = k.BACKEND._stage_messages_for_profile(projected, k.STAGES["extended_initial"])
-    assert [m["content"] for m in rendered[:3]] == [
-        "Build clock", "Chose SVG to preserve scaling.", "Created clock.svg",
-    ]
+    assert rendered[0]["content"] == "Build clock"
+    assert rendered[1]["content"] == projected[1]["content"]
+    assert rendered[2]["content"] == "Created clock.svg"
+    assert rendered[3]["content"] == "Why SVG?"
     journal = k._agentic_forensic_journal().get(turn)
     assert journal["status"] == "complete"
     assert journal["a1_sha256"] == k._sha256_text("Created clock.svg")
+
