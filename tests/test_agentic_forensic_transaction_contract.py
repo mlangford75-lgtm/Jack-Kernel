@@ -17,6 +17,8 @@ def load_kernel(monkeypatch, tmp_path):
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
     monkeypatch.setenv("JACK_BACKEND_MODEL", "test-model")
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT", "1")
+    # This legacy test explicitly verifies the opt-in forensic model-visible view.
+    monkeypatch.setenv("JACK_AGENTIC_TASK_ANCHOR", "1")
     monkeypatch.setenv("JACK_FORENSIC_ARCHIVE_MODE", "off")
     monkeypatch.setenv("JACK_AGENTIC_FORENSIC_DB", str(tmp_path / "forensic.sqlite"))
     name = "jack_forensic_" + uuid.uuid4().hex
