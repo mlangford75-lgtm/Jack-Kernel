@@ -836,6 +836,15 @@ _STAGE_CONTINUATIONS = {
     "Native answer": "Continue the original user request.",
     "Agentic native pass 1": "Continue the current user turn.",
     "Agentic native pass 2": (
+        "[JACK RUNTIME STAGE CONTINUATION - NOT USER CONTENT - SAME USER TURN]\n"
+        "The immediately preceding assistant response is the completed, frozen Response for the current Request. This is a retrospective memory pass, not a new user request. Produce a Memory of that Response using available reasoning and observed tool outcomes. Earlier Responses and Memories are historical context, not the target. Do not continue the task, address the user, ask questions, offer revisions, or emit tool calls."
+        "\nPreserve the Response's actual rationale, but do not elevate assumptions, predictions, or tool-reported results into independently verified facts. Distinguish what was intended, what tools reported, and what was actually observed."
+    ),
+}
+
+# The opt-in linked-transaction retrospective replaces only Jack's auxiliary
+# continuation, not either frozen cognition prompt or the Stage-2 cache path.
+_AGENTIC_STAGE2_LINKED_CONTINUATION = (
         "[JACK MEMORY CONTINUATION - SAME TURN]\n"
         "This conclusion means the frozen Response of the current transaction. "
         "Create a Memory of what this transaction accomplished and why. "
@@ -860,6 +869,8 @@ def _stage_continuation(
     continuation = _STAGE_CONTINUATIONS.get(
         profile.name, "Continue the requested task using the preceding conversation."
     )
+    if AGENTIC_MODE and AGENTIC_TRANSACTION_LINKS_ENABLED and profile.name == "Agentic native pass 2":
+        continuation = _AGENTIC_STAGE2_LINKED_CONTINUATION
     if AGENTIC_MODE and AGENTIC_TRANSACTION_LINKS_ENABLED and profile.name == "Agentic native pass 2" and messages is not None:
         # The ID comes from Jack's immutable current U/A1 journal binding, not
         # text similarity, a client-provided ID, or a copied historical memory.
