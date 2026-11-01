@@ -112,7 +112,7 @@ def test_degraded_frozen_answer_survives_shadow_write_error(monkeypatch, tmp_pat
     def fail(*args, **kwargs):
         raise RuntimeError("shadow unavailable")
     monkeypatch.setattr(k, "_agentic_shadow_record_commit", fail)
-    result = k.KERNEL._agentic_degraded_result(history, {}, answer, "stream interrupted")
+    result = k.KERNEL._agentic_degraded_result(history, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}, answer, "stream interrupted")
     assert result.content == "Exact A1"
     assert k._agentic_forensic_journal().get(turn)["status"] == "memory_failed"
 
