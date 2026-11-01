@@ -837,10 +837,30 @@ _STAGE_CONTINUATIONS = {
     "Agentic native pass 1": "Continue the current user turn.",
     "Agentic native pass 2": (
         "[JACK RUNTIME STAGE CONTINUATION - NOT USER CONTENT - SAME USER TURN]\n"
-        "The immediately preceding assistant response is the completed, frozen Stage-1 answer. This is a retrospective memory pass, not a new user request. Explain why Stage 1 reached that answer using available Stage-1 reasoning and observed tool outcomes. Do not continue the task, address the user, ask questions, offer revisions, or emit tool calls."
-        "\nPreserve Stage 1's actual reasoning and rationale, but do not elevate assumptions, predictions, or tool-reported results into independently verified facts. Distinguish what was intended, what tools reported, and what was actually observed."
+        "The immediately preceding assistant response is the completed, frozen Response for the current Request. This is a retrospective memory pass, not a new user request. Produce a Memory of that Response using available reasoning and observed tool outcomes. Earlier Responses and Memories are historical context, not the target. Do not continue the task, address the user, ask questions, offer revisions, or emit tool calls."
+        "\nPreserve the Response's actual rationale, but do not elevate assumptions, predictions, or tool-reported results into independently verified facts. Distinguish what was intended, what tools reported, and what was actually observed."
     ),
 }
+
+# The opt-in linked-transaction retrospective replaces only Jack's auxiliary
+# continuation, not either frozen cognition prompt or the Stage-2 cache path.
+_AGENTIC_STAGE2_LINKED_CONTINUATION = (
+    "[JACK MEMORY CONTINUATION - SAME TURN]\n"
+    "Distill ONLY the Stage 1 native reasoning of THIS transaction, including "
+    "reasoning across its tool continuations. Do not review the conversation.\n"
+    "Keep decisions and why, useful discoveries, constraints, failed approaches, "
+    "and unresolved issues for later turns. Use the frozen Stage 1 response to "
+    "identify what THIS turn delivered; ground actions and results ONLY in this "
+    "turn's tool calls and results. Distinguish intentions, tool reports, "
+    "and verified outcomes.\n"
+    "Do not summarize any previous turn's reasoning, tools, Memory, or Response. "
+    "If current Stage 1 relied on prior work, note only the specific dependency "
+    "and its effect on THIS turn's decision. If the current task asked about "
+    "history, capture the comparison or inference performed NOW, not the "
+    "earlier turns' narratives.\n"
+    "Do not re-solve the task, revise the frozen response, call tools, or produce "
+    "runtime identifiers/labels. Output only the current Stage 1 reasoning distillation."
+)
 
 
 def _stage_continuation(
@@ -849,6 +869,21 @@ def _stage_continuation(
     continuation = _STAGE_CONTINUATIONS.get(
         profile.name, "Continue the requested task using the preceding conversation."
     )
+    if AGENTIC_MODE and AGENTIC_TRANSACTION_LINKS_ENABLED and profile.name == "Agentic native pass 2":
+        continuation = _AGENTIC_STAGE2_LINKED_CONTINUATION
+    if AGENTIC_MODE and AGENTIC_TRANSACTION_LINKS_ENABLED and profile.name == "Agentic native pass 2" and messages is not None:
+        # The ID comes from Jack's immutable current U/A1 journal binding, not
+        # text similarity, a client-provided ID, or a copied historical memory.
+        binding = _agentic_current_forensic_binding(list(messages))
+        if binding is not None:
+            label = _agentic_visible_turn_label(binding["turn_id"])
+            if label is not None:
+                # One ID, immediately after the continuation header. The Request,
+                # Response and historical Memory carry this same label in their
+                # model-facing projections; no repeated UUID prose is needed.
+                return continuation.replace(
+                    "\n", "\nCurrent transaction: [" + label + "].\n", 1
+                )
     if AGENTIC_MODE and AGENTIC_TASK_ANCHOR_ENABLED and profile.name == "Agentic native pass 2" and messages is not None:
         # Experimental forensic labels may be re-enabled, but the default
         # retrospective is the proven Phase-3G short continuation. The
@@ -992,6 +1027,31 @@ AGENTIC_TASK_ANCHOR_ENABLED = (
     os.environ.get("JACK_AGENTIC_TASK_ANCHOR", "0").strip().lower()
     in {"1", "true", "yes", "on"}
 )
+
+# Model-visible per-turn Request/Response/Memory associations. This reuses the
+# existing durable host-minted UUID, so no second identity system is created.
+# Set to 1 to opt into the live A/B experiment; 0 preserves Phase-3G.
+# The old forensic-label experiment
+# is mutually exclusive when explicitly enabled for historical A/B testing.
+AGENTIC_TRANSACTION_LINKS_ENABLED = (
+    os.environ.get("JACK_AGENTIC_TRANSACTION_LINKS", "0").strip().lower()
+    in {"1", "true", "yes", "on"}
+) and not AGENTIC_TASK_ANCHOR_ENABLED
+
+
+def _agentic_visible_turn_label(turn_id: Any) -> Optional[str]:
+    """Compact lossless representation of the full host-owned UUID (128 bits).
+
+    No truncated/random alias, sequence number or user-provided marker can
+    collide with another valid UUID in the model-facing turn history.
+    """
+    if not (isinstance(turn_id, str) and turn_id.startswith("jack-turn-")):
+        return None
+    try:
+        value = uuid.UUID(hex=turn_id[len("jack-turn-"):])
+    except (ValueError, AttributeError):
+        return None
+    return base64.urlsafe_b64encode(value.bytes).decode("ascii").rstrip("=")
 
 
 # Canonical Agentic lifecycle: previous-turn R2 remains throughout the
@@ -3911,12 +3971,45 @@ def freeze_xml_stage_output(text: Any) -> str:
     return _content_to_text(text).strip()
 
 
-def _format_agentic_completed_response(memory: str, frozen_answer: str) -> str:
-    """Host-owned memory/answer boundary. Frozen A1 remains the exact output suffix."""
+def _agentic_visible_memory_header(turn_id: Optional[str]) -> str:
+    """Durable model-visible identity, separate from model-authored Memory.
+
+    Pi round-trips assistant.content, not Jack's private message metadata.
+    The header is therefore required for lossless repeated-turn attribution
+    after process restart; the frozen response stays byte-exact at the end.
+    """
+    if not (AGENTIC_MODE and AGENTIC_TRANSACTION_LINKS_ENABLED and turn_id):
+        return ""
+    label = _agentic_visible_turn_label(turn_id)
+    return "[" + label + "] Memory\n" if label else ""
+
+
+def _agentic_unwrap_visible_memory(assistant_text: str) -> Tuple[Optional[str], str]:
+    """Recover an optional host-written turn ID without trusting model content."""
+    match = re.match(r"^\[([A-Za-z0-9_-]{22})\] Memory\n", assistant_text)
+    if match is None:
+        return None, assistant_text
+    label = match.group(1)
+    try:
+        raw = base64.urlsafe_b64decode(label + "==")
+        if len(raw) != 16:
+            return None, assistant_text
+        turn_id = "jack-turn-" + uuid.UUID(bytes=raw).hex
+        if _agentic_visible_turn_label(turn_id) != label:
+            return None, assistant_text
+    except (ValueError, AttributeError, TypeError):
+        return None, assistant_text
+    return turn_id, assistant_text[match.end():]
+
+
+def _format_agentic_completed_response(
+    memory: str, frozen_answer: str, *, turn_id: Optional[str] = None
+) -> str:
+    """Host-owned memory/answer boundary. Exact A1 remains the output suffix."""
     summary = _content_to_text(memory).strip()
     if not summary:
         raise ValueError("Agentic Stage 2 produced no distilled memory")
-    return f"{summary}\n\n{frozen_answer}"
+    return _agentic_visible_memory_header(turn_id) + f"{summary}\n\n{frozen_answer}"
 
 
 def strip_final_answer_heading(text: str) -> str:
@@ -4131,6 +4224,10 @@ def _agentic_project_committed_artifact_pair(
     or ambiguous records. No Pi integration or backend reasoning replay required.
     """
     if not AGENTIC_MODE or not isinstance(assistant_text, str) or not assistant_text:
+        return None
+    # Identity-bearing committed capsules are validated through the durable
+    # journal, not through process-local records or content-based matching.
+    if _agentic_unwrap_visible_memory(assistant_text)[0] is not None:
         return None
     latest_user = next(
         (item for item in reversed(retained)
@@ -5303,6 +5400,46 @@ class OpenAICompatibleBackend:
                 continue
 
             item = dict(message)
+            if AGENTIC_MODE and AGENTIC_TRANSACTION_LINKS_ENABLED:
+                # Labels are model-facing presentation only. Canonical user,
+                # frozen response, and memory remain byte-exact in the journal.
+                request_owner = item.get("_jack_agentic_turn_id") or item.get("_jack_forensic_turn_id")
+                historical_owner = item.get("_jack_forensic_turn_id")
+                if item.get("role") == "user":
+                    label = _agentic_visible_turn_label(request_owner)
+                    if label is not None and _agentic_task_marker_supported(item.get("content")):
+                        # Put host metadata BEFORE user content, so a model
+                        # cannot mistake a trailing marker for extra user intent.
+                        # Stable from Stage 1 through its tool continuations and
+                        # Stage 2; only the new turn's uncached suffix changes.
+                        head = "[" + label + "] Request\n"
+                        if isinstance(item.get("content"), str):
+                            item["content"] = head + item["content"]
+                        else:
+                            item["content"] = [
+                                {"type": "text", "text": head}
+                            ] + list(item["content"])
+                elif item.get("role") == "assistant" and isinstance(item.get("content"), str):
+                    if (
+                        profile.name == "Agentic native pass 2"
+                        and item.get("_jack_extended_candidate_response")
+                    ):
+                        # Append only at the completed-response boundary. Never
+                        # prefix/rewrite A1 or copy large inputs: Stage 1's
+                        # generated tokens can still form Stage 2's KV prefix.
+                        binding = _agentic_current_forensic_binding(source_messages)
+                        label = _agentic_visible_turn_label(binding["turn_id"]) if binding else None
+                        if label is not None:
+                            item["content"] += "\n[" + label + "] Response"
+                    elif item.get("_jack_forensic_role") in {"M", "A1"}:
+                        label = _agentic_visible_turn_label(historical_owner)
+                        if label is not None:
+                            if item["_jack_forensic_role"] == "M":
+                                item["content"] = "[" + label + "] Memory\n" + item["content"]
+                            else:
+                                # Stable tail matches the current Response
+                                # projection when this turn becomes historical.
+                                item["content"] += "\n[" + label + "] Response"
             if (
                 AGENTIC_MODE and AGENTIC_TASK_ANCHOR_ENABLED
                 and item.get("role") == "user"
@@ -5750,6 +5887,7 @@ class PreparedCommit:
     usage: Dict[str, int]
     stage2_reasoning: Optional[str] = None
     context_usage: Optional[Dict[str, int]] = None
+    agentic_turn_id: Optional[str] = None
 
 
 @dataclass
@@ -7585,6 +7723,8 @@ class JackQwenKernel:
         unadorned_memory = memory
         tool_receipt = _agentic_tool_history_note(history)
         memory += tool_receipt
+        turn_record = _agentic_forensic_turn(history)
+        visible_turn_id = turn_record.turn_id if turn_record is not None else None
         _agentic_forensic_commit(history, frozen_stage1_answer, unadorned_memory, tool_receipt)
         # The journal is authoritative. Optional archival must never turn a
         # successful durable commit into a degraded result with contradictory state.
@@ -7604,6 +7744,7 @@ class JackQwenKernel:
             authoritative_source="STAGE1_FROZEN_PLUS_STAGE2_MEMORY",
             usage=usage,
             stage2_reasoning=str(stage2_reasoning or "").strip() or None,
+            agentic_turn_id=visible_turn_id,
         )
 
     def _agentic_degraded_result(
@@ -8382,7 +8523,10 @@ class JackQwenKernel:
                 prepared.usage = usage_delta(prepared.usage, response_usage_baseline)
                 return prepared
 
-            complete = _format_agentic_completed_response(prepared.frozen_xml, prepared.frozen_answer)
+            complete = _format_agentic_completed_response(
+                prepared.frozen_xml, prepared.frozen_answer,
+                turn_id=prepared.agentic_turn_id,
+            )
             return KernelResult(
                 content=complete,
                 tool_calls=None,
@@ -8914,8 +9058,11 @@ class JackQwenKernel:
                     unadorned_memory = distilled_memory
                     tool_receipt = _agentic_tool_history_note(history)
                     distilled_memory += tool_receipt
+                    turn_record = _agentic_forensic_turn(history)
+                    visible_turn_id = turn_record.turn_id if turn_record is not None else None
                     committed_output = _format_agentic_completed_response(
-                        distilled_memory, agentic_frozen_stage1_answer
+                        distilled_memory, agentic_frozen_stage1_answer,
+                        turn_id=visible_turn_id,
                     )
                     _agentic_forensic_commit(history, agentic_frozen_stage1_answer, unadorned_memory, tool_receipt)
                     # A committed forensic transaction cannot be downgraded by
@@ -10029,23 +10176,37 @@ def _agentic_forensic_project_visible(
         )
     except (TypeError, ValueError):
         return None
-    record = _agentic_forensic_journal().match_visible(
-        _sha256_text(canonical), _sha256_text(assistant_text)
-    )
-    if record is None:
+    claimed_turn, unwrapped_text = _agentic_unwrap_visible_memory(assistant_text)
+    if assistant_text.startswith("[") and claimed_turn is None and re.match(
+        r"^\[[A-Za-z0-9_-]{22}\] Memory", assistant_text
+    ):
+        # Malformed/forged owner label is not a legacy record.
         return None
+    if claimed_turn is not None:
+        record = _agentic_forensic_journal().match_visible_turn(
+            claimed_turn, _sha256_text(canonical), _sha256_text(unwrapped_text)
+        )
+        if record is None:
+            return None
+    else:
+        # Old, unmarked sessions retain the conservative unambiguous fallback.
+        record = _agentic_forensic_journal().match_visible(
+            _sha256_text(canonical), _sha256_text(assistant_text)
+        )
+        if record is None:
+            return None
     n_a = record["answer_chars"]
     n_m = record["memory_chars"]
     n_r = record["receipt_chars"]
     if not all(isinstance(n, int) and n >= 0 for n in (n_a, n_m, n_r)):
         return None
-    if len(assistant_text) != n_a + n_m + n_r + 2:
+    if len(unwrapped_text) != n_a + n_m + n_r + 2:
         return None
-    memory = assistant_text[:n_m]
-    receipt = assistant_text[n_m:n_m + n_r]
-    answer = assistant_text[n_m + n_r + 2:]
+    memory = unwrapped_text[:n_m]
+    receipt = unwrapped_text[n_m:n_m + n_r]
+    answer = unwrapped_text[n_m + n_r + 2:]
     if (
-        assistant_text[n_m + n_r:n_m + n_r + 2] != "\n\n"
+        unwrapped_text[n_m + n_r:n_m + n_r + 2] != "\n\n"
         or _sha256_text(memory) != record["memory_sha256"]
         or _sha256_text(receipt) != record["tool_sha256"]
         or _sha256_text(answer) != record["a1_sha256"]
