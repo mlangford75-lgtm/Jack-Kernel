@@ -94,3 +94,36 @@ def test_default_historical_memory_unlabeled_but_exact(monkeypatch, tmp_path):
     view = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_initial"])
     assert [entry["content"] for entry in view] == ["Old work", "Prior memory", "Prior answer", "New work"]
     assert not any(key.startswith("_jack_") for entry in view for key in entry)
+
+
+def test_downturn_memory_and_answer_survive_pruning_without_model_labels(monkeypatch, tmp_path):
+    import asyncio
+    k = load_default(monkeypatch, tmp_path)
+    historical = []
+    for user_text, memory, a1 in (
+        ("Generate cuckoo clock", "Created a wooden clock with a bird and pendulum", "Saved clock.svg"),
+        ("Make the bird blue", "Changed the bird fill to blue without altering the clock face", "Bird is blue"),
+    ):
+        user = {"role": "user", "content": [{"type": "text", "text": user_text}]}
+        active = [dict(user)]
+        k._agentic_begin_turn(active, fresh=True)
+        frozen = k.append_extended_candidate_response(active, {"content": a1, "reasoning_content": "Current Stage-1 native rationale"})
+        k._agentic_forensic_start_stage2(active)
+        committed = asyncio.run(k.KERNEL._complete_commit(
+            active, "", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}, frozen, memory,
+        ))
+        historical.extend((user, {"role": "assistant", "content": k._format_agentic_completed_response(
+            committed.frozen_xml, committed.frozen_answer,
+        )}))
+    historical.append({"role": "user", "content": [{"type": "text", "text": "What colors did we change?"}]})
+    compact = k.compact_incoming_history(historical)
+    rendered = k.BACKEND._stage_messages_for_profile(compact, k.STAGES["extended_initial"])
+    assert [m["role"] for m in rendered] == [
+        "user", "assistant", "assistant", "user", "assistant", "assistant", "user",
+    ]
+    assert "wooden clock with a bird" in rendered[1]["content"]
+    assert rendered[2]["content"] == "Saved clock.svg"
+    assert "bird fill to blue" in rendered[4]["content"]
+    assert rendered[5]["content"] == "Bird is blue"
+    assert not any("JACK LINK" in str(m) for m in rendered)
+    assert not any(m.get("reasoning_content") for m in rendered)
