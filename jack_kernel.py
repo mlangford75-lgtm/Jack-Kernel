@@ -862,6 +862,41 @@ _AGENTIC_STAGE2_LINKED_CONTINUATION = (
 )
 
 
+# Experimental causal-paper memory: Stage 1 reasoning is the rough draft,
+# Stage 2 is its coherent, evidence-qualified replacement in future context.
+# Only the trailing user continuation changes; Stage 1, frozen A1, tool policy,
+# historical projection and the cached Stage-1 request prefix are untouched.
+_AGENTIC_STAGE2_FINAL_PAPER_CONTINUATION = (
+    "The most recent genuine user request BEFORE the immediately preceding "
+    "frozen Stage-1 answer is the target. This Jack retrospective instruction "
+    "is not a new user request. Examine everything generated AFTER that user "
+    "request and BEFORE this instruction: current Stage-1 native reasoning "
+    "when present, assistant output, tool calls, returned tool results, and "
+    "the frozen answer. Treat native reasoning as a rough draft, not proof. "
+    "Write a coherent causal memory of this turn's actual decisions, "
+    "constraints, corrections, failures, consequential findings, and unresolved "
+    "details. The value is not in remembering that a tool failed. It's in "
+    "preserving the reasoning that turned the failure into a solution. "
+    "Preserve the obstacle, diagnosis, correction, and evidence of the remedy "
+    "when those changed the approach. If no remedy succeeded, preserve the "
+    "unresolved limitation instead. Do not repeat routine failed calls merely "
+    "to duplicate tool history. For claims of action or verification, "
+    "distinguish proposed "
+    "actions from executed calls, tool-reported results from independently "
+    "observed effects, and assertions from evidence. Generated code is not "
+    "a file write; tool-reported success alone does not verify on-disk state, "
+    "runtime behavior, or visual appearance. Claim verification only when "
+    "a corresponding check appears in this turn's record, and say exactly "
+    "what that check established. Do not invent actions, tests, results, "
+    "or internal motives to explain a failure; label unsupported causal "
+    "explanations as hypotheses, even when Stage 1 asserted them. Earlier "
+    "turns are context only; do not attribute their tool actions or evidence "
+    "to this turn. Do not continue the task, rewrite the frozen answer, "
+    "call tools, or address the user. Output only the polished retrospective "
+    "reasoning record."
+)
+
+
 # Optional differential-memory A/B: keep the proven linked continuation byte-exact.
 # This sentence is appended only to the Stage-2 user-message suffix.
 _AGENTIC_DIFFERENTIAL_MEMORY_SENTENCE = (
@@ -877,9 +912,14 @@ def _stage_continuation(
         profile.name, "Continue the requested task using the preceding conversation."
     )
     if AGENTIC_MODE and AGENTIC_TRANSACTION_LINKS_ENABLED and profile.name == "Agentic native pass 2":
-        continuation = _AGENTIC_STAGE2_LINKED_CONTINUATION
-        if AGENTIC_DIFFERENTIAL_MEMORY_EXPERIMENT:
-            continuation += " " + _AGENTIC_DIFFERENTIAL_MEMORY_SENTENCE
+        if AGENTIC_STAGE2_FINAL_PAPER_EXPERIMENT:
+            # Alternative to, not an addition on top of, differential-memory A/B.
+            # Never stack competing retrospective instructions.
+            continuation = _AGENTIC_STAGE2_FINAL_PAPER_CONTINUATION
+        else:
+            continuation = _AGENTIC_STAGE2_LINKED_CONTINUATION
+            if AGENTIC_DIFFERENTIAL_MEMORY_EXPERIMENT:
+                continuation += " " + _AGENTIC_DIFFERENTIAL_MEMORY_SENTENCE
     if AGENTIC_MODE and AGENTIC_TASK_ANCHOR_ENABLED and profile.name == "Agentic native pass 2" and messages is not None:
         # Experimental forensic labels may be re-enabled, but the default
         # retrospective is the proven Phase-3G short continuation. The
@@ -1040,6 +1080,13 @@ AGENTIC_TRANSACTION_LINKS_ENABLED = (
 # prefix, transaction linkage, streaming, tool authority, or pruning.
 AGENTIC_DIFFERENTIAL_MEMORY_EXPERIMENT = (
     os.environ.get("JACK_AGENTIC_DIFFERENTIAL_MEMORY", "0").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+
+# Experimental causal-paper Stage 2: default OFF pending live downstream recall
+# and cache/prefill comparison. Does not modify the immutable core stage prompt.
+AGENTIC_STAGE2_FINAL_PAPER_EXPERIMENT = (
+    os.environ.get("JACK_AGENTIC_STAGE2_FINAL_PAPER", "0").strip().lower()
     in {"1", "true", "yes", "on"}
 )
 
@@ -3477,6 +3524,17 @@ def active_response_target(messages: Iterable[Dict[str, Any]]) -> Optional[Dict[
     return None
 
 
+def _agentic_caller_system_for_actual_stage(caller_system: str, profile: "StageProfile") -> str:
+    """External custom system instructions govern Agentic Stage 1, never Stage 2.
+
+    Decide from the *actual* stage, not the synthetic Stage-1 profile reused by
+    the Phase-3E cache-append transport. Preserve all other modes unchanged.
+    """
+    if AGENTIC_MODE and profile.name == "Agentic native pass 2":
+        return ""
+    return caller_system
+
+
 def build_stage_system_prompt(secondary_system: str, profile: StageProfile, messages: Optional[Iterable[Dict[str, Any]]] = None) -> str:
     """Build the stage-local system instruction surface.
 
@@ -4313,15 +4371,42 @@ def _agentic_project_committed_artifact_pair(
     return result
 
 
-# Agentic now retires native R2 at the completion of its own turn.
-# Pi may retain Stage-2 reasoning for current-turn display, but inbound
-# historical reasoning is NEVER reattached to the next model-facing context.
+# Phase 3G one-hop native reasoning bridge: carry ONLY the immediately preceding
+# authenticated turn's Stage-2 native reasoning into the next complete turn.
+# Do not infer private thinking from memory, or carry old R1 or model prose.
+def _agentic_extract_one_hop_stage2_reasoning(raw: Any) -> Optional[str]:
+    if not isinstance(raw, dict) or raw.get("role") != "assistant":
+        return None
+    reasoning = next(
+        (raw.get(key) for key in ("reasoning_content", "reasoning", "thinking")
+         if isinstance(raw.get(key), str) and raw.get(key)), None,
+    )
+    if not reasoning:
+        return None
+    # The client may replay a combined streamed reasoning field. Do not turn
+    # unrelated Stage-1 reasoning or plain assistant prose into the R2 bridge.
+    marker = "===== JACK AGENTIC NATIVE PASS 2 ====="
+    pos = reasoning.rfind(marker)
+    if pos < 0:
+        return None
+    remainder = reasoning[pos + len(marker):].lstrip()
+    native_label = "[NATIVE REASONING]"
+    if not remainder.startswith(native_label):
+        return None
+    remainder = remainder[len(native_label):]
+    boundaries = (
+        "[STAGE 2 REASONING DISTILLATION]",
+        "[END AGENTIC STAGE 2",
+    )
+    stop = min((i for sentinel in boundaries if (i := remainder.find(sentinel)) >= 0), default=len(remainder))
+    return remainder[:stop].strip() or None
+
 
 def _agentic_retire_consumed_one_hop(history: List[Dict[str, Any]]) -> None:
-    """Defensively retire legacy carried R2 if a pending old-format frame exists.
+    """Retire only this turn's inherited one-hop R2 at its terminal boundary.
 
-    New turns never reintroduce historical native reasoning. Existing terminal
-    cleanup remains scoped to the current transaction and handles old frames.
+    The bridge remains during Stage 1, tool suspension, Stage 2, and degraded
+    completion. Retiring after Stage 1 would mutate the cached Stage-2 prefix.
     """
     for item in history:
         if not isinstance(item, dict) or not item.get("_jack_agentic_one_hop_r2"):
@@ -4333,10 +4418,10 @@ def _agentic_retire_consumed_one_hop(history: List[Dict[str, Any]]) -> None:
 
 
 def _agentic_finish_delayed_one_hop(history: List[Dict[str, Any]]) -> None:
-    """Clear any legacy R2 from current transaction/checkpoint references.
+    """Retire inherited R2 and aliased checkpoint state on terminal completion.
 
-    Normally a no-op for new Agentic turns; current R1 is left available through
-    the retrospective and historical U/M/A remains untouched.
+    The new Stage-2 R2 is returned to the caller, not pruned here: only the
+    old, consumed bridge in this turn's mutable model history is retired.
     """
     if not AGENTIC_MODE:
         return
@@ -4517,7 +4602,7 @@ def _agentic_context_report_request(
 def _compact_agentic_completed_capsules(
     messages: List[Dict[str, Any]],
 ) -> Optional[List[Dict[str, Any]]]:
-    """Retain every completed visible turn capsule and retire all native R1/R2.
+    """Retain U/M/A and at most one authenticated previous Stage-2 R2.
 
     A durable Agentic turn is represented in ordinary conversation order as:
         exact host-captured user message
@@ -4547,6 +4632,17 @@ def _compact_agentic_completed_capsules(
     opaque_unattributable_messages = 0
     pruned_tool_messages = 0
     pruned_reasoning_chars = 0
+
+    # Only the immediately preceding completed assistant may provide R2.
+    # Earlier turns retain U/M/A but never native reasoning, even when the
+    # caller replays an old thinking field.
+    previous_commit_index = next((
+        i for i in range(latest_user_index - 1, -1, -1)
+        if isinstance(compact[i], dict)
+        and compact[i].get("role") == "assistant"
+        and not compact[i].get("tool_calls")
+        and _content_to_text(compact[i].get("content")).strip()
+    ), None)
 
     # Completed history: retain associated U/M/A while retiring old R1,
     # historical R2, and consumed raw tool protocol.
@@ -4601,8 +4697,16 @@ def _compact_agentic_completed_capsules(
         else:
             if AGENTIC_CONTEXT_ACCOUNTING_ENABLED:
                 projected_pairs += 1
-            # Historical assistant reasoning was stripped above. Do not recover
-            # R2 from Pi's persisted response or project it into a new turn.
+            if history_index == previous_commit_index:
+                bridge_r2 = _agentic_extract_one_hop_stage2_reasoning(raw)
+                if bridge_r2:
+                    # This path is reachable only after exact U/M/A agreement
+                    # with the host's shadow ledger or durable forensic journal.
+                    # The client must actually supply native R2; Jack never
+                    # synthesizes it from M or a claimed tool result.
+                    projected[0]["reasoning_content"] = bridge_r2
+                    projected[0]["_jack_agentic_one_hop_r2"] = True
+                    LOG.info("Agentic one-hop R2 carried into next turn: chars=%d", len(bridge_r2))
             retained.extend(projected)
         frozen_xml, frozen_answer = _split_prior_jack_output(text)
         if frozen_xml and frozen_answer is not None:
@@ -5677,8 +5781,11 @@ class OpenAICompatibleBackend:
         model = await self.resolve_model()
         prepared_messages = self._stage_messages_for_profile(messages, profile)
         cache_append = _agentic_cache_append_enabled(profile, tool_choice)
+        # Do not grant the caller's Stage-1 system contract any Stage-2 authority.
+        # This intentionally sacrifices the caller-prefixed KV cache; Jack-only
+        # Stage-1 prefix reuse and the appended retrospective still remain.
         stage_system = build_stage_system_prompt(
-            secondary_system,
+            _agentic_caller_system_for_actual_stage(secondary_system, profile),
             STAGES["extended_initial"] if cache_append else profile,
             prepared_messages,
         )
@@ -5790,8 +5897,11 @@ class OpenAICompatibleBackend:
         model = await self.resolve_model()
         prepared_messages = self._stage_messages_for_profile(messages, profile)
         cache_append = _agentic_cache_append_enabled(profile, tool_choice)
+        # Do not grant the caller's Stage-1 system contract any Stage-2 authority.
+        # This intentionally sacrifices the caller-prefixed KV cache; Jack-only
+        # Stage-1 prefix reuse and the appended retrospective still remain.
         stage_system = build_stage_system_prompt(
-            secondary_system,
+            _agentic_caller_system_for_actual_stage(secondary_system, profile),
             STAGES["extended_initial"] if cache_append else profile,
             prepared_messages,
         )
@@ -8584,8 +8694,8 @@ class JackQwenKernel:
                     usage_delta(prepared.usage, response_usage_baseline),
                     prepared.context_usage,
                 ),
-                # Current-turn observability may expose Stage-2 thinking, but Jack
-                # never restores it on the next user turn.
+                # The caller may replay this bounded one-hop Stage-2 reasoning
+                # next turn alongside the authenticated M/A capsule.
                 reasoning_content=_stage2_reasoning_trace(prepared.stage2_reasoning),
             )
 

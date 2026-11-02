@@ -89,11 +89,11 @@ def test_current_stage1_reasoning_survives_through_stage2_and_freeze():
 
 
 @pytest.mark.parametrize("cache_enabled", [False, True])
-def test_previous_r2_is_absent_from_stage2_on_both_cache_profiles(cache_enabled):
+def test_previous_r2_stays_through_stage2_on_both_cache_profiles(cache_enabled):
     async def exercise():
         k = load(cache_enabled=cache_enabled)
-        # Caller may persist past native R2 in its displayed message, but
-        # Jack strips it during historical projection before BOTH stages.
+        # A verified U/M/A commit allows the immediately previous native R2
+        # to remain throughout both stages of this consuming turn.
         old = await k.KERNEL._complete_commit(
             [{"role": "user", "content": "previous"}], "", {},
             "previous A", "previous memory"
@@ -108,7 +108,7 @@ def test_previous_r2_is_absent_from_stage2_on_both_cache_profiles(cache_enabled)
             {"role": "user", "content": "current"},
         ]
         history = k.compact_incoming_history(incoming)
-        assert all("reasoning_content" not in m for m in history)
+        assert history[1]["reasoning_content"] == "expired R2"
         freeze(k, history)
         backend = k.OpenAICompatibleBackend(k.CFG)
         payloads = []
@@ -131,7 +131,7 @@ def test_previous_r2_is_absent_from_stage2_on_both_cache_profiles(cache_enabled)
             )
             assert len(payloads) == 1
             model_messages = payloads[0]["messages"]
-            assert "expired R2" not in json.dumps(model_messages)
+            assert "expired R2" in json.dumps(model_messages)
             assert "current R1" in json.dumps(model_messages)
             assert "previous memory" in json.dumps(model_messages)
             assert "previous A" in json.dumps(model_messages)

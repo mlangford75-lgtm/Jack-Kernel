@@ -407,6 +407,11 @@ def _install_caller_system_contract_compat(jk: Any) -> None:
     ) -> str:
         stage_contract = original_build_stage_system_prompt("", profile, messages)
         caller_contract = caller_system if isinstance(caller_system, str) else str(caller_system or "")
+        # Agentic retrospective is Jack-governed, even if a caller directly
+        # invokes the system-prompt composer. Backend dispatch also enforces
+        # isolation against the Phase-3E synthetic Stage-1 cache profile.
+        if getattr(jk, "AGENTIC_MODE", False) and profile.name == "Agentic native pass 2":
+            caller_contract = ""
         if not caller_contract:
             return stage_contract
         if not stage_contract:

@@ -40,7 +40,7 @@ def carry(k, u, answer, memory, reasoning=None):
     assert json.dumps(incoming,sort_keys=True)==before
     return prepared
 
-def test_completed_turn_discards_r2_before_next_stage1():
+def test_completed_turn_bridges_authenticated_r2_into_next_stage1():
     k = load()
     old_r1 = "expired Stage-1 thinking " * 100
     r2 = "retired prior Stage-2 reasoning"
@@ -49,18 +49,18 @@ def test_completed_turn_discards_r2_before_next_stage1():
     assert [m["role"] for m in ctx] == ["user", "assistant", "assistant", "user"]
     assert ctx[1]["content"] == PREFIX + "M"
     assert ctx[2]["content"] == "A"
-    assert "reasoning_content" not in ctx[1]
+    assert ctx[1]["reasoning_content"] == r2
+    assert ctx[1]["_jack_agentic_one_hop_r2"] is True
     assert old_r1 not in json.dumps(ctx)
-    assert r2 not in json.dumps(ctx)
     current = k.append_extended_candidate_response(
         ctx, {"content": "A2", "reasoning_content": "current R1_2"}
     )
     assert current == "A2"
     assert ctx[-1]["reasoning_content"] == "current R1_2"
-    assert "reasoning_content" not in ctx[1]
+    assert ctx[1]["reasoning_content"] == r2
 
 
-def test_completed_turn_does_not_reintroduce_r2_during_tool_continuation():
+def test_completed_turn_preserves_r2_during_tool_continuation():
     k = load()
     ctx = carry(k, "U", "A", "M", MARKER + "expired R2")
     ctx.extend([
@@ -69,14 +69,14 @@ def test_completed_turn_does_not_reintroduce_r2_during_tool_continuation():
              "function": {"name": "read", "arguments": "{}"}}]},
         {"role": "tool", "tool_call_id": "abc", "name": "read", "content": "observed"},
     ])
-    assert all("reasoning_content" not in m for m in ctx)
-    _ = k.BACKEND._stage_messages_for_profile(ctx, k.STAGES["extended_initial"])
-    assert all("reasoning_content" not in m for m in ctx)
+    assert ctx[1]["reasoning_content"] == "expired R2"
+    view = k.BACKEND._stage_messages_for_profile(ctx, k.STAGES["extended_initial"])
+    assert view[1]["reasoning_content"] == "expired R2"
     k.append_extended_candidate_response(ctx, {"content": "done"})
-    assert all("reasoning_content" not in m for m in ctx[:-1])
+    assert ctx[1]["reasoning_content"] == "expired R2"
 
 
-def test_all_historical_r2_is_pruned_even_immediately_preceding():
+def test_all_older_r2_is_pruned_but_immediate_predecessor_is_retained():
     k = load()
     v1 = committed(k, "U1", "A1", "M1")
     v2 = committed(k, "U2", "A2", "M2")
@@ -93,9 +93,10 @@ def test_all_historical_r2_is_pruned_even_immediately_preceding():
         "user", "assistant", "assistant", "user",
         "assistant", "assistant", "user",
     ]
-    assert not any("reasoning_content" in m for m in ctx)
+    assert "reasoning_content" not in ctx[1]
     assert "R2_1" not in json.dumps(ctx)
-    assert "R2_2" not in json.dumps(ctx)
+    assert ctx[4]["reasoning_content"] == "R2_2"
+    assert ctx[4]["_jack_agentic_one_hop_r2"] is True
     assert ctx[1]["content"] == PREFIX + "M1"
     assert ctx[4]["content"] == PREFIX + "M2"
 
