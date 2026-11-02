@@ -34,17 +34,22 @@ Historical acceptance/build evidence is preserved under `Documentation/Orchestra
 
 The current validated development/release baseline is **Python 3.14.6**. The Pi control-bridge validation harnesses use **Node.js 24.16.0**. Other Python 3 and Node versions may work, but they are not the pinned CI baseline.
 
-Install runtime dependencies from the repository root:
+From the repository root on Windows, run the one-command setup **before launching Jack**:
 
 ```powershell
-py -3 -m pip install -r requirements.txt
+.\setup.bat
 ```
 
-To reproduce the repository validation environment, install the separate test requirements:
+This creates a repository-local `.venv` and installs the pinned runtime dependencies into that interpreter, without depending on the user's global or roaming-site Python packages. Both `start.bat` and `start-lane.ps1` already prefer this `.venv` when it exists.
+
+To install the regression-test dependencies and run tests on a fresh clone:
 
 ```powershell
-py -3 -m pip install -r requirements-test.txt
+.\setup.bat --test
+& ".\.venv\Scripts\python.exe" -m pytest -q tests
 ```
+
+Use the `.venv` interpreter for tests: some security tests launch subprocesses with isolated `USERPROFILE` and `APPDATA` paths; globally or per-user installed packages might not be visible in those subprocesses. If setup fails, fix the reported Python or pip problem rather than launching with a different interpreter. Setup is explicit and does not start a server or change any cognition or security policies.
 
 The runtime requirements pin the validated FastAPI, Uvicorn, and HTTPX versions. `constraints.txt` also pins the FastAPI-facing Starlette and Pydantic versions from the accepted Windows baseline.
 
