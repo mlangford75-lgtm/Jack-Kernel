@@ -1054,6 +1054,20 @@ AGENTIC_CACHE_APPEND_EXPERIMENT = (
     in {"1", "true", "yes", "on"}
 )
 
+# Experiment only: preserve the caller-prefixed Stage-1 system string in the
+# Stage-2 cache-append request, so the backend may reuse the Stage-1 KV prefix.
+# isolated (default): validated PR #81 semantics, no caller authority in R2.
+# shared: exact shared prefix + trailing user-role retrospective.
+# shared_system: exact shared prefix + trailing system-role retrospective probe.
+# The latter is backend-template dependent; it is NOT stronger authority by fiat.
+# These variants never change Jack's host-side Stage-2 tool authorization.
+AGENTIC_STAGE2_PREFILL_AB = os.environ.get(
+    "JACK_AGENTIC_STAGE2_PREFILL_AB", "isolated"
+).strip().lower()
+if AGENTIC_STAGE2_PREFILL_AB not in {"isolated", "shared", "shared_system"}:
+    raise ValueError("JACK_AGENTIC_STAGE2_PREFILL_AB must be isolated, shared, or shared_system")
+
+
 # Phase-3G recovery: model-visible U/M/A forensic labels are OFF by default.
 # The durable host-side turn journal, U/A1 hash checks, stage completion gates,
 # and Stage-2 cached-prefix topology remain active regardless of this switch.
@@ -5784,8 +5798,12 @@ class OpenAICompatibleBackend:
         # Do not grant the caller's Stage-1 system contract any Stage-2 authority.
         # This intentionally sacrifices the caller-prefixed KV cache; Jack-only
         # Stage-1 prefix reuse and the appended retrospective still remain.
+        caller_for_stage = _agentic_caller_system_for_actual_stage(secondary_system, profile)
+        if cache_append and AGENTIC_STAGE2_PREFILL_AB in {"shared", "shared_system"}:
+            # A/B only: keep precisely the Stage-1 leading caller+Jack system.
+            caller_for_stage = secondary_system
         stage_system = build_stage_system_prompt(
-            _agentic_caller_system_for_actual_stage(secondary_system, profile),
+            caller_for_stage,
             STAGES["extended_initial"] if cache_append else profile,
             prepared_messages,
         )
@@ -5796,7 +5814,8 @@ class OpenAICompatibleBackend:
             # Deliberately appends the exact immutable instruction at the end.
             # Tool definitions are preserved in the backend request for prefix
             # comparison, but Stage 2 still has ZERO host tool authority.
-            stage_messages.append({"role": "user", "content": AGENTIC_36_STAGE2_PROMPT + "\n\n" + _stage_continuation(profile, messages)})
+            retrospective_role = "system" if AGENTIC_STAGE2_PREFILL_AB == "shared_system" else "user"
+            stage_messages.append({"role": retrospective_role, "content": AGENTIC_36_STAGE2_PROMPT + "\n\n" + _stage_continuation(profile, messages)})
             LOG.info("AGENTIC CACHE EXPERIMENT: appended Stage-2 directive; original Stage-1 system kept; tools only visible, not executable")
         elif (
             prepared_messages
@@ -5900,8 +5919,12 @@ class OpenAICompatibleBackend:
         # Do not grant the caller's Stage-1 system contract any Stage-2 authority.
         # This intentionally sacrifices the caller-prefixed KV cache; Jack-only
         # Stage-1 prefix reuse and the appended retrospective still remain.
+        caller_for_stage = _agentic_caller_system_for_actual_stage(secondary_system, profile)
+        if cache_append and AGENTIC_STAGE2_PREFILL_AB in {"shared", "shared_system"}:
+            # A/B only: keep precisely the Stage-1 leading caller+Jack system.
+            caller_for_stage = secondary_system
         stage_system = build_stage_system_prompt(
-            _agentic_caller_system_for_actual_stage(secondary_system, profile),
+            caller_for_stage,
             STAGES["extended_initial"] if cache_append else profile,
             prepared_messages,
         )
@@ -5912,7 +5935,8 @@ class OpenAICompatibleBackend:
             # Deliberately appends the exact immutable instruction at the end.
             # Tool definitions are preserved in the backend request for prefix
             # comparison, but Stage 2 still has ZERO host tool authority.
-            stage_messages.append({"role": "user", "content": AGENTIC_36_STAGE2_PROMPT + "\n\n" + _stage_continuation(profile, messages)})
+            retrospective_role = "system" if AGENTIC_STAGE2_PREFILL_AB == "shared_system" else "user"
+            stage_messages.append({"role": retrospective_role, "content": AGENTIC_36_STAGE2_PROMPT + "\n\n" + _stage_continuation(profile, messages)})
             LOG.info("AGENTIC CACHE EXPERIMENT: appended Stage-2 directive; original Stage-1 system kept; tools only visible, not executable")
         elif (
             prepared_messages
