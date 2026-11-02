@@ -862,6 +862,28 @@ _AGENTIC_STAGE2_LINKED_CONTINUATION = (
 )
 
 
+# Experimental causal-paper memory: Stage 1 reasoning is the rough draft,
+# Stage 2 is its coherent, evidence-qualified replacement in future context.
+# Only the trailing user continuation changes; Stage 1, frozen A1, tool policy,
+# historical projection and the cached Stage-1 request prefix are untouched.
+_AGENTIC_STAGE2_FINAL_PAPER_CONTINUATION = (
+    "Treat the latest completed Stage-1 native reasoning as a rough draft and "
+    "the assistant answer immediately above as its frozen conclusion. Write "
+    "the finished causal account of how that answer resulted from the latest "
+    "user request, this turn's reasoning, and this turn's observed tool results. "
+    "Consolidate repetition; reconcile meaningful corrections, rejected "
+    "approaches, decisions, and constraints. Preserve concrete findings and "
+    "consequential tool results, distinguishing actions attempted, results "
+    "reported by tools, and outcomes independently verified. If reasoning "
+    "was mistaken or evidence is missing, preserve that limitation instead "
+    "of inventing a justification, tool action, or successful outcome. "
+    "Earlier conversation is not the subject; mention it only when it "
+    "materially shaped this Stage-1 conclusion. Do not continue the task, "
+    "repeat or rewrite the frozen answer, imitate tool receipts, or address "
+    "the user. Output only the polished retrospective reasoning record."
+)
+
+
 # Optional differential-memory A/B: keep the proven linked continuation byte-exact.
 # This sentence is appended only to the Stage-2 user-message suffix.
 _AGENTIC_DIFFERENTIAL_MEMORY_SENTENCE = (
@@ -877,9 +899,14 @@ def _stage_continuation(
         profile.name, "Continue the requested task using the preceding conversation."
     )
     if AGENTIC_MODE and AGENTIC_TRANSACTION_LINKS_ENABLED and profile.name == "Agentic native pass 2":
-        continuation = _AGENTIC_STAGE2_LINKED_CONTINUATION
-        if AGENTIC_DIFFERENTIAL_MEMORY_EXPERIMENT:
-            continuation += " " + _AGENTIC_DIFFERENTIAL_MEMORY_SENTENCE
+        if AGENTIC_STAGE2_FINAL_PAPER_EXPERIMENT:
+            # Alternative to, not an addition on top of, differential-memory A/B.
+            # Never stack competing retrospective instructions.
+            continuation = _AGENTIC_STAGE2_FINAL_PAPER_CONTINUATION
+        else:
+            continuation = _AGENTIC_STAGE2_LINKED_CONTINUATION
+            if AGENTIC_DIFFERENTIAL_MEMORY_EXPERIMENT:
+                continuation += " " + _AGENTIC_DIFFERENTIAL_MEMORY_SENTENCE
     if AGENTIC_MODE and AGENTIC_TASK_ANCHOR_ENABLED and profile.name == "Agentic native pass 2" and messages is not None:
         # Experimental forensic labels may be re-enabled, but the default
         # retrospective is the proven Phase-3G short continuation. The
@@ -1040,6 +1067,13 @@ AGENTIC_TRANSACTION_LINKS_ENABLED = (
 # prefix, transaction linkage, streaming, tool authority, or pruning.
 AGENTIC_DIFFERENTIAL_MEMORY_EXPERIMENT = (
     os.environ.get("JACK_AGENTIC_DIFFERENTIAL_MEMORY", "0").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+
+# Experimental causal-paper Stage 2: default OFF pending live downstream recall
+# and cache/prefill comparison. Does not modify the immutable core stage prompt.
+AGENTIC_STAGE2_FINAL_PAPER_EXPERIMENT = (
+    os.environ.get("JACK_AGENTIC_STAGE2_FINAL_PAPER", "0").strip().lower()
     in {"1", "true", "yes", "on"}
 )
 
