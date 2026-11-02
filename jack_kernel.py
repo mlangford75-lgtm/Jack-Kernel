@@ -856,6 +856,14 @@ _AGENTIC_STAGE2_LINKED_CONTINUATION = (
 )
 
 
+# Optional differential-memory A/B: keep the proven linked continuation byte-exact.
+# This sentence is appended only to the Stage-2 user-message suffix.
+_AGENTIC_DIFFERENTIAL_MEMORY_SENTENCE = (
+    "Prioritize important reasoning, decisions, tool evidence, and unresolved "
+    "details that are not already clear from the completed answer."
+)
+
+
 def _stage_continuation(
     profile: "StageProfile", messages: Optional[Iterable[Dict[str, Any]]] = None
 ) -> str:
@@ -864,6 +872,8 @@ def _stage_continuation(
     )
     if AGENTIC_MODE and AGENTIC_TRANSACTION_LINKS_ENABLED and profile.name == "Agentic native pass 2":
         continuation = _AGENTIC_STAGE2_LINKED_CONTINUATION
+        if AGENTIC_DIFFERENTIAL_MEMORY_EXPERIMENT:
+            continuation += " " + _AGENTIC_DIFFERENTIAL_MEMORY_SENTENCE
     if AGENTIC_MODE and AGENTIC_TASK_ANCHOR_ENABLED and profile.name == "Agentic native pass 2" and messages is not None:
         # Experimental forensic labels may be re-enabled, but the default
         # retrospective is the proven Phase-3G short continuation. The
@@ -1017,6 +1027,15 @@ AGENTIC_TRANSACTION_LINKS_ENABLED = (
     os.environ.get("JACK_AGENTIC_TRANSACTION_LINKS", "0").strip().lower()
     in {"1", "true", "yes", "on"}
 ) and not AGENTIC_TASK_ANCHOR_ENABLED
+
+
+# Opt-in only; defaults to the validated Phase-3G behavior. In the live A/B,
+# this changed only the appended Stage-2 instruction, not the immutable prompt
+# prefix, transaction linkage, streaming, tool authority, or pruning.
+AGENTIC_DIFFERENTIAL_MEMORY_EXPERIMENT = (
+    os.environ.get("JACK_AGENTIC_DIFFERENTIAL_MEMORY", "0").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
 
 
 def _agentic_visible_turn_label(turn_id: Any) -> Optional[str]:
