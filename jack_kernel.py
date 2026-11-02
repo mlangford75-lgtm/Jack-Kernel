@@ -261,6 +261,12 @@ class KernelConfig:
         or BACKEND_PRESETS[_normalize_backend_profile(os.getenv("JACK_BACKEND_PROFILE", "lmstudio"))]["base_url"]
     ).strip().rstrip("/")
     backend_model: str = os.getenv("JACK_BACKEND_MODEL", "")
+    # Optional exact-model overrides for nonstandard native max-reasoning
+    # template variables. The defaults use documented model controls only.
+    # Example: {"custom/model-id":{"field":"reasoning_strength","value":"xhigh"}}
+    backend_max_reasoning_overrides_json: str = os.getenv(
+        "JACK_BACKEND_MAX_REASONING_OVERRIDES", ""
+    ).strip()
 
     # Authentication is backend-owned configuration, separate from the optional
     # Jack Kernel access key used by calling agents. Local presets default to no
@@ -5471,6 +5477,53 @@ class OpenAICompatibleBackend:
             prepared.append(item)
         return prepared
 
+    def _model_native_reasoning_template_control(
+        self, model: str, profile: StageProfile
+    ) -> Optional[Tuple[str, Any]]:
+        """Return documented/model-configured native template effort, if known.
+
+        An OpenAI-compatible endpoint does not imply universal support for
+        reasoning_effort. Never probe by re-running a potentially side-effecting
+        stage. A missing capability record leaves the pre-existing generic
+        request untouched. Only opt-in xhigh stages use custom max overrides.
+        """
+        if not profile.thinking or not profile.reasoning_effort:
+            return None
+        effort = profile.reasoning_effort.strip().lower()
+        normalized = re.sub(r"[^a-z0-9]+", "-", str(model).casefold()).strip("-")
+        # Meta's Muse Glimmer chat template calls this control
+        # reasoning_strength (not reasoning_effort); its ceiling is xhigh.
+        # Make the selection stage-local, not a new system prompt.
+        if re.search(r"(?:^|-)muse-glimmer(?:-|$)", normalized):
+            muse_effort = {
+                "max": "xhigh", "xhigh": "xhigh", "high": "high",
+                "medium": "medium", "low": "low", "minimal": "low",
+            }.get(effort)
+            return ("reasoning_strength", muse_effort) if muse_effort else None
+
+        if effort not in {"xhigh", "max"} or not self.cfg.backend_max_reasoning_overrides_json:
+            return None
+        try:
+            overrides = json.loads(self.cfg.backend_max_reasoning_overrides_json)
+            if not isinstance(overrides, dict):
+                raise ValueError("Expected a JSON object keyed by exact model ID")
+            spec = overrides.get(model)
+            if spec is None:
+                return None
+            if not isinstance(spec, dict) or set(spec) != {"field", "value"}:
+                raise ValueError("Override requires exactly field and value")
+            key, value = spec["field"], spec["value"]
+            if key not in {"reasoning_effort", "reasoning_strength", "thinking_level", "thinking_budget"}:
+                raise ValueError("Unsupported native reasoning template field")
+            if key == "thinking_budget":
+                if type(value) is not int or not 1 <= value <= 262144:
+                    raise ValueError("thinking_budget must be an integer in 1..262144")
+            elif not isinstance(value, str) or value not in {"low", "medium", "high", "xhigh", "max"}:
+                raise ValueError("Template effort must be low, medium, high, xhigh or max")
+            return key, value
+        except (ValueError, TypeError) as exc:
+            raise RuntimeError("Invalid JACK_BACKEND_MAX_REASONING_OVERRIDES configuration") from exc
+
     def _apply_qwen_controls(
         self, payload: Dict[str, Any], profile: StageProfile
     ) -> None:
@@ -5514,8 +5567,22 @@ class OpenAICompatibleBackend:
         if profile.thinking and profile.reasoning_effort:
             kwargs["reasoning_effort"] = profile.reasoning_effort
 
+        native_control = self._model_native_reasoning_template_control(
+            str(payload.get("model") or ""), profile
+        )
+        if native_control is not None:
+            key, value = native_control
+            # Do not send a contradictory Qwen-style effort to a model whose
+            # template expects a different native effort key.
+            kwargs.pop("reasoning_effort", None)
+            kwargs[key] = value
+            LOG.info("Native reasoning control for model %s: %s=%s",
+                     payload.get("model"), key, value)
+
         shape = self.cfg.qwen_control_shape
-        if shape in {"template_kwargs", "hybrid"}:
+        if shape in {"template_kwargs", "hybrid"} or (
+            native_control is not None and self.cfg.backend_profile == "lmstudio"
+        ):
             payload["chat_template_kwargs"] = kwargs
         if shape in {"top_level", "hybrid"}:
             payload["enable_thinking"] = profile.thinking
@@ -5523,6 +5590,7 @@ class OpenAICompatibleBackend:
             if (
                 profile.thinking
                 and profile.reasoning_effort
+                and native_control is None
                 and self.cfg.backend_profile != "lmstudio"
             ):
                 payload["reasoning_effort"] = profile.reasoning_effort
@@ -5532,6 +5600,11 @@ class OpenAICompatibleBackend:
         # template booleans alone are not sufficient on every LM Studio build/model
         # combination. For a thinking-OFF stage, send `none` explicitly.
         if self.cfg.backend_profile == "lmstudio":
+            if native_control is not None:
+                # The model-specific chat-template field owns effort selection.
+                # LM Studio's generic top-level reasoning_effort is a different
+                # control and may be unsupported or ignored by this model.
+                return
             if profile.thinking and profile.reasoning_effort:
                 effort = profile.reasoning_effort
                 if effort not in {"minimal", "low", "medium", "high", "xhigh"}:
