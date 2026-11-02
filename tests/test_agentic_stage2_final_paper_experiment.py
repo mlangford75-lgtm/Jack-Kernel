@@ -151,6 +151,9 @@ def test_refinement_is_evidence_bounded_without_changing_immutable_prompts(monke
     assert "corresponding check appears in this turn's record" in instruction
     assert "do not attribute their tool actions" in instruction
     assert "internal motives" in instruction
+    assert "The value is not in remembering that a tool failed. It's in" in instruction
+    assert "preserving the reasoning that turned the failure into a solution." in instruction
+    assert "Do not repeat routine failed calls" in instruction
     assert k.AGENTIC_STAGE1_PROMPT == (
         "Reasoning effort is set to xhigh. Please think carefully through the task, "
         "validate key assumptions, consider plausible alternatives, and prioritize "
