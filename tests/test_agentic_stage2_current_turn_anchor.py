@@ -1,4 +1,4 @@
-"""Agentic: retain current R1, retire prior R2, preserve Stage-2 cache prefix."""
+"""Agentic: retain current R1, one-hop prior R2, preserve Stage-2 cache prefix."""
 import asyncio
 import importlib.util
 import json
