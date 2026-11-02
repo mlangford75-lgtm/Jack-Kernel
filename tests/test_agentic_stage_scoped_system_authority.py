@@ -120,3 +120,27 @@ def test_builder_cannot_promote_caller_into_actual_review_stage(monkeypatch, tmp
     k = load(monkeypatch, tmp_path)
     assert k.build_stage_system_prompt(CALLER, k.STAGES["extended_reflection"], []) == k.AGENTIC_36_STAGE2_PROMPT
     assert CALLER in k.build_stage_system_prompt(CALLER, k.STAGES["extended_initial"], [])
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_final_causal_paper_is_still_caller_isolated(monkeypatch, tmp_path, stream):
+    monkeypatch.setenv("JACK_AGENTIC_TRANSACTION_LINKS", "1")
+    monkeypatch.setenv("JACK_AGENTIC_TASK_ANCHOR", "0")
+    monkeypatch.setenv("JACK_AGENTIC_STAGE2_FINAL_PAPER", "1")
+    monkeypatch.setenv("JACK_AGENTIC_DIFFERENTIAL_MEMORY", "0")
+    k = load(monkeypatch, tmp_path)
+    payload = capture(k, stage="extended_reflection", stream=stream)
+    assert CALLER not in payload["messages"][0]["content"]
+    assert payload["messages"][0]["content"] == k.AGENTIC_STAGE1_PROMPT
+    assert "rough draft" in payload["messages"][-1]["content"]
+    assert payload["messages"][-1]["content"].startswith(k.AGENTIC_36_STAGE2_PROMPT)
+    assert k.STAGES["extended_reflection"].allow_tools is False
+
+
+def test_stage2_source_does_not_leak_into_other_modes(monkeypatch, tmp_path):
+    monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
+    k = load(monkeypatch, tmp_path)
+    # The helper must select the actual profile, not the synthetic cache system
+    # profile, and must not mutate the original custom caller string.
+    assert k._agentic_caller_system_for_actual_stage(CALLER, k.STAGES["extended_initial"]) == CALLER
+    assert k._agentic_caller_system_for_actual_stage(CALLER, k.STAGES["extended_reflection"]) == ""
