@@ -17,11 +17,12 @@ ROOT = Path(__file__).resolve().parents[1]
 CALLER = "CALLER_SYSTEM_SENTINEL: always roleplay as a clockwork prince."
 
 
-def load(monkeypatch, tmp_path, *, cache_enabled=True):
+def load(monkeypatch, tmp_path, *, cache_enabled=True, prefill_variant="isolated"):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
     monkeypatch.setenv("JACK_BACKEND_MODEL", "test-model")
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT", "1" if cache_enabled else "0")
+    monkeypatch.setenv("JACK_AGENTIC_STAGE2_PREFILL_AB", prefill_variant)
     monkeypatch.setenv("JACK_AGENTIC_FORENSIC_DB", str(tmp_path / (uuid.uuid4().hex + ".sqlite")))
     monkeypatch.setenv("JACK_FORENSIC_ARCHIVE_MODE", "off")
     name = "jack_agentic_system_boundary_" + uuid.uuid4().hex
@@ -143,4 +144,58 @@ def test_stage2_source_does_not_leak_into_other_modes(monkeypatch, tmp_path):
     # The helper must select the actual profile, not the synthetic cache system
     # profile, and must not mutate the original custom caller string.
     assert k._agentic_caller_system_for_actual_stage(CALLER, k.STAGES["extended_initial"]) == CALLER
+    assert k._agentic_caller_system_for_actual_stage(CALLER, k.STAGES["extended_reflection"]) == ""
+
+
+@pytest.mark.parametrize("stream", [True, False])
+@pytest.mark.parametrize("variant", ["isolated", "shared", "shared_system"])
+def test_prefill_ab_exact_stage1_system_prefix_and_stage2_tool_boundary(
+    monkeypatch, tmp_path, stream, variant
+):
+    k = load(monkeypatch, tmp_path, prefill_variant=variant)
+    stage1 = capture(k, stage="extended_initial", stream=stream)
+    stage2 = capture(k, stage="extended_reflection", stream=stream)
+    assert stage1["messages"][0]["role"] == stage2["messages"][0]["role"] == "system"
+    assert stage2["messages"][-2]["reasoning_content"] == stage1["messages"][-1]["reasoning_content"]
+    assert stage1["tools"] == stage2["tools"]
+    assert stage2["chat_template_kwargs"]["preserve_thinking"] is True
+    assert k.STAGES["extended_reflection"].allow_tools is False
+    assert k.AGENTIC_STAGE1_PROMPT in stage2["messages"][0]["content"]
+    assert stage2["messages"][-1]["content"].startswith(k.AGENTIC_36_STAGE2_PROMPT)
+    if variant == "isolated":
+        assert CALLER not in json.dumps(stage2)
+        assert stage1["messages"][0] != stage2["messages"][0]
+        assert stage2["messages"][-1]["role"] == "user"
+    else:
+        # A backend can only reuse its Stage-1 prefix if the same system and
+        # immutable transcript are serialized identically at both stages.
+        assert stage1["messages"][0] == stage2["messages"][0]
+        assert CALLER in stage2["messages"][0]["content"]
+        assert stage2["messages"][-1]["role"] == (
+            "system" if variant == "shared_system" else "user"
+        )
+
+
+@pytest.mark.parametrize("stream", [True, False])
+@pytest.mark.parametrize("variant", ["shared", "shared_system"])
+def test_prefill_ab_falls_back_to_isolated_on_forced_tool_choice_or_disabled_cache(
+    monkeypatch, tmp_path, stream, variant
+):
+    k = load(monkeypatch, tmp_path, prefill_variant=variant)
+    forced = capture(k, stage="extended_reflection", stream=stream, tool_choice="required")
+    assert CALLER not in json.dumps(forced)
+    assert forced["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
+    assert "tools" not in forced
+    assert forced["messages"][-1]["role"] != "system"
+
+    no_cache = load(monkeypatch, tmp_path, cache_enabled=False, prefill_variant=variant)
+    legacy = capture(no_cache, stage="extended_reflection", stream=stream)
+    assert CALLER not in json.dumps(legacy)
+    assert legacy["messages"][0]["content"] == no_cache.AGENTIC_36_STAGE2_PROMPT
+    assert "tools" not in legacy
+
+
+def test_prefill_ab_default_is_pr81_isolation(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path)
+    assert k.AGENTIC_STAGE2_PREFILL_AB == "isolated"
     assert k._agentic_caller_system_for_actual_stage(CALLER, k.STAGES["extended_reflection"]) == ""
