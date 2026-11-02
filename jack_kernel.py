@@ -3511,6 +3511,17 @@ def active_response_target(messages: Iterable[Dict[str, Any]]) -> Optional[Dict[
     return None
 
 
+def _agentic_caller_system_for_actual_stage(caller_system: str, profile: "StageProfile") -> str:
+    """External custom system instructions govern Agentic Stage 1, never Stage 2.
+
+    Decide from the *actual* stage, not the synthetic Stage-1 profile reused by
+    the Phase-3E cache-append transport. Preserve all other modes unchanged.
+    """
+    if AGENTIC_MODE and profile.name == "Agentic native pass 2":
+        return ""
+    return caller_system
+
+
 def build_stage_system_prompt(secondary_system: str, profile: StageProfile, messages: Optional[Iterable[Dict[str, Any]]] = None) -> str:
     """Build the stage-local system instruction surface.
 
@@ -5711,8 +5722,11 @@ class OpenAICompatibleBackend:
         model = await self.resolve_model()
         prepared_messages = self._stage_messages_for_profile(messages, profile)
         cache_append = _agentic_cache_append_enabled(profile, tool_choice)
+        # Do not grant the caller's Stage-1 system contract any Stage-2 authority.
+        # This intentionally sacrifices the caller-prefixed KV cache; Jack-only
+        # Stage-1 prefix reuse and the appended retrospective still remain.
         stage_system = build_stage_system_prompt(
-            secondary_system,
+            _agentic_caller_system_for_actual_stage(secondary_system, profile),
             STAGES["extended_initial"] if cache_append else profile,
             prepared_messages,
         )
@@ -5824,8 +5838,11 @@ class OpenAICompatibleBackend:
         model = await self.resolve_model()
         prepared_messages = self._stage_messages_for_profile(messages, profile)
         cache_append = _agentic_cache_append_enabled(profile, tool_choice)
+        # Do not grant the caller's Stage-1 system contract any Stage-2 authority.
+        # This intentionally sacrifices the caller-prefixed KV cache; Jack-only
+        # Stage-1 prefix reuse and the appended retrospective still remain.
         stage_system = build_stage_system_prompt(
-            secondary_system,
+            _agentic_caller_system_for_actual_stage(secondary_system, profile),
             STAGES["extended_initial"] if cache_append else profile,
             prepared_messages,
         )

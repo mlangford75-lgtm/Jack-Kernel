@@ -53,7 +53,10 @@ def test_caller_contract_precedes_unchanged_stage_contract_in_every_mode(mode, m
     for key, profile in mod.STAGES.items():
         expected = expected_stage_contracts[key]
         actual = mod.build_stage_system_prompt(CALLER, profile, [])
-        if expected:
+        if mode == "agentic" and profile.name == "Agentic native pass 2":
+            assert actual == expected
+            assert CALLER not in actual
+        elif expected:
             assert actual == CALLER + DELIMITER + expected
         else:
             assert actual == CALLER
