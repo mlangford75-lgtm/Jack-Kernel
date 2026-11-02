@@ -156,7 +156,7 @@ def test_prefill_ab_exact_stage1_system_prefix_and_stage2_tool_boundary(
     stage1 = capture(k, stage="extended_initial", stream=stream)
     stage2 = capture(k, stage="extended_reflection", stream=stream)
     assert stage1["messages"][0]["role"] == stage2["messages"][0]["role"] == "system"
-    assert stage2["messages"][-2]["reasoning_content"] == stage1["messages"][-1]["reasoning_content"]
+    assert stage2["messages"][-2]["reasoning_content"] == stage1["messages"][-2]["reasoning_content"]
     assert stage1["tools"] == stage2["tools"]
     assert stage2["chat_template_kwargs"]["preserve_thinking"] is True
     assert k.STAGES["extended_reflection"].allow_tools is False
