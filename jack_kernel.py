@@ -1090,6 +1090,15 @@ AGENTIC_STAGE2_FINAL_PAPER_EXPERIMENT = (
     in {"1", "true", "yes", "on"}
 )
 
+# A/B ONLY: after Stage 1 has consumed the previous turn's native R2,
+# omit that inherited R2 from Stage 2's provider-facing prompt. Keep the
+# live transaction and forensic references unchanged until terminal cleanup.
+# Stage 2's external caller-system isolation is already the default.
+AGENTIC_STAGE2_PRUNE_CONSUMED_R2_AB = (
+    os.environ.get("JACK_AGENTIC_STAGE2_PRUNE_CONSUMED_R2_AB", "0").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+
 
 def _agentic_visible_turn_label(turn_id: Any) -> Optional[str]:
     """Compact lossless representation of the full host-owned UUID (128 bits).
@@ -5496,9 +5505,16 @@ class OpenAICompatibleBackend:
         Private Jack host metadata is never sent to the model. Thinking-OFF native
         profiles do not receive historical native reasoning. Agentic and Deep Research active
         stages keep their native reasoning because those profiles run thinking-ON with
-        Preserve Thinking under their stage contracts.
+        Preserve Thinking under their stage contracts. An opt-in Agentic Stage-2-only
+        projection can omit the already-consumed previous turn's R2 without
+        mutating the live history, frozen A1, current R1, or the new R2 handoff.
         """
         strip_reasoning = not profile.thinking
+        strip_inherited_r2 = bool(
+            AGENTIC_MODE
+            and AGENTIC_STAGE2_PRUNE_CONSUMED_R2_AB
+            and profile.name == "Agentic native pass 2"
+        )
         source_messages = (
             self._ultra_thesis_history_projection(messages)
             if ULTRA_MODE and profile.name == "Deep Research Thesis pass 1"
@@ -5515,7 +5531,7 @@ class OpenAICompatibleBackend:
                 for key in message.keys()
             )
             must_strip_reasoning = bool(
-                strip_reasoning
+                (strip_reasoning or (strip_inherited_r2 and message.get("_jack_agentic_one_hop_r2")))
                 and message.get("role") == "assistant"
                 and any(key in message for key in ("reasoning_content", "reasoning", "thinking"))
             )
