@@ -116,8 +116,10 @@ def test_only_trailing_suffix_changes(monkeypatch, tmp_path, stream):
         candidate.AGENTIC_36_STAGE2_PROMPT + "\n\n" +
         candidate._AGENTIC_STAGE2_FINAL_PAPER_CONTINUATION
     )
-    assert "latest completed Stage-1 native reasoning" in revised_tail["content"]
-    assert "reported by tools" in revised_tail["content"]
+    assert "most recent genuine user request" in revised_tail["content"]
+    assert "everything generated AFTER that user" in revised_tail["content"]
+    assert "tool-reported success alone does not verify on-disk state" in revised_tail["content"]
+    assert "label unsupported causal" in revised_tail["content"]
     assert revised["messages"][-1]["reasoning_content"] == history()[-1]["reasoning_content"]
     assert revised["tools"] == tools()
     assert revised["chat_template_kwargs"]["preserve_thinking"] is True
@@ -136,3 +138,22 @@ def test_final_paper_overrides_differential_not_stacks(monkeypatch, tmp_path):
     k = kernel(monkeypatch, tmp_path, enabled=True)
     assert k._stage_continuation(k.STAGES["extended_reflection"], history()) == k._AGENTIC_STAGE2_FINAL_PAPER_CONTINUATION
     assert k._AGENTIC_DIFFERENTIAL_MEMORY_SENTENCE not in k._stage_continuation(k.STAGES["extended_reflection"], history())
+
+
+def test_refinement_is_evidence_bounded_without_changing_immutable_prompts(monkeypatch, tmp_path):
+    k = kernel(monkeypatch, tmp_path, enabled=True)
+    instruction = k._stage_continuation(k.STAGES["extended_reflection"], history())
+    assert "BEFORE the immediately preceding" in instruction
+    assert "BEFORE this instruction" in instruction
+    assert "current Stage-1 native reasoning" in instruction
+    assert "tool calls, returned tool results" in instruction
+    assert "Generated code is not a file write" in instruction
+    assert "corresponding check appears in this turn's record" in instruction
+    assert "do not attribute their tool actions" in instruction
+    assert "internal motives" in instruction
+    assert k.AGENTIC_STAGE1_PROMPT == (
+        "Reasoning effort is set to xhigh. Please think carefully through the task, "
+        "validate key assumptions, consider plausible alternatives, and prioritize "
+        "correctness, consistency, and clarity in the final answer."
+    )
+    assert k.AGENTIC_36_STAGE2_PROMPT == "Generate a detailed summary of why you came to this conclusion."
