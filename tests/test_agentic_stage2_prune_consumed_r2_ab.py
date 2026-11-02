@@ -31,6 +31,10 @@ def load(monkeypatch, tmp_path, *, early_prune, cache_enabled):
     k = importlib.util.module_from_spec(spec)
     sys.modules[name] = k
     spec.loader.exec_module(k)
+    # The caller system prefix is composed by the same Pi/Responses
+    # compatibility adapter used in the existing authority tests.
+    import jack_responses_compat
+    jack_responses_compat.register(k)
     return k
 
 
