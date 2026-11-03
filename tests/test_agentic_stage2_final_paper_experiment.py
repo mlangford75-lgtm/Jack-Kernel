@@ -25,6 +25,7 @@ def kernel(monkeypatch, tmp_path, *, enabled):
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT", "1")
     monkeypatch.setenv("JACK_AGENTIC_DIFFERENTIAL_MEMORY", "0")
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_FINAL_PAPER", "1" if enabled else "0")
+    monkeypatch.setenv("JACK_AGENTIC_STAGE2_RETENTION_TEST", "baseline")  # legacy suffix-only test
     monkeypatch.setenv("JACK_FORENSIC_ARCHIVE_MODE", "off")
     monkeypatch.setenv("JACK_AGENTIC_FORENSIC_DB", str(tmp_path / (uuid.uuid4().hex + ".sqlite")))
     name = "jack_stage2_final_paper_" + uuid.uuid4().hex
