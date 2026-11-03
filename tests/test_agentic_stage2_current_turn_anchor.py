@@ -16,7 +16,7 @@ STAGE1 = (
     "validate key assumptions, consider plausible alternatives, and prioritize "
     "correctness, consistency, and clarity in the final answer."
 )
-STAGE2 = "Generate a detailed summary of why you came to this conclusion."
+STAGE2 = "Preserve useful working knowledge from the completed task for future work, not a retrospective report."
 
 def load(cache):
     os.environ["JACK_REASONING_LEVEL"] = "agentic"
