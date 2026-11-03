@@ -79,7 +79,7 @@ import contextvars
 import json
 import logging
 from jack_agentic_forensics import AgenticForensicJournal, ForensicConflict, attempt_id as _new_forensic_attempt_id
-from jack_loop_detector import (ReasoningLoopDetector, RepeatedReasoningLoop, RepeatedLoopInterrupt, LOOP_THRESHOLDS)
+from jack_loop_detector import (ReasoningLoopDetector, RepeatedReasoningLoop, RepeatedLoopInterrupt, PartialOutputLoopInterrupt, LOOP_THRESHOLDS)
 import os
 import shutil
 import socket
@@ -6631,6 +6631,11 @@ class JackQwenKernel:
         except RepeatedReasoningLoop as loop_error:
             # The active stream is cancelled by finally below before the retry.
             # Incomplete generation is never frozen as an Agentic answer/memory.
+            # Native output may already be visible to the agent. A retry cannot
+            # retract those bytes, so fail closed rather than concatenate two
+            # answers or masquerade as a clean successful completion.
+            if content_parts and not AGENTIC_MODE and stage_key not in {"extended_initial", "extended_reflection"}:
+                raise PartialOutputLoopInterrupt() from loop_error
             if loop_retry_depth:
                 LOG.warning("Jack repeated reasoning loop after one retry: %s", loop_error)
                 raise RepeatedLoopInterrupt() from loop_error
@@ -11232,6 +11237,8 @@ async def _safe_public_stream(
 
         if isinstance(exc, RepeatedLoopInterrupt):
             failure_text = "Jack Kernel interrupt - Repeated Loop Failure"
+        elif isinstance(exc, PartialOutputLoopInterrupt):
+            failure_text = "Jack Kernel interrupt - Loop Detected After Partial Output"
         elif ULTRA_MODE:
             failure_text = (
                 "\n\n[Jack Kernel Deep Research interrupted before authoritative Synthesis commit. "
