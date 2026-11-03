@@ -22,7 +22,7 @@ import tempfile
 
 from agentic_stage2_layout_ab import BLOCK, builtin_fixtures, load_jack, one_stage2
 
-VARIANTS = ("native", "without_r1", "documentary_r1")
+VARIANTS = ("native", "without_r1", "documentary_r1", "caller_quote_elided")
 
 
 def transform(fixture: dict, variant: str) -> dict:
@@ -33,6 +33,10 @@ def transform(fixture: dict, variant: str) -> dict:
     documentary_r1: Full R1 in a preceding assistant content message as a
         historical document, not a native reasoning_content field. This is an
         experimental transport only and may impair normal cognitive continuity.
+    caller_quote_elided: Leave native R1 unchanged EXCEPT an exact, known
+        quotation of the caller system contract is replaced with a short,
+        non-instructional marker. This requires source identity; it does not
+        attempt paraphrase detection or semantic filtering.
     """
     if variant not in VARIANTS:
         raise ValueError("Unknown variant")
@@ -46,6 +50,23 @@ def transform(fixture: dict, variant: str) -> dict:
     result["_host_raw_r1_sha256"] = hashlib.sha256(original_r1.encode()).hexdigest()
     if variant == "native":
         a1["reasoning_content"] = original_r1
+    if variant == "caller_quote_elided":
+        caller = result.get("secondary_system", "")
+        if not isinstance(caller, str) or not caller.strip():
+            raise ValueError("Exact caller contract required to test quote elision")
+        marker = "[quoted caller system contract elided]"
+        quoted = repr(caller)
+        count = original_r1.count(quoted)
+        filtered = original_r1.replace(quoted, marker)
+        # Also handle exact unquoted copies, without trying to remove
+        # paraphrases or doing any model-driven transformation.
+        raw_count = filtered.count(caller)
+        filtered = filtered.replace(caller, marker)
+        result["_caller_quote_elision_count"] = count + raw_count
+        result["_caller_quote_elision_chars_saved"] = len(original_r1) - len(filtered)
+        if result["_caller_quote_elision_count"] < 1:
+            raise ValueError("No exact caller contract quotation found in current R1")
+        a1["reasoning_content"] = filtered
     if variant == "documentary_r1":
         # This is purposely a lower-status, model-visible historical record
         # before the untouched A1; it is NOT an alternative source of authority.
@@ -78,6 +99,8 @@ def main():
     p.add_argument("--model", default="gemma-4-12b-it")
     p.add_argument("--cases", nargs="+",
                    default=["conflicting_current_turn", "tool_receipt_grounding"])
+    p.add_argument("--variants", nargs="+", choices=VARIANTS,
+                   default=list(VARIANTS), help="Select projections for a paired comparison")
     p.add_argument("--repetitions", type=int, default=2)
     p.add_argument("--output", type=Path, default=(
         Path(tempfile.gettempdir()) / "jack_agentic_stage2_r1_boundary_results.json"
@@ -105,7 +128,7 @@ def main():
     for case in args.cases:
         original = fixtures[case]
         for rep in range(args.repetitions):
-            order = VARIANTS if rep % 2 == 0 else tuple(reversed(VARIANTS))
+            order = tuple(args.variants) if rep % 2 == 0 else tuple(reversed(args.variants))
             for variant in order:
                 fixture = transform(original, variant)
                 print(f"{case} / repeat {rep+1} / {variant} ...",flush=True)
@@ -120,6 +143,14 @@ def main():
                         current = req["messages"][-2]
                         if variant == "native":
                             assert current.get("reasoning_content") == original["messages"][-1]["reasoning_content"]
+                        elif variant == "caller_quote_elided":
+                            assert "reasoning_content" in current
+                            assert original["messages"][-1]["reasoning_content"] != current["reasoning_content"]
+                            assert original["messages"][-1]["reasoning_content"].replace(
+                                repr(original["secondary_system"]), "[quoted caller system contract elided]"
+                            ) == current["reasoning_content"]
+                            assert original["secondary_system"] not in current["reasoning_content"]
+                            assert fixture["_caller_quote_elision_count"] > 0
                         else:
                             assert "reasoning_content" not in current
                         if variant == "documentary_r1":
@@ -138,6 +169,8 @@ def main():
                 report["results"].append({
                     "case":case,"repeat":rep+1,"variant":variant,
                     "raw_r1_sha256":fixture["_host_raw_r1_sha256"],
+                    "exact_caller_quote_elisions":fixture.get("_caller_quote_elision_count",0),
+                    "quote_elision_chars_saved":fixture.get("_caller_quote_elision_chars_saved",0),
                     "frozen_a1_sha256":hashlib.sha256(
                         original["messages"][-1]["content"].encode()).hexdigest(),
                     **result,
