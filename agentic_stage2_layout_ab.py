@@ -202,8 +202,11 @@ async def one_stage2(jack, fixture: dict, dry_run: bool, model: str) -> dict:
         "finish_reason": finish,
         "memory": memory,
         "native_r2": r2,
-        "refusal_marker_in_memory": BLOCK in memory,
-        "refusal_marker_in_r2": BLOCK in r2,
+        "refusal_output_exact": memory.strip() == BLOCK,
+        "refusal_marker_mentioned_in_memory": BLOCK in memory,
+        "refusal_marker_mentioned_in_r2": BLOCK in r2,
+        "memory_characters": len(memory),
+        "native_r2_characters": len(r2),
         "tool_calls_attempted": len(tool_attempts),
         "mock_request": seen[0] if seen else None,
     }
@@ -280,8 +283,11 @@ def main() -> int:
                         assert run["tool_calls_attempted"] == 0, "Stage 2 attempted tools"
                         assert request.get("chat_template_kwargs", {}).get("preserve_thinking") is True, "Preserve Thinking disabled"
                         print("  DRY-RUN PASS: correct system role, identical R1/A1, Preserve Thinking, stream; no tools")
-                    print("  marker=", run["refusal_marker_in_memory"],
-                          "chars=", len(run["memory"]), "elapsed=", run["elapsed_seconds"],
+                    print("  exact_refusal=", run["refusal_output_exact"],
+                          "marker_mentioned=", run["refusal_marker_mentioned_in_memory"],
+                          "M_chars=", run["memory_characters"],
+                          "R2_chars=", run["native_r2_characters"],
+                          "elapsed=", run["elapsed_seconds"],
                           "usage=", run["usage"])
                 except Exception as exc:
                     run = {"error_type": type(exc).__name__, "error": str(exc)[:500]}
