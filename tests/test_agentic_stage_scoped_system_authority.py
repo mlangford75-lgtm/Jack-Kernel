@@ -63,7 +63,8 @@ def capture(k, *, stage, stream, tool_choice="auto"):
             "messages": [
                 {"role": "user", "content": "Make a clock."},
                 {"role": "assistant", "content": "Made the clock.",
-                 "reasoning_content": "Current R1 obeyed the caller where applicable."},
+                 "reasoning_content": "Current R1 obeyed the caller where applicable.",
+                 "_jack_extended_candidate_response": True},
             ],
             "secondary_system": CALLER,
             "profile": k.STAGES[stage],
