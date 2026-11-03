@@ -191,7 +191,7 @@ def test_metadata_does_not_modify_frozen_prompts_or_context_pruning(monkeypatch,
         "correctness, consistency, and clarity in the final answer."
     )
     assert k.AGENTIC_36_STAGE2_PROMPT == (
-        "Generate a detailed summary of why you came to this conclusion."
+        "Preserve useful working knowledge from the completed task for future work, not a retrospective report."
     )
     assert k.AGENTIC_CACHE_APPEND_EXPERIMENT
     assert k.STAGES["extended_reflection"].allow_tools is False
