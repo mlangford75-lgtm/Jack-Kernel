@@ -18,6 +18,7 @@ def load(monkeypatch, tmp_path, *, anchor="1"):
     monkeypatch.setenv("JACK_BACKEND_MODEL", "test-model")
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT", "1")
     monkeypatch.setenv("JACK_AGENTIC_TASK_ANCHOR", anchor)
+    monkeypatch.setenv("JACK_AGENTIC_STAGE2_RETENTION_TEST", "baseline")  # legacy anchor-specific test
     monkeypatch.setenv("JACK_FORENSIC_ARCHIVE_MODE", "off")
     monkeypatch.setenv("JACK_AGENTIC_FORENSIC_DB", str(tmp_path / ("forensic-" + uuid.uuid4().hex + ".sqlite")))
     name = "jack_task_anchor_" + uuid.uuid4().hex
