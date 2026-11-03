@@ -73,4 +73,4 @@ def test_stage_prompts_are_not_replaced_by_phase1():
         "validate key assumptions, consider plausible alternatives, and prioritize "
         "correctness, consistency, and clarity in the final answer."
     )
-    assert k.AGENTIC_36_STAGE2_PROMPT == "Generate a detailed summary of why you came to this conclusion."
+    assert k.AGENTIC_36_STAGE2_PROMPT == "Preserve useful working knowledge from the completed task for future work, not a retrospective report."

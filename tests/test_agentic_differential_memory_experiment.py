@@ -29,6 +29,7 @@ def load_kernel(monkeypatch, tmp_path, *, experiment):
     monkeypatch.setenv("JACK_AGENTIC_TASK_ANCHOR", "0")
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT", "1")
     monkeypatch.setenv("JACK_AGENTIC_DIFFERENTIAL_MEMORY", "1" if experiment else "0")
+    monkeypatch.setenv("JACK_AGENTIC_STAGE2_RETENTION_TEST", "baseline")  # legacy suffix-only test
     monkeypatch.setenv("JACK_FORENSIC_ARCHIVE_MODE", "off")
     monkeypatch.setenv("JACK_AGENTIC_FORENSIC_DB", str(tmp_path / (uuid.uuid4().hex + ".sqlite")))
     module_name = "jack_differential_memory_" + uuid.uuid4().hex
@@ -137,7 +138,7 @@ def test_baseline_default_and_frozen_prompts_unchanged(monkeypatch, tmp_path):
     assert k._stage_continuation(k.STAGES["extended_reflection"], history()) == (
         k._AGENTIC_STAGE2_LINKED_CONTINUATION
     )
-    assert k.AGENTIC_36_STAGE2_PROMPT == "Generate a detailed summary of why you came to this conclusion."
+    assert k.AGENTIC_36_STAGE2_PROMPT == "Preserve useful working knowledge from the completed task for future work, not a retrospective report."
     assert k.AGENTIC_STAGE1_PROMPT.startswith("Reasoning effort is set to xhigh.")
     assert k._agentic_cache_append_enabled(k.STAGES["extended_reflection"])
     assert not k.AGENTIC_DIFFERENTIAL_MEMORY_EXPERIMENT

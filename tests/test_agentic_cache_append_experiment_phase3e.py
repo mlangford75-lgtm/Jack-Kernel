@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 ROOT=Path(__file__).resolve().parents[1]
-STAGE2="Generate a detailed summary of why you came to this conclusion."
+STAGE2="Preserve useful working knowledge from the completed task for future work, not a retrospective report."
 
 def load(enabled):
     os.environ["JACK_REASONING_LEVEL"]="agentic"
@@ -30,7 +30,7 @@ def load(enabled):
 
 def fixture(k):
     hist=[{"role":"user","content":"explain the clock"},
-          {"role":"assistant","content":"A1 exact","reasoning_content":"Stage 1 native R1"}]
+          {"role":"assistant","content":"A1 exact","reasoning_content":"Stage 1 native R1","_jack_extended_candidate_response":True}]
     tools=[{"type":"function","function":{"name":"read","description":"read", "parameters":{"type":"object","properties":{}}}}]
     return hist,tools
 
@@ -67,8 +67,8 @@ def test_cache_route_exact_prompt_and_schema(stream):
     assert p["messages"][0]["content"]==k.AGENTIC_STAGE1_PROMPT
     assert p["messages"][-1]["role"]=="user"
     assert p["messages"][-1]["content"].startswith(STAGE2+"\n\n")
-    assert "retrospective memory pass" in p["messages"][-1]["content"]
-    assert "Do not continue the task" in p["messages"][-1]["content"]
+    assert "reusable working knowledge" in p["messages"][-1]["content"]
+    assert "do not replay the user request" in p["messages"][-1]["content"].lower()
     assert p["messages"][-2]["content"]=="A1 exact"
     assert p["messages"][-2]["reasoning_content"]=="Stage 1 native R1"
     assert p["tools"][0]["function"]["name"]=="read"

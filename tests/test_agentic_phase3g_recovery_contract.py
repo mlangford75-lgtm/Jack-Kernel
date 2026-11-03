@@ -49,7 +49,7 @@ def test_phase3g_retrospective_restored_and_cached_prefix_preserved(monkeypatch,
     assert second[:len(first)] == first
     assert second[-1]["content"] == a1
     assert second[-1]["reasoning_content"] == "Decided on clock face, bird, and pendulum"
-    assert k._stage_continuation(k.STAGES["extended_reflection"], history) == k._STAGE_CONTINUATIONS["Agentic native pass 2"]
+    assert k._stage_continuation(k.STAGES["extended_reflection"], history) == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
     assert "[JACK LINK" not in str(second)
     assert "[JACK TASK SCOPE" not in k._stage_continuation(k.STAGES["extended_reflection"], history)
     assert k._agentic_cache_append_enabled(k.STAGES["extended_reflection"])
@@ -58,6 +58,7 @@ def test_phase3g_retrospective_restored_and_cached_prefix_preserved(monkeypatch,
 
 def test_opt_in_forensic_projection_keeps_regression_comparison_available(monkeypatch, tmp_path):
     k = load_default(monkeypatch, tmp_path, labels=True)
+    k.AGENTIC_STAGE2_RETENTION_TEST = "baseline"  # legacy label suffix diagnostics
     history = [{"role": "user", "content": [{"type": "text", "text": "Make the bird blue"}]}]
     turn = k._agentic_begin_turn(history, fresh=True)
     first = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_initial"])
@@ -76,7 +77,7 @@ def test_frozen_prompts_and_delayed_techniques_not_changed(monkeypatch, tmp_path
         "validate key assumptions, consider plausible alternatives, and prioritize "
         "correctness, consistency, and clarity in the final answer."
     )
-    assert k.AGENTIC_36_STAGE2_PROMPT == "Generate a detailed summary of why you came to this conclusion."
+    assert k.AGENTIC_36_STAGE2_PROMPT == "Preserve useful working knowledge from the completed task for future work, not a retrospective report."
     assert k._agentic_cache_append_enabled(k.STAGES["extended_reflection"])
     assert k.STAGES["extended_reflection"].allow_tools is False
 

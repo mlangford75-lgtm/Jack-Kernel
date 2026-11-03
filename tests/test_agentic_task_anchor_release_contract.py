@@ -18,6 +18,7 @@ def load(monkeypatch, tmp_path, *, anchor="1"):
     monkeypatch.setenv("JACK_BACKEND_MODEL", "test-model")
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT", "1")
     monkeypatch.setenv("JACK_AGENTIC_TASK_ANCHOR", anchor)
+    monkeypatch.setenv("JACK_AGENTIC_STAGE2_RETENTION_TEST", "baseline")  # legacy anchor-specific test
     monkeypatch.setenv("JACK_FORENSIC_ARCHIVE_MODE", "off")
     monkeypatch.setenv("JACK_AGENTIC_FORENSIC_DB", str(tmp_path / ("forensic-" + uuid.uuid4().hex + ".sqlite")))
     name = "jack_task_anchor_" + uuid.uuid4().hex
@@ -76,7 +77,7 @@ def test_large_user_request_stays_in_cached_prefix(monkeypatch, tmp_path):
     assert len(suffix) < 1500
     assert original == [{"role": "user", "content": huge}]
     assert k.AGENTIC_STAGE1_PROMPT == "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer."
-    assert k.AGENTIC_36_STAGE2_PROMPT == "Generate a detailed summary of why you came to this conclusion."
+    assert k.AGENTIC_36_STAGE2_PROMPT == "Preserve useful working knowledge from the completed task for future work, not a retrospective report."
 
 
 def test_tool_repair_keeps_authentic_user_identity(monkeypatch, tmp_path):

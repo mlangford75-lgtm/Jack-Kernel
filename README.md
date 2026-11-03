@@ -69,7 +69,7 @@ Jack's cognition modes are **programs built on the Kernel**. They do not make Ja
 | Medium | Direct native Medium reasoning |
 | X-High | Direct native X-High reasoning |
 | Deep Reasoning | Thesis → Antithesis → Synthesis |
-| Local Agentic (Preserve Thinking) | Full native Stage-1 cognition and authorized tools, exact frozen A1, followed by tools-off Stage-2 retrospective reasoning distillation, host receipts, authenticated historical memory projection, one-hop native-reasoning continuity, and completed-turn pruning |
+| Local Agentic (Preserve Thinking) | Full native Stage-1 cognition and authorized tools, exact frozen A1, followed by tools-off Stage-2 working-memory distillation, host receipts, authenticated historical memory projection, memory-only downstream continuity without inherited R2, and completed-turn pruning |
 | Code Debugging | Five-pass, report-only defect review using Medium reasoning |
 | Code Debugging (Deep) | Same report-only topology at X-High reasoning |
 

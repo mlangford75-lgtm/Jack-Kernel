@@ -1,4 +1,4 @@
-"""Agentic: retain current R1, one-hop prior R2, preserve Stage-2 cache prefix."""
+"""Agentic: retain current R1 and exclude historical R2 from downstream context."""
 import asyncio
 import importlib.util
 import json
@@ -16,7 +16,7 @@ STAGE1 = (
     "validate key assumptions, consider plausible alternatives, and prioritize "
     "correctness, consistency, and clarity in the final answer."
 )
-STAGE2 = "Generate a detailed summary of why you came to this conclusion."
+STAGE2 = "Preserve useful working knowledge from the completed task for future work, not a retrospective report."
 
 def load(cache):
     os.environ["JACK_REASONING_LEVEL"] = "agentic"
@@ -39,7 +39,7 @@ def history():
         {"role": "user", "content": "Turn 2: generate cuckoo clock SVG"},
         {"role": "assistant", "content": "", "tool_calls": [{"id": "write-1", "type": "function", "function": {"name": "write", "arguments": "{}"}}]},
         {"role": "tool", "tool_call_id": "write-1", "name": "write", "content": "Successfully wrote cuckoo-clock.svg"},
-        {"role": "assistant", "content": "Turn 2 frozen answer: created cuckoo-clock.svg", "reasoning_content": "R1_2 created SVG"},
+        {"role": "assistant", "content": "Turn 2 frozen answer: created cuckoo-clock.svg", "reasoning_content": "R1_2 created SVG", "_jack_extended_candidate_response": True},
     ]
 
 def tools():
@@ -103,7 +103,7 @@ def test_stage1_prefix_unchanged_when_stage2_is_appended():
     assert stage2[:len(stage1)] == stage1
     assert stage2[-1]["content"] == "Turn 2 frozen answer: created cuckoo-clock.svg"
     assert k._stage_continuation(k.STAGES["extended_reflection"], h).startswith(
-        "[JACK RUNTIME STAGE CONTINUATION"
+        "You must retain and preserve"
     )
 
 def test_incoming_history_never_recovers_previous_r2():

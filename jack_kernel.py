@@ -882,9 +882,13 @@ _AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION = (
     "or edit confirms only the tool-reported action, not working code or a "
     "correct visual result. State what was actually checked and what remains "
     "unverified; preserve consequential failures and recoveries rather than "
-    "converting confidence into proof. This instruction "
-    "applies only to this Stage-2 retrospective; it imposes no restrictions "
-    "on later user requests or Stage-1 execution. Produce the memory directly."
+    "converting confidence into proof. Preserve important exact identifiers, "
+    "paths, versions, numbers, and dependencies. Write reusable working knowledge "
+    "and causal findings directly, not a retrospective report or chat transcript. "
+    "Do not replay the user request, reproduce stage headings or tool-receipt "
+    "formats, or present the memory as a sample assistant response. This "
+    "instruction governs this memory operation only; it does not constrain later "
+    "user requests or Stage-1 execution."
 )
 
 
@@ -1112,7 +1116,7 @@ def _agentic_stage2_test_history(
     but preserves every current-turn assistant/tool exchange (including native
     reasoning across tool resumes) and exact frozen Stage-1 answer in order.
     The original history remains authoritative for forensic commit, receipts,
-    cleanup and the following turn's native R2 bridge.
+    and cleanup. Historical R2 is not forwarded to the next turn.
     """
     if (
         not AGENTIC_MODE
@@ -1127,14 +1131,31 @@ def _agentic_stage2_test_history(
     if not (0 <= start < len(messages)) or not _jack_is_authentic_user_message(messages[start]):
         raise HTTPException(status_code=409, detail="Isolated Stage 2 cannot identify the original user request")
     view = messages[start:]
-    last = view[-1]
-    if (
-        not isinstance(last, dict)
-        or last.get("role") != "assistant"
-        or not last.get("_jack_extended_candidate_response")
-        or not _content_to_text(last.get("content")).strip()
-    ):
+    # A rejected Stage-2 tool proposal produces host-owned checkpoint/notice
+    # pairs after A1. They are not new user turns and must not invalidate the
+    # original A1 or expose any earlier turn to the same-stage retry.
+    candidates = [i for i, item in enumerate(view)
+                  if isinstance(item, dict) and item.get("_jack_extended_candidate_response")]
+    if len(candidates) != 1:
         raise HTTPException(status_code=409, detail="Isolated Stage 2 missing exact frozen Stage-1 answer")
+    frozen_index = candidates[0]
+    frozen = view[frozen_index]
+    if frozen.get("role") != "assistant" or not _content_to_text(frozen.get("content")).strip():
+        raise HTTPException(status_code=409, detail="Isolated Stage 2 missing exact frozen Stage-1 answer")
+    recovery = view[frozen_index + 1:]
+    if len(recovery) % 2:
+        raise HTTPException(status_code=409, detail="Isolated Stage 2 has an invalid recovery suffix")
+    for idx in range(0, len(recovery), 2):
+        checkpoint, notice = recovery[idx:idx + 2]
+        if not (
+            isinstance(checkpoint, dict)
+            and checkpoint.get("role") == "assistant"
+            and checkpoint.get("_jack_internal_tool_validation_checkpoint") is True
+            and isinstance(notice, dict)
+            and notice.get("role") == "user"
+            and notice.get("_jack_internal_tool_validation_rejection") is True
+        ):
+            raise HTTPException(status_code=409, detail="Isolated Stage 2 has an invalid recovery suffix")
     return view
 
 # Phase-3G recovery: model-visible U/M/A forensic labels are OFF by default.
@@ -1228,7 +1249,7 @@ You have no tools in this stage. Synthesis may receive the caller's tools and is
 
 Output only the plan."""
 
-AGENTIC_36_STAGE2_PROMPT = "Generate a detailed summary of why you came to this conclusion."
+AGENTIC_36_STAGE2_PROMPT = "Preserve useful working knowledge from the completed task for future work, not a retrospective report."
 
 ULTRA_STAGE2_ANTITHESIS_PROMPT = """You are Antithesis.
 
@@ -4684,13 +4705,13 @@ def _agentic_context_report_request(
 def _compact_agentic_completed_capsules(
     messages: List[Dict[str, Any]],
 ) -> Optional[List[Dict[str, Any]]]:
-    """Retain U/M/A and at most one authenticated previous Stage-2 R2.
+    """Retain authenticated U/M/A without historical Stage-2 R2.
 
     A durable Agentic turn is represented in ordinary conversation order as:
         exact host-captured user message
         + committed assistant artifact (Agentic Memory + exact frozen Stage-1 answer).
 
-    Historical native reasoning, consumed tool-call/result protocol, Jack runtime prompts,
+    Historical native reasoning (including R2), consumed tool-call/result protocol, Jack runtime prompts,
     and other transient stage machinery are removed. The newest user turn remains active
     and is not duplicated into the completed history. This keeps user authority byte-faithful
     while letting each Agentic Memory checkpoint remain turn-local rather than acting as a lossy
@@ -4715,16 +4736,9 @@ def _compact_agentic_completed_capsules(
     pruned_tool_messages = 0
     pruned_reasoning_chars = 0
 
-    # Only the immediately preceding completed assistant may provide R2.
-    # Earlier turns retain U/M/A but never native reasoning, even when the
-    # caller replays an old thinking field.
-    previous_commit_index = next((
-        i for i in range(latest_user_index - 1, -1, -1)
-        if isinstance(compact[i], dict)
-        and compact[i].get("role") == "assistant"
-        and not compact[i].get("tool_calls")
-        and _content_to_text(compact[i].get("content")).strip()
-    ), None)
+    # Memory-only downstream projection: keep authenticated U/M/A, never carry
+    # any previous Stage-2 native reasoning into a new Stage-1 request.
+    # Legacy replayed reasoning is stripped below without mutating the caller.
 
     # Completed history: retain associated U/M/A while retiring old R1,
     # historical R2, and consumed raw tool protocol.
@@ -4779,16 +4793,8 @@ def _compact_agentic_completed_capsules(
         else:
             if AGENTIC_CONTEXT_ACCOUNTING_ENABLED:
                 projected_pairs += 1
-            if history_index == previous_commit_index:
-                bridge_r2 = _agentic_extract_one_hop_stage2_reasoning(raw)
-                if bridge_r2:
-                    # This path is reachable only after exact U/M/A agreement
-                    # with the host's shadow ledger or durable forensic journal.
-                    # The client must actually supply native R2; Jack never
-                    # synthesizes it from M or a claimed tool result.
-                    projected[0]["reasoning_content"] = bridge_r2
-                    projected[0]["_jack_agentic_one_hop_r2"] = True
-                    LOG.info("Agentic one-hop R2 carried into next turn: chars=%d", len(bridge_r2))
+            # M contains the completed turn's reusable knowledge. The R2 trace
+            # remains available only as current-turn stream output/forensics.
             retained.extend(projected)
         frozen_xml, frozen_answer = _split_prior_jack_output(text)
         if frozen_xml and frozen_answer is not None:

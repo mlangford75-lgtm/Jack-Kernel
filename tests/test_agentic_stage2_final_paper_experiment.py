@@ -25,6 +25,7 @@ def kernel(monkeypatch, tmp_path, *, enabled):
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT", "1")
     monkeypatch.setenv("JACK_AGENTIC_DIFFERENTIAL_MEMORY", "0")
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_FINAL_PAPER", "1" if enabled else "0")
+    monkeypatch.setenv("JACK_AGENTIC_STAGE2_RETENTION_TEST", "baseline")  # legacy suffix-only test
     monkeypatch.setenv("JACK_FORENSIC_ARCHIVE_MODE", "off")
     monkeypatch.setenv("JACK_AGENTIC_FORENSIC_DB", str(tmp_path / (uuid.uuid4().hex + ".sqlite")))
     name = "jack_stage2_final_paper_" + uuid.uuid4().hex
@@ -124,7 +125,7 @@ def test_only_trailing_suffix_changes(monkeypatch, tmp_path, stream):
     assert revised["tools"] == tools()
     assert revised["chat_template_kwargs"]["preserve_thinking"] is True
     assert candidate.STAGES["extended_reflection"].allow_tools is False
-    assert candidate.AGENTIC_36_STAGE2_PROMPT == "Generate a detailed summary of why you came to this conclusion."
+    assert candidate.AGENTIC_36_STAGE2_PROMPT == "Preserve useful working knowledge from the completed task for future work, not a retrospective report."
     assert candidate.AGENTIC_STAGE1_PROMPT.startswith("Reasoning effort is set to xhigh.")
 
 
@@ -159,4 +160,4 @@ def test_refinement_is_evidence_bounded_without_changing_immutable_prompts(monke
         "validate key assumptions, consider plausible alternatives, and prioritize "
         "correctness, consistency, and clarity in the final answer."
     )
-    assert k.AGENTIC_36_STAGE2_PROMPT == "Generate a detailed summary of why you came to this conclusion."
+    assert k.AGENTIC_36_STAGE2_PROMPT == "Preserve useful working knowledge from the completed task for future work, not a retrospective report."

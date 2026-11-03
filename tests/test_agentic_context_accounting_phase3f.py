@@ -135,7 +135,7 @@ async def capture_backend(k, *, streaming: bool, cache: bool):
         return 'test-model'
     backend.resolve_model = name
     history = [{'role': 'user', 'content': 'create a clock'},
-               {'role': 'assistant', 'content': 'Frozen A1', 'reasoning_content': 'R1 native'}]
+               {'role': 'assistant', 'content': 'Frozen A1', 'reasoning_content': 'R1 native', '_jack_extended_candidate_response': True}]
     tools = [{'type': 'function', 'function': {'name': 'read', 'description': 'file reader',
              'parameters': {'type': 'object', 'properties': {}}}}] if cache else None
     args = dict(messages=history, secondary_system='', profile=k.STAGES['extended_reflection'],

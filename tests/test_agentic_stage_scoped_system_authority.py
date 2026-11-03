@@ -63,7 +63,8 @@ def capture(k, *, stage, stream, tool_choice="auto"):
             "messages": [
                 {"role": "user", "content": "Make a clock."},
                 {"role": "assistant", "content": "Made the clock.",
-                 "reasoning_content": "Current R1 obeyed the caller where applicable."},
+                 "reasoning_content": "Current R1 obeyed the caller where applicable.",
+                 "_jack_extended_candidate_response": True},
             ],
             "secondary_system": CALLER,
             "profile": k.STAGES[stage],
@@ -127,6 +128,7 @@ def test_final_causal_paper_is_still_caller_isolated(monkeypatch, tmp_path, stre
     monkeypatch.setenv("JACK_AGENTIC_TRANSACTION_LINKS", "1")
     monkeypatch.setenv("JACK_AGENTIC_TASK_ANCHOR", "0")
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_FINAL_PAPER", "1")
+    monkeypatch.setenv("JACK_AGENTIC_STAGE2_RETENTION_TEST", "baseline")  # legacy causal-paper suffix test
     monkeypatch.setenv("JACK_AGENTIC_DIFFERENTIAL_MEMORY", "0")
     k = load(monkeypatch, tmp_path)
     payload = capture(k, stage="extended_reflection", stream=stream)

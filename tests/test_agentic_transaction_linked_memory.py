@@ -55,12 +55,12 @@ def test_exact_user_and_frozen_answer_with_host_owned_id(monkeypatch, tmp_path, 
     assert memory_view[-1]["reasoning_content"] == "Clock face and bird were required."
     assert history[-1]["content"] == frozen
     continuation = k._stage_continuation(k.STAGES["extended_reflection"], history)
-    assert "immediately above" in continuation
-    assert "tool results" in continuation
-    assert "Older conversation matters only where" in continuation
-    assert not re.search(r"stage[\s-]*[12]|frozen|transaction|current turn|turn=", continuation, re.IGNORECASE)
+    assert "this turn\'s exact user request" in continuation
+    assert "tool calls and returned results" in continuation
+    assert "not a retrospective report" in continuation
+    assert "turn=" not in continuation
     assert label not in continuation
-    assert k.AGENTIC_36_STAGE2_PROMPT == "Generate a detailed summary of why you came to this conclusion."
+    assert k.AGENTIC_36_STAGE2_PROMPT == "Preserve useful working knowledge from the completed task for future work, not a retrospective report."
     assert k.AGENTIC_STAGE1_PROMPT.startswith("Reasoning effort is set to xhigh.")
     assert k._agentic_cache_append_enabled(k.STAGES["extended_reflection"])
 

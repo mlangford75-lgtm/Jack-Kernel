@@ -19,6 +19,7 @@ def load_kernel(monkeypatch, tmp_path):
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT", "1")
     # This legacy test explicitly verifies the opt-in forensic model-visible view.
     monkeypatch.setenv("JACK_AGENTIC_TASK_ANCHOR", "1")
+    monkeypatch.setenv("JACK_AGENTIC_STAGE2_RETENTION_TEST", "baseline")  # legacy forensic label test
     monkeypatch.setenv("JACK_FORENSIC_ARCHIVE_MODE", "off")
     monkeypatch.setenv("JACK_AGENTIC_FORENSIC_DB", str(tmp_path / "forensic.sqlite"))
     name = "jack_forensic_" + uuid.uuid4().hex
@@ -191,7 +192,7 @@ def test_metadata_does_not_modify_frozen_prompts_or_context_pruning(monkeypatch,
         "correctness, consistency, and clarity in the final answer."
     )
     assert k.AGENTIC_36_STAGE2_PROMPT == (
-        "Generate a detailed summary of why you came to this conclusion."
+        "Preserve useful working knowledge from the completed task for future work, not a retrospective report."
     )
     assert k.AGENTIC_CACHE_APPEND_EXPERIMENT
     assert k.STAGES["extended_reflection"].allow_tools is False

@@ -65,7 +65,9 @@ async def payload(k, *, stream, profile="extended_initial"):
 
     backend.resolve_model = model
     kwargs = {
-        "messages": task_history(),
+        "messages": (task_history() + [{"role": "assistant", "content": "Frozen answer",
+                            "_jack_extended_candidate_response": True}]
+                      if profile == "extended_reflection" else task_history()),
         "secondary_system": "",
         "profile": k.STAGES[profile],
         "tools": [{"type": "function", "function": {
@@ -155,4 +157,4 @@ def test_invalid_override_fails_closed_without_guess(monkeypatch, tmp_path):
 def test_frozen_prompts_remain_unchanged(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path, model="meta/muse-glimmer")
     assert k.AGENTIC_STAGE1_PROMPT.startswith("Reasoning effort is set to xhigh.")
-    assert k.AGENTIC_36_STAGE2_PROMPT == "Generate a detailed summary of why you came to this conclusion."
+    assert k.AGENTIC_36_STAGE2_PROMPT == "Preserve useful working knowledge from the completed task for future work, not a retrospective report."
