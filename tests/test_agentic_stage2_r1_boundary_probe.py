@@ -38,6 +38,14 @@ def test_r1_projection_is_experimental_and_keeps_a1_exact(case, variant):
         assert request["messages"][-2]["reasoning_content"] == original["messages"][-1]["reasoning_content"]
     elif variant == "without_r1":
         assert original["messages"][-1]["reasoning_content"] not in rendered
+    elif variant == "caller_quote_elided":
+        source = original["messages"][-1]["reasoning_content"]
+        target = request["messages"][-2]["reasoning_content"]
+        marker = "[quoted caller system contract elided]"
+        assert target == source.replace(repr(original["secondary_system"]), marker)
+        assert original["secondary_system"] not in target
+        assert fixture["_caller_quote_elision_count"] == 1
+        assert target != source
     elif variant == "documentary_r1":
         assert original["messages"][-1]["reasoning_content"] in request["messages"][-3]["content"]
         assert "reasoning_content" not in request["messages"][-2]
