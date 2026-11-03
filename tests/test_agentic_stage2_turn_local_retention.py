@@ -218,8 +218,7 @@ def test_stage1_backend_payload_is_unmodified_by_experiment(monkeypatch, tmp_pat
     original = copy.deepcopy(request)
     payload = asyncio.run(payload_for(k, "extended_initial", stream, request))
     assert request == original
-    assert payload["messages"][1:] == request
-    assert CALLER_SYSTEM in payload["messages"][0]["content"]
+    assert payload["messages"][1:] == k.BACKEND._stage_messages_for_profile(\n        request, k.STAGES["extended_initial"]\n    )\n    assert CALLER_SYSTEM in payload["messages"][0]["content"]
 
 
 @pytest.mark.parametrize("variant", ("isolate", "isolate-retain"))
