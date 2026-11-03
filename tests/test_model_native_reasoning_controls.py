@@ -65,7 +65,9 @@ async def payload(k, *, stream, profile="extended_initial"):
 
     backend.resolve_model = model
     kwargs = {
-        "messages": task_history(),
+        "messages": (task_history() + [{"role": "assistant", "content": "Frozen answer",
+                            "_jack_extended_candidate_response": True}]
+                      if profile == "extended_reflection" else task_history()),
         "secondary_system": "",
         "profile": k.STAGES[profile],
         "tools": [{"type": "function", "function": {
