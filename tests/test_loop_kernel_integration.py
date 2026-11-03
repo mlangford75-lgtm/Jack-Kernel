@@ -161,3 +161,47 @@ def test_agentic_stage1_retry_changes_attempt_not_turn(monkeypatch, tmp_path):
     statuses = [e["status"] for e in events]
     assert statuses.count("stage1_active") == 2
     assert "stage1_failed" in statuses
+
+
+
+def test_visible_output_loop_does_not_concatenate_retried_answers(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path)
+
+    class VisibleFirstBackend(FakeBackend):
+        async def chat_stream(self, **kwargs):
+            self.calls += 1
+            try:
+                yield {
+                    "choices": [{"index": 0, "delta": {"content": "Visible partial answer"},
+                                 "finish_reason": None}],
+                    "usage": {},
+                }
+                yield {
+                    "choices": [{"index": 0, "delta": {"reasoning_content": repeated_reasoning()},
+                                 "finish_reason": None}],
+                    "usage": {},
+                }
+            finally:
+                self.closed += 1
+
+    backend = VisibleFirstBackend([])
+    kernel = k.JackQwenKernel(backend, k.CFG)
+    with pytest.raises(k.PartialOutputLoopInterrupt):
+        run_stage(k, kernel)
+    assert backend.calls == 1
+    assert backend.closed == 1
+
+
+def test_launcher_configuration_persists_selected_threshold(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path)
+    monkeypatch.setattr(k, "_config_paths", lambda: (tmp_path / "config.json", tmp_path / "unused.txt"))
+    config = dict(k.CLI_DEFAULTS)
+    config["loop_detector_repetitions"] = 128
+    config["loop_detector_enabled"] = False
+    k._save_cli_config(config)
+    restored = k._load_cli_config()
+    assert restored["loop_detector_repetitions"] == 128
+    assert restored["loop_detector_enabled"] is False
+    env = k._config_to_env(restored)
+    assert env["JACK_LOOP_DETECTOR"] == "0"
+    assert env["JACK_LOOP_REPETITIONS"] == "128"
