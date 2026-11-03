@@ -257,3 +257,38 @@ def test_default_isolated_retention_and_immutable_prompts(monkeypatch, tmp_path)
     assert k._agentic_stage2_test_history(
         history(), k.STAGES["extended_reflection"],
     ) == history()[4:]
+
+
+@pytest.mark.parametrize("variant", ("isolate", "isolate-retain"))
+def test_stage2_tool_rejection_retries_without_losing_frozen_answer(monkeypatch, tmp_path, variant):
+    k = load_kernel(monkeypatch, tmp_path, variant)
+    original = history()
+    frozen = original[-1]
+    assert frozen["_jack_extended_candidate_response"] is True
+    proposed = {"role": "assistant", "content": "I need a tool", "reasoning_content": "Must read file."}
+    corrected = k._tool_rejection_history(
+        original, proposed, ["Agentic native pass 2: this stage has no tool authority"],
+        k.STAGES["extended_reflection"].name,
+    )
+    projected = k._agentic_stage2_test_history(corrected, k.STAGES["extended_reflection"])
+    assert projected[0]["content"] == original[4]["content"]
+    assert projected[-3]["content"] == frozen["content"]
+    assert projected[-2]["_jack_internal_tool_validation_checkpoint"] is True
+    assert projected[-1]["_jack_internal_tool_validation_rejection"] is True
+    assert "Earlier Stage 2 reasoning" not in str(projected)
+    # A second rejected proposal must remain in the same authentic turn.
+    retried = k._tool_rejection_history(
+        corrected, proposed, ["Agentic native pass 2: this stage has no tool authority"],
+        k.STAGES["extended_reflection"].name,
+    )
+    assert k._agentic_stage2_test_history(retried, k.STAGES["extended_reflection"])[-1][
+        "_jack_internal_tool_validation_rejection"
+    ] is True
+
+
+def test_stage2_rejects_unowned_suffix_after_frozen_answer(monkeypatch, tmp_path):
+    k = load_kernel(monkeypatch, tmp_path, "isolate-retain")
+    unowned = history() + [{"role": "user", "content": "Different actual request"}]
+    with pytest.raises(k.HTTPException) as exc:
+        k._agentic_stage2_test_history(unowned, k.STAGES["extended_reflection"])
+    assert exc.value.status_code == 409
