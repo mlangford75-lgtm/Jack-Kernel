@@ -861,7 +861,30 @@ _AGENTIC_STAGE2_LINKED_CONTINUATION = (
     "reports, and unresolved details useful later or after compaction. Older "
     "conversation matters only where it directly affected this answer. "
     "Do not repeat earlier work, continue the task, change the answer, "
-    "or address the user. Write the retained details directly."
+    "or address the user. A successful edit or write is not proof of "
+    "runtime or visual correctness; preserve actual checks, unresolved "
+    "uncertainty, and consequential failures or recoveries. "
+    "Write the retained details directly."
+)
+
+# Opt-in turn-local retrospective: cognition scope and downstream utility are
+# tested independently from the accepted full-history Agentic continuation.
+# This is deliberately not a change to either immutable core stage prompt.
+_AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION = (
+    "You must retain and preserve that which is useful for future work. "
+    "Examine this turn's exact user request, complete native Stage-1 reasoning, "
+    "tool calls and returned results, and exact frozen answer. Preserve useful "
+    "discoveries, decisions and rationale, constraints, failures and corrections, "
+    "consequential tool evidence, established findings, and unresolved matters. "
+    "Explain the causal connections that later work would otherwise need to "
+    "rediscover. Distinguish proposed actions from tool-reported outcomes, "
+    "observed verification, and unverified assumptions. A successful write "
+    "or edit confirms only the tool-reported action, not working code or a "
+    "correct visual result. State what was actually checked and what remains "
+    "unverified; preserve consequential failures and recoveries rather than "
+    "converting confidence into proof. This instruction "
+    "applies only to this Stage-2 retrospective; it imposes no restrictions "
+    "on later user requests or Stage-1 execution. Produce the memory directly."
 )
 
 
@@ -914,6 +937,12 @@ def _stage_continuation(
     continuation = _STAGE_CONTINUATIONS.get(
         profile.name, "Continue the requested task using the preceding conversation."
     )
+    if (
+        AGENTIC_MODE
+        and profile.name == "Agentic native pass 2"
+        and AGENTIC_STAGE2_RETENTION_TEST == "isolate-retain"
+    ):
+        return _AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
     if AGENTIC_MODE and AGENTIC_TRANSACTION_LINKS_ENABLED and profile.name == "Agentic native pass 2":
         if AGENTIC_STAGE2_FINAL_PAPER_EXPERIMENT:
             # Alternative to, not an addition on top of, differential-memory A/B.
@@ -1056,6 +1085,55 @@ AGENTIC_CACHE_APPEND_EXPERIMENT = (
     os.environ.get("JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT", "1").strip().lower()
     in {"1", "true", "yes", "on"}
 )
+
+# A/B/C with the established full-history Stage 2 as default (regression safe):
+#   baseline (default) full-context Stage 2 + accepted linked continuation
+#   isolate        current-turn-only Stage 2 + accepted linked continuation
+#   isolate-retain current-turn-only Stage 2 + evidence-qualified retention
+# The source history, host tool ledger, frozen A1, forensic lifecycle and
+# next-turn one-hop native R2 bridge remain untouched in all three variants.
+AGENTIC_STAGE2_RETENTION_TEST = (
+    os.environ.get("JACK_AGENTIC_STAGE2_RETENTION_TEST", "baseline").strip().lower()
+)
+if AGENTIC_STAGE2_RETENTION_TEST not in {"baseline", "isolate", "isolate-retain"}:
+    raise RuntimeError(
+        "JACK_AGENTIC_STAGE2_RETENTION_TEST must be baseline, isolate, or isolate-retain"
+    )
+
+
+def _agentic_stage2_test_history(
+    messages: List[Dict[str, Any]], profile: "StageProfile"
+) -> List[Dict[str, Any]]:
+    """Experiment-only Stage-2 request view; never mutate canonical history.
+
+    The host's active user boundary excludes all prior U/M/A and inherited R2,
+    but preserves every current-turn assistant/tool exchange (including native
+    reasoning across tool resumes) and exact frozen Stage-1 answer in order.
+    The original history remains authoritative for forensic commit, receipts,
+    cleanup and the following turn's native R2 bridge.
+    """
+    if (
+        not AGENTIC_MODE
+        or profile.name != "Agentic native pass 2"
+        or AGENTIC_STAGE2_RETENTION_TEST == "baseline"
+    ):
+        return messages
+    target = active_response_target(messages)
+    if target is None:
+        raise HTTPException(status_code=409, detail="Isolated Stage 2 missing an active owned user turn")
+    start = int(target["history_index"])
+    if not (0 <= start < len(messages)) or not _jack_is_authentic_user_message(messages[start]):
+        raise HTTPException(status_code=409, detail="Isolated Stage 2 cannot identify the original user request")
+    view = messages[start:]
+    last = view[-1]
+    if (
+        not isinstance(last, dict)
+        or last.get("role") != "assistant"
+        or not last.get("_jack_extended_candidate_response")
+        or not _content_to_text(last.get("content")).strip()
+    ):
+        raise HTTPException(status_code=409, detail="Isolated Stage 2 missing exact frozen Stage-1 answer")
+    return view
 
 # Phase-3G recovery: model-visible U/M/A forensic labels are OFF by default.
 # The durable host-side turn journal, U/A1 hash checks, stage completion gates,
@@ -5781,7 +5859,9 @@ class OpenAICompatibleBackend:
         tool_choice: Any = None,
     ) -> Dict[str, Any]:
         model = await self.resolve_model()
-        prepared_messages = self._stage_messages_for_profile(messages, profile)
+        prepared_messages = self._stage_messages_for_profile(
+            _agentic_stage2_test_history(messages, profile), profile
+        )
         cache_append = _agentic_cache_append_enabled(profile, tool_choice)
         # Do not grant the caller's Stage-1 system contract any Stage-2 authority.
         # This intentionally sacrifices the caller-prefixed KV cache; Jack-only
@@ -5897,7 +5977,9 @@ class OpenAICompatibleBackend:
     ) -> AsyncIterator[Dict[str, Any]]:
         """Stream one backend stage as normalized OpenAI-style chunks internally."""
         model = await self.resolve_model()
-        prepared_messages = self._stage_messages_for_profile(messages, profile)
+        prepared_messages = self._stage_messages_for_profile(
+            _agentic_stage2_test_history(messages, profile), profile
+        )
         cache_append = _agentic_cache_append_enabled(profile, tool_choice)
         # Do not grant the caller's Stage-1 system contract any Stage-2 authority.
         # This intentionally sacrifices the caller-prefixed KV cache; Jack-only
