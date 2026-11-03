@@ -861,7 +861,10 @@ _AGENTIC_STAGE2_LINKED_CONTINUATION = (
     "reports, and unresolved details useful later or after compaction. Older "
     "conversation matters only where it directly affected this answer. "
     "Do not repeat earlier work, continue the task, change the answer, "
-    "or address the user. Write the retained details directly."
+    "or address the user. A successful edit or write is not proof of "
+    "runtime or visual correctness; preserve actual checks, unresolved "
+    "uncertainty, and consequential failures or recoveries. "
+    "Write the retained details directly."
 )
 
 # Opt-in turn-local retrospective: cognition scope and downstream utility are
@@ -1083,15 +1086,14 @@ AGENTIC_CACHE_APPEND_EXPERIMENT = (
     in {"1", "true", "yes", "on"}
 )
 
-# Stage-2 turn-local retention is now the Agentic default; preserve both
-# historical controls for explicit rollback or repeatable comparison:
-#   baseline       prior full-context Stage 2 + accepted continuation
-#   isolate        current-turn-only Stage 2 + accepted continuation
-#   isolate-retain (default) current-turn-only Stage 2 + evidence-qualified retention
+# A/B/C with the established full-history Stage 2 as default (regression safe):
+#   baseline (default) full-context Stage 2 + accepted linked continuation
+#   isolate        current-turn-only Stage 2 + accepted linked continuation
+#   isolate-retain current-turn-only Stage 2 + evidence-qualified retention
 # The source history, host tool ledger, frozen A1, forensic lifecycle and
 # next-turn one-hop native R2 bridge remain untouched in all three variants.
 AGENTIC_STAGE2_RETENTION_TEST = (
-    os.environ.get("JACK_AGENTIC_STAGE2_RETENTION_TEST", "isolate-retain").strip().lower()
+    os.environ.get("JACK_AGENTIC_STAGE2_RETENTION_TEST", "baseline").strip().lower()
 )
 if AGENTIC_STAGE2_RETENTION_TEST not in {"baseline", "isolate", "isolate-retain"}:
     raise RuntimeError(
