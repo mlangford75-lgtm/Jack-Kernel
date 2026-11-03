@@ -79,6 +79,7 @@ import contextvars
 import json
 import logging
 from jack_agentic_forensics import AgenticForensicJournal, ForensicConflict, attempt_id as _new_forensic_attempt_id
+from jack_loop_detector import (ReasoningLoopDetector, RepeatedReasoningLoop, RepeatedLoopInterrupt, PartialOutputLoopInterrupt, LOOP_THRESHOLDS)
 import os
 import shutil
 import socket
@@ -344,6 +345,8 @@ class KernelConfig:
     # Logging. Native model reasoning is NOT logged unless explicitly enabled.
     log_level: str = os.getenv("JACK_LOG_LEVEL", "INFO").upper()
     log_reasoning: bool = os.getenv("JACK_LOG_REASONING", "0") == "1"
+    loop_detector_enabled: bool = os.getenv("JACK_LOOP_DETECTOR", "1").strip().lower() not in {"0", "false", "no", "off"}
+    loop_detector_repetitions: int = int(os.getenv("JACK_LOOP_REPETITIONS", "32"))
 
     # Optional local forensic checkpointing is host-owned and never model context.
     # ``stage`` archives the completed Agentic Stage-1 trajectory only after Stage 2
@@ -2220,12 +2223,11 @@ class StageProfile:
     max_tokens: Optional[int] = None
 
 
-# Deep Research stage output caps are deliberately large host-side loop failsafes, not
-# target lengths and not projected into model context. Antithesis is narrower
-# because its only job is to introduce concentrated adversarial friction.
-ULTRA_STAGE1_MAX_TOKENS = 100_000
-ULTRA_STAGE2_MAX_TOKENS = 20_000
-ULTRA_STAGE3_MAX_TOKENS = 100_000
+# No Jack-imposed generation-token ceilings. Backends retain their native
+# context and generation limits; the optional Loop Detector is separate.
+ULTRA_STAGE1_MAX_TOKENS = None
+ULTRA_STAGE2_MAX_TOKENS = None
+ULTRA_STAGE3_MAX_TOKENS = None
 
 STAGES: Dict[str, StageProfile] = {
     "thesis": StageProfile(
@@ -6499,6 +6501,7 @@ class JackQwenKernel:
         append: bool = True,
         same_stage_resume: bool = False,
         tool_validation_repair_depth: int = 0,
+        loop_retry_depth: int = 0,
     ) -> AsyncIterator[Dict[str, Any]]:
         """Run one Jack stage with backend streaming and reconstruct its message.
 
@@ -6526,6 +6529,7 @@ class JackQwenKernel:
             _agentic_begin_turn(history, fresh=not same_stage_resume)
         elif AGENTIC_MODE and stage_key == "extended_reflection":
             _agentic_forensic_start_stage2(history)
+        detector = ReasoningLoopDetector(self.cfg.loop_detector_repetitions) if self.cfg.loop_detector_enabled else None
         content_parts: List[str] = []
         reasoning_content_parts: List[str] = []
         reasoning_parts: List[str] = []
@@ -6595,11 +6599,15 @@ class JackQwenKernel:
                     text = str(reasoning_content)
                     if text:
                         reasoning_content_parts.append(text)
+                        if detector is not None and detector.feed(text):
+                            raise RepeatedReasoningLoop(detector.detected_cycle_words or 128, detector.repetitions)
                         yield {"kind": "reasoning", "text": text}
                 elif reasoning is not None:
                     text = str(reasoning)
                     if text:
                         reasoning_parts.append(text)
+                        if detector is not None and detector.feed(text):
+                            raise RepeatedReasoningLoop(detector.detected_cycle_words or 128, detector.repetitions)
                         yield {"kind": "reasoning", "text": text}
 
                 content = delta.get("content")
@@ -6620,6 +6628,43 @@ class JackQwenKernel:
 
                 if choice.get("finish_reason"):
                     finish_reason = str(choice["finish_reason"])
+        except RepeatedReasoningLoop as loop_error:
+            # The active stream is cancelled by finally below before the retry.
+            # Incomplete generation is never frozen as an Agentic answer/memory.
+            # Native output may already be visible to the agent. A retry cannot
+            # retract those bytes, so fail closed rather than concatenate two
+            # answers or masquerade as a clean successful completion.
+            if content_parts and not AGENTIC_MODE and stage_key not in {"extended_initial", "extended_reflection"}:
+                raise PartialOutputLoopInterrupt() from loop_error
+            if loop_retry_depth:
+                LOG.warning("Jack repeated reasoning loop after one retry: %s", loop_error)
+                raise RepeatedLoopInterrupt() from loop_error
+            LOG.warning("Jack native reasoning loop detected; retrying one inference: %s", loop_error)
+            if AGENTIC_MODE and stage_key == "extended_initial":
+                record = _agentic_forensic_turn(history)
+                if record is not None:
+                    _agentic_forensic_journal().fail(record.turn_id, record.stage1_attempt_id, "loop_detected")
+                    record.status = "stage1_failed"
+                    next_attempt = _new_forensic_attempt_id()
+                    _agentic_forensic_journal().retry_stage1(
+                        record.turn_id, record.user_request.sha256, next_attempt
+                    )
+                    record.stage1_attempt_id = next_attempt
+                    record.status = "stage1_active"
+            elif AGENTIC_MODE and stage_key == "extended_reflection":
+                record = _agentic_forensic_turn(history)
+                if record is not None and record.frozen_a1_sha256:
+                    _agentic_forensic_journal().fail(
+                        record.turn_id, record.stage2_attempt_id or record.stage1_attempt_id,
+                        "loop_detected",
+                    )
+                    record.status = "memory_failed"
+                    record.stage2_attempt_id = None
+            # Recursion begins below, after stream closure, not inside the
+            # exception handler: backend stream shutdown completes first.
+            retry_loop = True
+        else:
+            retry_loop = False
         finally:
             if pending_next is not None and not pending_next.done():
                 pending_next.cancel()
@@ -6630,6 +6675,19 @@ class JackQwenKernel:
                 with contextlib.suppress(Exception):
                     await aclose()
             await self._activity_update(backend_request_active=False)
+
+        if retry_loop:
+            # Diagnostic only; no assistant answer, tool or memory is committed.
+            yield {"kind": "reasoning", "text": "\n[Failure - Loop Detected - Reasoning; retrying once]\n"}
+            async for retry_packet in self._run_stage_streamed(
+                history, secondary_system, stage_key, usage,
+                tools=tools, tool_choice=tool_choice, append=append,
+                same_stage_resume=(same_stage_resume or (AGENTIC_MODE and stage_key == "extended_initial")),
+                tool_validation_repair_depth=tool_validation_repair_depth,
+                loop_retry_depth=1,
+            ):
+                yield retry_packet
+            return
 
         message: Dict[str, Any] = {
             "role": "assistant",
@@ -7678,6 +7736,11 @@ class JackQwenKernel:
     async def _consume_pending_tool_resume(
         self, messages: List[Dict[str, Any]]
     ) -> Optional[Tuple[PendingToolResume, List[Dict[str, Any]]]]:
+        # A caller's latest USER message starts a new agent turn even when
+        # full replayed history contains tool results from an abandoned turn.
+        # Tool IDs in history are not sufficient evidence of resume authority.
+        if not messages or not isinstance(messages[-1], dict) or messages[-1].get("role") != "tool":
+            return None
         tool_messages: List[Dict[str, Any]] = []
         ids_in_request: List[str] = []
         for raw in messages:
@@ -8576,12 +8639,19 @@ class JackQwenKernel:
         """
         try:
             scope = _AGENTIC_DELAY_R2_SCOPE.get()
-            if scope is None or not scope.get("stage1_frozen"):
+            if scope is None:
                 return
-            _agentic_retire_consumed_one_hop(scope.get("bridge_messages", []))
             state = scope.get("pending_state")
-            if state is not None:
-                _agentic_retire_consumed_one_hop(state.history)
+            if scope.get("stage1_frozen"):
+                _agentic_retire_consumed_one_hop(scope.get("bridge_messages", []))
+                if state is not None:
+                    _agentic_retire_consumed_one_hop(state.history)
+                    await self._retire_pending_tool_resume(state)
+            elif state is not None:
+                # A resumed tool transaction that did not complete must not
+                # survive an agent cancellation, stream error, or detected loop.
+                # This does NOT retire an ordinary successful tool suspension;
+                # those carry no pending_state in the consuming request scope.
                 await self._retire_pending_tool_resume(state)
         finally:
             try:
@@ -9106,6 +9176,10 @@ class JackQwenKernel:
                         ):
                             yield wire
                     except Exception as exc:
+                        if isinstance(exc, RepeatedLoopInterrupt):
+                            # Repeated loops are terminal. Stage 2 must not be
+                            # misreported as a successful degraded A1 response.
+                            raise
                         if AGENTIC_MODE and stage_key == "extended_reflection" and agentic_frozen_stage1_answer is not None:
                             detail = str(exc.detail) if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
                             degraded = self._agentic_degraded_result(history, usage, agentic_frozen_stage1_answer, detail)
@@ -11144,7 +11218,8 @@ async def _safe_public_stream(
         if AGENTIC_MODE:
             _agentic_mark_stage1_failure(type(exc).__name__)
         LOG.exception("Jack streamed request failed; closing SSE cleanly")
-        await KERNEL._rearm_pending_tool_resume_for_messages(body.get("messages"))
+        if not isinstance(exc, RepeatedLoopInterrupt):
+            await KERNEL._rearm_pending_tool_resume_for_messages(body.get("messages"))
         await KERNEL._rearm_pending_debugging_resumes_for_messages(body.get("messages"))
         detail = str(exc.detail) if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
         response_id = f"chatcmpl-jack-error-{uuid.uuid4().hex}"
@@ -11160,7 +11235,11 @@ async def _safe_public_stream(
             }
             return ("data: " + json.dumps(obj, ensure_ascii=False) + "\n\n").encode("utf-8")
 
-        if ULTRA_MODE:
+        if isinstance(exc, RepeatedLoopInterrupt):
+            failure_text = "Jack Kernel interrupt - Repeated Loop Failure"
+        elif isinstance(exc, PartialOutputLoopInterrupt):
+            failure_text = "Jack Kernel interrupt - Loop Detected After Partial Output"
+        elif ULTRA_MODE:
             failure_text = (
                 "\n\n[Jack Kernel Deep Research interrupted before authoritative Synthesis commit. "
                 "Any preceding streamed Synthesis text is partial/uncommitted. Failure: " + detail[:1800] + "]"
@@ -11470,6 +11549,8 @@ CLI_DEFAULTS: Dict[str, Any] = {
     "qwen_control_shape": "template_kwargs",
     "log_level": "INFO",
     "log_reasoning": False,
+    "loop_detector_enabled": True,
+    "loop_detector_repetitions": 32,
     "forensic_archive_mode": "stage",
     "forensic_archive_dir": "",
     "thinking_temperature": 1.0,
@@ -11894,6 +11975,8 @@ def _print_header(
     print(_status_value("Virtual model", cfg['virtual_model']))
     print(_status_value("Preserve thinking", "ON" if cfg.get("preserve_thinking", True) else "OFF"))
     print(_status_value("Forensic archive", str(cfg.get("forensic_archive_mode", "stage")).upper()))
+    loop_n = cfg.get("loop_detector_repetitions", 32)
+    print(_status_value("Loop Detector", f"ON / {loop_n} repetitions" if cfg.get("loop_detector_enabled", True) else "OFF"))
     active_mode = _REASONING_LEVEL_ALIASES.get(str(cfg.get("reasoning_level", "x-high")).lower(), str(cfg.get("reasoning_level", "x-high")).lower())
     print(_status_value("Live stage streaming", "BUFFERED  [stream=true; Pi-compatible]" if active_mode == "deep-reasoning" else "ON  [stream=true]"))
     print(_status_value("Kernel max-token cap", "NONE"))
@@ -11969,6 +12052,36 @@ def _edit_preserve_thinking(cfg: Dict[str, Any]) -> None:
         cfg["preserve_thinking"] = False
     else:
         print("Invalid selection; keeping current value.")
+
+
+def _edit_loop_detector(cfg: Dict[str, Any]) -> None:
+    _print_back_hint()
+    print("Loop Detector - exact native reasoning repetition")
+    print("Minimum exact cycle: 128 words. Only generated native reasoning is checked.")
+    current_enabled = bool(cfg.get("loop_detector_enabled", True))
+    enabled = _cli_input(f"Enable Loop Detector? [Y/n] [{'Y' if current_enabled else 'N'}]: ").strip().lower()
+    if enabled in {"y", "yes"}:
+        cfg["loop_detector_enabled"] = True
+    elif enabled in {"n", "no"}:
+        cfg["loop_detector_enabled"] = False
+    elif enabled:
+        print("Invalid toggle; preserving current setting.")
+        return
+    if not cfg.get("loop_detector_enabled", True):
+        print("Loop Detector disabled; backend limits and agent cancellation unchanged.")
+        return
+    print("Repetitions: 16, 32 (Default), 48, 64, 128")
+    current = int(cfg.get("loop_detector_repetitions", 32))
+    selected = _cli_input(f"Select repetition threshold [{current}]: ").strip()
+    if selected:
+        try:
+            parsed = int(selected)
+        except ValueError:
+            parsed = -1
+        if parsed not in LOOP_THRESHOLDS:
+            print("Invalid threshold; preserving current setting.")
+        else:
+            cfg["loop_detector_repetitions"] = parsed
 
 
 def _edit_forensic_archive(cfg: Dict[str, Any]) -> None:
@@ -12297,6 +12410,8 @@ def _config_to_env(cfg: Dict[str, Any]) -> Dict[str, str]:
         "JACK_QWEN_CONTROL_SHAPE": cfg["qwen_control_shape"],
         "JACK_LOG_LEVEL": cfg["log_level"],
         "JACK_LOG_REASONING": "1" if cfg["log_reasoning"] else "0",
+        "JACK_LOOP_DETECTOR": "1" if cfg.get("loop_detector_enabled", True) else "0",
+        "JACK_LOOP_REPETITIONS": cfg.get("loop_detector_repetitions", 32),
         "JACK_FORENSIC_ARCHIVE_MODE": cfg.get("forensic_archive_mode", "stage"),
         "JACK_FORENSIC_ARCHIVE_DIR": cfg.get("forensic_archive_dir", ""),
         "JACK_THINKING_TEMPERATURE": cfg["thinking_temperature"],
@@ -12346,7 +12461,8 @@ def _start_server_from_cli(cfg: Dict[str, Any]) -> None:
     print(f"Reasoning level  : {REASONING_PROFILES.get(level_key, REASONING_PROFILES['x-high'])['label']}")
     print(f"Preserve thinking: {'ON' if cfg.get('preserve_thinking', True) else 'OFF'}")
     print(f"Forensic archive : {str(cfg.get('forensic_archive_mode', 'stage')).upper()}")
-    print("Deep Research max_tokens failsafes: Thesis 100000 / Antithesis 20000 / Synthesis 100000" if level_key == "ultra" else "Kernel-side max_tokens limits: NONE")
+    print(f"Loop Detector    : {'ON' if cfg.get('loop_detector_enabled', True) else 'OFF'} / {cfg.get('loop_detector_repetitions', 32)} repetitions")
+    print("Kernel-side max_tokens limits: NONE")
     print("Press Ctrl+C to stop the server and return to the launcher.")
     print()
     try:
@@ -12366,6 +12482,7 @@ def _print_main_menu_options() -> None:
     print(_ansi_rgb("  8", _JACK_STEEL, bold=True) + "  Reset Jack defaults")
     print(_ansi_rgb("  P", _JACK_STEEL, bold=True) + "  Preserve thinking")
     print(_ansi_rgb("  F", _JACK_STEEL, bold=True) + "  Forensic archive")
+    print(_ansi_rgb("  L", _JACK_STEEL, bold=True) + "  Loop Detector")
     print(_ansi_rgb("  S", _JACK_STEEL, bold=True) + "  Save settings")
     print(_ansi_rgb("  M", _JACK_STEEL, bold=True) + "  Main screen / refresh")
     print(_ansi_rgb("  Q", _JACK_STEEL, bold=True) + "  Quit")
@@ -12377,7 +12494,7 @@ def _print_compact_main_commands() -> None:
     print()
     print(_ansi_rgb("Main:", _JACK_MUTED) +
           " 1 Start  2 Models  3 Reasoning  4 Sampling  5 Endpoint  6 Advanced")
-    print("      7 Test  8 Reset  P Thinking  F Forensic  S Save  M Main screen  Q Quit")
+    print("      7 Test  8 Reset  P Thinking  F Forensic  L Loop  S Save  M Main screen  Q Quit")
     print(_ansi_rgb("Use M only when you want the full status screen redrawn.", _JACK_MUTED))
     print()
 
@@ -12430,6 +12547,8 @@ def run_cli() -> None:
                 _run_transactional_editor(_edit_preserve_thinking, cfg)
             elif choice == "f":
                 _run_transactional_editor(_edit_forensic_archive, cfg)
+            elif choice == "l":
+                _run_transactional_editor(_edit_loop_detector, cfg)
             elif choice == "s":
                 _save_cli_config(cfg)
                 print("Settings saved.")
@@ -12484,8 +12603,10 @@ def run_server() -> None:
     LOG.info("Reasoning level: %s", ACTIVE_REASONING_PROFILE["label"])
     LOG.info("Preserve thinking: %s", "ON" if CFG.preserve_thinking else "OFF")
     LOG.info("Forensic archive: %s", CFG.forensic_archive_mode.upper())
+    LOG.info("Loop Detector: %s, threshold=%s, min-cycle=128 words",
+             "ON" if CFG.loop_detector_enabled else "OFF", CFG.loop_detector_repetitions)
     LOG.info("Live stage streaming: ON for OpenAI stream=true requests")
-    LOG.info("Deep Research max_tokens failsafes: Thesis 100000 / Antithesis 20000 / Synthesis 100000" if ULTRA_MODE else "Kernel-side max_tokens limits: NONE")
+    LOG.info("Kernel-side max_tokens limits: NONE")
 
     config = uvicorn.Config(
         APP,
