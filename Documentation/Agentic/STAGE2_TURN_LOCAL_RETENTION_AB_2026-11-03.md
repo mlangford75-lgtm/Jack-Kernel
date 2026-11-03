@@ -1,6 +1,6 @@
 # Agentic Stage 2 — Turn-Local Retention A/B/C (experimental)
 
-**Status:** Validated live in a multi-turn analog-clock build and promoted for merge. `isolate-retain` is the Agentic default; `baseline` and `isolate` remain explicit rollback/comparison modes.
+**Status:** Live-tested and approved for merger as an opt-in turn-local feature, with the existing full-history Stage 2 default retained for regression compatibility. `baseline` remains the backward-compatible default; `isolate` and `isolate-retain` remain available for explicit selection. The new evidence-qualification rule also applies to the default linked continuation.
 
 ## Hypothesis
 
@@ -12,13 +12,13 @@ Stage 1 still receives its established full-context history and the preceding au
 
 ## Variants
 
-Optional: set `JACK_AGENTIC_STAGE2_RETENTION_TEST` before `start.bat` to select a non-default variant:
+Set `JACK_AGENTIC_STAGE2_RETENTION_TEST` before `start.bat` to select an opt-in isolation variant:
 
 | Value | Stage-2 backend messages | Stage-2 continuation |
 | --- | --- | --- |
-| `baseline` (rollback) | Accepted full active history | Accepted linked continuation |
+| `baseline` (default) | Accepted full active history | Accepted linked continuation |
 | `isolate` | Current U, all current-turn Stage-1 assistant/native reasoning, tool calls/results, and frozen A1 | Accepted linked continuation |
-| `isolate-retain` (default) | Same turn-local view as `isolate` | New future-work preservation directive |
+| `isolate-retain` | Same turn-local view as `isolate` | New future-work preservation directive |
 
 `isolate` tests context isolation with the same wording. `isolate-retain` tests the combined context + instruction change. The core `AGENTIC_STAGE1_PROMPT` and `AGENTIC_36_STAGE2_PROMPT` remain byte-exact. With the normal launcher, transaction links are enabled.
 
@@ -46,7 +46,7 @@ $env:JACK_AGENTIC_CONTEXT_ACCOUNTING="1"
 .\start.bat
 ```
 
-Repeat with `"isolate"` and `"isolate-retain"`. Do not run competing Jack instances on the same listener port. The environment switch must be set **before launch**, and changing it requires a restart. Unset the variable or use `"isolate-retain"` to restore the accepted default afterward.
+Repeat with `"isolate"` and `"isolate-retain"`. Do not run competing Jack instances on the same listener port. The environment switch must be set **before launch**, and changing it requires a restart. Unset the variable or use `"baseline"` to restore the accepted full-history default afterward.
 
 Keep the same backend model, parameters, context window, system prompt, tool schemas and workspace state for all runs. Use separate Pi sessions (or restored copies) so prior experimental memories do not contaminate another variant. Use comparable task prompts; preferably replay the same captured Stage-1 execution when exercising the three Stage-2 payloads in a controlled harness.
 
@@ -66,6 +66,6 @@ Use one short request, a multi-tool request with a failed tool and a corrected r
 - Favor the experiment only if independently repeated downstream benefits compensate for any added Stage-2 prefill and latency.
 - A passing unit test establishes **request shape and host invariants**, not model-level improvement. No measured gain is claimed until a real LM Studio/Pi test is performed.
 
-**Live observations (Nov 3, 2026):** A seven-turn analog-clock implementation showed Stage-1 tool continuity, source editing, one loop interruption and successful recovery, and a Stage-2 retrospective with current-turn scope. Backend logs showed streaming, substantial same-stage prefix cache reuse, and multi-second Stage-2 prefill on context isolation. Retrospective memory sometimes promoted a successful file edit into an unverified claim of correct visual output. To address this narrowly, the default future-work retention directive adds explicit evidence discipline: successful writes/edits establish only tool-reported actions, not runtime or visual correctness; checks and unresolved issues must be distinguished and consequential recovery history preserved. This live test supports the authorized merge, but is **not** a controlled A/B proof of faster performance or improved downstream answer correctness.
+**Live observations (Nov 3, 2026):** A seven-turn analog-clock implementation showed Stage-1 tool continuity, source editing, one loop interruption and successful recovery, and a Stage-2 retrospective with current-turn scope. Backend logs showed streaming, substantial same-stage prefix cache reuse, and multi-second Stage-2 prefill on context isolation. Retrospective memory sometimes promoted a successful file edit into an unverified claim of correct visual output. To address this narrowly, both the established default linked continuation and the opt-in future-work retention directive add explicit evidence discipline: successful writes/edits establish only tool-reported actions, not runtime or visual correctness; checks and unresolved issues must be distinguished and consequential recovery history preserved. This live test supports the authorized merge, but is **not** a controlled A/B proof of faster performance or improved downstream answer correctness.
 
-**Rollback:** `$env:JACK_AGENTIC_STAGE2_RETENTION_TEST="baseline"` followed by a server restart restores the previous full-history Stage-2 request and linked continuation without modifying the code. The immutable Stage-1 and Stage-2 core prompts, host lifecycle, streaming, and one-hop R2 bridge remain unchanged.
+**Rollback:** `$env:JACK_AGENTIC_STAGE2_RETENTION_TEST="baseline"` followed by a server restart restores full-history Stage 2. The established default keeps the new short evidence-discipline sentence, and the original accepted core stage prompts remain unchanged. The immutable Stage-1 and Stage-2 core prompts, host lifecycle, streaming, and one-hop R2 bridge remain unchanged.
