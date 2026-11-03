@@ -60,7 +60,7 @@ def test_exact_user_and_frozen_answer_with_host_owned_id(monkeypatch, tmp_path, 
     assert "Older conversation matters only where" in continuation
     assert not re.search(r"stage[\s-]*[12]|frozen|transaction|current turn|turn=", continuation, re.IGNORECASE)
     assert label not in continuation
-    assert k.AGENTIC_36_STAGE2_PROMPT == "Generate a detailed summary of why you came to this conclusion."
+    assert k.AGENTIC_36_STAGE2_PROMPT == "Preserve useful working knowledge from the completed task for future work, not a retrospective report."
     assert k.AGENTIC_STAGE1_PROMPT.startswith("Reasoning effort is set to xhigh.")
     assert k._agentic_cache_append_enabled(k.STAGES["extended_reflection"])
 
