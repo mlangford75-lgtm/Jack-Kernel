@@ -1149,23 +1149,26 @@ def _agentic_stage2_test_history(
         ):
             raise HTTPException(status_code=409, detail="Isolated Stage 2 has an invalid recovery suffix")
 
-    # Model-facing Stage 2 = authentic U + all Stage-1 native R1 + frozen A1.
-    # Retain chronological reasoning across tool continuations while withholding
-    # tool calls, tool results, intermediate prose, and independent tool receipts.
-    projected: List[Dict[str, Any]] = [dict(view[0])]
-    for item in view[1:frozen_index]:
-        if not isinstance(item, dict):
+    # Model-facing Stage 2 = one authentic U and one frozen A1 carrying all
+    # native Stage-1 R1 in chronological order. Flatten the reasoning fragments
+    # across tool continuations without including tool calls, results, or
+    # intermediate prose. Original source messages and A1 remain byte-faithful.
+    reasoning_fragments: List[str] = []
+    for item in view[1:frozen_index + 1]:
+        if not isinstance(item, dict) or item.get("role") != "assistant":
             continue
-        if item.get("role") != "assistant":
-            continue
-        # Tool-call assistant messages may contain genuine native reasoning;
-        # retain that field alone, never their call arguments or tool results.
         r1 = item.get("reasoning_content") or item.get("reasoning") or item.get("thinking")
         if isinstance(r1, str) and r1:
-            projected.append({"role": "assistant", "content": "", "reasoning_content": r1})
-    projected.append(dict(frozen))
+            reasoning_fragments.append(r1)
+    frozen_view = dict(frozen)
+    frozen_view.pop("reasoning", None)
+    frozen_view.pop("thinking", None)
+    frozen_view.pop("reasoning_content", None)
+    if reasoning_fragments:
+        frozen_view["reasoning_content"] = "\n\n".join(reasoning_fragments)
+    projected: List[Dict[str, Any]] = [dict(view[0]), frozen_view]
     # A previous invalid Stage-2 proposal is not Stage-1 cognition. Keep only
-    # the host's short corrective notice, not the proposed tool or its reasoning.
+    # the host's corrective notice, not the proposed tool or its reasoning.
     for idx in range(1, len(recovery), 2):
         projected.append(dict(recovery[idx]))
     return projected
