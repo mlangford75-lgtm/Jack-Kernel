@@ -185,7 +185,7 @@ def test_abc_current_turn_projection_and_original_history_unchanged(monkeypatch,
     old = base["messages"][1:-1]
     current = isolated["messages"][1:-1]
     assert len(old) == len(frozen)
-    assert len(current) == 4  # current U, two R1 fragments, frozen A1/R1
+    assert len(current) == 2  # current U + frozen A1 with complete R1
     assert isolated["messages"][:-1] == retention["messages"][:-1]
     assert isolated["messages"][-1] == base["messages"][-1]
     assert retention["messages"][-1]["content"].startswith(
@@ -197,10 +197,12 @@ def test_abc_current_turn_projection_and_original_history_unchanged(monkeypatch,
     assert "Earlier Stage 2 reasoning" not in json.dumps(isolated["messages"])
     assert current[0]["role"] == "user"
     assert current[0]["content"] == frozen[4]["content"]
-    assert current[1]["reasoning_content"] == "R1 before tools: first try edit."
-    assert current[2]["reasoning_content"] == "R1 after error: fix path and retry."
-    assert current[3]["reasoning_content"].startswith("Final R1:")
-    assert current[-1]["content"] == frozen[-1]["content"]
+    assert current[1]["reasoning_content"] == (
+        "R1 before tools: first try edit.\n\n"
+        "R1 after error: fix path and retry.\n\n"
+        "Final R1: changed the path, second edit reported success but did not verify visual result."
+    )
+    assert current[1]["content"] == frozen[-1]["content"]
     assert not any(m.get("tool_calls") or m.get("role") == "tool" for m in current)
     assert "Error: wrong path" not in json.dumps(current)
     assert "Reported success. Browser not available." not in json.dumps(current)
@@ -259,9 +261,11 @@ def test_default_isolated_retention_and_immutable_prompts(monkeypatch, tmp_path)
         history(), k.STAGES["extended_reflection"],
     ) == [
         history()[4],
-        {"role": "assistant", "content": "", "reasoning_content": "R1 before tools: first try edit."},
-        {"role": "assistant", "content": "", "reasoning_content": "R1 after error: fix path and retry."},
-        history()[-1],
+        dict(history()[-1], reasoning_content=(
+            "R1 before tools: first try edit.\n\n"
+            "R1 after error: fix path and retry.\n\n"
+            "Final R1: changed the path, second edit reported success but did not verify visual result."
+        )),
     ]
 
 
