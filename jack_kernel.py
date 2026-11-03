@@ -1086,14 +1086,16 @@ AGENTIC_CACHE_APPEND_EXPERIMENT = (
     in {"1", "true", "yes", "on"}
 )
 
-# A/B/C with the established full-history Stage 2 as default (regression safe):
-#   baseline (default) full-context Stage 2 + accepted linked continuation
-#   isolate        current-turn-only Stage 2 + accepted linked continuation
-#   isolate-retain current-turn-only Stage 2 + evidence-qualified retention
+# Normal Agentic Stage 2 is isolated to its current turn and preserves useful
+# causal reasoning, tool evidence, corrections, and unresolved work. The older
+# full-history and isolation-only layouts remain explicit diagnostic overrides:
+#   isolate-retain (default) current-turn-only + evidence-qualified retention
+#   isolate                  current-turn-only + prior linked continuation
+#   baseline                 full-history + prior linked continuation
 # The source history, host tool ledger, frozen A1, forensic lifecycle and
 # next-turn one-hop native R2 bridge remain untouched in all three variants.
 AGENTIC_STAGE2_RETENTION_TEST = (
-    os.environ.get("JACK_AGENTIC_STAGE2_RETENTION_TEST", "baseline").strip().lower()
+    os.environ.get("JACK_AGENTIC_STAGE2_RETENTION_TEST", "isolate-retain").strip().lower()
 )
 if AGENTIC_STAGE2_RETENTION_TEST not in {"baseline", "isolate", "isolate-retain"}:
     raise RuntimeError(
