@@ -73,7 +73,7 @@ def test_completed_turn_does_not_expose_r2_during_tool_continuation():
     view = k.BACKEND._stage_messages_for_profile(ctx, k.STAGES["extended_initial"])
     assert "reasoning_content" not in view[1]
     k.append_extended_candidate_response(ctx, {"content": "done"})
-    assert ctx[1]["reasoning_content"] == "expired R2"
+    assert "reasoning_content" not in ctx[1]
 
 
 def test_all_historical_r2_is_pruned_even_immediate_predecessor():
