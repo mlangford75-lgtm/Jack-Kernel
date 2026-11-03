@@ -37,6 +37,13 @@ class RepeatedLoopInterrupt(RuntimeError):
         super().__init__("Jack Kernel interrupt - Repeated Loop Failure")
 
 
+class PartialOutputLoopInterrupt(RuntimeError):
+    """A model-facing retry cannot retract content already released to an agent."""
+
+    def __init__(self) -> None:
+        super().__init__("Jack Kernel interrupt - Loop Detected After Partial Output")
+
+
 class ReasoningLoopDetector:
     """Incremental exact-suffix detector, independent of transport chunk sizes.
 
