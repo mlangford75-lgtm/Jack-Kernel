@@ -101,6 +101,11 @@ class ReasoningLoopDetector:
         upper = min(self.max_cycle_words, count // self.repetitions)
         if upper < self.min_cycle_words:
             return False
+        # Inspect a completed batch rather than every individual word; at
+        # most 15 additional words of detection latency. This keeps the monitor
+        # inexpensive even with a 128-copy threshold.
+        if count % 16:
+            return False
         for width in range(self.min_cycle_words, upper + 1):
             # A period is only a candidate if its last two blocks hash alike.
             if self._range_hash(count - width, count) != self._range_hash(
