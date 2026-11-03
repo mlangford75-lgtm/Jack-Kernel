@@ -29,6 +29,7 @@ def load_kernel(monkeypatch, tmp_path, *, experiment):
     monkeypatch.setenv("JACK_AGENTIC_TASK_ANCHOR", "0")
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT", "1")
     monkeypatch.setenv("JACK_AGENTIC_DIFFERENTIAL_MEMORY", "1" if experiment else "0")
+    monkeypatch.setenv("JACK_AGENTIC_STAGE2_RETENTION_TEST", "baseline")  # legacy suffix-only test
     monkeypatch.setenv("JACK_FORENSIC_ARCHIVE_MODE", "off")
     monkeypatch.setenv("JACK_AGENTIC_FORENSIC_DB", str(tmp_path / (uuid.uuid4().hex + ".sqlite")))
     module_name = "jack_differential_memory_" + uuid.uuid4().hex
