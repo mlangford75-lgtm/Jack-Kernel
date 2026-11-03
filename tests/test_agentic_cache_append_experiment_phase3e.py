@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 ROOT=Path(__file__).resolve().parents[1]
-STAGE2="Generate a detailed summary of why you came to this conclusion."
+STAGE2="Preserve useful working knowledge from the completed task for future work, not a retrospective report."
 
 def load(enabled):
     os.environ["JACK_REASONING_LEVEL"]="agentic"
