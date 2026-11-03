@@ -278,8 +278,9 @@ def test_stage2_tool_rejection_retries_without_losing_frozen_answer(monkeypatch,
     )
     projected = k._agentic_stage2_test_history(corrected, k.STAGES["extended_reflection"])
     assert projected[0]["content"] == original[4]["content"]
-    assert projected[-3]["content"] == frozen["content"]
+    assert projected[-2]["content"] == frozen["content"]
     assert not any(p.get("_jack_internal_tool_validation_checkpoint") for p in projected)
+    assert not any(p.get("role") == "tool" or p.get("tool_calls") for p in projected)
     assert projected[-1]["_jack_internal_tool_validation_rejection"] is True
     assert "Earlier Stage 2 reasoning" not in str(projected)
     # A second rejected proposal must remain in the same authentic turn.
