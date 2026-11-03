@@ -2223,12 +2223,11 @@ class StageProfile:
     max_tokens: Optional[int] = None
 
 
-# Deep Research stage output caps are deliberately large host-side loop failsafes, not
-# target lengths and not projected into model context. Antithesis is narrower
-# because its only job is to introduce concentrated adversarial friction.
-ULTRA_STAGE1_MAX_TOKENS = 100_000
-ULTRA_STAGE2_MAX_TOKENS = 20_000
-ULTRA_STAGE3_MAX_TOKENS = 100_000
+# No Jack-imposed generation-token ceilings. Backends retain their native
+# context and generation limits; the optional Loop Detector is separate.
+ULTRA_STAGE1_MAX_TOKENS = None
+ULTRA_STAGE2_MAX_TOKENS = None
+ULTRA_STAGE3_MAX_TOKENS = None
 
 STAGES: Dict[str, StageProfile] = {
     "thesis": StageProfile(
@@ -6674,7 +6673,7 @@ class JackQwenKernel:
 
         if retry_loop:
             # Diagnostic only; no assistant answer, tool or memory is committed.
-            yield {"kind": "reasoning", "text": "\\n[Failure - Loop Detected - Reasoning; retrying once]\\n"}
+            yield {"kind": "reasoning", "text": "\n[Failure - Loop Detected - Reasoning; retrying once]\n"}
             async for retry_packet in self._run_stage_streamed(
                 history, secondary_system, stage_key, usage,
                 tools=tools, tool_choice=tool_choice, append=append,
@@ -9172,6 +9171,10 @@ class JackQwenKernel:
                         ):
                             yield wire
                     except Exception as exc:
+                        if isinstance(exc, RepeatedLoopInterrupt):
+                            # Repeated loops are terminal. Stage 2 must not be
+                            # misreported as a successful degraded A1 response.
+                            raise
                         if AGENTIC_MODE and stage_key == "extended_reflection" and agentic_frozen_stage1_answer is not None:
                             detail = str(exc.detail) if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
                             degraded = self._agentic_degraded_result(history, usage, agentic_frozen_stage1_answer, detail)
@@ -11210,7 +11213,8 @@ async def _safe_public_stream(
         if AGENTIC_MODE:
             _agentic_mark_stage1_failure(type(exc).__name__)
         LOG.exception("Jack streamed request failed; closing SSE cleanly")
-        await KERNEL._rearm_pending_tool_resume_for_messages(body.get("messages"))
+        if not isinstance(exc, RepeatedLoopInterrupt):
+            await KERNEL._rearm_pending_tool_resume_for_messages(body.get("messages"))
         await KERNEL._rearm_pending_debugging_resumes_for_messages(body.get("messages"))
         detail = str(exc.detail) if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
         response_id = f"chatcmpl-jack-error-{uuid.uuid4().hex}"
@@ -12451,7 +12455,7 @@ def _start_server_from_cli(cfg: Dict[str, Any]) -> None:
     print(f"Preserve thinking: {'ON' if cfg.get('preserve_thinking', True) else 'OFF'}")
     print(f"Forensic archive : {str(cfg.get('forensic_archive_mode', 'stage')).upper()}")
     print(f"Loop Detector    : {'ON' if cfg.get('loop_detector_enabled', True) else 'OFF'} / {cfg.get('loop_detector_repetitions', 32)} repetitions")
-    print("Deep Research max_tokens failsafes: Thesis 100000 / Antithesis 20000 / Synthesis 100000" if level_key == "ultra" else "Kernel-side max_tokens limits: NONE")
+    print("Kernel-side max_tokens limits: NONE")
     print("Press Ctrl+C to stop the server and return to the launcher.")
     print()
     try:
@@ -12595,7 +12599,7 @@ def run_server() -> None:
     LOG.info("Loop Detector: %s, threshold=%s, min-cycle=128 words",
              "ON" if CFG.loop_detector_enabled else "OFF", CFG.loop_detector_repetitions)
     LOG.info("Live stage streaming: ON for OpenAI stream=true requests")
-    LOG.info("Deep Research max_tokens failsafes: Thesis 100000 / Antithesis 20000 / Synthesis 100000" if ULTRA_MODE else "Kernel-side max_tokens limits: NONE")
+    LOG.info("Kernel-side max_tokens limits: NONE")
 
     config = uvicorn.Config(
         APP,
