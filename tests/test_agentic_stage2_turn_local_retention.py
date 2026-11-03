@@ -176,7 +176,7 @@ def test_abc_current_turn_projection_and_original_history_unchanged(monkeypatch,
         assert payload["messages"][0]["content"] == k.AGENTIC_STAGE1_PROMPT
         assert CALLER_SYSTEM not in json.dumps(payload)
         assert payload["chat_template_kwargs"]["preserve_thinking"] is True
-        assert payload["tools"] == tools()
+        assert "tools" not in payload
         assert k.STAGES["extended_reflection"].allow_tools is False
 
     base = results["baseline"][1]
@@ -185,24 +185,25 @@ def test_abc_current_turn_projection_and_original_history_unchanged(monkeypatch,
     old = base["messages"][1:-1]
     current = isolated["messages"][1:-1]
     assert len(old) == len(frozen)
-    assert current == old[4:]
+    assert len(current) == 4  # current U, two R1 fragments, frozen A1/R1
     assert isolated["messages"][:-1] == retention["messages"][:-1]
     assert isolated["messages"][-1] == base["messages"][-1]
     assert retention["messages"][-1]["content"].startswith(
         results["isolate-retain"][0].AGENTIC_36_STAGE2_PROMPT
     )
-    assert "You must retain and preserve that which is useful for future work." in (
+    assert "Treat this turn's Stage-1 native reasoning as a draft" in (
         retention["messages"][-1]["content"]
     )
-    assert "do not repeat earlier work" not in retention["messages"][-1]["content"].lower()
     assert "Earlier Stage 2 reasoning" not in json.dumps(isolated["messages"])
     assert current[0]["role"] == "user"
-    assert current[1]["tool_calls"][0]["id"] == "call-1"
-    assert current[2]["content"] == "Error: wrong path"
-    assert current[3]["reasoning_content"] == "R1 after error: fix path and retry."
-    assert current[4]["content"] == "Reported success. Browser not available."
-    assert current[5]["reasoning_content"].startswith("Final R1:")
+    assert current[0]["content"] == frozen[4]["content"]
+    assert current[1]["reasoning_content"] == "R1 before tools: first try edit."
+    assert current[2]["reasoning_content"] == "R1 after error: fix path and retry."
+    assert current[3]["reasoning_content"].startswith("Final R1:")
     assert current[-1]["content"] == frozen[-1]["content"]
+    assert not any(m.get("tool_calls") or m.get("role") == "tool" for m in current)
+    assert "Error: wrong path" not in json.dumps(current)
+    assert "Reported success. Browser not available." not in json.dumps(current)
     assert all(
         not any(key.startswith("_jack_") for key in m)
         for m in current if isinstance(m, dict)
@@ -244,9 +245,9 @@ def test_default_isolated_retention_and_immutable_prompts(monkeypatch, tmp_path)
     spec.loader.exec_module(k)
     assert k.AGENTIC_STAGE2_RETENTION_TEST == "isolate-retain"
     continuation = k._stage_continuation(k.STAGES["extended_reflection"])
-    assert "You must retain and preserve that which is useful for future work." in continuation
-    assert "not a retrospective report" in continuation
-    assert "A successful write" in continuation
+    assert "Treat this turn\'s Stage-1 native reasoning as a draft" in continuation
+    assert "without retrospective headings" in continuation
+    assert "Do not independently" in continuation
     assert "unresolved matters" in continuation
     assert k.AGENTIC_36_STAGE2_PROMPT == "Preserve useful working knowledge from the completed task for future work, not a retrospective report."
     assert k.AGENTIC_STAGE1_PROMPT == (
@@ -256,7 +257,12 @@ def test_default_isolated_retention_and_immutable_prompts(monkeypatch, tmp_path)
     )
     assert k._agentic_stage2_test_history(
         history(), k.STAGES["extended_reflection"],
-    ) == history()[4:]
+    ) == [
+        history()[4],
+        {"role": "assistant", "content": "", "reasoning_content": "R1 before tools: first try edit."},
+        {"role": "assistant", "content": "", "reasoning_content": "R1 after error: fix path and retry."},
+        history()[-1],
+    ]
 
 
 @pytest.mark.parametrize("variant", ("isolate", "isolate-retain"))
@@ -273,7 +279,7 @@ def test_stage2_tool_rejection_retries_without_losing_frozen_answer(monkeypatch,
     projected = k._agentic_stage2_test_history(corrected, k.STAGES["extended_reflection"])
     assert projected[0]["content"] == original[4]["content"]
     assert projected[-3]["content"] == frozen["content"]
-    assert projected[-2]["_jack_internal_tool_validation_checkpoint"] is True
+    assert not any(p.get("_jack_internal_tool_validation_checkpoint") for p in projected)
     assert projected[-1]["_jack_internal_tool_validation_rejection"] is True
     assert "Earlier Stage 2 reasoning" not in str(projected)
     # A second rejected proposal must remain in the same authentic turn.
