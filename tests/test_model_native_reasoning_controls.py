@@ -104,7 +104,10 @@ def test_muse_uses_its_template_max_without_generic_effort(monkeypatch, tmp_path
     assert "reasoning_effort" not in p
     assert p["messages"][0]["content"] == k.AGENTIC_STAGE1_PROMPT
     assert p["messages"][1]["content"] == "Build a clock"
-    assert p["tools"][0]["function"]["name"] == "read"
+    if stage == "extended_initial":
+        assert p["tools"][0]["function"]["name"] == "read"
+    else:
+        assert "tools" not in p
 
 
 @pytest.mark.parametrize("stream", [True, False])
