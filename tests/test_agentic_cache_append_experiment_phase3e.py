@@ -68,11 +68,11 @@ def test_cache_route_exact_prompt_and_schema(stream):
     assert p["messages"][-1]["role"]=="user"
     assert p["messages"][-1]["content"].startswith(STAGE2+"\n\n")
     assert "reusable working knowledge" in p["messages"][-1]["content"]
-    assert "do not replay the user request" in p["messages"][-1]["content"].lower()
+    assert "do not independently" in p["messages"][-1]["content"].lower()
     assert p["messages"][-2]["content"]=="A1 exact"
     assert p["messages"][-2]["reasoning_content"]=="Stage 1 native R1"
-    assert p["tools"][0]["function"]["name"]=="read"
-    assert p["tool_choice"]=="auto"
+    assert "tools" not in p
+    assert "tool_choice" not in p
     assert p["chat_template_kwargs"]["preserve_thinking"] is True
 
 @pytest.mark.parametrize("stream",[False,True])
@@ -130,7 +130,7 @@ def test_default_request_uses_cache_append(stream):
     p=asyncio.run(collect(k,True,stream))
     assert p["messages"][0]["content"]==k.AGENTIC_STAGE1_PROMPT
     assert p["messages"][-1]["content"].startswith(STAGE2)
-    assert p["tools"][0]["function"]["name"]=="read"
+    assert "tools" not in p
 
 @pytest.mark.parametrize("stream",[False,True])
 def test_forced_tool_choice_falls_back_to_existing_stage2(stream):

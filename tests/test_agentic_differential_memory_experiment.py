@@ -125,7 +125,7 @@ def test_only_trailing_stage2_instruction_differs(monkeypatch, tmp_path, stream)
     assert a_tail["role"] == b_tail["role"]
     assert a["messages"][0]["content"] == control.AGENTIC_STAGE1_PROMPT
     assert a["messages"][-1]["reasoning_content"] == history()[-1]["reasoning_content"]
-    assert a["tools"] == tools()
+    assert "tools" not in a
     assert a["chat_template_kwargs"]["preserve_thinking"] is True
     assert control.STAGES["extended_reflection"].allow_tools is False
     assert candidate.STAGES["extended_reflection"].allow_tools is False

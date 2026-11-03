@@ -102,7 +102,7 @@ def test_custom_system_never_governs_agentic_stage2(monkeypatch, tmp_path, strea
         assert stage2["messages"][0]["content"] == k.AGENTIC_STAGE1_PROMPT
         assert stage2["messages"][-1]["content"].startswith(k.AGENTIC_36_STAGE2_PROMPT)
         assert stage2["chat_template_kwargs"]["preserve_thinking"] is True
-        assert stage2["tools"] == stage1["tools"]
+        assert "tools" not in stage2
     else:
         assert stage2["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
         assert "tools" not in stage2

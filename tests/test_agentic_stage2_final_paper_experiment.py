@@ -122,7 +122,7 @@ def test_only_trailing_suffix_changes(monkeypatch, tmp_path, stream):
     assert "tool-reported success alone does not verify on-disk state" in revised_tail["content"]
     assert "label unsupported causal" in revised_tail["content"]
     assert revised["messages"][-1]["reasoning_content"] == history()[-1]["reasoning_content"]
-    assert revised["tools"] == tools()
+    assert "tools" not in revised
     assert revised["chat_template_kwargs"]["preserve_thinking"] is True
     assert candidate.STAGES["extended_reflection"].allow_tools is False
     assert candidate.AGENTIC_36_STAGE2_PROMPT == "Preserve useful working knowledge from the completed task for future work, not a retrospective report."

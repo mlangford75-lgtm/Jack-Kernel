@@ -89,8 +89,8 @@ def test_stage2_sees_current_r1_but_never_old_r2(cache):
     if cache:
         assert p["messages"][0]["content"] == STAGE1
         assert p["messages"][-1]["content"].startswith(STAGE2 + "\\n\\n".replace("\\n", "\n"))
-        assert p["tool_choice"] == "auto"
-        assert len(p["tools"]) == 1
+        assert "tool_choice" not in p
+        assert "tools" not in p
     else:
         assert p["messages"][0]["content"] == STAGE2
         assert "tools" not in p
@@ -100,10 +100,14 @@ def test_stage1_prefix_unchanged_when_stage2_is_appended():
     h = history()
     stage1 = k.BACKEND._stage_messages_for_profile(h[:-1], k.STAGES["extended_initial"])
     stage2 = k.BACKEND._stage_messages_for_profile(h, k.STAGES["extended_reflection"])
-    assert stage2[:len(stage1)] == stage1
+    # Raw Stage-1 tool exchanges are not part of the Stage-2 model view.
+    projection = k._agentic_stage2_test_history(h, k.STAGES["extended_reflection"])
+    assert projection[0]["content"] == h[3]["content"]
+    assert all("tool_calls" not in item and item.get("role") != "tool" for item in projection)
+    assert projection[-1]["content"] == h[-1]["content"]
     assert stage2[-1]["content"] == "Turn 2 frozen answer: created cuckoo-clock.svg"
     assert k._stage_continuation(k.STAGES["extended_reflection"], h).startswith(
-        "You must retain and preserve"
+        "Treat this turn\'s Stage-1 native reasoning"
     )
 
 def test_incoming_history_never_recovers_previous_r2():
