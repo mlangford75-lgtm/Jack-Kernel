@@ -120,7 +120,7 @@ def test_summary_cannot_impersonate_original_user_for_artifact_projection(monkey
     assert all("reasoning_content" not in m for m in projected)
 
 
-def test_compaction_discards_stale_r2_and_keeps_authenticated_one_hop(monkeypatch):
+def test_compaction_discards_all_historical_r2_and_preserves_memory(monkeypatch):
     k = load(monkeypatch)
     old_visible = committed(k, "old U", "old A", "old M")
     recent_visible = committed(k, "recent U", "recent A", "recent M")
@@ -142,8 +142,8 @@ def test_compaction_discards_stale_r2_and_keeps_authenticated_one_hop(monkeypatc
     assert "stale old R2" not in json.dumps(projected)
     assert projected[5]["content"] == MEMORY_PREFIX + "recent M"
     assert "reasoning_content" not in projected[2]
-    assert projected[5]["reasoning_content"] == "one-hop recent R2"
-    assert projected[5]["_jack_agentic_one_hop_r2"] is True
+    assert "reasoning_content" not in projected[5]
+    assert "_jack_agentic_one_hop_r2" not in projected[5]
     assert projected[6]["content"] == "recent A"
     assert projected[5]["content"] == MEMORY_PREFIX + "recent M"
     assert projected[6]["content"] == "recent A"
