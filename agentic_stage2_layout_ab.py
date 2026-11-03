@@ -236,6 +236,8 @@ def main() -> int:
             p.error("Each fixture must contain a nonempty messages array")
         if fixture["messages"][-1].get("role") != "assistant":
             p.error("Each fixture must end with the frozen Stage 1 assistant message")
+        if fixture.get("tools"):
+            p.error("This fixed-evidence probe does not send tool schemas; keep tools empty. Completed tool calls/results belong in messages.")
         result["fixture_sha256"][name] = fixture_sha(fixture)
         for pair in range(args.repeat_pairs):
             order = (1, 0) if pair % 2 == 0 else (0, 1)
@@ -244,6 +246,22 @@ def main() -> int:
                 print(f"{name} / pair {pair+1} / {label} ...", flush=True)
                 try:
                     run = asyncio.run(one_stage2(jacks[layout], fixture, dry_run, args.model))
+                    if dry_run:
+                        request = run["mock_request"]
+                        assert request and request["stream"] is True, "No streaming request was captured"
+                        assert request["messages"][-2]["content"] == fixture["messages"][-1]["content"], "Frozen A1 mutated"
+                        assert request["messages"][-2].get("reasoning_content") == fixture["messages"][-1].get("reasoning_content"), "Native R1 mutated"
+                        assert request["messages"][0]["role"] == "system", "Missing system contract"
+                        assert BLOCK not in request["messages"][0]["content"], "Caller conflict promoted to system"
+                        expected = (jacks[layout].AGENTIC_STAGE1_PROMPT if layout else
+                                    jacks[layout].AGENTIC_36_STAGE2_PROMPT)
+                        assert request["messages"][0]["content"] == expected, "Incorrect Jack system stage"
+                        assert request["messages"][-1]["role"] == "user", "Missing Stage 2 continuation"
+                        assert request["messages"][-1]["content"], "Empty Stage 2 continuation"
+                        assert "tools" not in request, "Stage 2 unexpectedly received tool schemas"
+                        assert run["tool_calls_attempted"] == 0, "Stage 2 attempted tools"
+                        assert request.get("chat_template_kwargs", {}).get("preserve_thinking") is True, "Preserve Thinking disabled"
+                        print("  DRY-RUN PASS: correct system role, identical R1/A1, Preserve Thinking, stream; no tools")
                     print("  marker=", run["refusal_marker_in_memory"],
                           "chars=", len(run["memory"]), "elapsed=", run["elapsed_seconds"],
                           "usage=", run["usage"])
