@@ -11230,13 +11230,13 @@ async def _safe_public_stream(
             }
             return ("data: " + json.dumps(obj, ensure_ascii=False) + "\n\n").encode("utf-8")
 
-        if ULTRA_MODE:
+        if isinstance(exc, RepeatedLoopInterrupt):
+            failure_text = "Jack Kernel interrupt - Repeated Loop Failure"
+        elif ULTRA_MODE:
             failure_text = (
                 "\n\n[Jack Kernel Deep Research interrupted before authoritative Synthesis commit. "
                 "Any preceding streamed Synthesis text is partial/uncommitted. Failure: " + detail[:1800] + "]"
             )
-        elif isinstance(exc, RepeatedLoopInterrupt):
-            failure_text = "Jack Kernel interrupt - Repeated Loop Failure"
         else:
             failure_text = "\n\n[Jack Kernel internal stage failure: " + detail[:2000] + "]"
         yield event({"content": failure_text})
