@@ -245,9 +245,10 @@ def test_default_isolated_retention_and_immutable_prompts(monkeypatch, tmp_path)
     assert k.AGENTIC_STAGE2_RETENTION_TEST == "isolate-retain"
     continuation = k._stage_continuation(k.STAGES["extended_reflection"])
     assert "You must retain and preserve that which is useful for future work." in continuation
+    assert "not a retrospective report" in continuation
     assert "A successful write" in continuation
     assert "unresolved matters" in continuation
-    assert k.AGENTIC_36_STAGE2_PROMPT == "Generate a detailed summary of why you came to this conclusion."
+    assert k.AGENTIC_36_STAGE2_PROMPT == "Preserve useful working knowledge from the completed task for future work, not a retrospective report."
     assert k.AGENTIC_STAGE1_PROMPT == (
         "Reasoning effort is set to xhigh. Please think carefully through the task, "
         "validate key assumptions, consider plausible alternatives, and prioritize "
