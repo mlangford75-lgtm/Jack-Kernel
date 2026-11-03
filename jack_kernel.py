@@ -875,7 +875,11 @@ _AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION = (
     "consequential tool evidence, established findings, and unresolved matters. "
     "Explain the causal connections that later work would otherwise need to "
     "rediscover. Distinguish proposed actions from tool-reported outcomes, "
-    "observed verification, and unverified assumptions. This instruction "
+    "observed verification, and unverified assumptions. A successful write "
+    "or edit confirms only the tool-reported action, not working code or a "
+    "correct visual result. State what was actually checked and what remains "
+    "unverified; preserve consequential failures and recoveries rather than "
+    "converting confidence into proof. This instruction "
     "applies only to this Stage-2 retrospective; it imposes no restrictions "
     "on later user requests or Stage-1 execution. Produce the memory directly."
 )
@@ -1079,14 +1083,15 @@ AGENTIC_CACHE_APPEND_EXPERIMENT = (
     in {"1", "true", "yes", "on"}
 )
 
-# A/B/C, default unchanged:
-#   baseline       current full-context Stage 2 + accepted continuation
+# Stage-2 turn-local retention is now the Agentic default; preserve both
+# historical controls for explicit rollback or repeatable comparison:
+#   baseline       prior full-context Stage 2 + accepted continuation
 #   isolate        current-turn-only Stage 2 + accepted continuation
-#   isolate-retain current-turn-only Stage 2 + future-work retention directive
+#   isolate-retain (default) current-turn-only Stage 2 + evidence-qualified retention
 # The source history, host tool ledger, frozen A1, forensic lifecycle and
 # next-turn one-hop native R2 bridge remain untouched in all three variants.
 AGENTIC_STAGE2_RETENTION_TEST = (
-    os.environ.get("JACK_AGENTIC_STAGE2_RETENTION_TEST", "baseline").strip().lower()
+    os.environ.get("JACK_AGENTIC_STAGE2_RETENTION_TEST", "isolate-retain").strip().lower()
 )
 if AGENTIC_STAGE2_RETENTION_TEST not in {"baseline", "isolate", "isolate-retain"}:
     raise RuntimeError(
