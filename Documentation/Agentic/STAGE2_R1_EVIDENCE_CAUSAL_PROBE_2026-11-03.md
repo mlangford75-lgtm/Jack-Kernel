@@ -44,3 +44,34 @@ Read the JSON's full M and native R2 and grade (a) exact invalid refusals (b) at
 ## Decision
 
 If `without_r1` succeeds and `native` fails, that is causal evidence the R1 content contributed. If `documentary_r1` also fails, re-labeling is insufficient. If it succeeds, do not automatically adopt it: model continuity and context/caching consequences are unresolved. The longer-term objective remains to preserve the full one-hop **R2→next Stage1** bridge and avoid poisoned R2.
+
+## Follow-up: provenance-bound exact caller quotation ablation
+
+The first 12-run live test produced exact Stage2 refusals in 4/4 native-R1
+runs and 4/4 archived-document-R1 runs, but 0/4 no-R1 runs. No-R1 produced
+unverified retrospective rationales and is not an acceptable production policy.
+
+The new fourth diagnostic variant, `caller_quote_elided`, retains
+`assistant.reasoning_content` and its surrounding narrative but replaces only
+**exactly identified verbatim copies** of the caller's known system prompt
+(including Python repr-quoted copies) with a non-instructional marker. It does
+not remove paraphrases, make semantic safety judgments, or alter frozen A1.
+The original, exact R1 is retained and hashed on the host. This is an
+*experimental model-facing projection*, not a proposed default. It will not
+protect against paraphrases or fragmented copies and may lose causally
+important policy details.
+
+Windows commands after `git pull --ff-only` in the R1-probe checkout:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q tests/test_agentic_stage2_r1_boundary_probe.py
+.\.venv\Scripts\python.exe .\agentic_stage2_r1_boundary_ab.py --dry-run --variants native caller_quote_elided
+.\.venv\Scripts\python.exe .\agentic_stage2_r1_boundary_ab.py --live --variants native caller_quote_elided --repetitions 3
+Copy-Item "$env:TEMP\jack_agentic_stage2_r1_boundary_results.json" "$HOME\Desktop\jack_agentic_stage2_r1_boundary_results.json"
+```
+
+A convincing negative-control test should additionally use an R1 with an
+accurate explanation of a *legitimate* caller constraint. Any production
+candidate must preserve that detail while preventing its promotion to Stage2
+instruction authority. The present test cannot establish that and cannot
+validate real Stage1 cache reuse or the next Stage1's interpretation of R2.
