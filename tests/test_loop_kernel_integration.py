@@ -205,3 +205,29 @@ def test_launcher_configuration_persists_selected_threshold(monkeypatch, tmp_pat
     env = k._config_to_env(restored)
     assert env["JACK_LOOP_DETECTOR"] == "0"
     assert env["JACK_LOOP_REPETITIONS"] == "128"
+
+
+
+def test_agentic_stage2_retry_preserves_frozen_a1(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path, mode="Local Agentic (Preserve Thinking)")
+    history = [{"role": "user", "content": "Construct the clock"}]
+    turn_id = k._agentic_begin_turn(history, fresh=True)
+    k._agentic_forensic_freeze(history, "EXACT FROZEN A1")
+    history.append({
+        "role": "assistant", "content": "EXACT FROZEN A1",
+        "reasoning_content": "Stage1 reasoning evidence",
+    })
+    original = k._agentic_forensic_turn(history)
+    frozen_hash = original.frozen_a1_sha256
+    backend = FakeBackend([repeated_reasoning(), "stage2 healthy memory"])
+    kernel = k.JackQwenKernel(backend, k.CFG)
+    packets = run_stage(k, kernel, name="extended_reflection", history=history)
+    assert backend.calls == 2
+    assert packets[-1]["kind"] == "result"
+    record = k._agentic_forensic_turn(history)
+    assert record.turn_id == turn_id
+    assert record.frozen_a1_sha256 == frozen_hash
+    assert history[-1]["content"] == "EXACT FROZEN A1"
+    events = k._agentic_forensic_journal().events(turn_id)
+    assert [e["status"] for e in events].count("stage2_active") == 2
+    assert any(e["status"] == "memory_failed" for e in events)
