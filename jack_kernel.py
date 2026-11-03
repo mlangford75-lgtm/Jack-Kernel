@@ -80,6 +80,7 @@ import json
 import logging
 from jack_agentic_forensics import AgenticForensicJournal, ForensicConflict, attempt_id as _new_forensic_attempt_id
 from jack_loop_detector import (ReasoningLoopDetector, RepeatedReasoningLoop, RepeatedLoopInterrupt, PartialOutputLoopInterrupt, LOOP_THRESHOLDS)
+from jack_stage2_native_reflection import select_stream as _stage2_native_reflection_stream
 import os
 import shutil
 import socket
@@ -6628,13 +6629,22 @@ class JackQwenKernel:
             stage_number=_runtime_activity_stage_number(stage_key),
             backend_request_active=True,
         )
-        backend_stream = self.backend.chat_stream(
-            messages=history,
-            secondary_system=secondary_system,
-            profile=profile,
-            tools=effective_tools,
-            tool_choice=effective_tool_choice,
-        ).__aiter__()
+        backend_stream, native_reflection_selected = _stage2_native_reflection_stream(
+            self.backend,
+            enabled=os.getenv("JACK_AGENTIC_STAGE2_NATIVE_REFLECTION", "0").strip().lower() in {"1", "true", "yes", "on"},
+            stage_key=stage_key,
+            agentic_mode=AGENTIC_MODE,
+            stream_kwargs={
+                "messages": history,
+                "secondary_system": secondary_system,
+                "profile": profile,
+                "tools": effective_tools,
+                "tool_choice": effective_tool_choice,
+            },
+        )
+        if native_reflection_selected:
+            LOG.info("Agentic Stage-2 native reasoning extension selected by verified backend capability")
+        backend_stream = backend_stream.__aiter__()
         pending_next: Optional[asyncio.Task] = None
         try:
             while True:
