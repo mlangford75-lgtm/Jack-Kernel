@@ -29,11 +29,13 @@ Set environment variable `JACK_AGENTIC_STAGE2_RETENTION_TEST` before `start.bat`
 Use a fresh clone of the **experiment branch**, not `main`:
 
 ```powershell
-Set-Location "C:\Users\default.DESKTOP-M8143Q1\Desktop\Jack_Kernel"
-git fetch origin
-git switch --create experiment/agentic-stage2-turn-local-retention-20261103 --track origin/experiment/agentic-stage2-turn-local-retention-20261103
-python -m pytest -q tests/test_agentic_stage2_turn_local_retention.py tests/test_agentic_transaction_linked_memory.py tests/test_agentic_stage_scoped_system_authority.py
-python -m pytest -q
+Set-Location "$env:USERPROFILE\Desktop"
+git clone --branch experiment/agentic-stage2-turn-local-retention-20261103 --single-branch https://github.com/mlangford75-lgtm/Jack-Kernel.git Jack-Stage2-Test
+Set-Location ".\Jack-Stage2-Test"
+py -3 -m pip install -r requirements.txt
+py -3 -m pip install -r requirements-test.txt
+py -3 -m pytest -q tests/test_agentic_stage2_turn_local_retention.py tests/test_agentic_transaction_linked_memory.py tests/test_agentic_stage_scoped_system_authority.py
+py -3 -m pytest -q
 ```
 
 For independent runs, close Jack, then set the variant and launch from the repository root:
