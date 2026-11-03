@@ -871,24 +871,18 @@ _AGENTIC_STAGE2_LINKED_CONTINUATION = (
 # tested independently from the accepted full-history Agentic continuation.
 # This is deliberately not a change to either immutable core stage prompt.
 _AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION = (
-    "You must retain and preserve that which is useful for future work. "
-    "Examine this turn's exact user request, complete native Stage-1 reasoning, "
-    "tool calls and returned results, and exact frozen answer. Preserve useful "
-    "discoveries, decisions and rationale, constraints, failures and corrections, "
-    "consequential tool evidence, established findings, and unresolved matters. "
-    "Explain the causal connections that later work would otherwise need to "
-    "rediscover. Distinguish proposed actions from tool-reported outcomes, "
-    "observed verification, and unverified assumptions. A successful write "
-    "or edit confirms only the tool-reported action, not working code or a "
-    "correct visual result. State what was actually checked and what remains "
-    "unverified; preserve consequential failures and recoveries rather than "
-    "converting confidence into proof. Preserve important exact identifiers, "
-    "paths, versions, numbers, and dependencies. Write reusable working knowledge "
-    "and causal findings directly, not a retrospective report or chat transcript. "
-    "Do not replay the user request, reproduce stage headings or tool-receipt "
-    "formats, or present the memory as a sample assistant response. This "
-    "instruction governs this memory operation only; it does not constrain later "
-    "user requests or Stage-1 execution."
+    "Treat this turn's Stage-1 native reasoning as a draft of working knowledge. "
+    "Use only the original user request, Stage-1 native reasoning, and frozen "
+    "Stage-1 answer. Distill consequential discoveries, decisions and rationale, "
+    "constraints, failed approaches and corrections, established conclusions, "
+    "causal dependencies, and unresolved matters. Preserve exact identifiers, "
+    "paths, versions, numbers, scope, polarity, and important qualifications. "
+    "Use the frozen answer to establish what Stage 1 concluded; do not treat "
+    "an unverified assertion as independently verified. Do not independently "
+    "reconstruct execution or tool history, introduce new findings, retry the "
+    "task, call tools, or address the user. Output reusable working knowledge "
+    "directly, without retrospective headings, tool receipts, or transcript "
+    "formatting. This instruction governs memory distillation only."
 )
 
 
@@ -1112,11 +1106,10 @@ def _agentic_stage2_test_history(
 ) -> List[Dict[str, Any]]:
     """Experiment-only Stage-2 request view; never mutate canonical history.
 
-    The host's active user boundary excludes all prior U/M/A and inherited R2,
-    but preserves every current-turn assistant/tool exchange (including native
-    reasoning across tool resumes) and exact frozen Stage-1 answer in order.
-    The original history remains authoritative for forensic commit, receipts,
-    and cleanup. Historical R2 is not forwarded to the next turn.
+    Stage 2 sees the authentic current request, native Stage-1 reasoning
+    across tool continuations, and exact frozen Stage-1 answer only. Raw tool
+    calls, tool results, and intermediate assistant prose remain in canonical
+    host history for forensic commit and receipts, not for model distillation.
     """
     if (
         not AGENTIC_MODE
@@ -1131,9 +1124,8 @@ def _agentic_stage2_test_history(
     if not (0 <= start < len(messages)) or not _jack_is_authentic_user_message(messages[start]):
         raise HTTPException(status_code=409, detail="Isolated Stage 2 cannot identify the original user request")
     view = messages[start:]
-    # A rejected Stage-2 tool proposal produces host-owned checkpoint/notice
-    # pairs after A1. They are not new user turns and must not invalidate the
-    # original A1 or expose any earlier turn to the same-stage retry.
+    # Validate A1 and any host-owned same-stage correction before projecting.
+    # Raw tool protocol is owned by Jack, not material for cognitive distillation.
     candidates = [i for i, item in enumerate(view)
                   if isinstance(item, dict) and item.get("_jack_extended_candidate_response")]
     if len(candidates) != 1:
@@ -1156,7 +1148,29 @@ def _agentic_stage2_test_history(
             and notice.get("_jack_internal_tool_validation_rejection") is True
         ):
             raise HTTPException(status_code=409, detail="Isolated Stage 2 has an invalid recovery suffix")
-    return view
+
+    # Model-facing Stage 2 = authentic U + all Stage-1 native R1 + frozen A1.
+    # Retain chronological reasoning across tool continuations while withholding
+    # tool calls, tool results, intermediate prose, and independent tool receipts.
+    projected: List[Dict[str, Any]] = [dict(view[0])]
+    for item in view[1:frozen_index]:
+        if not isinstance(item, dict):
+            continue
+        if item.get("role") == "tool" or item.get("tool_calls"):
+            # Tool-call assistant messages can contain genuine native reasoning.
+            # Keep only that reasoning; never forward call arguments or results.
+            pass
+        elif item.get("role") != "assistant":
+            continue
+        r1 = item.get("reasoning_content") or item.get("reasoning") or item.get("thinking")
+        if isinstance(r1, str) and r1:
+            projected.append({"role": "assistant", "content": "", "reasoning_content": r1})
+    projected.append(dict(frozen))
+    # A previous invalid Stage-2 proposal is not Stage-1 cognition. Keep only
+    # the host's short corrective notice, not the proposed tool or its reasoning.
+    for idx in range(1, len(recovery), 2):
+        projected.append(dict(recovery[idx]))
+    return projected
 
 # Phase-3G recovery: model-visible U/M/A forensic labels are OFF by default.
 # The durable host-side turn journal, U/A1 hash checks, stage completion gates,
@@ -5883,11 +5897,10 @@ class OpenAICompatibleBackend:
             [{"role": "system", "content": stage_system}] if stage_system else []
         ) + prepared_messages
         if cache_append:
-            # Deliberately appends the exact immutable instruction at the end.
-            # Tool definitions are preserved in the backend request for prefix
-            # comparison, but Stage 2 still has ZERO host tool authority.
+            # Append the Stage-2 directive after projected R1/A1.
+            # Tool schemas are absent: Stage 2 has zero model or host tool authority.
             stage_messages.append({"role": "user", "content": AGENTIC_36_STAGE2_PROMPT + "\n\n" + _stage_continuation(profile, messages)})
-            LOG.info("AGENTIC CACHE EXPERIMENT: appended Stage-2 directive; original Stage-1 system kept; tools only visible, not executable")
+            LOG.info("AGENTIC CACHE EXPERIMENT: appended Stage-2 directive; only U/R1/A1 projected; no tool schemas")
         elif (
             prepared_messages
             and prepared_messages[-1].get("role") == "assistant"
@@ -5909,11 +5922,7 @@ class OpenAICompatibleBackend:
         if self.cfg.seed:
             payload["seed"] = int(self.cfg.seed)
 
-        if (profile.allow_tools or cache_append) and tools:
-            # Cache experiment mirrors Stage-1 tool schemas to preserve template
-            # identity. Authorization remains bound to profile.allow_tools=False.
-            if cache_append and tool_choice not in (None, "auto"):
-                raise HTTPException(status_code=409, detail="Stage-2 cache experiment requires auto tool_choice for controlled comparison")
+        if profile.allow_tools and tools:
             self._apply_tool_policy(payload, tools, tool_choice)
 
         _agentic_context_report_request(stage_messages, payload, profile)
@@ -6001,11 +6010,10 @@ class OpenAICompatibleBackend:
             [{"role": "system", "content": stage_system}] if stage_system else []
         ) + prepared_messages
         if cache_append:
-            # Deliberately appends the exact immutable instruction at the end.
-            # Tool definitions are preserved in the backend request for prefix
-            # comparison, but Stage 2 still has ZERO host tool authority.
+            # Append the Stage-2 directive after projected R1/A1.
+            # Tool schemas are absent: Stage 2 has zero model or host tool authority.
             stage_messages.append({"role": "user", "content": AGENTIC_36_STAGE2_PROMPT + "\n\n" + _stage_continuation(profile, messages)})
-            LOG.info("AGENTIC CACHE EXPERIMENT: appended Stage-2 directive; original Stage-1 system kept; tools only visible, not executable")
+            LOG.info("AGENTIC CACHE EXPERIMENT: appended Stage-2 directive; only U/R1/A1 projected; no tool schemas")
         elif (
             prepared_messages
             and prepared_messages[-1].get("role") == "assistant"
@@ -6026,11 +6034,7 @@ class OpenAICompatibleBackend:
             payload["max_tokens"] = int(profile.max_tokens)
         if self.cfg.seed:
             payload["seed"] = int(self.cfg.seed)
-        if (profile.allow_tools or cache_append) and tools:
-            # Cache experiment mirrors Stage-1 tool schemas to preserve template
-            # identity. Authorization remains bound to profile.allow_tools=False.
-            if cache_append and tool_choice not in (None, "auto"):
-                raise HTTPException(status_code=409, detail="Stage-2 cache experiment requires auto tool_choice for controlled comparison")
+        if profile.allow_tools and tools:
             self._apply_tool_policy(payload, tools, tool_choice)
 
         _agentic_context_report_request(stage_messages, payload, profile)
