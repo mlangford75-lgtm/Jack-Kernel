@@ -232,7 +232,7 @@ def test_isolation_fails_closed_without_frozen_a1(monkeypatch, tmp_path, variant
     assert exc.value.status_code == 409
 
 
-def test_default_retention_and_immutable_prompts(monkeypatch, tmp_path):
+def test_default_baseline_and_immutable_prompts(monkeypatch, tmp_path):
     # Loader sets the A/B variant explicitly. Remove that override and
     # reimport to check the deployed default.
     load_kernel(monkeypatch, tmp_path, "baseline")
@@ -242,10 +242,10 @@ def test_default_retention_and_immutable_prompts(monkeypatch, tmp_path):
     k = importlib.util.module_from_spec(spec)
     sys.modules[name] = k
     spec.loader.exec_module(k)
-    assert k.AGENTIC_STAGE2_RETENTION_TEST == "isolate-retain"
+    assert k.AGENTIC_STAGE2_RETENTION_TEST == "baseline"
     continuation = k._stage_continuation(k.STAGES["extended_reflection"])
-    assert "A successful write or edit confirms only the tool-reported action" in continuation
-    assert "preserve consequential failures and recoveries" in continuation
+    assert "A successful edit or write is not proof of" in continuation
+    assert "consequential failures or recoveries" in continuation
     assert k.AGENTIC_36_STAGE2_PROMPT == "Generate a detailed summary of why you came to this conclusion."
     assert k.AGENTIC_STAGE1_PROMPT == (
         "Reasoning effort is set to xhigh. Please think carefully through the task, "
