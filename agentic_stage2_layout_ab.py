@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Jack Agentic Stage-2 request-layout A/B. NON-PRODUCTION EXPERIMENT.
+r"""Jack Agentic Stage-2 request-layout A/B. NON-PRODUCTION EXPERIMENT.
 
 Place beside jack_kernel.py in a clean Jack-Kernel clone, then run:
   .venv\Scripts\python.exe agentic_stage2_layout_ab.py --dry-run
@@ -92,31 +92,49 @@ def builtin_fixtures() -> dict:
 
 
 def load_jack(root: Path, layout: int, model: str):
-    os.environ["JACK_REASONING_LEVEL"] = "Local Agentic (Preserve Thinking)"
-    os.environ["JACK_BACKEND_PROFILE"] = "lmstudio"
-    os.environ["JACK_BACKEND_MODEL"] = model
-    os.environ.setdefault("JACK_BACKEND_BASE_URL", "http://127.0.0.1:1234/v1")
-    os.environ["JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT"] = str(layout)
-    os.environ["JACK_AGENTIC_TRANSACTION_LINKS"] = "1"
-    os.environ["JACK_AGENTIC_TASK_ANCHOR"] = "0"
-    os.environ["JACK_AGENTIC_DIFFERENTIAL_MEMORY"] = "0"
-    os.environ["JACK_AGENTIC_STAGE2_FINAL_PAPER"] = "1"
-    os.environ["JACK_FORENSIC_ARCHIVE_MODE"] = "off"
-    os.environ["JACK_AGENTIC_FORENSIC_DB"] = str(Path(tempfile.gettempdir()) / ("jack-ab-" + uuid.uuid4().hex + ".sqlite"))
-
-    module_name = "jack_stage2_ab_" + uuid.uuid4().hex
-    spec = importlib.util.spec_from_file_location(module_name, root / "jack_kernel.py")
-    if spec is None or spec.loader is None:
-        raise RuntimeError("Could not load jack_kernel.py")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    import jack_responses_compat
-    jack_responses_compat.register(module)
-    if not module.AGENTIC_MODE:
-        raise RuntimeError("Jack was not initialized in Agentic mode")
-    return module
-
+    # Import-time Jack configuration must NOT leak into other pytest modules.
+    # The experiment compares layout only, using the accepted Stage-2 memory
+    # continuation; unrelated prompt experiments remain disabled.
+    overrides = {
+        "JACK_REASONING_LEVEL": "Local Agentic (Preserve Thinking)",
+        "JACK_BACKEND_PROFILE": "lmstudio",
+        "JACK_BACKEND_MODEL": model,
+        "JACK_BACKEND_BASE_URL": os.environ.get(
+            "JACK_BACKEND_BASE_URL", "http://127.0.0.1:1234/v1"
+        ),
+        "JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT": str(layout),
+        "JACK_AGENTIC_TRANSACTION_LINKS": "1",
+        "JACK_AGENTIC_TASK_ANCHOR": "0",
+        "JACK_AGENTIC_DIFFERENTIAL_MEMORY": "0",
+        "JACK_AGENTIC_STAGE2_FINAL_PAPER": "0",
+        "JACK_FORENSIC_ARCHIVE_MODE": "off",
+        "JACK_AGENTIC_FORENSIC_DB": str(
+            Path(tempfile.gettempdir()) / ("jack-ab-" + uuid.uuid4().hex + ".sqlite")
+        ),
+    }
+    old_values = {key: os.environ.get(key) for key in overrides}
+    try:
+        os.environ.update(overrides)
+        module_name = "jack_stage2_ab_" + uuid.uuid4().hex
+        spec = importlib.util.spec_from_file_location(
+            module_name, root / "jack_kernel.py"
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError("Could not load jack_kernel.py")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+        import jack_responses_compat
+        jack_responses_compat.register(module)
+        if not module.AGENTIC_MODE:
+            raise RuntimeError("Jack was not initialized in Agentic mode")
+        return module
+    finally:
+        for key, previous in old_values.items():
+            if previous is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = previous
 
 async def one_stage2(jack, fixture: dict, dry_run: bool, model: str) -> dict:
     import httpx
