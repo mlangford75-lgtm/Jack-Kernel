@@ -133,8 +133,8 @@ def test_previous_r2_is_never_projected_into_stage2_on_both_cache_profiles(cache
             model_messages = payloads[0]["messages"]
             assert "expired R2" not in json.dumps(model_messages)
             assert "current R1" in json.dumps(model_messages)
-            assert "previous memory" in json.dumps(model_messages)
-            assert "previous A" in json.dumps(model_messages)
+            assert "previous memory" not in json.dumps(model_messages)
+            assert "previous A" not in json.dumps(model_messages)
             if cache_enabled:
                 assert model_messages[-1]["content"].startswith(
                     k.AGENTIC_36_STAGE2_PROMPT
@@ -314,7 +314,8 @@ def test_streamed_terminal_exit_retires_only_frozen_bridge(interrupt):
                 else:
                     await anext(stream)
                     assert reached_stage2.is_set()
-                    assert "reasoning_content" not in history[1]
+                    # Legacy synthetic bridge remains until terminal cleanup only.
+                    assert history[1]["reasoning_content"] == "previous R2"
                     if interrupt == "cancel":
                         await anext(stream)
             finally:
