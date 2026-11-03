@@ -76,7 +76,7 @@ def test_frozen_prompts_and_delayed_techniques_not_changed(monkeypatch, tmp_path
         "validate key assumptions, consider plausible alternatives, and prioritize "
         "correctness, consistency, and clarity in the final answer."
     )
-    assert k.AGENTIC_36_STAGE2_PROMPT == "Generate a detailed summary of why you came to this conclusion."
+    assert k.AGENTIC_36_STAGE2_PROMPT == "Preserve useful working knowledge from the completed task for future work, not a retrospective report."
     assert k._agentic_cache_append_enabled(k.STAGES["extended_reflection"])
     assert k.STAGES["extended_reflection"].allow_tools is False
 
