@@ -1156,12 +1156,10 @@ def _agentic_stage2_test_history(
     for item in view[1:frozen_index]:
         if not isinstance(item, dict):
             continue
-        if item.get("role") == "tool" or item.get("tool_calls"):
-            # Tool-call assistant messages can contain genuine native reasoning.
-            # Keep only that reasoning; never forward call arguments or results.
-            pass
-        elif item.get("role") != "assistant":
+        if item.get("role") != "assistant":
             continue
+        # Tool-call assistant messages may contain genuine native reasoning;
+        # retain that field alone, never their call arguments or tool results.
         r1 = item.get("reasoning_content") or item.get("reasoning") or item.get("thinking")
         if isinstance(r1, str) and r1:
             projected.append({"role": "assistant", "content": "", "reasoning_content": r1})
