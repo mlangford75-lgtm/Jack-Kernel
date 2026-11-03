@@ -221,7 +221,7 @@ def test_stage1_backend_payload_is_unmodified_by_experiment(monkeypatch, tmp_pat
     assert payload["messages"][1:] == k.BACKEND._stage_messages_for_profile(
         request, k.STAGES["extended_initial"]
     )
-    assert CALLER_SYSTEM in payload["messages"][0]["content"]
+    assert payload["messages"][0]["content"] == k.AGENTIC_STAGE1_PROMPT
 
 
 @pytest.mark.parametrize("variant", ("isolate", "isolate-retain"))
