@@ -89,11 +89,11 @@ def test_current_stage1_reasoning_survives_through_stage2_and_freeze():
 
 
 @pytest.mark.parametrize("cache_enabled", [False, True])
-def test_previous_r2_stays_through_stage2_on_both_cache_profiles(cache_enabled):
+def test_previous_r2_is_never_projected_into_stage2_on_both_cache_profiles(cache_enabled):
     async def exercise():
         k = load(cache_enabled=cache_enabled)
-        # A verified U/M/A commit allows the immediately previous native R2
-        # to remain throughout both stages of this consuming turn.
+        # U/M/A remains authenticated, but the prior native R2 is retired
+        # before the next model request.
         old = await k.KERNEL._complete_commit(
             [{"role": "user", "content": "previous"}], "", {},
             "previous A", "previous memory"
@@ -108,7 +108,7 @@ def test_previous_r2_stays_through_stage2_on_both_cache_profiles(cache_enabled):
             {"role": "user", "content": "current"},
         ]
         history = k.compact_incoming_history(incoming)
-        assert history[1]["reasoning_content"] == "expired R2"
+        assert "reasoning_content" not in history[1]
         freeze(k, history)
         backend = k.OpenAICompatibleBackend(k.CFG)
         payloads = []
@@ -131,7 +131,7 @@ def test_previous_r2_stays_through_stage2_on_both_cache_profiles(cache_enabled):
             )
             assert len(payloads) == 1
             model_messages = payloads[0]["messages"]
-            assert "expired R2" in json.dumps(model_messages)
+            assert "expired R2" not in json.dumps(model_messages)
             assert "current R1" in json.dumps(model_messages)
             assert "previous memory" in json.dumps(model_messages)
             assert "previous A" in json.dumps(model_messages)
@@ -145,7 +145,7 @@ def test_previous_r2_stays_through_stage2_on_both_cache_profiles(cache_enabled):
                 "correctness, consistency, and clarity in the final answer."
             )
             assert k.AGENTIC_36_STAGE2_PROMPT == (
-                "Generate a detailed summary of why you came to this conclusion."
+                "Preserve useful working knowledge from the completed task for future work, not a retrospective report."
             )
         finally:
             await backend._client.aclose()
@@ -314,7 +314,7 @@ def test_streamed_terminal_exit_retires_only_frozen_bridge(interrupt):
                 else:
                     await anext(stream)
                     assert reached_stage2.is_set()
-                    assert history[1]["reasoning_content"] == "previous R2"
+                    assert "reasoning_content" not in history[1]
                     if interrupt == "cancel":
                         await anext(stream)
             finally:
