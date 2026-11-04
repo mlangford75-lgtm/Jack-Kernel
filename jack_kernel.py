@@ -11546,11 +11546,11 @@ def _status_value(label: str, value: str, *, width: int = 21) -> str:
     plain_label = f"{label:<{width}}"
     return f"{_ansi_rgb(plain_label, _JACK_MUTED)}{_ansi_rgb(value, _JACK_CHROME, bold=True)}"
 
-CLI_DEFAULTS: Dict[str, Any] = {
+# New-install and reset defaults select the verified Nov 4 LM Studio Agentic run.\n# Existing saved config and explicit environment overrides retain precedence.\nCLI_DEFAULTS: Dict[str, Any] = {
     "config_schema_version": CONFIG_SCHEMA_VERSION,
     "backend_profile": "lmstudio",
     "backend_base_url": "http://127.0.0.1:1234/v1",
-    "backend_model": "",
+    "backend_model": "qwen3.6-35b-a3b",
     "backend_auth_mode": "none",
     "backend_api_key": "",
     "backend_header_name": "",
@@ -11565,7 +11565,7 @@ CLI_DEFAULTS: Dict[str, Any] = {
     "agent_base_url": "",
     "api_key": "",
     "virtual_model": "jack-kernel",
-    "reasoning_level": "x-high",
+    "reasoning_level": "Local Agentic (Preserve Thinking)",
     "preserve_thinking": True,
     "backend_timeout_seconds": 1800.0,
     "backend_context_length": 0,
