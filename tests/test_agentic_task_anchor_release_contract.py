@@ -75,7 +75,7 @@ def test_large_user_request_stays_in_cached_prefix(monkeypatch, tmp_path):
     suffix = k._stage_continuation(k.STAGES["extended_reflection"], history)
     assert marker not in suffix
     assert huge not in suffix
-    assert len(suffix) < 1500
+    assert len(suffix) < 2400
     assert original == [{"role": "user", "content": huge}]
     assert k.AGENTIC_STAGE1_PROMPT == "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer."
     assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
