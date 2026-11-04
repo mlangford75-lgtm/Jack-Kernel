@@ -262,6 +262,11 @@ def test_default_isolated_retention_and_immutable_prompts(monkeypatch, tmp_path)
     assert "not a new user request or a report about the process" in continuation
     assert "re-solve the task" in continuation
     assert "unresolved matters" in continuation
+    assert "Missing path information or limited metadata is not itself a contradiction" in continuation
+    assert "Preserve what was established, not what could plausibly be true" in continuation
+    assert "Do not reconstruct earlier turns" in continuation
+    assert "not a new user request" in continuation
+    assert "without an arbitrary length limit" in continuation
     assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
     assert k.AGENTIC_STAGE1_PROMPT == (
         "Reasoning effort is set to xhigh. Please think carefully through the task, "
