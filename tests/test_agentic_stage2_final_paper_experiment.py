@@ -37,7 +37,7 @@ async def capture(k, stream):
     def reply(request):
         seen.append(json.loads(request.content))
         if stream:
-            return httpx.Response(200, text='data: {"choices":[{"index":0,"delta":{"content":"M"},"finish_reason":"stop"}]}\\n\\ndata: [DONE]\\n\\n',
+            return httpx.Response(200, text='data: {"choices":[{"index":0,"delta":{"content":"M"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
                                   headers={"content-type": "text/event-stream"})
         return httpx.Response(200, json={"choices": [{"message": {"content": "M"}, "finish_reason": "stop"}], "usage": {}})
     backend = k.OpenAICompatibleBackend(k.CFG)
