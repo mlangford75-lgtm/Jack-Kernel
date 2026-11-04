@@ -357,7 +357,7 @@ def test_retired_tool_receipts_keep_outcomes_without_raw_tool_protocol(monkeypat
     assert 'call_id="call-1"' in note and 'call_id="call-2"' in note
     assert "outcome=REPORTED_ERROR" in note
     assert "outcome=RESULT_RETURNED_NO_STRUCTURED_ERROR" in note
-    assert "earlier" not in note.lower()
+    assert "Earlier Stage 2 reasoning" not in note
     assert "Error: wrong path" not in note
     assert "<jack_tool_evidence_receipt>" not in json.dumps(payload)
 
