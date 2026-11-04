@@ -272,7 +272,13 @@ def test_default_isolated_retention_and_immutable_prompts(monkeypatch, tmp_path)
         "Reasoning effort is set to xhigh. Please think carefully through the task, "
         "validate key assumptions, consider plausible alternatives, and prioritize "
         "correctness, consistency, and clarity in the final answer.\n"
-        "Carefully reason on the task before using tools"
+        "Carefully reason on the task before using tools\n"
+        "Before using tools, consider:\n"
+        "- What is the user actually trying to achieve?\n"
+        "- What information do you already have vs. what is missing?\n"
+        "- Is a tool the right next step, or can you answer from what you have?\n"
+        "- For information gathering - reading files, searching, running tests, inspecting results - using the tool is part of reasoning.\n"
+        "- For state-changing actions like writing files, treat the tool as a commit after you have a clear picture of the correct final state."
     )
     assert k._agentic_stage2_test_history(
         history(), k.STAGES["extended_reflection"],
