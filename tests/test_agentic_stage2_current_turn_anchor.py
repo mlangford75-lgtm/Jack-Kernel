@@ -14,7 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 STAGE1 = (
     "Reasoning effort is set to xhigh. Please think carefully through the task, "
     "validate key assumptions, consider plausible alternatives, and prioritize "
-    "correctness, consistency, and clarity in the final answer."
+    "correctness, consistency, and clarity in the final answer.\n"
+        "Carefully reason on the task before using tools"
 )
 STAGE2 = "Review the latest user request"
 
