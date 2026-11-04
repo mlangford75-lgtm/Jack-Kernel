@@ -848,21 +848,19 @@ _STAGE_CONTINUATIONS = {
 
 # One plain-language memory directive. Jack owns evidence isolation and stage authority.
 # Stage-1 cognition prompt is byte-exact and untouched.
-_AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION = """Review the latest user request, your reasoning while working on that request, and the final response you gave.
+_AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION = """Review the latest actual user request, your reasoning while working on it, and your final response.
 
-Your task is to preserve the useful knowledge from this work so that you can understand and build upon it in future conversations without having to repeat the reasoning.
+Preserve the important working knowledge established during that request so it can be used in future turns without repeating the reasoning.
 
-Preserve important facts, discoveries, decisions, explanations, corrections, technical details, constraints, unresolved problems, and why particular decisions were made. Keep exact names, paths, numbers, and other details whenever they matter.
+Retain consequential facts, decisions, their original explanations, exact technical details, actions, corrections, constraints, failures, and unresolved matters. Preserve distinctions between intended, attempted, completed, reported, and verified outcomes.
 
-Distinguish between what was planned, what was attempted, what was completed, what was verified, and what remains uncertain. Do not treat something you intended to do or claimed to do as proof that it happened.
+Use Jack's host-recorded tool evidence only to check execution claims. A discrepancy exists when the evidence explicitly conflicts with a claim. Missing path information or limited metadata is not itself a contradiction. Do not turn incomplete metadata into evidence that an action failed or never occurred.
 
-When your reasoning or final response says you used a tool or completed a tool-dependent action, compare that claim with the separate Jack host-recorded tool evidence, if available. If Jack explicitly reports NO_TOOL_CALLS_RECORDED for the completed turn, do not remember claimed tool use as executed; keep it as an unverified claim or intention. If Jack recorded returned results or failures, preserve that distinction without treating a returned result as proof of the intended effect. If the record is unavailable or incomplete, do not infer that no tools were used. Preserve material discrepancies concisely without inventing missing activity. This is a narrow check on execution claims, not a general search for mistakes.
+Do not reconstruct earlier turns, re-solve the task, introduce new explanations, implementation details, conclusions, recommendations, or possibilities. Preserve what was established, not what could plausibly be true.
 
-Use the reasoning as source material, not as something to copy word for word. Remove repetition, abandoned ideas, unnecessary deliberation, and information that will not help with future work. Preserve important lessons from mistakes and failed approaches.
+Remove repetition, self-checking, and unnecessary deliberation. Keep as much detail as is genuinely useful, without an arbitrary length limit.
 
-Do not invent facts, perform new reasoning about the original task, or change its conclusions. Where the sources disagree, preserve the uncertainty rather than inventing a resolution.
-
-Write the resulting knowledge directly, clearly, and with enough detail to be useful in future conversations. Do not write a retrospective report or address the user."""
+Write only the resulting working knowledge. This is Jack's internal memory task, not a new user request or a report about the process."""
 
 
 def _stage_continuation(
