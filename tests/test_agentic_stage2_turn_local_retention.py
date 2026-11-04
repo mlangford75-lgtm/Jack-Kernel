@@ -67,6 +67,7 @@ def history():
                 }
             ],
             "_jack_internal_tool_exchange": True,
+            "_jack_stage_key": "extended_initial",
         },
         {
             "role": "tool",
@@ -88,6 +89,7 @@ def history():
                 }
             ],
             "_jack_internal_tool_exchange": True,
+            "_jack_stage_key": "extended_initial",
         },
         {
             "role": "tool",
@@ -323,3 +325,76 @@ def test_nov4_qwen36_reference_is_the_new_install_default(monkeypatch, tmp_path)
     assert k.STAGES["extended_reflection"].temperature == 0.50
     assert k.AGENTIC_STAGE2_RETENTION_TEST == "isolate-retain"
     assert k._agentic_cache_append_enabled(k.STAGES["extended_reflection"])
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_retired_tool_receipts_keep_outcomes_without_raw_tool_protocol(monkeypatch, tmp_path, stream):
+    k = load_kernel(monkeypatch, tmp_path, "isolate-retain")
+    raw = history()
+    first = k._tool_evidence_receipts_from_group(raw[5:7])
+    second = k._tool_evidence_receipts_from_group(raw[7:9])
+    assert first and second
+    retired = raw[:5] + first + second + raw[-1:]
+    before = copy.deepcopy(retired)
+    payload = asyncio.run(payload_for(k, "extended_reflection", stream, retired))
+    assert retired == before
+    assert len(payload["messages"]) == 4
+    assert payload["messages"][1]["content"] == raw[4]["content"]
+    assert payload["messages"][2]["content"] == raw[-1]["content"]
+    note = payload["messages"][-1]["content"]
+    assert 'call_id="call-1"' in note and 'call_id="call-2"' in note
+    assert "outcome=REPORTED_ERROR" in note
+    assert "outcome=RESULT_RETURNED_NO_STRUCTURED_ERROR" in note
+    assert "earlier" not in note.lower()
+    assert "Error: wrong path" not in note
+    assert "<jack_tool_evidence_receipt>" not in json.dumps(payload)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_stage2_host_note_missing_tools_is_zero_cost(monkeypatch, tmp_path, stream):
+    k = load_kernel(monkeypatch, tmp_path, "isolate-retain")
+    raw = [history()[4], history()[-1]]
+    p = asyncio.run(payload_for(k, "extended_reflection", stream, raw))
+    assert p["messages"][-1]["content"] == k.AGENTIC_36_STAGE2_PROMPT
+
+
+def test_host_evidence_is_bounded_current_turn_only(monkeypatch, tmp_path):
+    k = load_kernel(monkeypatch, tmp_path, "isolate-retain")
+    raw = history()
+    # Older tool results must never enter the current-turn evidence projection.
+    older = [
+        {"role": "assistant", "_jack_internal_tool_exchange": True,
+         "_jack_stage_key": "extended_initial",
+         "tool_calls": [{"id": "old-secrets", "type": "function",
+                         "function": {"name": "write", "arguments": '{"path":"old-sensitive-path"}'}}]},
+        {"role": "tool", "_jack_internal_tool_exchange": True,
+         "tool_call_id": "old-secrets", "content": "Old secret: must not leak"},
+    ]
+    recent = []
+    for i in range(20):
+        recent.extend([
+            {"role": "assistant", "_jack_internal_tool_exchange": True,
+             "_jack_stage_key": "extended_initial",
+             "tool_calls": [{"id": f"write-{i}", "type": "function",
+                             "function": {"name": "write", "arguments": '{"path":"clock.css"}'}}]},
+            {"role": "tool", "_jack_internal_tool_exchange": True,
+             "tool_call_id": f"write-{i}", "content": "Success"},
+        ])
+    full = raw[:4] + older + raw[4:5] + recent + raw[-1:]
+    note = k._agentic_stage2_host_tool_evidence_note(full)
+    assert "old-secrets" not in note and "old-sensitive-path" not in note
+    assert "write-19" in note and "write-0" not in note
+    assert "omitted" in note
+    assert note.count("call_id=") <= k._AGENTIC_STAGE2_HOST_TOOL_MAX_ENTRIES
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_stage2_noncache_fallback_labels_host_record(monkeypatch, tmp_path, stream):
+    k = load_kernel(monkeypatch, tmp_path, "isolate-retain")
+    k.AGENTIC_CACHE_APPEND_EXPERIMENT = False
+    payload = asyncio.run(payload_for(k, "extended_reflection", stream, history()))
+    assert payload["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
+    assert payload["messages"][-1]["role"] == "user"
+    assert "Host-recorded tool outcome evidence" in payload["messages"][-1]["content"]
+    assert "Write the useful working knowledge now." in payload["messages"][-1]["content"]
+    assert "tools" not in payload
