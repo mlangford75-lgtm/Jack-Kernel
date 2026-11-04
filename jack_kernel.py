@@ -844,27 +844,23 @@ SELF_ADVERSARIAL_MODE = AGENTIC_MODE or ULTRA_MODE or DEEP_REASONING_MODE
 _STAGE_CONTINUATIONS = {
     "Native answer": "Continue the original user request.",
     "Agentic native pass 1": "Continue the current user turn.",
-    "Agentic native pass 2": (
-        "[JACK RUNTIME STAGE CONTINUATION - NOT USER CONTENT - SAME USER TURN]\n"
-        "The immediately preceding assistant response is the completed, frozen Response for the current Request. This is a retrospective memory pass, not a new user request. Produce a Memory of that Response using available reasoning and observed tool outcomes. Earlier Responses and Memories are historical context, not the target. Do not continue the task, address the user, ask questions, offer revisions, or emit tool calls."
-        "\nPreserve the Response's actual rationale, but do not elevate assumptions, predictions, or tool-reported results into independently verified facts. Distinguish what was intended, what tools reported, and what was actually observed."
-    ),
 }
 
-# Canonical Agentic Stage-2 instruction for current-turn U/R1/A1 only.
-# Stage-1 cognition prompt is untouched.
-_AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION = (
-    "Treat the current Stage-1 native reasoning as a draft. Using only the current "
-    "user request, that reasoning, and the frozen Stage-1 answer, distill accurate "
-    "working knowledge for future turns. Preserve consequential discoveries, "
-    "causal explanations, decisions, corrections, constraints, conclusions, and "
-    "unresolved dependencies. Keep exact names, paths, identifiers, numbers, "
-    "qualifications, and whether claims are proposed, reported, or verified; "
-    "never turn an assertion into proof. Do not add unsupported facts or replace "
-    "specific source details with guesses. Do not re-solve the task, reconstruct "
-    "tool history, or address the user. Remove repetition and self-checking. "
-    "Output the useful knowledge directly without a retrospective or checklist."
-)
+# One plain-language memory directive. Jack owns evidence isolation and stage authority.
+# Stage-1 cognition prompt is byte-exact and untouched.
+_AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION = """Review the latest user request, your reasoning while working on that request, and the final response you gave.
+
+Your task is to preserve the useful knowledge from this work so that you can understand and build upon it in future conversations without having to repeat the reasoning.
+
+Preserve important facts, discoveries, decisions, explanations, corrections, technical details, constraints, unresolved problems, and why particular decisions were made. Keep exact names, paths, numbers, and other details whenever they matter.
+
+Distinguish between what was planned, what was attempted, what was completed, what was verified, and what remains uncertain. Do not treat something you intended to do or claimed to do as proof that it happened.
+
+Use the reasoning as source material, not as something to copy word for word. Remove repetition, abandoned ideas, unnecessary deliberation, and information that will not help with future work. Preserve important lessons from mistakes and failed approaches.
+
+Do not invent facts, perform new reasoning about the original task, or change its conclusions. Where the sources disagree, preserve the uncertainty rather than inventing a resolution.
+
+Write the resulting knowledge directly, clearly, and with enough detail to be useful in future conversations. Do not write a retrospective report or address the user."""
 
 
 def _stage_continuation(
@@ -945,6 +941,9 @@ def _stage_generation_trigger(
             "role": "user",
             "content": _ultra_transition_reminder(ULTRA_STAGE3_TRANSITION_BRIDGE, messages),
         }
+    if AGENTIC_MODE and profile.name == "Agentic native pass 2":
+        # In the non-cache layout the full directive is already the system prompt.
+        return {"role": "user", "content": "Write the useful working knowledge now."}
     return {"role": "user", "content": _stage_continuation(profile, messages)}
 
 
@@ -1148,7 +1147,7 @@ You have no tools in this stage. Synthesis may receive the caller's tools and is
 
 Output only the plan."""
 
-AGENTIC_36_STAGE2_PROMPT = "Preserve useful working knowledge from the completed task for future work, not a retrospective report."
+AGENTIC_36_STAGE2_PROMPT = _AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
 
 ULTRA_STAGE2_ANTITHESIS_PROMPT = """You are Antithesis.
 
@@ -5811,7 +5810,7 @@ class OpenAICompatibleBackend:
         if cache_append:
             # Append the Stage-2 directive after projected R1/A1.
             # Tool schemas are absent: Stage 2 has zero model or host tool authority.
-            stage_messages.append({"role": "user", "content": AGENTIC_36_STAGE2_PROMPT + "\n\n" + _stage_continuation(profile, messages)})
+            stage_messages.append({"role": "user", "content": AGENTIC_36_STAGE2_PROMPT})
             LOG.info("AGENTIC CACHE EXPERIMENT: appended Stage-2 directive; only U/R1/A1 projected; no tool schemas")
         elif (
             prepared_messages
@@ -5924,7 +5923,7 @@ class OpenAICompatibleBackend:
         if cache_append:
             # Append the Stage-2 directive after projected R1/A1.
             # Tool schemas are absent: Stage 2 has zero model or host tool authority.
-            stage_messages.append({"role": "user", "content": AGENTIC_36_STAGE2_PROMPT + "\n\n" + _stage_continuation(profile, messages)})
+            stage_messages.append({"role": "user", "content": AGENTIC_36_STAGE2_PROMPT})
             LOG.info("AGENTIC CACHE EXPERIMENT: appended Stage-2 directive; only U/R1/A1 projected; no tool schemas")
         elif (
             prepared_messages
