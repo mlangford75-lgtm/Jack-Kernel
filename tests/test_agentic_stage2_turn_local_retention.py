@@ -269,6 +269,7 @@ def test_default_isolated_retention_and_immutable_prompts(monkeypatch, tmp_path)
     assert "Do not reconstruct earlier turns" in continuation
     assert "not a new user request" in continuation
     assert "without an arbitrary length limit" in continuation
+    assert "Begin with a brief description of the current task (a short sentence) and then preserve the consequential working knowledge." in continuation
     assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
     assert k.AGENTIC_STAGE1_PROMPT == (
         "Reasoning effort is set to xhigh. Please think carefully through the task, "
