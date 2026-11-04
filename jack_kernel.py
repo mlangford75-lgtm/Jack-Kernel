@@ -851,25 +851,8 @@ _STAGE_CONTINUATIONS = {
     ),
 }
 
-# Opt-in memory retrieval carries the host-owned turn identity outside the
-# model's prompt. The append-only cognitive continuation is deliberately short
-# and refers only to the immediately preceding completed assistant answer.
-_AGENTIC_STAGE2_LINKED_CONTINUATION = (
-    "Retain the useful reasoning and observed tool results behind the assistant "
-    "answer immediately above. Include significant discoveries, decisions and "
-    "why, constraints, unsuccessful approaches, verified outcomes versus tool "
-    "reports, and unresolved details useful later or after compaction. Older "
-    "conversation matters only where it directly affected this answer. "
-    "Do not repeat earlier work, continue the task, change the answer, "
-    "or address the user. A successful edit or write is not proof of "
-    "runtime or visual correctness; preserve actual checks, unresolved "
-    "uncertainty, and consequential failures or recoveries. "
-    "Write the retained details directly."
-)
-
-# Opt-in turn-local retrospective: cognition scope and downstream utility are
-# tested independently from the accepted full-history Agentic continuation.
-# This is deliberately not a change to either immutable core stage prompt.
+# Canonical Agentic Stage-2 instruction for current-turn U/R1/A1 only.
+# Stage-1 cognition prompt is untouched.
 _AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION = (
     "Treat the current Stage-1 native reasoning as a draft. Using only the current "
     "user request, that reasoning, and the frozen Stage-1 answer, distill accurate "
@@ -884,97 +867,15 @@ _AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION = (
 )
 
 
-# Experimental causal-paper memory: Stage 1 reasoning is the rough draft,
-# Stage 2 is its coherent, evidence-qualified replacement in future context.
-# Only the trailing user continuation changes; Stage 1, frozen A1, tool policy,
-# historical projection and the cached Stage-1 request prefix are untouched.
-_AGENTIC_STAGE2_FINAL_PAPER_CONTINUATION = (
-    "The most recent genuine user request BEFORE the immediately preceding "
-    "frozen Stage-1 answer is the target. This Jack retrospective instruction "
-    "is not a new user request. Examine everything generated AFTER that user "
-    "request and BEFORE this instruction: current Stage-1 native reasoning "
-    "when present, assistant output, tool calls, returned tool results, and "
-    "the frozen answer. Treat native reasoning as a rough draft, not proof. "
-    "Write a coherent causal memory of this turn's actual decisions, "
-    "constraints, corrections, failures, consequential findings, and unresolved "
-    "details. The value is not in remembering that a tool failed. It's in "
-    "preserving the reasoning that turned the failure into a solution. "
-    "Preserve the obstacle, diagnosis, correction, and evidence of the remedy "
-    "when those changed the approach. If no remedy succeeded, preserve the "
-    "unresolved limitation instead. Do not repeat routine failed calls merely "
-    "to duplicate tool history. For claims of action or verification, "
-    "distinguish proposed "
-    "actions from executed calls, tool-reported results from independently "
-    "observed effects, and assertions from evidence. Generated code is not "
-    "a file write; tool-reported success alone does not verify on-disk state, "
-    "runtime behavior, or visual appearance. Claim verification only when "
-    "a corresponding check appears in this turn's record, and say exactly "
-    "what that check established. Do not invent actions, tests, results, "
-    "or internal motives to explain a failure; label unsupported causal "
-    "explanations as hypotheses, even when Stage 1 asserted them. Earlier "
-    "turns are context only; do not attribute their tool actions or evidence "
-    "to this turn. Do not continue the task, rewrite the frozen answer, "
-    "call tools, or address the user. Output only the polished retrospective "
-    "reasoning record."
-)
-
-
-# Optional differential-memory A/B: keep the proven linked continuation byte-exact.
-# This sentence is appended only to the Stage-2 user-message suffix.
-_AGENTIC_DIFFERENTIAL_MEMORY_SENTENCE = (
-    "Prioritize important reasoning, decisions, tool evidence, and unresolved "
-    "details that are not already clear from the completed answer."
-)
-
-
 def _stage_continuation(
     profile: "StageProfile", messages: Optional[Iterable[Dict[str, Any]]] = None
 ) -> str:
-    continuation = _STAGE_CONTINUATIONS.get(
+    """Agentic Stage 2 has one role: current-turn isolated R1/A1 distillation."""
+    if AGENTIC_MODE and profile.name == "Agentic native pass 2":
+        return _AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
+    return _STAGE_CONTINUATIONS.get(
         profile.name, "Continue the requested task using the preceding conversation."
     )
-    if (
-        AGENTIC_MODE
-        and profile.name == "Agentic native pass 2"
-        and AGENTIC_STAGE2_RETENTION_TEST == "isolate-retain"
-    ):
-        return _AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
-    if AGENTIC_MODE and AGENTIC_TRANSACTION_LINKS_ENABLED and profile.name == "Agentic native pass 2":
-        if AGENTIC_STAGE2_FINAL_PAPER_EXPERIMENT:
-            # Alternative to, not an addition on top of, differential-memory A/B.
-            # Never stack competing retrospective instructions.
-            continuation = _AGENTIC_STAGE2_FINAL_PAPER_CONTINUATION
-        else:
-            continuation = _AGENTIC_STAGE2_LINKED_CONTINUATION
-            if AGENTIC_DIFFERENTIAL_MEMORY_EXPERIMENT:
-                continuation += " " + _AGENTIC_DIFFERENTIAL_MEMORY_SENTENCE
-    if AGENTIC_MODE and AGENTIC_TASK_ANCHOR_ENABLED and profile.name == "Agentic native pass 2" and messages is not None:
-        # Experimental forensic labels may be re-enabled, but the default
-        # retrospective is the proven Phase-3G short continuation. The
-        # immutable host-side U/A1 binding is enforced independently.
-        history = list(messages)
-        binding = _agentic_current_forensic_binding(history)
-        if binding is not None:
-            # Only append after frozen A1. Never restate the request/codebase or
-            # mutate the cached Stage-1 message prefix.
-            target = (
-                "\n[JACK FORENSIC TARGET | turn=" + binding["turn_id"]
-                + " | request=" + binding["request_sha256"][:16]
-                + " | frozen_A1=" + binding["a1_sha256"][:16]
-                + "]\nExplain ONLY this turn's completed Stage 1. "
-                "Previous memories and answers are historical, not the target."
-            )
-            if AGENTIC_TASK_ANCHOR_ENABLED and _agentic_current_task_marker_supported(history, binding["turn_id"]):
-                target += (
-                    "\n[JACK TASK SCOPE | turn=" + binding["turn_id"] + "]\n"
-                    "Retrospect only on the Stage-1 execution for the user message "
-                    "marked [JACK LINK turn=" + binding["turn_id"] + " | artifact=U] "
-                    "and its frozen Stage-1 answer. Other tasks and their memories "
-                    "are background, not the subject of this retrospective. "
-                    "This control message is not a separate task."
-                )
-            return continuation + target
-    return continuation
 
 ULTRA_STAGE2_TRANSITION_BRIDGE = "THESIS COMPLETE. PROCEED TO ANTITHESIS."
 ULTRA_STAGE3_TRANSITION_BRIDGE = "ANTITHESIS COMPLETE. PROCEED TO SYNTHESIS."
@@ -1082,38 +983,23 @@ AGENTIC_CACHE_APPEND_EXPERIMENT = (
     in {"1", "true", "yes", "on"}
 )
 
-# Normal Agentic Stage 2 is isolated to its current turn and preserves useful
-# causal reasoning, tool evidence, corrections, and unresolved work. The older
-# full-history and isolation-only layouts remain explicit diagnostic overrides:
-#   isolate-retain (default) current-turn-only + evidence-qualified retention
-#   isolate                  current-turn-only + prior linked continuation
-#   baseline                 full-history + prior linked continuation
-# The source history, host tool ledger, frozen A1, forensic lifecycle and
-# next-turn one-hop native R2 bridge remain untouched in all three variants.
-AGENTIC_STAGE2_RETENTION_TEST = (
-    os.environ.get("JACK_AGENTIC_STAGE2_RETENTION_TEST", "isolate-retain").strip().lower()
-)
-if AGENTIC_STAGE2_RETENTION_TEST not in {"baseline", "isolate", "isolate-retain"}:
-    raise RuntimeError(
-        "JACK_AGENTIC_STAGE2_RETENTION_TEST must be baseline, isolate, or isolate-retain"
-    )
+# The measured Nov 4 isolated-retention path is the ONLY Agentic Stage-2
+# context policy. An obsolete JACK_AGENTIC_STAGE2_RETENTION_TEST environment
+# override is intentionally ignored; it cannot restore full-history access.
+AGENTIC_STAGE2_RETENTION_TEST = "isolate-retain"
 
 
 def _agentic_stage2_test_history(
     messages: List[Dict[str, Any]], profile: "StageProfile"
 ) -> List[Dict[str, Any]]:
-    """Experiment-only Stage-2 request view; never mutate canonical history.
+    """The sole Agentic Stage-2 request view; never mutate canonical history.
 
     Stage 2 sees the authentic current request, native Stage-1 reasoning
     across tool continuations, and exact frozen Stage-1 answer only. Raw tool
     calls, tool results, and intermediate assistant prose remain in canonical
     host history for forensic commit and receipts, not for model distillation.
     """
-    if (
-        not AGENTIC_MODE
-        or profile.name != "Agentic native pass 2"
-        or AGENTIC_STAGE2_RETENTION_TEST == "baseline"
-    ):
+    if not AGENTIC_MODE or profile.name != "Agentic native pass 2":
         return messages
     target = active_response_target(messages)
     if target is None:
