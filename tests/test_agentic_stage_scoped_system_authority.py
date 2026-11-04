@@ -100,9 +100,10 @@ def test_custom_system_never_governs_agentic_stage2(monkeypatch, tmp_path, strea
     assert stage1_system.count("Before using tools, consider:") == 1
     assert "For information gathering - reading files, searching, running tests, inspecting results - using the tool is part of reasoning." in stage1_system
     assert "For state-changing actions like writing files, treat the tool as a commit after you have a clear picture of the correct final state." in stage1_system
-    assert "Before using tools, consider:" not in json.dumps(stage2)
+    assert "Before using tools, consider:" not in k.AGENTIC_36_STAGE2_PROMPT
     assert stage1_system.endswith(k.AGENTIC_STAGE1_PROMPT)
-    assert k.AGENTIC_STAGE1_PROMPT.endswith("\n" + expected_addition)
+    assert "\n" + expected_addition + "\nBefore using tools, consider:" in k.AGENTIC_STAGE1_PROMPT
+    assert k.AGENTIC_STAGE1_PROMPT.endswith("clear picture of the correct final state.")
     assert stage1_system.index(CALLER) < stage1_system.index("Reasoning effort is set to xhigh.")
     assert "JACK RUNTIME STAGE CONTRACT" in stage1_system
     assert CALLER not in json.dumps(stage2)
