@@ -94,6 +94,13 @@ def test_custom_system_never_governs_agentic_stage2(monkeypatch, tmp_path, strea
     stage2 = capture(k, stage="extended_reflection", stream=stream)
     assert CALLER in stage1["messages"][0]["content"]
     assert k.AGENTIC_STAGE1_PROMPT in stage1["messages"][0]["content"]
+    expected_addition = "Carefully reason on the task before using tools"
+    stage1_system = stage1["messages"][0]["content"]
+    assert stage1_system.count(expected_addition) == 1
+    assert stage1_system.endswith(k.AGENTIC_STAGE1_PROMPT)
+    assert k.AGENTIC_STAGE1_PROMPT.endswith("\n" + expected_addition)
+    assert stage1_system.index(CALLER) < stage1_system.index("Reasoning effort is set to xhigh.")
+    assert "JACK RUNTIME STAGE CONTRACT" in stage1_system
     assert CALLER not in json.dumps(stage2)
     assert all(m["role"] != "developer" for m in stage2["messages"])
     assert stage2["messages"][-2]["reasoning_content"] == "Current R1 obeyed the caller where applicable."
