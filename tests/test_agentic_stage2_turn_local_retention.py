@@ -191,7 +191,7 @@ def test_abc_current_turn_projection_and_original_history_unchanged(monkeypatch,
     assert retention["messages"][-1]["content"].startswith(
         results["isolate-retain"][0].AGENTIC_36_STAGE2_PROMPT
     )
-    assert "Treat this turn's Stage-1 native reasoning as a draft" in (
+    assert "Treat the current Stage-1 native reasoning as a draft" in (
         retention["messages"][-1]["content"]
     )
     assert "Earlier Stage 2 reasoning" not in json.dumps(isolated["messages"])
