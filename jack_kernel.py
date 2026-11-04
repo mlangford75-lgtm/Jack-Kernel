@@ -860,6 +860,8 @@ Do not reconstruct earlier turns, re-solve the task, introduce new explanations,
 
 Remove repetition, self-checking, and unnecessary deliberation. Keep as much detail as is genuinely useful, without an arbitrary length limit.
 
+Begin with a brief description of the current task (a short sentence) and then preserve the consequential working knowledge.
+
 Write only the resulting working knowledge. This is Jack's internal memory task, not a new user request or a report about the process."""
 
 
