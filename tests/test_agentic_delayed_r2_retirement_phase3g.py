@@ -144,9 +144,7 @@ def test_previous_r2_is_never_projected_into_stage2_on_both_cache_profiles(cache
                 "validate key assumptions, consider plausible alternatives, and prioritize "
                 "correctness, consistency, and clarity in the final answer."
             )
-            assert k.AGENTIC_36_STAGE2_PROMPT == (
-                "Preserve useful working knowledge from the completed task for future work, not a retrospective report."
-            )
+            assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
         finally:
             await backend._client.aclose()
     asyncio.run(exercise())

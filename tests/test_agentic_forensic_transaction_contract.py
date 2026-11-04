@@ -194,9 +194,7 @@ def test_metadata_does_not_modify_frozen_prompts_or_context_pruning(monkeypatch,
         "validate key assumptions, consider plausible alternatives, and prioritize "
         "correctness, consistency, and clarity in the final answer."
     )
-    assert k.AGENTIC_36_STAGE2_PROMPT == (
-        "Preserve useful working knowledge from the completed task for future work, not a retrospective report."
-    )
+    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
     assert k.AGENTIC_CACHE_APPEND_EXPERIMENT
     assert k.STAGES["extended_reflection"].allow_tools is False
     assert k._STAGE_CONTINUATIONS["Agentic native pass 2"].startswith(
