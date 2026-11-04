@@ -17,7 +17,7 @@ STAGE1 = (
     "correctness, consistency, and clarity in the final answer.\n"
         "Carefully reason on the task before using tools"
 )
-STAGE2 = "Review the latest user request"
+STAGE2 = "Review the latest actual user request"
 
 def load(cache):
     os.environ["JACK_REASONING_LEVEL"] = "agentic"
@@ -108,7 +108,7 @@ def test_stage1_prefix_unchanged_when_stage2_is_appended():
     assert projection[-1]["content"] == h[-1]["content"]
     assert stage2[-1]["content"] == "Turn 2 frozen answer: created cuckoo-clock.svg"
     assert k._stage_continuation(k.STAGES["extended_reflection"], h).startswith(
-        "Review the latest user request"
+        "Review the latest actual user request"
     )
 
 def test_incoming_history_never_recovers_previous_r2():
