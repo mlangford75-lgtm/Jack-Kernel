@@ -94,6 +94,18 @@ def test_custom_system_never_governs_agentic_stage2(monkeypatch, tmp_path, strea
     stage2 = capture(k, stage="extended_reflection", stream=stream)
     assert CALLER in stage1["messages"][0]["content"]
     assert k.AGENTIC_STAGE1_PROMPT in stage1["messages"][0]["content"]
+    expected_addition = "Carefully reason on the task before using tools"
+    stage1_system = stage1["messages"][0]["content"]
+    assert stage1_system.count(expected_addition) == 1
+    assert stage1_system.count("Before using tools, consider:") == 1
+    assert "For information gathering - reading files, searching, running tests, inspecting results - using the tool is part of reasoning." in stage1_system
+    assert "For state-changing actions like writing files, treat the tool as a commit after you have a clear picture of the correct final state." in stage1_system
+    assert "Before using tools, consider:" not in k.AGENTIC_36_STAGE2_PROMPT
+    assert stage1_system.endswith(k.AGENTIC_STAGE1_PROMPT)
+    assert "\n" + expected_addition + "\nBefore using tools, consider:" in k.AGENTIC_STAGE1_PROMPT
+    assert k.AGENTIC_STAGE1_PROMPT.endswith("clear picture of the correct final state.")
+    assert stage1_system.index(CALLER) < stage1_system.index("Reasoning effort is set to xhigh.")
+    assert "JACK RUNTIME STAGE CONTRACT" in stage1_system
     assert CALLER not in json.dumps(stage2)
     assert all(m["role"] != "developer" for m in stage2["messages"])
     assert stage2["messages"][-2]["reasoning_content"] == "Current R1 obeyed the caller where applicable."
@@ -134,7 +146,7 @@ def test_final_causal_paper_is_still_caller_isolated(monkeypatch, tmp_path, stre
     payload = capture(k, stage="extended_reflection", stream=stream)
     assert CALLER not in payload["messages"][0]["content"]
     assert payload["messages"][0]["content"] == k.AGENTIC_STAGE1_PROMPT
-    assert "Treat the current Stage-1 native reasoning as a draft" in payload["messages"][-1]["content"]
+    assert payload["messages"][-1]["content"] == k.AGENTIC_36_STAGE2_PROMPT
     assert payload["messages"][-1]["content"].startswith(k.AGENTIC_36_STAGE2_PROMPT)
     assert k.STAGES["extended_reflection"].allow_tools is False
 

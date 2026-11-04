@@ -14,9 +14,16 @@ ROOT = Path(__file__).resolve().parents[1]
 STAGE1 = (
     "Reasoning effort is set to xhigh. Please think carefully through the task, "
     "validate key assumptions, consider plausible alternatives, and prioritize "
-    "correctness, consistency, and clarity in the final answer."
+    "correctness, consistency, and clarity in the final answer.\n"
+        "Carefully reason on the task before using tools\n"
+        "Before using tools, consider:\n"
+        "- What is the user actually trying to achieve?\n"
+        "- What information do you already have vs. what is missing?\n"
+        "- Is a tool the right next step, or can you answer from what you have?\n"
+        "- For information gathering - reading files, searching, running tests, inspecting results - using the tool is part of reasoning.\n"
+        "- For state-changing actions like writing files, treat the tool as a commit after you have a clear picture of the correct final state."
 )
-STAGE2 = "Preserve useful working knowledge from the completed task for future work, not a retrospective report."
+STAGE2 = "Review the latest actual user request"
 
 def load(cache):
     os.environ["JACK_REASONING_LEVEL"] = "agentic"
@@ -84,15 +91,15 @@ def test_stage2_sees_current_r1_but_never_old_r2(cache):
     assert p["messages"][-2]["reasoning_content"] == "R1_2 created SVG"
     assert p["messages"][-1]["role"] == "user"
     assert k.AGENTIC_STAGE1_PROMPT == STAGE1
-    assert k.AGENTIC_36_STAGE2_PROMPT == STAGE2
+    assert k.AGENTIC_36_STAGE2_PROMPT.startswith(STAGE2)
     assert k.STAGES["extended_reflection"].allow_tools is False
     if cache:
         assert p["messages"][0]["content"] == STAGE1
-        assert p["messages"][-1]["content"].startswith(STAGE2 + "\\n\\n".replace("\\n", "\n"))
+        assert p["messages"][-1]["content"] == k.AGENTIC_36_STAGE2_PROMPT
         assert "tool_choice" not in p
         assert "tools" not in p
     else:
-        assert p["messages"][0]["content"] == STAGE2
+        assert p["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
         assert "tools" not in p
 
 def test_stage1_prefix_unchanged_when_stage2_is_appended():
@@ -107,7 +114,7 @@ def test_stage1_prefix_unchanged_when_stage2_is_appended():
     assert projection[-1]["content"] == h[-1]["content"]
     assert stage2[-1]["content"] == "Turn 2 frozen answer: created cuckoo-clock.svg"
     assert k._stage_continuation(k.STAGES["extended_reflection"], h).startswith(
-        "Treat the current Stage-1 native reasoning"
+        "Review the latest actual user request"
     )
 
 def test_incoming_history_never_recovers_previous_r2():

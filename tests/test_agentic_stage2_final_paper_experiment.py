@@ -80,5 +80,5 @@ def test_final_paper_flag_cannot_change_current_turn_memory(monkeypatch, tmp_pat
     assert a["messages"][2]["content"] == "Fixed clock; visual status unverified."
     assert a["messages"][2]["reasoning_content"] == "Corrected gradient syntax."
     assert "Old memory" not in json.dumps(a)
-    assert "Treat the current Stage-1 native reasoning as a draft" in a["messages"][3]["content"]
+    assert a["messages"][3]["content"].startswith("Review the latest actual user request")
     assert "tools" not in a

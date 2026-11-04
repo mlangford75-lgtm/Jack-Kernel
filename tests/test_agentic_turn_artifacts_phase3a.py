@@ -104,6 +104,13 @@ def test_preserve_both_cognitive_prompts_byte_exact():
     assert k.AGENTIC_STAGE1_PROMPT == (
         "Reasoning effort is set to xhigh. Please think carefully through the task, "
         "validate key assumptions, consider plausible alternatives, and prioritize "
-        "correctness, consistency, and clarity in the final answer."
+        "correctness, consistency, and clarity in the final answer.\n"
+        "Carefully reason on the task before using tools\n"
+        "Before using tools, consider:\n"
+        "- What is the user actually trying to achieve?\n"
+        "- What information do you already have vs. what is missing?\n"
+        "- Is a tool the right next step, or can you answer from what you have?\n"
+        "- For information gathering - reading files, searching, running tests, inspecting results - using the tool is part of reasoning.\n"
+        "- For state-changing actions like writing files, treat the tool as a commit after you have a clear picture of the correct final state."
     )
-    assert k.AGENTIC_36_STAGE2_PROMPT == "Preserve useful working knowledge from the completed task for future work, not a retrospective report."
+    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
