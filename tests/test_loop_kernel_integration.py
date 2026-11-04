@@ -232,7 +232,8 @@ def test_agentic_stage2_loop_aborts_without_retry_and_frozen_a1_survives(monkeyp
     assert [e["status"] for e in k._agentic_forensic_journal().events(turn_id)].count("stage2_active") == 1
 
     degraded = kernel._agentic_degraded_result(
-        history, {}, "EXACT FROZEN A1", "Stage-2 reasoning loop"
+        history, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "EXACT FROZEN A1", "Stage-2 reasoning loop"
     )
     assert degraded.content == "EXACT FROZEN A1"
     assert degraded.finish_reason == "stop"
