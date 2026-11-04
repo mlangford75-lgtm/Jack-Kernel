@@ -258,4 +258,3 @@ def test_agentic_stream_loop_returns_exact_frozen_stage1_answer(monkeypatch, tmp
     assert "MEMORY NOT PRODUCED" in wire
     assert "[END AGENTIC STAGE 2 — MEMORY COMPLETE" not in wire
     assert "data: [DONE]" in wire
-
