@@ -77,6 +77,16 @@ jobs:
         shell: pwsh
         run: python -m pytest -q
 
+      - name: Fresh-clone Windows bootstrap and isolated subprocess regression
+        shell: pwsh
+        run: |
+          cmd /c setup.bat
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmd /c run-tests.bat tests/test_phase7_ledger_hooks.py tests/test_phase7_ledger_resources.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmd /c run-tests.bat
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Run Pi control bridge harnesses
         shell: pwsh
         run: |
