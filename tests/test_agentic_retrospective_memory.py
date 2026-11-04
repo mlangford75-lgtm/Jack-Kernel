@@ -152,7 +152,7 @@ def test_model_memory_projection_excludes_receipts_and_keeps_original_artifact()
         raw, k.STAGES["extended_initial"]
     )
     assert raw == original
-    assert projected[1]["content"] == "Causal lesson\\n\\nA1 exact"
+    assert projected[1]["content"] == "Causal lesson" + chr(10) * 2 + "A1 exact"
     assert receipt not in str(projected)
     assert "result_sha256=" not in str(projected)
     assert projected[1]["role"] == "assistant"
@@ -161,13 +161,13 @@ def test_model_memory_projection_excludes_receipts_and_keeps_original_artifact()
 def test_receipt_projection_is_copy_on_write_and_stage_scoped():
     k = load_kernel()
     note = k._agentic_tool_history_note(tool_exchange(1))
-    old = {"role": "assistant", "content": "M" + note + "\\n\\nA1"}
+    old = {"role": "assistant", "content": "M" + note + chr(10) * 2 + "A1"}
     before = dict(old)
     stage1 = k.BACKEND._stage_messages_for_profile(
         [old], k.STAGES["extended_initial"]
     )
     assert note not in stage1[0]["content"]
-    assert stage1[0]["content"] == "M\\n\\nA1"
+    assert stage1[0]["content"] == "M" + chr(10) * 2 + "A1"
     assert old == before
     # Stage 2 still sees current frozen A1 byte-exact, not a rewritten answer.
     stage2 = k.BACKEND._stage_messages_for_profile(
