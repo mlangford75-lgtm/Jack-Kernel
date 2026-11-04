@@ -136,9 +136,10 @@ def test_previous_r2_is_never_projected_into_stage2_on_both_cache_profiles(cache
             assert "previous memory" not in json.dumps(model_messages)
             assert "previous A" not in json.dumps(model_messages)
             if cache_enabled:
-                assert model_messages[-1]["content"].startswith(
+                assert model_messages[-1]["content"].endswith(
                     k.AGENTIC_36_STAGE2_PROMPT
                 )
+                assert model_messages[-1]["content"].count("Review the latest user request") == 1
             assert k.AGENTIC_STAGE1_PROMPT == (
                 "Reasoning effort is set to xhigh. Please think carefully through the task, "
                 "validate key assumptions, consider plausible alternatives, and prioritize "
