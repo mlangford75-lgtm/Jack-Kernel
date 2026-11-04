@@ -34,19 +34,19 @@ Historical acceptance/build evidence is preserved under `Documentation/Orchestra
 
 The current validated development/release baseline is **Python 3.14.6**. The Pi control-bridge validation harnesses use **Node.js 24.16.0**. Other Python 3 and Node versions may work, but they are not the pinned CI baseline.
 
-Install runtime dependencies from the repository root:
+**Recommended fresh-clone setup (PowerShell, from the repository root):**
 
 ```powershell
-py -3 -m pip install -r requirements.txt
+.\setup.bat
+.\run-tests.bat
+.\start.bat
 ```
 
-To reproduce the repository validation environment, install the separate test requirements:
+`setup.bat` creates a repository-local `.venv` and installs the pinned runtime and test dependencies. `run-tests.bat` runs the regression suite using that exact interpreter. `start.bat` automatically invokes setup on a truly fresh clone and always runs using the local `.venv`; it never silently switches to a different global Python. A pre-existing but incomplete `.venv` produces an actionable error instead of a partial launch: rerun `setup.bat` to repair it.
 
-```powershell
-py -3 -m pip install -r requirements-test.txt
-```
+**Why this matters:** Security tests intentionally replace `HOME`, `USERPROFILE`, and `APPDATA` inside child processes. Packages installed in a per-user Python directory can disappear under that isolation even when pytest itself starts. The local `.venv` keeps `httpx` and other dependencies available to child processes without weakening the security tests or their isolated environment.
 
-The runtime requirements pin the validated FastAPI, Uvicorn, and HTTPX versions. `constraints.txt` also pins the FastAPI-facing Starlette and Pydantic versions from the accepted Windows baseline.
+The runtime requirements pin FastAPI, Uvicorn, and HTTPX; `requirements-test.txt` includes pytest. `constraints.txt` pins their validated transitive dependencies. The scripts do not change the caller's environment variables, system Python installation, or external model backend. Python 3.14.6 is the verified Windows CI baseline; other versions are not guaranteed.
 
 ## 2. Start Jack
 

@@ -153,17 +153,15 @@ The current validated development/release baseline is **Python 3.14.6**. Reposit
 
 **Pi v0.87.0 or newer required.**
 
-Install runtime dependencies:
+From a fresh clone on Windows, prepare the isolated environment and verify Jack:
 
 ```powershell
-py -3 -m pip install -r requirements.txt
-```
-
-Start Jack:
-
-```powershell
+.\setup.bat
+.\run-tests.bat
 .\start.bat
 ```
+
+`start.bat` also runs the one-time bootstrap automatically if `.venv` is absent. All three scripts use the repository-local Python environment, including subprocess security tests; global per-user package installs are not required.
 
 Default agent-facing endpoint:
 
