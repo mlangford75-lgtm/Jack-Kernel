@@ -132,3 +132,45 @@ def test_cross_turn_receipt_budget_preserves_semantic_memory_and_a1():
         len(x[x.index(k._AGENTIC_TOOL_NOTE_OPEN):x.index(k._AGENTIC_TOOL_NOTE_CLOSE) + len(k._AGENTIC_TOOL_NOTE_CLOSE)])
         for x in assistants if k._AGENTIC_TOOL_NOTE_OPEN in x
     ) <= k._AGENTIC_TOOL_CONTEXT_BUDGET_CHARS
+
+
+def test_model_memory_projection_excludes_receipts_and_keeps_original_artifact():
+    k = load_kernel()
+    receipt = k._agentic_tool_history_note(tool_exchange(1))
+    assert receipt
+    assert k._agentic_model_memory_view("Causal lesson", receipt).endswith("Causal lesson")
+    assert receipt not in k._agentic_model_memory_view("Causal lesson", receipt)
+
+    # Even unauthenticated or legacy combined assistant messages should not
+    # expose complete host receipt envelopes to the next Stage 1.
+    capsule = k._format_agentic_completed_response("Causal lesson" + receipt, "A1 exact")
+    raw = [{"role": "user", "content": "next task"},
+           {"role": "assistant", "content": capsule}]
+    import copy
+    original = copy.deepcopy(raw)
+    projected = k.BACKEND._stage_messages_for_profile(
+        raw, k.STAGES["extended_initial"]
+    )
+    assert raw == original
+    assert projected[1]["content"] == "Causal lesson" + chr(10) * 2 + "A1 exact"
+    assert receipt not in str(projected)
+    assert "result_sha256=" not in str(projected)
+    assert projected[1]["role"] == "assistant"
+
+
+def test_receipt_projection_is_copy_on_write_and_stage_scoped():
+    k = load_kernel()
+    note = k._agentic_tool_history_note(tool_exchange(1))
+    old = {"role": "assistant", "content": "M" + note + chr(10) * 2 + "A1"}
+    before = dict(old)
+    stage1 = k.BACKEND._stage_messages_for_profile(
+        [old], k.STAGES["extended_initial"]
+    )
+    assert note not in stage1[0]["content"]
+    assert stage1[0]["content"] == "M" + chr(10) * 2 + "A1"
+    assert old == before
+    # Stage 2 still sees current frozen A1 byte-exact, not a rewritten answer.
+    stage2 = k.BACKEND._stage_messages_for_profile(
+        [old], k.STAGES["extended_reflection"]
+    )
+    assert stage2[0]["content"] == old["content"]

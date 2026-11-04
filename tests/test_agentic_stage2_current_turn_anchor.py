@@ -107,7 +107,7 @@ def test_stage1_prefix_unchanged_when_stage2_is_appended():
     assert projection[-1]["content"] == h[-1]["content"]
     assert stage2[-1]["content"] == "Turn 2 frozen answer: created cuckoo-clock.svg"
     assert k._stage_continuation(k.STAGES["extended_reflection"], h).startswith(
-        "Treat this turn\'s Stage-1 native reasoning"
+        "Treat the current Stage-1 native reasoning"
     )
 
 def test_incoming_history_never_recovers_previous_r2():

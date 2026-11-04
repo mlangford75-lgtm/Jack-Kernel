@@ -208,7 +208,7 @@ def test_launcher_configuration_persists_selected_threshold(monkeypatch, tmp_pat
 
 
 
-def test_agentic_stage2_retry_preserves_frozen_a1(monkeypatch, tmp_path):
+def test_agentic_stage2_loop_aborts_without_retry_and_frozen_a1_survives(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path, mode="Local Agentic (Preserve Thinking)")
     history = [{"role": "user", "content": "Construct the clock"}]
     turn_id = k._agentic_begin_turn(history, fresh=True)
@@ -219,15 +219,43 @@ def test_agentic_stage2_retry_preserves_frozen_a1(monkeypatch, tmp_path):
     })
     original = k._agentic_forensic_turn(history)
     frozen_hash = original.frozen_a1_sha256
-    backend = FakeBackend([repeated_reasoning(), "stage2 healthy memory"])
+    backend = FakeBackend([repeated_reasoning(), "unneeded retry"])
     kernel = k.JackQwenKernel(backend, k.CFG)
-    packets = run_stage(k, kernel, name="extended_reflection", history=history)
-    assert backend.calls == 2
-    assert packets[-1]["kind"] == "result"
+    with pytest.raises(k.RepeatedLoopInterrupt):
+        run_stage(k, kernel, name="extended_reflection", history=history)
+    assert backend.calls == 1
+    assert backend.closed == 1
     record = k._agentic_forensic_turn(history)
     assert record.turn_id == turn_id
     assert record.frozen_a1_sha256 == frozen_hash
     assert history[-1]["content"] == "EXACT FROZEN A1"
-    events = k._agentic_forensic_journal().events(turn_id)
-    assert [e["status"] for e in events].count("stage2_active") == 2
-    assert any(e["status"] == "memory_failed" for e in events)
+    assert [e["status"] for e in k._agentic_forensic_journal().events(turn_id)].count("stage2_active") == 1
+
+    degraded = kernel._agentic_degraded_result(
+        history, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "EXACT FROZEN A1", "Stage-2 reasoning loop"
+    )
+    assert degraded.content == "EXACT FROZEN A1"
+    assert degraded.finish_reason == "stop"
+    assert "MEMORY NOT PRODUCED" in degraded.reasoning_content
+    assert k._agentic_forensic_journal().get(turn_id)["status"] == "memory_failed"
+
+
+def test_agentic_stream_loop_returns_exact_frozen_stage1_answer(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path, mode="Local Agentic (Preserve Thinking)")
+    backend = FakeBackend(["stage1 healthy", repeated_reasoning()])
+    kernel = k.JackQwenKernel(backend, k.CFG)
+
+    async def collect():
+        return [chunk async for chunk in kernel.stream({
+            "messages": [{"role": "user", "content": "Build a clock"}],
+            "stream": True,
+        })]
+
+    wire = b"".join(asyncio.run(collect())).decode("utf-8")
+    assert backend.calls == 2  # Stage 1, then one Stage 2 only
+    assert backend.closed == 2
+    assert "completed" in wire
+    assert "MEMORY NOT PRODUCED" in wire
+    assert "[END AGENTIC STAGE 2 — MEMORY COMPLETE" not in wire
+    assert "data: [DONE]" in wire

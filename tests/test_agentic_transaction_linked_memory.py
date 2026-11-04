@@ -55,9 +55,9 @@ def test_exact_user_and_frozen_answer_with_host_owned_id(monkeypatch, tmp_path, 
     assert memory_view[-1]["reasoning_content"] == "Clock face and bird were required."
     assert history[-1]["content"] == frozen
     continuation = k._stage_continuation(k.STAGES["extended_reflection"], history)
-    assert "original user request" in continuation
+    assert "current user request" in continuation
     assert "Stage-1 native reasoning" in continuation
-    assert "without retrospective headings" in continuation
+    assert "without a retrospective or checklist" in continuation
     assert "turn=" not in continuation
     assert label not in continuation
     assert k.AGENTIC_36_STAGE2_PROMPT == "Preserve useful working knowledge from the completed task for future work, not a retrospective report."
