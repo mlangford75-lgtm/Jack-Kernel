@@ -192,7 +192,8 @@ def test_metadata_does_not_modify_frozen_prompts_or_context_pruning(monkeypatch,
     assert k.AGENTIC_STAGE1_PROMPT == (
         "Reasoning effort is set to xhigh. Please think carefully through the task, "
         "validate key assumptions, consider plausible alternatives, and prioritize "
-        "correctness, consistency, and clarity in the final answer."
+        "correctness, consistency, and clarity in the final answer.\n"
+        "Carefully reason on the task before using tools"
     )
     assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
     assert k.AGENTIC_CACHE_APPEND_EXPERIMENT
