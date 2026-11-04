@@ -51,8 +51,9 @@ def test_transaction_commit_and_restart_recovery(monkeypatch, tmp_path):
     assert record.stage2_attempt_id.startswith("jack-attempt-")
     assert record.stage2_attempt_id != record.stage1_attempt_id
     suffix = k._stage_continuation(k.STAGES["extended_reflection"], history)
-    assert f"turn={turn}" in suffix
-    assert "frozen_A1=" in suffix
+    assert f"turn={turn}" not in suffix
+    assert "frozen_A1=" not in suffix
+    assert suffix == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
     assert original_request not in suffix
     assert answer not in suffix
 
@@ -63,9 +64,11 @@ def test_transaction_commit_and_restart_recovery(monkeypatch, tmp_path):
     p2 = k.BACKEND._stage_messages_for_profile(
         history, k.STAGES["extended_reflection"]
     )
-    assert p2[:len(p1)] == p1
-    assert p2[-1]["content"] == answer
-    assert p2[-1]["reasoning_content"] == "current R1"
+    isolated = k._agentic_stage2_test_history(history, k.STAGES["extended_reflection"])
+    assert len(isolated) == 2
+    assert isolated[0]["content"] == original["content"]
+    assert isolated[-1]["content"] == answer
+    assert isolated[-1]["reasoning_content"] == "current R1"
 
     committed = asyncio.run(k.KERNEL._complete_commit(
         history, "", {}, answer, "Retrospective for THIS clock",
