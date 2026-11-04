@@ -67,7 +67,7 @@ def test_cache_route_exact_prompt_and_schema(stream):
     assert p["messages"][0]["content"]==k.AGENTIC_STAGE1_PROMPT
     assert p["messages"][-1]["role"]=="user"
     assert p["messages"][-1]["content"] == k.AGENTIC_36_STAGE2_PROMPT
-    assert "useful knowledge" in p["messages"][-1]["content"]
+    assert "working knowledge" in p["messages"][-1]["content"]
     assert "preserve what was established" in p["messages"][-1]["content"].lower()
     assert p["messages"][-2]["content"]=="A1 exact"
     assert p["messages"][-2]["reasoning_content"]=="Stage 1 native R1"
