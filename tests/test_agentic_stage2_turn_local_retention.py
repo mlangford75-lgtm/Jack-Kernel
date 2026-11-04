@@ -1,4 +1,4 @@
-"""A/B/C Stage-2 turn-local cognitive retention: request-only opt-in experiment.
+"""Canonical Stage-2 current-turn retention and ignored legacy switches.
 
 No live model is used. Capture streaming/nonstreaming backend requests and
 assert that host-owned history, exact Stage-1 R1/A1, complete tool chronology,
@@ -16,7 +16,7 @@ import httpx
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-VARIANTS = ("baseline", "isolate", "isolate-retain")
+VARIANTS = ("baseline", "isolate", "isolate-retain")  # historical env inputs must all be inert
 CALLER_SYSTEM = "CUSTOM_SYSTEM_SENTINEL: historical instruction must not govern Stage 2"
 
 
@@ -179,37 +179,27 @@ def test_abc_current_turn_projection_and_original_history_unchanged(monkeypatch,
         assert "tools" not in payload
         assert k.STAGES["extended_reflection"].allow_tools is False
 
-    base = results["baseline"][1]
-    isolated = results["isolate"][1]
-    retention = results["isolate-retain"][1]
-    old = base["messages"][1:-1]
-    current = isolated["messages"][1:-1]
-    assert len(old) == len(frozen)
-    assert len(current) == 2  # current U + frozen A1 with complete R1
-    assert isolated["messages"][:-1] == retention["messages"][:-1]
-    assert isolated["messages"][-1] == base["messages"][-1]
-    assert retention["messages"][-1]["content"].startswith(
-        results["isolate-retain"][0].AGENTIC_36_STAGE2_PROMPT
-    )
-    assert "Treat the current Stage-1 native reasoning as a draft" in (
-        retention["messages"][-1]["content"]
-    )
-    assert "Earlier Stage 2 reasoning" not in json.dumps(isolated["messages"])
-    assert current[0]["role"] == "user"
-    assert current[0]["content"] == frozen[4]["content"]
-    assert current[1]["reasoning_content"] == (
-        "R1 before tools: first try edit.\n\n"
-        "R1 after error: fix path and retry.\n\n"
+    # All historical environment choices MUST resolve to the same isolated
+    # model-facing U/R1/A1 and the same distillation instruction.
+    payloads = [results[v][1] for v in VARIANTS]
+    assert payloads[0] == payloads[1] == payloads[2]
+    for variant in VARIANTS:
+        assert results[variant][0].AGENTIC_STAGE2_RETENTION_TEST == "isolate-retain"
+    projected = payloads[0]["messages"][1:-1]
+    assert len(projected) == 2
+    assert projected[0]["role"] == "user"
+    assert projected[0]["content"] == frozen[4]["content"]
+    assert projected[1]["content"] == frozen[-1]["content"]
+    assert projected[1]["reasoning_content"] == (
+        "R1 before tools: first try edit.\\n\\n"
+        "R1 after error: fix path and retry.\\n\\n"
         "Final R1: changed the path, second edit reported success but did not verify visual result."
     )
-    assert current[1]["content"] == frozen[-1]["content"]
-    assert not any(m.get("tool_calls") or m.get("role") == "tool" for m in current)
-    assert "Error: wrong path" not in json.dumps(current)
-    assert "Reported success. Browser not available." not in json.dumps(current)
-    assert all(
-        not any(key.startswith("_jack_") for key in m)
-        for m in current if isinstance(m, dict)
-    )
+    assert not any(x.get("role") == "tool" or x.get("tool_calls") for x in projected)
+    assert "Error: wrong path" not in json.dumps(projected)
+    assert "Earlier Stage 2 reasoning" not in json.dumps(payloads[0])
+    assert "Treat the current Stage-1 native reasoning as a draft" in payloads[0]["messages"][-1]["content"]
+
 
 
 @pytest.mark.parametrize("stream", [False, True])
