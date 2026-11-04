@@ -57,7 +57,7 @@ def tool_exchange(n=1):
 def test_stage_contracts_and_frozen_answer_are_separate():
     k = load_kernel()
     assert k.AGENTIC_STAGE1_PROMPT.startswith("Reasoning effort is set to xhigh.")
-    assert k.AGENTIC_36_STAGE2_PROMPT == "Preserve useful working knowledge from the completed task for future work, not a retrospective report."
+    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
     assert k.STAGES["extended_initial"].allow_tools is True
     assert k.STAGES["extended_reflection"].allow_tools is False
 
