@@ -1,44 +1,32 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0" || exit /b 1
 title Jack Kernel
-REM Restore branch only: enable host-linked memory in the normal launcher.
-REM Does not modify reasoning, Preserve Thinking, tool policy, or cache config.
+
+REM Preserve the accepted Agentic transaction configuration.
 set "JACK_AGENTIC_TRANSACTION_LINKS=1"
 set "JACK_AGENTIC_TASK_ANCHOR=0"
 
-if exist ".venv\Scripts\python.exe" (
-    ".venv\Scripts\python.exe" "jack_secure_entrypoint.py"
-    goto :done
+REM A clean clone has no dependencies yet. Bootstrap once into .venv.
+REM Do not silently fall back to an unrelated global/user Python installation.
+if not exist ".venv\Scripts\python.exe" (
+    echo First launch: preparing Jack's isolated Python environment...
+    call "%~dp0setup.bat"
+    if errorlevel 1 (
+        echo ERROR: Initial setup failed. Fix the reported issue and rerun setup.bat.
+        exit /b 1
+    )
 )
 
-py -3 -c "import sys" >nul 2>nul
-if not errorlevel 1 (
-    py -3 "jack_secure_entrypoint.py"
-    goto :done
+".venv\Scripts\python.exe" -c "import fastapi, uvicorn, httpx" >nul 2>nul
+if errorlevel 1 (
+    echo ERROR: Jack's .venv is incomplete. Run setup.bat to repair it.
+    exit /b 1
 )
 
-python -c "import sys" >nul 2>nul
-if not errorlevel 1 (
-    python "jack_secure_entrypoint.py"
-    goto :done
-)
-
-echo.
-echo Jack Kernel requires Python 3.
-echo Install Python 3, then install dependencies with:
-echo   py -3 -m pip install -r requirements.txt
-echo.
-pause
-exit /b 1
-
-:done
+".venv\Scripts\python.exe" "jack_secure_entrypoint.py"
 set "RC=%ERRORLEVEL%"
 if "%RC%"=="0" exit /b 0
 echo.
 echo Jack Kernel exited with error code %RC%.
-echo If dependencies are missing, run:
-echo   py -3 -m pip install -r requirements.txt
-echo.
-pause
 exit /b %RC%
