@@ -871,18 +871,16 @@ _AGENTIC_STAGE2_LINKED_CONTINUATION = (
 # tested independently from the accepted full-history Agentic continuation.
 # This is deliberately not a change to either immutable core stage prompt.
 _AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION = (
-    "Treat this turn's Stage-1 native reasoning as a draft of working knowledge. "
-    "Use only the original user request, Stage-1 native reasoning, and frozen "
-    "Stage-1 answer. Distill consequential discoveries, decisions and rationale, "
-    "constraints, failed approaches and corrections, established conclusions, "
-    "causal dependencies, and unresolved matters. Preserve exact identifiers, "
-    "paths, versions, numbers, scope, polarity, and important qualifications. "
-    "Use the frozen answer to establish what Stage 1 concluded; do not treat "
-    "an unverified assertion as independently verified. Do not independently "
-    "reconstruct execution or tool history, introduce new findings, retry the "
-    "task, call tools, or address the user. Output reusable working knowledge "
-    "directly, without retrospective headings, tool receipts, or transcript "
-    "formatting. This instruction governs memory distillation only."
+    "Treat the current Stage-1 native reasoning as a draft. Using only the current "
+    "user request, that reasoning, and the frozen Stage-1 answer, distill accurate "
+    "working knowledge for future turns. Preserve consequential discoveries, "
+    "causal explanations, decisions, corrections, constraints, conclusions, and "
+    "unresolved dependencies. Keep exact names, paths, identifiers, numbers, "
+    "qualifications, and whether claims are proposed, reported, or verified; "
+    "never turn an assertion into proof. Do not add unsupported facts or replace "
+    "specific source details with guesses. Do not re-solve the task, reconstruct "
+    "tool history, or address the user. Remove repetition and self-checking. "
+    "Output the useful knowledge directly without a retrospective or checklist."
 )
 
 
@@ -4392,17 +4390,18 @@ def _stage2_reasoning_trace(reasoning: Optional[str]) -> Optional[str]:
     return f"===== JACK {label} =====\n[NATIVE REASONING]\n" + text
 
 def _agentic_model_memory_view(memory: str, receipt: str) -> str:
-    """Model-view historical memory: preserve useful evidence, not host labels.
+    """Project authenticated memory without host tool receipts.
 
-    The external capsule retains a durable turn ID and forensic verification.
-    Neither its header nor the host UUID enters new prompts. The existing
-    Phase-3G projection is unchanged when transaction links are not opted in.
+    Receipts remain byte-exact in the outward committed capsule and durable
+    forensic journal, where they prove tool provenance. They are not cognitive
+    memory and must not prime later Stage 1 to imitate tool-result formatting.
+    The caller's original artifact and frozen A1 are not modified.
     """
     if AGENTIC_MODE and AGENTIC_TRANSACTION_LINKS_ENABLED:
-        return memory + receipt
+        return memory
     return (
         "[Agentic Memory associated with the preceding user request and following frozen response]\n"
-        + memory + receipt
+        + memory
     )
 
 
@@ -6624,7 +6623,16 @@ class JackQwenKernel:
             _agentic_begin_turn(history, fresh=not same_stage_resume)
         elif AGENTIC_MODE and stage_key == "extended_reflection":
             _agentic_forensic_start_stage2(history)
-        detector = ReasoningLoopDetector(self.cfg.loop_detector_repetitions) if self.cfg.loop_detector_enabled else None
+        # Agentic Stage 2 only distills already-frozen cognition: an observed
+        # repetition must end this optional memory stage, never burn another
+        # inference retry and never prevent the exact A1 from being delivered.
+        # A shorter Stage-2 repetition threshold limits wasted native tokens.
+        loop_repetitions = (
+            min(self.cfg.loop_detector_repetitions, 8)
+            if AGENTIC_MODE and stage_key == "extended_reflection"
+            else self.cfg.loop_detector_repetitions
+        )
+        detector = ReasoningLoopDetector(loop_repetitions) if self.cfg.loop_detector_enabled else None
         content_parts: List[str] = []
         reasoning_content_parts: List[str] = []
         reasoning_parts: List[str] = []
@@ -6724,6 +6732,12 @@ class JackQwenKernel:
                 if choice.get("finish_reason"):
                     finish_reason = str(choice["finish_reason"])
         except RepeatedReasoningLoop as loop_error:
+            # Stage-2 repetition is terminal for memory, NOT for frozen A1.
+            # The caller handles this as an explicit A1-only degraded commit.
+            # No second Stage-2 inference repeats an already-detected loop.
+            if AGENTIC_MODE and stage_key == "extended_reflection":
+                LOG.warning("Agentic Stage 2 reasoning loop: aborting memory; A1 remains frozen: %s", loop_error)
+                raise RepeatedLoopInterrupt() from loop_error
             # The active stream is cancelled by finally below before the retry.
             # Incomplete generation is never frozen as an Agentic answer/memory.
             # Native output may already be visible to the agent. A retry cannot
@@ -9271,11 +9285,15 @@ class JackQwenKernel:
                         ):
                             yield wire
                     except Exception as exc:
-                        if isinstance(exc, RepeatedLoopInterrupt):
-                            # Repeated loops are terminal. Stage 2 must not be
-                            # misreported as a successful degraded A1 response.
+                        if isinstance(exc, RepeatedLoopInterrupt) and not (
+                            AGENTIC_MODE and stage_key == "extended_reflection"
+                            and agentic_frozen_stage1_answer is not None
+                        ):
+                            # Stage-1 and other-mode repeated loops remain terminal.
                             raise
                         if AGENTIC_MODE and stage_key == "extended_reflection" and agentic_frozen_stage1_answer is not None:
+                            # An interrupted Stage 2 never commits M. Explicitly
+                            # mark memory failure and deliver byte-exact frozen A1.
                             detail = str(exc.detail) if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
                             degraded = self._agentic_degraded_result(history, usage, agentic_frozen_stage1_answer, detail)
                             if pending_state is not None:
