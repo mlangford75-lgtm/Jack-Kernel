@@ -197,6 +197,6 @@ def test_metadata_does_not_modify_frozen_prompts_or_context_pruning(monkeypatch,
     assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
     assert k.AGENTIC_CACHE_APPEND_EXPERIMENT
     assert k.STAGES["extended_reflection"].allow_tools is False
-    assert k._STAGE_CONTINUATIONS["Agentic native pass 2"].startswith(
-        "[JACK RUNTIME STAGE CONTINUATION"
+    assert k._stage_continuation(k.STAGES["extended_reflection"]).startswith(
+        "Review the latest user request"
     )
