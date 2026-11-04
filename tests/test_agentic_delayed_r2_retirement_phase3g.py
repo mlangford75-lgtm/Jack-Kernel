@@ -143,7 +143,8 @@ def test_previous_r2_is_never_projected_into_stage2_on_both_cache_profiles(cache
             assert k.AGENTIC_STAGE1_PROMPT == (
                 "Reasoning effort is set to xhigh. Please think carefully through the task, "
                 "validate key assumptions, consider plausible alternatives, and prioritize "
-                "correctness, consistency, and clarity in the final answer."
+                "correctness, consistency, and clarity in the final answer.\n"
+        "Carefully reason on the task before using tools"
             )
             assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
         finally:
