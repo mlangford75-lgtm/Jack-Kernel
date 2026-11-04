@@ -854,7 +854,7 @@ Preserve the important working knowledge established during that request so it c
 
 Retain consequential facts, decisions, their original explanations, exact technical details, actions, corrections, constraints, failures, and unresolved matters. Preserve distinctions between intended, attempted, completed, reported, and verified outcomes.
 
-Use Jack's host-recorded tool evidence only to check execution claims. A discrepancy exists when the evidence explicitly conflicts with a claim. Missing path information or limited metadata is not itself a contradiction. Do not turn incomplete metadata into evidence that an action failed or never occurred.
+Preserve concrete outcomes described in your reasoning and final response at their stated certainty. Use Jack's host-recorded tool evidence only to check execution claims: qualify a claim when that evidence explicitly contradicts it, including a confirmed absence of tool calls or a reported failure. Missing path resolution, independent attestation, or detailed result metadata is not a contradiction and does not negate an observed outcome.
 
 Do not reconstruct earlier turns, re-solve the task, introduce new explanations, implementation details, conclusions, recommendations, or possibilities. Preserve what was established, not what could plausibly be true.
 
