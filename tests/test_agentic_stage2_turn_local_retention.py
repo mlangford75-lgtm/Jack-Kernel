@@ -266,7 +266,8 @@ def test_default_isolated_retention_and_immutable_prompts(monkeypatch, tmp_path)
     assert k.AGENTIC_STAGE1_PROMPT == (
         "Reasoning effort is set to xhigh. Please think carefully through the task, "
         "validate key assumptions, consider plausible alternatives, and prioritize "
-        "correctness, consistency, and clarity in the final answer."
+        "correctness, consistency, and clarity in the final answer.\n"
+        "Carefully reason on the task before using tools"
     )
     assert k._agentic_stage2_test_history(
         history(), k.STAGES["extended_reflection"],
