@@ -4389,6 +4389,23 @@ def _stage2_reasoning_trace(reasoning: Optional[str]) -> Optional[str]:
     label = "AGENTIC NATIVE PASS 2" if AGENTIC_MODE else "DEEP RESEARCH RE-EVALUATION PASS 2"
     return f"===== JACK {label} =====\n[NATIVE REASONING]\n" + text
 
+def _agentic_remove_host_receipts_from_model_content(content: str) -> str:
+    """Drop only complete host receipt envelopes from an assistant model view.
+
+    A caller's full committed artifact remains unchanged for authentication;
+    untrusted/incomplete markers are left untouched, never treated as evidence.
+    """
+    result = content
+    while True:
+        start = result.find(_AGENTIC_TOOL_NOTE_OPEN)
+        if start < 0:
+            return result
+        end = result.find(_AGENTIC_TOOL_NOTE_CLOSE, start + len(_AGENTIC_TOOL_NOTE_OPEN))
+        if end < 0:
+            return result
+        result = result[:start] + result[end + len(_AGENTIC_TOOL_NOTE_CLOSE):]
+
+
 def _agentic_model_memory_view(memory: str, receipt: str) -> str:
     """Project authenticated memory without host tool receipts.
 
@@ -5621,11 +5638,20 @@ class OpenAICompatibleBackend:
                 and message.get("role") == "assistant"
                 and any(key in message for key in ("reasoning_content", "reasoning", "thinking"))
             )
-            if not has_private and not must_strip_reasoning:
+            strip_host_receipt = bool(
+                AGENTIC_MODE
+                and profile.name == "Agentic native pass 1"
+                and message.get("role") == "assistant"
+                and isinstance(message.get("content"), str)
+                and _AGENTIC_TOOL_NOTE_OPEN in message["content"]
+            )
+            if not has_private and not must_strip_reasoning and not strip_host_receipt:
                 prepared.append(message)
                 continue
 
             item = dict(message)
+            if strip_host_receipt:
+                item["content"] = _agentic_remove_host_receipts_from_model_content(item["content"])
             # Unique turn ownership remains host-side; no Request/Response/Memory
             # labels or turn IDs are injected into the inference prompt.
             if (
