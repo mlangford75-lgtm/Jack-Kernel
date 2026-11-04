@@ -247,10 +247,10 @@ def test_default_isolated_retention_and_immutable_prompts(monkeypatch, tmp_path)
     spec.loader.exec_module(k)
     assert k.AGENTIC_STAGE2_RETENTION_TEST == "isolate-retain"
     continuation = k._stage_continuation(k.STAGES["extended_reflection"])
-    assert "Treat this turn\'s Stage-1 native reasoning as a draft" in continuation
-    assert "without retrospective headings" in continuation
-    assert "Do not independently" in continuation
-    assert "unresolved matters" in continuation
+    assert "Treat the current Stage-1 native reasoning as a draft" in continuation
+    assert "without a retrospective or checklist" in continuation
+    assert "Do not re-solve the task" in continuation
+    assert "unresolved dependencies" in continuation
     assert k.AGENTIC_36_STAGE2_PROMPT == "Preserve useful working knowledge from the completed task for future work, not a retrospective report."
     assert k.AGENTIC_STAGE1_PROMPT == (
         "Reasoning effort is set to xhigh. Please think carefully through the task, "
