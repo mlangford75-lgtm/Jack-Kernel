@@ -1140,7 +1140,7 @@ def _stage_requires_user_continuation(profile: "StageProfile") -> bool:
 # Native mode has no Jack-authored cognitive prompt; Agentic Stage 1 has a minimal directive.
 THESIS_PROMPT = ""
 
-AGENTIC_STAGE1_PROMPT = "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer."
+AGENTIC_STAGE1_PROMPT = "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\nCarefully reason on the task before using tools"
 
 ULTRA_STAGE1_THESIS_PROMPT = """You are Thesis.
 
