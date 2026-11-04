@@ -191,8 +191,8 @@ def test_abc_current_turn_projection_and_original_history_unchanged(monkeypatch,
     assert projected[0]["content"] == frozen[4]["content"]
     assert projected[1]["content"] == frozen[-1]["content"]
     assert projected[1]["reasoning_content"] == (
-        "R1 before tools: first try edit.\\n\\n"
-        "R1 after error: fix path and retry.\\n\\n"
+        "R1 before tools: first try edit.\n\n"
+        "R1 after error: fix path and retry.\n\n"
         "Final R1: changed the path, second edit reported success but did not verify visual result."
     )
     assert not any(x.get("role") == "tool" or x.get("tool_calls") for x in projected)
