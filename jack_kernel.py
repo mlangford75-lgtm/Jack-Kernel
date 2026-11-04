@@ -11546,7 +11546,9 @@ def _status_value(label: str, value: str, *, width: int = 21) -> str:
     plain_label = f"{label:<{width}}"
     return f"{_ansi_rgb(plain_label, _JACK_MUTED)}{_ansi_rgb(value, _JACK_CHROME, bold=True)}"
 
-# New-install and reset defaults select the verified Nov 4 LM Studio Agentic run.\n# Existing saved config and explicit environment overrides retain precedence.\nCLI_DEFAULTS: Dict[str, Any] = {
+# New-install and reset defaults select the verified Nov 4 LM Studio Agentic run.
+# Existing saved config and explicit environment overrides retain precedence.
+CLI_DEFAULTS: Dict[str, Any] = {
     "config_schema_version": CONFIG_SCHEMA_VERSION,
     "backend_profile": "lmstudio",
     "backend_base_url": "http://127.0.0.1:1234/v1",
