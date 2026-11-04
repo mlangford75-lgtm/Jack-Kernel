@@ -142,6 +142,6 @@ def test_tool_receipt_keeps_early_material_edit_over_many_reads():
 
 def test_prompt_and_client_format_not_changed():
     k=load()
-    assert k.AGENTIC_STAGE1_PROMPT=="Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer."
+    assert k.AGENTIC_STAGE1_PROMPT=="Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\nCarefully reason on the task before using tools"
     assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
     assert k._format_agentic_completed_response("M","A")=="M\n\nA"
