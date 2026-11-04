@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 ROOT=Path(__file__).resolve().parents[1]
-STAGE2="Preserve useful working knowledge from the completed task for future work, not a retrospective report."
+STAGE2="Review the latest user request"
 
 def load(enabled):
     os.environ["JACK_REASONING_LEVEL"]="agentic"
@@ -66,9 +66,9 @@ def test_cache_route_exact_prompt_and_schema(stream):
     assert p["messages"][0]["role"]=="system"
     assert p["messages"][0]["content"]==k.AGENTIC_STAGE1_PROMPT
     assert p["messages"][-1]["role"]=="user"
-    assert p["messages"][-1]["content"].startswith(STAGE2+"\n\n")
-    assert "accurate working knowledge" in p["messages"][-1]["content"]
-    assert "do not re-solve the task" in p["messages"][-1]["content"].lower()
+    assert p["messages"][-1]["content"] == k.AGENTIC_36_STAGE2_PROMPT
+    assert "useful knowledge" in p["messages"][-1]["content"]
+    assert "do not invent facts" in p["messages"][-1]["content"].lower()
     assert p["messages"][-2]["content"]=="A1 exact"
     assert p["messages"][-2]["reasoning_content"]=="Stage 1 native R1"
     assert "tools" not in p
@@ -79,16 +79,16 @@ def test_cache_route_exact_prompt_and_schema(stream):
 def test_default_stage2_unmodified(stream):
     k=load(False)
     p=asyncio.run(collect(k,False,stream))
-    assert p["messages"][0]["content"]==STAGE2
+    assert p["messages"][0]["content"]==k.AGENTIC_36_STAGE2_PROMPT
     assert "tools" not in p
     assert p["messages"][-1]["role"]=="user"
-    assert p["messages"][-1]["content"]!=STAGE2
+    assert p["messages"][-1]["content"]!=k.AGENTIC_36_STAGE2_PROMPT
 
 
 def test_original_stage_profiles_immutable():
     k=load(True)
     assert k.STAGES["extended_initial"].prompt==k.AGENTIC_STAGE1_PROMPT
-    assert k.STAGES["extended_reflection"].prompt==STAGE2
+    assert k.STAGES["extended_reflection"].prompt==k.AGENTIC_36_STAGE2_PROMPT
     assert k.STAGES["extended_reflection"].allow_tools is False
     assert k._agentic_cache_append_enabled(k.STAGES["extended_initial"]) is False
     assert k._agentic_cache_append_enabled(k.STAGES["extended_reflection"]) is True
@@ -129,13 +129,13 @@ def test_default_request_uses_cache_append(stream):
     k=load(None)
     p=asyncio.run(collect(k,True,stream))
     assert p["messages"][0]["content"]==k.AGENTIC_STAGE1_PROMPT
-    assert p["messages"][-1]["content"].startswith(STAGE2)
+    assert p["messages"][-1]["content"]==k.AGENTIC_36_STAGE2_PROMPT
     assert "tools" not in p
 
 @pytest.mark.parametrize("stream",[False,True])
 def test_forced_tool_choice_falls_back_to_existing_stage2(stream):
     k=load(None)
     p=asyncio.run(collect(k,True,stream,tool_choice="required"))
-    assert p["messages"][0]["content"]==STAGE2
+    assert p["messages"][0]["content"]==k.AGENTIC_36_STAGE2_PROMPT
     assert "tools" not in p
 

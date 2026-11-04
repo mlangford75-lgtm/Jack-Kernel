@@ -198,7 +198,8 @@ def test_abc_current_turn_projection_and_original_history_unchanged(monkeypatch,
     assert not any(x.get("role") == "tool" or x.get("tool_calls") for x in projected)
     assert "Error: wrong path" not in json.dumps(projected)
     assert "Earlier Stage 2 reasoning" not in json.dumps(payloads[0])
-    assert "Treat the current Stage-1 native reasoning as a draft" in payloads[0]["messages"][-1]["content"]
+    assert payloads[0]["messages"][-1]["content"] == results["baseline"][0].AGENTIC_36_STAGE2_PROMPT
+    assert payloads[0]["messages"][-1]["content"].count("Review the latest user request") == 1
 
 
 
@@ -237,11 +238,12 @@ def test_default_isolated_retention_and_immutable_prompts(monkeypatch, tmp_path)
     spec.loader.exec_module(k)
     assert k.AGENTIC_STAGE2_RETENTION_TEST == "isolate-retain"
     continuation = k._stage_continuation(k.STAGES["extended_reflection"])
-    assert "Treat the current Stage-1 native reasoning as a draft" in continuation
-    assert "without a retrospective or checklist" in continuation
-    assert "Do not re-solve the task" in continuation
-    assert "unresolved dependencies" in continuation
-    assert k.AGENTIC_36_STAGE2_PROMPT == "Preserve useful working knowledge from the completed task for future work, not a retrospective report."
+    assert continuation.startswith("Review the latest user request")
+    assert "Stage-1" not in continuation and "R1" not in continuation and "A1" not in continuation
+    assert "Do not write a retrospective report" in continuation
+    assert "perform new reasoning about the original task" in continuation
+    assert "unresolved problems" in continuation
+    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
     assert k.AGENTIC_STAGE1_PROMPT == (
         "Reasoning effort is set to xhigh. Please think carefully through the task, "
         "validate key assumptions, consider plausible alternatives, and prioritize "
