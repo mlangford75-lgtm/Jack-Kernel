@@ -58,7 +58,7 @@ def test_phase3g_retrospective_restored_and_cached_prefix_preserved(monkeypatch,
 
 def test_opt_in_forensic_projection_keeps_regression_comparison_available(monkeypatch, tmp_path):
     k = load_default(monkeypatch, tmp_path, labels=True)
-    k.AGENTIC_STAGE2_RETENTION_TEST = "baseline"  # legacy label suffix diagnostics
+    k.AGENTIC_STAGE2_RETENTION_TEST = "baseline"  # must NOT alter canonical Stage 2
     history = [{"role": "user", "content": [{"type": "text", "text": "Make the bird blue"}]}]
     turn = k._agentic_begin_turn(history, fresh=True)
     first = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_initial"])
@@ -66,8 +66,9 @@ def test_opt_in_forensic_projection_keeps_regression_comparison_available(monkey
     k.append_extended_candidate_response(history, {"content": "Bird is now blue"})
     k._agentic_forensic_start_stage2(history)
     continuation = k._stage_continuation(k.STAGES["extended_reflection"], history)
-    assert f"turn={turn}" in continuation
-    assert "JACK TASK SCOPE" in continuation
+    assert "JACK TASK SCOPE" not in continuation
+    assert continuation == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
+    assert k._agentic_stage2_test_history(history, k.STAGES["extended_reflection"])[0]["role"] == "user"
 
 
 def test_frozen_prompts_and_delayed_techniques_not_changed(monkeypatch, tmp_path):
