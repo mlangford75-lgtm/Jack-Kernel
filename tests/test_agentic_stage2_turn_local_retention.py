@@ -262,7 +262,9 @@ def test_default_isolated_retention_and_immutable_prompts(monkeypatch, tmp_path)
     assert "not a new user request or a report about the process" in continuation
     assert "re-solve the task" in continuation
     assert "unresolved matters" in continuation
-    assert "Missing path information or limited metadata is not itself a contradiction" in continuation
+    assert "Missing path resolution, independent attestation, or detailed result metadata is not a contradiction" in continuation
+    assert "Preserve concrete outcomes described in your reasoning and final response at their stated certainty" in continuation
+    assert "confirmed absence of tool calls or a reported failure" in continuation
     assert "Preserve what was established, not what could plausibly be true" in continuation
     assert "Do not reconstruct earlier turns" in continuation
     assert "not a new user request" in continuation
