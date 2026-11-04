@@ -1,158 +1,90 @@
-"""A/B contract for the one-sentence differential Agentic memory experiment.
-
-A/B must change only the final Stage-2 user continuation text. All frozen
-prompts, stage history, native reasoning, tool schemas, streaming policy,
-source user messages and cache prefix must be byte-identical.
-"""
+"""Retired differential-memory switch cannot change the sole isolated Stage-2 payload."""
 import asyncio
 import importlib.util
 import json
-from pathlib import Path
 import sys
 import uuid
+from pathlib import Path
 
 import httpx
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-SENTENCE = (
-    "Prioritize important reasoning, decisions, tool evidence, and unresolved "
-    "details that are not already clear from the completed answer."
-)
 
 
-def load_kernel(monkeypatch, tmp_path, *, experiment):
+def load(monkeypatch, tmp_path, *, differential):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
     monkeypatch.setenv("JACK_BACKEND_MODEL", "test-model")
     monkeypatch.setenv("JACK_AGENTIC_TRANSACTION_LINKS", "1")
     monkeypatch.setenv("JACK_AGENTIC_TASK_ANCHOR", "0")
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT", "1")
-    monkeypatch.setenv("JACK_AGENTIC_DIFFERENTIAL_MEMORY", "1" if experiment else "0")
-    monkeypatch.setenv("JACK_AGENTIC_STAGE2_RETENTION_TEST", "baseline")  # legacy suffix-only test
+    monkeypatch.setenv("JACK_AGENTIC_STAGE2_FINAL_PAPER", "0")
+    monkeypatch.setenv("JACK_AGENTIC_DIFFERENTIAL_MEMORY", "1" if differential else "0")
+    monkeypatch.setenv("JACK_AGENTIC_STAGE2_RETENTION_TEST", "baseline")
     monkeypatch.setenv("JACK_FORENSIC_ARCHIVE_MODE", "off")
     monkeypatch.setenv("JACK_AGENTIC_FORENSIC_DB", str(tmp_path / (uuid.uuid4().hex + ".sqlite")))
-    module_name = "jack_differential_memory_" + uuid.uuid4().hex
-    spec = importlib.util.spec_from_file_location(module_name, ROOT / "jack_kernel.py")
-    kernel = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = kernel
-    spec.loader.exec_module(kernel)
-    return kernel
+    name = "jack_differential_retired_" + uuid.uuid4().hex
+    spec = importlib.util.spec_from_file_location(name, ROOT / "jack_kernel.py")
+    k = importlib.util.module_from_spec(spec)
+    sys.modules[name] = k
+    spec.loader.exec_module(k)
+    return k
 
 
 def history():
     return [
         {"role": "user", "content": "Prior work"},
-        {"role": "assistant", "content": "Retained prior memory"},
-        {"role": "assistant", "content": "Prior answer"},
-        {"role": "user", "content": "Make the clock gold and verify the HTML"},
-        {
-            "role": "assistant",
-            "content": "Updated clock.html with a gold face.",
-            "reasoning_content": "Used gold CSS gradients; write returned success; browser rendering unverified.",
-        },
+        {"role": "assistant", "content": "Prior memory"},
+        {"role": "user", "content": "Make the clock gold."},
+        {"role": "assistant", "content": "Edited clock.html; rendering unverified.",
+         "reasoning_content": "Used gold CSS; visual check unavailable.",
+         "_jack_extended_candidate_response": True},
     ]
 
 
-def tools():
-    return [
-        {"type": "function", "function": {
-            "name": "write",
-            "description": "Write contents to a file.",
-            "parameters": {"type": "object", "properties": {"path": {"type": "string"}}},
-        }},
-    ]
+async def capture(k, stream):
+    seen = []
 
-
-async def capture_payload(kernel, *, stream):
-    payloads = []
-
-    def respond(request):
-        data = json.loads(request.content)
-        payloads.append(data)
+    def reply(request):
+        seen.append(json.loads(request.content))
         if stream:
-            body = "\n\n".join([
-                'data: {"choices":[{"index":0,"delta":{"content":"Memory"},"finish_reason":null}]}',
-                'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}',
-                'data: [DONE]',
-            ]) + "\n\n"
-            return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
-        return httpx.Response(200, json={
-            "choices": [{"message": {"role": "assistant", "content": "Memory"}, "finish_reason": "stop"}],
-            "usage": {},
-        })
+            return httpx.Response(200, text='data: {"choices":[{"index":0,"delta":{"content":"Memory"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+                                  headers={"content-type": "text/event-stream"})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "Memory"}, "finish_reason": "stop"}], "usage": {}})
 
-    backend = kernel.OpenAICompatibleBackend(kernel.CFG)
+    backend = k.OpenAICompatibleBackend(k.CFG)
     await backend._client.aclose()
-    backend._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
-
-    async def resolve_model():
+    backend._client = httpx.AsyncClient(transport=httpx.MockTransport(reply))
+    async def model():
         return "test-model"
-
-    backend.resolve_model = resolve_model
-    kwargs = {
-        "messages": history(), "secondary_system": "",
-        "profile": kernel.STAGES["extended_reflection"],
-        "tools": tools(), "tool_choice": "auto",
-    }
+    backend.resolve_model = model
     try:
+        args = dict(messages=history(), secondary_system="", profile=k.STAGES["extended_reflection"],
+                    tools=[{"type": "function", "function": {"name": "write", "parameters": {"type": "object"}}}],
+                    tool_choice="auto")
         if stream:
-            async for _ in backend.chat_stream(**kwargs):
+            async for _ in backend.chat_stream(**args):
                 pass
         else:
-            await backend.chat(**kwargs)
+            await backend.chat(**args)
     finally:
         await backend._client.aclose()
-    assert len(payloads) == 1
-    return payloads[0]
+    assert len(seen) == 1
+    return seen[0]
 
 
 @pytest.mark.parametrize("stream", [False, True])
-def test_only_trailing_stage2_instruction_differs(monkeypatch, tmp_path, stream):
-    control = load_kernel(monkeypatch, tmp_path, experiment=False)
-    a = asyncio.run(capture_payload(control, stream=stream))
-    candidate = load_kernel(monkeypatch, tmp_path, experiment=True)
-    b = asyncio.run(capture_payload(candidate, stream=stream))
-
-    assert a["stream"] is b["stream"] is stream
-    assert a["messages"][:-1] == b["messages"][:-1]
-    assert a["messages"][-1]["role"] == b["messages"][-1]["role"] == "user"
-    assert b["messages"][-1]["content"] == a["messages"][-1]["content"] + " " + SENTENCE
-
-    a_tail = a["messages"].pop()
-    b_tail = b["messages"].pop()
-    assert a == b  # Exactly same model, sampling, tools, thinking, messages and flags.
-    assert a_tail["role"] == b_tail["role"]
-    assert a["messages"][0]["content"] == control.AGENTIC_STAGE1_PROMPT
-    assert a["messages"][-1]["reasoning_content"] == history()[-1]["reasoning_content"]
+def test_differential_flag_cannot_change_isolated_stage2(monkeypatch, tmp_path, stream):
+    control = load(monkeypatch, tmp_path, differential=False)
+    a = asyncio.run(capture(control, stream))
+    alternate = load(monkeypatch, tmp_path, differential=True)
+    b = asyncio.run(capture(alternate, stream))
+    assert a == b
+    assert len(a["messages"]) == 4
+    assert a["messages"][1]["content"] == "Make the clock gold."
+    assert a["messages"][2]["content"] == "Edited clock.html; rendering unverified."
+    assert a["messages"][2]["reasoning_content"] == "Used gold CSS; visual check unavailable."
+    assert "Prior memory" not in json.dumps(a)
     assert "tools" not in a
-    assert a["chat_template_kwargs"]["preserve_thinking"] is True
-    assert control.STAGES["extended_reflection"].allow_tools is False
-    assert candidate.STAGES["extended_reflection"].allow_tools is False
-
-
-def test_baseline_default_and_frozen_prompts_unchanged(monkeypatch, tmp_path):
-    monkeypatch.delenv("JACK_AGENTIC_DIFFERENTIAL_MEMORY", raising=False)
-    k = load_kernel(monkeypatch, tmp_path, experiment=False)
-    assert k._AGENTIC_STAGE2_LINKED_CONTINUATION.endswith("Write the retained details directly.")
-    assert k._stage_continuation(k.STAGES["extended_reflection"], history()) == (
-        k._AGENTIC_STAGE2_LINKED_CONTINUATION
-    )
-    assert k.AGENTIC_36_STAGE2_PROMPT == "Preserve useful working knowledge from the completed task for future work, not a retrospective report."
-    assert k.AGENTIC_STAGE1_PROMPT.startswith("Reasoning effort is set to xhigh.")
-    assert k._agentic_cache_append_enabled(k.STAGES["extended_reflection"])
-    assert not k.AGENTIC_DIFFERENTIAL_MEMORY_EXPERIMENT
-
-
-def test_one_sentence_no_model_facing_ids_and_no_stage1_mutation(monkeypatch, tmp_path):
-    k = load_kernel(monkeypatch, tmp_path, experiment=True)
-    h = history()
-    before = json.loads(json.dumps(h))
-    stage1 = k.BACKEND._stage_messages_for_profile(h[:-1], k.STAGES["extended_initial"])
-    stage2 = k.BACKEND._stage_messages_for_profile(h, k.STAGES["extended_reflection"])
-    assert stage2[:len(stage1)] == stage1
-    assert h == before
-    suffix = k._stage_continuation(k.STAGES["extended_reflection"], h)
-    assert suffix == k._AGENTIC_STAGE2_LINKED_CONTINUATION + " " + SENTENCE
-    assert "jack-turn" not in suffix and "[JACK LINK" not in suffix
-    assert k.STAGES["extended_reflection"].allow_tools is False
+    assert alternate._stage_continuation(alternate.STAGES["extended_reflection"]) == alternate._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION

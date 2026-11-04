@@ -1,8 +1,4 @@
-"""Stage-2 causal-paper experiment: only trailing suffix changes.
-
-No model generation is used. Check both streaming and nonstreaming requests
-against the baseline to prevent prefix, tool, or stage-control regression.
-"""
+"""Retired final-paper switch cannot replace the sole current-turn Stage-2 directive."""
 import asyncio
 import importlib.util
 import json
@@ -16,7 +12,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def kernel(monkeypatch, tmp_path, *, enabled):
+def load(monkeypatch, tmp_path, *, paper):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
     monkeypatch.setenv("JACK_BACKEND_MODEL", "test-model")
@@ -24,140 +20,65 @@ def kernel(monkeypatch, tmp_path, *, enabled):
     monkeypatch.setenv("JACK_AGENTIC_TASK_ANCHOR", "0")
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT", "1")
     monkeypatch.setenv("JACK_AGENTIC_DIFFERENTIAL_MEMORY", "0")
-    monkeypatch.setenv("JACK_AGENTIC_STAGE2_FINAL_PAPER", "1" if enabled else "0")
-    monkeypatch.setenv("JACK_AGENTIC_STAGE2_RETENTION_TEST", "baseline")  # legacy suffix-only test
+    monkeypatch.setenv("JACK_AGENTIC_STAGE2_FINAL_PAPER", "1" if paper else "0")
+    monkeypatch.setenv("JACK_AGENTIC_STAGE2_RETENTION_TEST", "baseline")
     monkeypatch.setenv("JACK_FORENSIC_ARCHIVE_MODE", "off")
     monkeypatch.setenv("JACK_AGENTIC_FORENSIC_DB", str(tmp_path / (uuid.uuid4().hex + ".sqlite")))
-    name = "jack_stage2_final_paper_" + uuid.uuid4().hex
+    name = "jack_paper_retired_" + uuid.uuid4().hex
     spec = importlib.util.spec_from_file_location(name, ROOT / "jack_kernel.py")
-    obj = importlib.util.module_from_spec(spec)
-    sys.modules[name] = obj
-    spec.loader.exec_module(obj)
-    return obj
+    k = importlib.util.module_from_spec(spec)
+    sys.modules[name] = k
+    spec.loader.exec_module(k)
+    return k
 
 
-def history():
-    return [
-        {"role": "user", "content": "Previous unrelated project"},
-        {"role": "assistant", "content": "Historical memory"},
-        {"role": "user", "content": "Make the clock face gold."},
-        {
-            "role": "assistant",
-            "content": "Edited index.html with gold colors. Visual check unavailable.",
-            "reasoning_content": "Reviewed CSS. Used edit; result reported success but no browser verification.",
-        },
-    ]
-
-
-def tools():
-    return [{"type": "function", "function": {
-        "name": "edit", "description": "Edit a file",
-        "parameters": {"type": "object", "properties": {}},
-    }}]
-
-
-async def capture(k, *, stream):
-    calls = []
-
-    def respond(request):
-        calls.append(json.loads(request.content))
+async def capture(k, stream):
+    seen = []
+    def reply(request):
+        seen.append(json.loads(request.content))
         if stream:
-            data = "\n\n".join([
-                'data: {"choices":[{"index":0,"delta":{"content":"retrospective"},"finish_reason":null}]}',
-                'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}',
-                "data: [DONE]",
-            ]) + "\n\n"
-            return httpx.Response(200, text=data, headers={"content-type": "text/event-stream"})
-        return httpx.Response(200, json={
-            "choices": [{"message": {"role": "assistant", "content": "retrospective"}, "finish_reason": "stop"}],
-            "usage": {},
-        })
-
+            return httpx.Response(200, text='data: {"choices":[{"index":0,"delta":{"content":"M"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+                                  headers={"content-type": "text/event-stream"})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "M"}, "finish_reason": "stop"}], "usage": {}})
     backend = k.OpenAICompatibleBackend(k.CFG)
     await backend._client.aclose()
-    backend._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
-
+    backend._client = httpx.AsyncClient(transport=httpx.MockTransport(reply))
     async def model():
         return "test-model"
-
     backend.resolve_model = model
+    history = [
+        {"role": "user", "content": "Old request"},
+        {"role": "assistant", "content": "Old memory"},
+        {"role": "user", "content": "Fix the clock"},
+        {"role": "assistant", "content": "Fixed clock; visual status unverified.",
+         "reasoning_content": "Corrected gradient syntax.",
+         "_jack_extended_candidate_response": True},
+    ]
     try:
-        args = {
-            "messages": history(),
-            "secondary_system": "",
-            "profile": k.STAGES["extended_reflection"],
-            "tools": tools(),
-            "tool_choice": "auto",
-        }
+        kw = dict(messages=history, secondary_system="", profile=k.STAGES["extended_reflection"],
+                  tools=[], tool_choice="auto")
         if stream:
-            async for _ in backend.chat_stream(**args):
+            async for _ in backend.chat_stream(**kw):
                 pass
         else:
-            await backend.chat(**args)
+            await backend.chat(**kw)
     finally:
         await backend._client.aclose()
-    assert len(calls) == 1
-    return calls[0]
+    assert len(seen) == 1
+    return seen[0]
 
 
-@pytest.mark.parametrize("stream", [True, False])
-def test_only_trailing_suffix_changes(monkeypatch, tmp_path, stream):
-    baseline = kernel(monkeypatch, tmp_path, enabled=False)
-    original = asyncio.run(capture(baseline, stream=stream))
-    candidate = kernel(monkeypatch, tmp_path, enabled=True)
-    revised = asyncio.run(capture(candidate, stream=stream))
-
-    assert original["messages"][:-1] == revised["messages"][:-1]
-    original_tail = original["messages"].pop()
-    revised_tail = revised["messages"].pop()
-    assert original == revised
-    assert original_tail["role"] == revised_tail["role"] == "user"
-    assert original_tail["content"].startswith(baseline.AGENTIC_36_STAGE2_PROMPT)
-    assert revised_tail["content"] == (
-        candidate.AGENTIC_36_STAGE2_PROMPT + "\n\n" +
-        candidate._AGENTIC_STAGE2_FINAL_PAPER_CONTINUATION
-    )
-    assert "most recent genuine user request" in revised_tail["content"]
-    assert "everything generated AFTER that user" in revised_tail["content"]
-    assert "tool-reported success alone does not verify on-disk state" in revised_tail["content"]
-    assert "label unsupported causal" in revised_tail["content"]
-    assert revised["messages"][-1]["reasoning_content"] == history()[-1]["reasoning_content"]
-    assert "tools" not in revised
-    assert revised["chat_template_kwargs"]["preserve_thinking"] is True
-    assert candidate.STAGES["extended_reflection"].allow_tools is False
-    assert candidate.AGENTIC_36_STAGE2_PROMPT == "Preserve useful working knowledge from the completed task for future work, not a retrospective report."
-    assert candidate.AGENTIC_STAGE1_PROMPT.startswith("Reasoning effort is set to xhigh.")
-
-
-def test_baseline_default_off(monkeypatch, tmp_path):
-    k = kernel(monkeypatch, tmp_path, enabled=False)
-    assert k._stage_continuation(k.STAGES["extended_reflection"], history()) == k._AGENTIC_STAGE2_LINKED_CONTINUATION
-    assert k.AGENTIC_STAGE2_FINAL_PAPER_EXPERIMENT is False
-
-
-def test_final_paper_overrides_differential_not_stacks(monkeypatch, tmp_path):
-    k = kernel(monkeypatch, tmp_path, enabled=True)
-    assert k._stage_continuation(k.STAGES["extended_reflection"], history()) == k._AGENTIC_STAGE2_FINAL_PAPER_CONTINUATION
-    assert k._AGENTIC_DIFFERENTIAL_MEMORY_SENTENCE not in k._stage_continuation(k.STAGES["extended_reflection"], history())
-
-
-def test_refinement_is_evidence_bounded_without_changing_immutable_prompts(monkeypatch, tmp_path):
-    k = kernel(monkeypatch, tmp_path, enabled=True)
-    instruction = k._stage_continuation(k.STAGES["extended_reflection"], history())
-    assert "BEFORE the immediately preceding" in instruction
-    assert "BEFORE this instruction" in instruction
-    assert "current Stage-1 native reasoning" in instruction
-    assert "tool calls, returned tool results" in instruction
-    assert "Generated code is not a file write" in instruction
-    assert "corresponding check appears in this turn's record" in instruction
-    assert "do not attribute their tool actions" in instruction
-    assert "internal motives" in instruction
-    assert "The value is not in remembering that a tool failed. It's in" in instruction
-    assert "preserving the reasoning that turned the failure into a solution." in instruction
-    assert "Do not repeat routine failed calls" in instruction
-    assert k.AGENTIC_STAGE1_PROMPT == (
-        "Reasoning effort is set to xhigh. Please think carefully through the task, "
-        "validate key assumptions, consider plausible alternatives, and prioritize "
-        "correctness, consistency, and clarity in the final answer."
-    )
-    assert k.AGENTIC_36_STAGE2_PROMPT == "Preserve useful working knowledge from the completed task for future work, not a retrospective report."
+@pytest.mark.parametrize("stream", [False, True])
+def test_final_paper_flag_cannot_change_current_turn_memory(monkeypatch, tmp_path, stream):
+    control = load(monkeypatch, tmp_path, paper=False)
+    a = asyncio.run(capture(control, stream))
+    alternate = load(monkeypatch, tmp_path, paper=True)
+    b = asyncio.run(capture(alternate, stream))
+    assert a == b
+    assert len(a["messages"]) == 4
+    assert a["messages"][1]["content"] == "Fix the clock"
+    assert a["messages"][2]["content"] == "Fixed clock; visual status unverified."
+    assert a["messages"][2]["reasoning_content"] == "Corrected gradient syntax."
+    assert "Old memory" not in json.dumps(a)
+    assert "Treat the current Stage-1 native reasoning as a draft" in a["messages"][3]["content"]
+    assert "tools" not in a

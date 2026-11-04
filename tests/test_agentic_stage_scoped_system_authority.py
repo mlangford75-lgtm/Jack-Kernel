@@ -134,7 +134,7 @@ def test_final_causal_paper_is_still_caller_isolated(monkeypatch, tmp_path, stre
     payload = capture(k, stage="extended_reflection", stream=stream)
     assert CALLER not in payload["messages"][0]["content"]
     assert payload["messages"][0]["content"] == k.AGENTIC_STAGE1_PROMPT
-    assert "rough draft" in payload["messages"][-1]["content"]
+    assert "Treat the current Stage-1 native reasoning as a draft" in payload["messages"][-1]["content"]
     assert payload["messages"][-1]["content"].startswith(k.AGENTIC_36_STAGE2_PROMPT)
     assert k.STAGES["extended_reflection"].allow_tools is False
 
