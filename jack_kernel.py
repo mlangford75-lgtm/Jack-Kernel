@@ -6654,7 +6654,7 @@ class JackQwenKernel:
         # inference retry and never prevent the exact A1 from being delivered.
         # A shorter Stage-2 repetition threshold limits wasted native tokens.
         loop_repetitions = (
-            min(self.cfg.loop_detector_repetitions, 8)
+            min(self.cfg.loop_detector_repetitions, 16)
             if AGENTIC_MODE and stage_key == "extended_reflection"
             else self.cfg.loop_detector_repetitions
         )
