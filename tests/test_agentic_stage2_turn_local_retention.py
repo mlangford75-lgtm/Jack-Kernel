@@ -356,6 +356,7 @@ def test_stage2_host_note_missing_tools_is_zero_cost(monkeypatch, tmp_path, stre
     raw = [history()[4], history()[-1]]
     p = asyncio.run(payload_for(k, "extended_reflection", stream, raw))
     assert p["messages"][-1]["content"] == k.AGENTIC_36_STAGE2_PROMPT
+    assert k._agentic_stage2_host_tool_evidence_note(raw) == ""
 
 
 def test_host_evidence_is_bounded_current_turn_only(monkeypatch, tmp_path):
@@ -398,3 +399,84 @@ def test_stage2_noncache_fallback_labels_host_record(monkeypatch, tmp_path, stre
     assert "Host-recorded tool outcome evidence" in payload["messages"][-1]["content"]
     assert "Write the useful working knowledge now." in payload["messages"][-1]["content"]
     assert "tools" not in payload
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_completed_turn_without_tools_reports_explicit_absence(monkeypatch, tmp_path, stream):
+    k = load_kernel(monkeypatch, tmp_path, "isolate-retain")
+    h = [{"role": "user", "content": "Write index.html."}]
+    k.append_extended_candidate_response(
+        h, {"content": "I wrote index.html.", "reasoning_content": "I created the file using a tool."}
+    )
+    assert h[-1]["_jack_agentic_stage1_tool_observation_complete"] is True
+    payload = asyncio.run(payload_for(k, "extended_reflection", stream, h))
+    evidence = payload["messages"][-1]["content"]
+    assert "Record coverage: COMPLETE_CURRENT_TURN" in evidence
+    assert "NO_TOOL_CALLS_RECORDED" in evidence
+    assert "compare that claim with the separate Jack host-recorded tool evidence" in evidence
+    assert evidence.count("Review the latest user request") == 1
+    assert evidence.endswith(k.AGENTIC_36_STAGE2_PROMPT)
+    assert payload["messages"][1]["content"] == h[0]["content"]
+    assert payload["messages"][2]["content"] == "I wrote index.html."
+    assert "tools" not in payload
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_no_tool_record_fallback_also_reports_absence(monkeypatch, tmp_path, stream):
+    k = load_kernel(monkeypatch, tmp_path, "isolate-retain")
+    k.AGENTIC_CACHE_APPEND_EXPERIMENT = False
+    h = [{"role": "user", "content": "Please save this."}]
+    k.append_extended_candidate_response(h, {"content": "Saved it."})
+    payload = asyncio.run(payload_for(k, "extended_reflection", stream, h))
+    assert payload["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
+    assert "NO_TOOL_CALLS_RECORDED" in payload["messages"][-1]["content"]
+    assert "Record coverage: COMPLETE_CURRENT_TURN" in payload["messages"][-1]["content"]
+    assert "tools" not in payload
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_incomplete_host_tool_record_never_claims_no_calls(monkeypatch, tmp_path, stream):
+    k = load_kernel(monkeypatch, tmp_path, "isolate-retain")
+    h = [{"role": "user", "content": "Write index.html."}]
+    h.append({
+        "role": "assistant",
+        "_jack_internal_tool_exchange": True,
+        "_jack_stage_key": "extended_initial",
+        "tool_calls": [{
+            "id": "unreturned",
+            "type": "function",
+            "function": {"name": "write", "arguments": '{"path":"index.html"}'},
+        }],
+        "content": "",
+        "reasoning_content": "Attempted to write."
+    })
+    k.append_extended_candidate_response(h, {"content": "I wrote index.html."})
+    payload = asyncio.run(payload_for(k, "extended_reflection", stream, h))
+    note = payload["messages"][-1]["content"]
+    assert "Record coverage: INCOMPLETE_OR_UNCONFIRMED" in note
+    assert "RECORD_INCOMPLETE: 1 host-recorded tool call" in note
+    assert "NO_TOOL_CALLS_RECORDED:" not in note
+    assert note.endswith(k.AGENTIC_36_STAGE2_PROMPT)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_success_and_failure_notes_do_not_claim_no_tools(monkeypatch, tmp_path, stream):
+    k = load_kernel(monkeypatch, tmp_path, "isolate-retain")
+    h = history()
+    h[-1]["_jack_agentic_stage1_tool_observation_complete"] = True
+    payload = asyncio.run(payload_for(k, "extended_reflection", stream, h))
+    note = payload["messages"][-1]["content"]
+    assert "Record coverage: COMPLETE_CURRENT_TURN" in note
+    assert "outcome=REPORTED_ERROR" in note
+    assert "outcome=RESULT_RETURNED_NO_STRUCTURED_ERROR" in note
+    assert "NO_TOOL_CALLS_RECORDED:" not in note
+
+
+def test_unconfirmed_history_never_negative_certifies(monkeypatch, tmp_path):
+    k = load_kernel(monkeypatch, tmp_path, "isolate-retain")
+    h = [{"role": "user", "content": "Save file."},
+         {"role": "assistant", "content": "Saved.", "_jack_extended_candidate_response": True}]
+    assert k._agentic_stage2_host_tool_evidence_note(h) == ""
+    # An untrusted caller's plain text is not an authoritative tool record.
+    h.insert(1, {"role": "assistant", "content": "I called write(index.html) successfully"})
+    assert k._agentic_stage2_host_tool_evidence_note(h) == ""
