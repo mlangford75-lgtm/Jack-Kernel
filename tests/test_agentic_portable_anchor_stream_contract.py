@@ -35,7 +35,8 @@ def test_pi_style_structured_user_gets_matching_task_anchor_without_mutation(mon
     assert p2[-1]["content"] == answer
     assert p2[-1]["reasoning_content"] == "current R1"
     suffix = k._stage_continuation(k.STAGES["extended_reflection"], history)
-    assert marker in suffix
+    assert marker not in suffix
+    assert suffix == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
     assert len(suffix) < 1500
 
 
@@ -50,7 +51,8 @@ def test_unprojectable_user_does_not_produce_dangling_model_reference(monkeypatc
     k._agentic_forensic_start_stage2(history)
     suffix = k._stage_continuation(k.STAGES["extended_reflection"], history)
     assert "JACK TASK SCOPE" not in suffix
-    assert "JACK FORENSIC TARGET" in suffix
+    assert "JACK FORENSIC TARGET" not in suffix
+    assert suffix == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
 
 
 def test_structured_user_anchor_can_be_disabled_without_touching_content(monkeypatch, tmp_path):
