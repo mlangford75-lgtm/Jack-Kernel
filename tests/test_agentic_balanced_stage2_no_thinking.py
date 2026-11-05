@@ -48,7 +48,7 @@ def backend_payload(k, *, stage, stream):
                 "data: [DONE]",
             ]
             return httpx.Response(
-                200, text="\\n\\n".join(chunks) + "\\n\\n",
+                200, text="\n\n".join(chunks) + "\n\n",
                 headers={"content-type": "text/event-stream"},
             )
         return httpx.Response(
