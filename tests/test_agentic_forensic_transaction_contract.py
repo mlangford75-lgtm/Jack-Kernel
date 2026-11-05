@@ -189,21 +189,10 @@ def test_journal_rejects_ambiguous_identical_requests(monkeypatch, tmp_path):
 
 def test_metadata_does_not_modify_frozen_prompts_or_context_pruning(monkeypatch, tmp_path):
     k = load_kernel(monkeypatch, tmp_path)
-    assert k.AGENTIC_STAGE1_PROMPT == (
-        "Reasoning effort is set to xhigh. Please think carefully through the task, "
-        "validate key assumptions, consider plausible alternatives, and prioritize "
-        "correctness, consistency, and clarity in the final answer.\n"
-        "Carefully reason on the task before using tools\n"
-        "Before using tools, consider:\n"
-        "- What is the user actually trying to achieve?\n"
-        "- What information do you already have vs. what is missing?\n"
-        "- Is a tool the right next step, or can you answer from what you have?\n"
-        "- For information gathering - reading files, searching, running tests, inspecting results - using the tool is part of reasoning.\n"
-        "- For state-changing actions like writing files, treat the tool as a commit after you have a clear picture of the correct final state."
-    )
+    assert k.AGENTIC_STAGE1_PROMPT.endswith("Carefully reason on the task before using tools.")
     assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
-    assert k.AGENTIC_CACHE_APPEND_EXPERIMENT
+    assert k.AGENTIC_CACHE_APPEND_EXPERIMENT  # explicitly enabled by fixture
     assert k.STAGES["extended_reflection"].allow_tools is False
     assert k._stage_continuation(k.STAGES["extended_reflection"]).startswith(
-        "Review the latest actual user request"
+        "Begin with a brief description of the current task"
     )

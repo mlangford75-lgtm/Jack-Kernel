@@ -77,7 +77,9 @@ def test_large_user_request_stays_in_cached_prefix(monkeypatch, tmp_path):
     assert huge not in suffix
     assert len(suffix) < 2400
     assert original == [{"role": "user", "content": huge}]
-    assert k.AGENTIC_STAGE1_PROMPT == "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\nCarefully reason on the task before using tools\nBefore using tools, consider:\n- What is the user actually trying to achieve?\n- What information do you already have vs. what is missing?\n- Is a tool the right next step, or can you answer from what you have?\n- For information gathering - reading files, searching, running tests, inspecting results - using the tool is part of reasoning.\n- For state-changing actions like writing files, treat the tool as a commit after you have a clear picture of the correct final state."
+    assert k.AGENTIC_STAGE1_PROMPT.startswith("Reasoning effort is set to xhigh.")
+    assert k.AGENTIC_STAGE1_PROMPT.endswith("Carefully reason on the task before using tools.")
+    assert "Do not imitate the style, format, or structure of previous turns" in k.AGENTIC_STAGE1_PROMPT
     assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
 
 

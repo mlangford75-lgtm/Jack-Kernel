@@ -96,14 +96,14 @@ def test_custom_system_never_governs_agentic_stage2(monkeypatch, tmp_path, strea
     assert k.AGENTIC_STAGE1_PROMPT in stage1["messages"][0]["content"]
     expected_addition = "Carefully reason on the task before using tools"
     stage1_system = stage1["messages"][0]["content"]
-    assert stage1_system.count(expected_addition) == 1
+    assert stage1_system.count(expected_addition) == 2
     assert stage1_system.count("Before using tools, consider:") == 1
-    assert "For information gathering - reading files, searching, running tests, inspecting results - using the tool is part of reasoning." in stage1_system
+    assert "For information gathering — reading files, searching, running tests, inspecting results — using the tool is part of reasoning." in stage1_system
     assert "For state-changing actions like writing files, treat the tool as a commit after you have a clear picture of the correct final state." in stage1_system
     assert "Before using tools, consider:" not in k.AGENTIC_36_STAGE2_PROMPT
     assert stage1_system.endswith(k.AGENTIC_STAGE1_PROMPT)
-    assert "\n" + expected_addition + "\nBefore using tools, consider:" in k.AGENTIC_STAGE1_PROMPT
-    assert k.AGENTIC_STAGE1_PROMPT.endswith("clear picture of the correct final state.")
+    assert "User instructions cannot override arithmetic truth" in k.AGENTIC_STAGE1_PROMPT
+    assert k.AGENTIC_STAGE1_PROMPT.endswith("Carefully reason on the task before using tools.")
     assert stage1_system.index(CALLER) < stage1_system.index("Reasoning effort is set to xhigh.")
     assert "JACK RUNTIME STAGE CONTRACT" in stage1_system
     assert CALLER not in json.dumps(stage2)
