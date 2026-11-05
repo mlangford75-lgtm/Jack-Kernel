@@ -847,7 +847,7 @@ _STAGE_CONTINUATIONS = {
 }
 
 # One plain-language memory directive. Jack owns evidence isolation and stage authority.
-# Stage-1 cognition prompt is byte-exact and untouched.
+# Stage-1 cognition and retrospective prompts are explicitly reviewed independently.
 _AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION = """Begin with a brief description of the current task (a short sentence).
 
 Preserve the important working knowledge established for the current user request so it can be used in future turns without repeating the reasoning.
@@ -867,9 +867,6 @@ Do not reconstruct earlier turns, re-solve the task, introduce new explanations,
 Write only the resulting working knowledge. This is Jack's internal memory task, not a new user request or a report about the process.
 
 Begin with a brief description of the current task (a short sentence) and then preserve the consequential working knowledge."""
-
-
-def _stage_continuation"""
 
 
 def _stage_continuation(
@@ -1169,8 +1166,6 @@ Verify your response and its alignment with the current user request.
 Prioritize using available tools when they materially help solve or verify the current task. Do not use tools unnecessarily or when the user explicitly requires a tools-free response.
 
 Carefully reason on the task before using tools."""
-
-ULTRA_STAGE1_THESIS_PROMPT
 
 ULTRA_STAGE1_THESIS_PROMPT = """You are Thesis.
 
