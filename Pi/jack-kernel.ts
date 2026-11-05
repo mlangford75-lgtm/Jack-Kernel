@@ -10,25 +10,6 @@ const DEFAULT_JACK_URL = "http://127.0.0.1:8001";
 const PI_DEFAULT_MAX_TOKENS = 16384;
 const CONFIG_PATH = path.join(os.homedir(), ".pi", "agent", "jack-kernel.json");
 const EXECUTOR_ADMISSION_PROTOCOL_VERSION = 1;
-const FILE_MUTATION_VERIFICATION_GUIDELINE =
-  "After every write or edit tool operation, read back the actual target file (or changed range) and check that the intended content was saved. A successful tool response alone is not verification. Never claim a file was created, saved, or modified unless the relevant write/edit was actually executed and read-back confirms the result; otherwise report the failure or unverified status.";
-
-function addFileMutationVerificationGuideline(event) {
-  // Pi supports stable, structured prompt guidelines. Do not inject a new
-  // conversation message, change tool permissions, or grow the prompt per turn.
-  const guidelines = event?.systemPromptOptions?.promptGuidelines;
-  if (Array.isArray(guidelines)) {
-    if (!guidelines.includes(FILE_MUTATION_VERIFICATION_GUIDELINE)) {
-      guidelines.push(FILE_MUTATION_VERIFICATION_GUIDELINE);
-    }
-    return undefined;
-  }
-  // Older Pi extension hosts may lack structured prompt sections.
-  const prompt = String(event?.systemPrompt || "");
-  if (prompt.includes(FILE_MUTATION_VERIFICATION_GUIDELINE)) return undefined;
-  return { systemPrompt: prompt + "\n\n" + FILE_MUTATION_VERIFICATION_GUIDELINE };
-}
-
 const STRUCTURED_PATH_TOOLS = new Set(["read", "edit", "write", "grep", "find", "ls"]);
 const COMMAND_DIALECT_BY_TOOL = new Map([
   ["bash", "bash"],
@@ -384,11 +365,9 @@ export default async function (pi) {
   });
 
   let refreshedThisTurn = false;
-  pi.on("before_agent_start", async (event, ctx) => {
+  pi.on("before_agent_start", async () => {
     refreshedThisTurn = false;
     await syncProvider();
-    if (String(ctx?.model?.provider || "") !== PROVIDER_NAME) return undefined;
-    return addFileMutationVerificationGuideline(event);
   });
   pi.on("message_end", async (event) => {
     if (event?.message?.role === "assistant" && !refreshedThisTurn) {
