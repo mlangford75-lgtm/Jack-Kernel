@@ -307,6 +307,9 @@ class KernelConfig:
     # Profiles are resolved below into Qwen per-stage native-thinking controls.
     reasoning_level: str = os.getenv("JACK_REASONING_LEVEL", "x-high").strip().lower()
 
+    # Experimental Agentic profile. Thorough remains the unchanged default.
+    agentic_profile: str = os.getenv("JACK_AGENTIC_PROFILE", "thorough").strip().lower()
+
     # Human-configurable Qwen preserve-thinking policy. Calling agents cannot
     # override this value; it is owned by the Jack Kernel runtime.
     preserve_thinking: bool = os.getenv("JACK_PRESERVE_THINKING", "1").strip().lower() not in {
@@ -831,6 +834,9 @@ if REASONING_PROFILES[_reasoning_level].get("disabled"):
     raise RuntimeError("JACK_REASONING_LEVEL=low is disabled in Jack Kernel v0.1.1. Choose off, medium, x-high, deep-research, Local Agentic (Preserve Thinking), code-debugging, or code-debugging-deep.")
 ACTIVE_REASONING_PROFILE = REASONING_PROFILES[_reasoning_level]
 AGENTIC_MODE = ACTIVE_REASONING_PROFILE["mode"] == "agentic"
+if AGENTIC_MODE and CFG.agentic_profile not in {"thorough", "balanced"}:
+    raise RuntimeError("JACK_AGENTIC_PROFILE must be thorough or balanced in this experiment")
+AGENTIC_BALANCED_MODE = AGENTIC_MODE and CFG.agentic_profile == "balanced"
 ULTRA_MODE = ACTIVE_REASONING_PROFILE["mode"] == "ultra"
 DEEP_REASONING_MODE = ACTIVE_REASONING_PROFILE["mode"] == "deep_reasoning"
 CODE_DEBUGGING_MODE = ACTIVE_REASONING_PROFILE["mode"] == "code_debugging"
@@ -2286,7 +2292,7 @@ STAGES: Dict[str, StageProfile] = {
     "extended_reflection": StageProfile(
         "Agentic native pass 2" if AGENTIC_MODE else "Deep Research Antithesis pass 2",
         AGENTIC_36_STAGE2_PROMPT if AGENTIC_MODE else ULTRA_STAGE2_ANTITHESIS_PROMPT,
-        True,
+        not AGENTIC_BALANCED_MODE,
         ACTIVE_REASONING_PROFILE.get("pass2", "xhigh"),
         False,
         0.50 if AGENTIC_MODE else 0.70,
@@ -5666,7 +5672,9 @@ class OpenAICompatibleBackend:
         stages keep their native reasoning because those profiles run thinking-ON with
         Preserve Thinking under their stage contracts.
         """
-        strip_reasoning = not profile.thinking
+        # Balanced disables NEW Stage-2 thinking, not Stage-1 R1 as input.
+        balanced_r1_reader = AGENTIC_BALANCED_MODE and profile.name == "Agentic native pass 2"
+        strip_reasoning = not profile.thinking and not balanced_r1_reader
         source_messages = (
             self._ultra_thesis_history_projection(messages)
             if ULTRA_MODE and profile.name == "Deep Research Thesis pass 1"
@@ -5826,8 +5834,11 @@ class OpenAICompatibleBackend:
         # start with Preserve Thinking OFF regardless of the global setting, and Jack
         # enables it only for same-pass tool continuation via force_preserve_thinking.
         debugging_fresh_boundary = profile.name.startswith("Code Debugging Pass ") or profile.name == "Code Debugging Summary"
+        # Preserve Thinking controls whether supplied R1 remains visible in the
+        # Stage-2 chat template; it is independent of Stage-2 generation.
+        balanced_r1_reader = AGENTIC_BALANCED_MODE and profile.name == "Agentic native pass 2"
         effective_preserve = bool(
-            profile.thinking
+            (profile.thinking or balanced_r1_reader)
             and (
                 profile.force_preserve_thinking
                 or (self.cfg.preserve_thinking and not debugging_fresh_boundary)
