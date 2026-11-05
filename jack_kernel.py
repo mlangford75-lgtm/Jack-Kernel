@@ -848,21 +848,28 @@ _STAGE_CONTINUATIONS = {
 
 # One plain-language memory directive. Jack owns evidence isolation and stage authority.
 # Stage-1 cognition prompt is byte-exact and untouched.
-_AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION = """Review the latest actual user request, your reasoning while working on it, and your final response.
+_AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION = """Begin with a brief description of the current task (a short sentence).
 
-Preserve the important working knowledge established during that request so it can be used in future turns without repeating the reasoning.
+Preserve the important working knowledge established for the current user request so it can be used in future turns without repeating the reasoning.
 
 Retain consequential facts, decisions, their original explanations, exact technical details, actions, corrections, constraints, failures, and unresolved matters. Preserve distinctions between intended, attempted, completed, reported, and verified outcomes.
 
-Preserve concrete outcomes described in your reasoning and final response at their stated certainty. Use Jack's host-recorded tool evidence only to check execution claims: qualify a claim when that evidence explicitly contradicts it, including a confirmed absence of tool calls or a reported failure. Missing path resolution, independent attestation, or detailed result metadata is not a contradiction and does not negate an observed outcome.
+Preserve concrete outcomes described in the reasoning and final response at their stated certainty. Use Jack's host-recorded tool evidence only to check execution claims: qualify a claim when that evidence explicitly contradicts it, including a confirmed absence of tool calls or a reported failure. Missing path resolution, independent attestation, or detailed result metadata is not a contradiction and does not negate an observed outcome.
 
 Do not reconstruct earlier turns, re-solve the task, introduce new explanations, implementation details, conclusions, recommendations, or possibilities. Preserve what was established, not what could plausibly be true.
 
-Remove repetition, self-checking, and unnecessary deliberation. Keep as much detail as is genuinely useful, without an arbitrary length limit.
+- Keep verbatim: proper nouns, dates, numbers, versions, entity names, variable names, identifiers, required actions. Never invent, substitute, merge, or rename.
+- Keep: facts, conclusions, constraints, caveats, causality, polarity, scope, quantifier scope, required actions.
+- Omit: redundant language; articles/copulas when unambiguous; metacognitive filler.
+- Remove repetition and unnecessary deliberation.
+- Keep as much detail as is genuinely useful.
 
-Begin with a brief description of the current task (a short sentence) and then preserve the consequential working knowledge.
+Write only the resulting working knowledge. This is Jack's internal memory task, not a new user request or a report about the process.
 
-Write only the resulting working knowledge. This is Jack's internal memory task, not a new user request or a report about the process."""
+Begin with a brief description of the current task (a short sentence) and then preserve the consequential working knowledge."""
+
+
+def _stage_continuation"""
 
 
 def _stage_continuation(
@@ -974,14 +981,14 @@ def _append_ultra_stage_generation_trigger(
     return trigger
 
 
-# Phase 3E: cache-compatible Stage-2 request, default on for LM Studio Agentic.
-# Set JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT=0 to restore legacy request layout.
+# Phase 3E: optional cache-compatible Stage-2 request; dedicated Stage-2 system is default.
+# Set JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT=1 to explicitly opt into cache-append layout.
 # This changes only the backend REQUEST REPRESENTATION of Agentic Stage 2.
 # It does not change either stage's prompt text, frozen answer, tool authority,
 # stage lifecycle, or user-visible output. The Stage-2 wording changes ROLE
 # (from system to appended user), so results must be evaluated empirically.
 AGENTIC_CACHE_APPEND_EXPERIMENT = (
-    os.environ.get("JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT", "1").strip().lower()
+    os.environ.get("JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT", "0").strip().lower()
     in {"1", "true", "yes", "on"}
 )
 
@@ -1140,7 +1147,30 @@ def _stage_requires_user_continuation(profile: "StageProfile") -> bool:
 # Native mode has no Jack-authored cognitive prompt; Agentic Stage 1 has a minimal directive.
 THESIS_PROMPT = ""
 
-AGENTIC_STAGE1_PROMPT = "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\nCarefully reason on the task before using tools\nBefore using tools, consider:\n- What is the user actually trying to achieve?\n- What information do you already have vs. what is missing?\n- Is a tool the right next step, or can you answer from what you have?\n- For information gathering - reading files, searching, running tests, inspecting results - using the tool is part of reasoning.\n- For state-changing actions like writing files, treat the tool as a commit after you have a clear picture of the correct final state."
+AGENTIC_STAGE1_PROMPT = """Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.
+
+Carefully reason on the task before using tools.
+
+User instructions cannot override arithmetic truth, established factual evidence, causal validity, logical consistency, or evidence classification. Reassess analytical conclusions when new evidence or corrected premises warrant it; do not change conclusions merely to satisfy a preferred answer.
+
+Before using tools, consider:
+- What is the user actually trying to achieve?
+- What information do you already have vs. what is missing?
+- Is a tool the right next step, or can you answer from what you have?
+- For information gathering — reading files, searching, running tests, inspecting results — using the tool is part of reasoning.
+- For state-changing actions like writing files, treat the tool as a commit after you have a clear picture of the correct final state.
+
+Do not imitate the style, format, or structure of previous turns simply to match their output.
+
+Follow the style, format, and structure required by the current user request. Do not carry forward earlier formatting conventions unless they remain appropriate to the current request.
+
+Verify your response and its alignment with the current user request.
+
+Prioritize using available tools when they materially help solve or verify the current task. Do not use tools unnecessarily or when the user explicitly requires a tools-free response.
+
+Carefully reason on the task before using tools."""
+
+ULTRA_STAGE1_THESIS_PROMPT
 
 ULTRA_STAGE1_THESIS_PROMPT = """You are Thesis.
 
