@@ -307,7 +307,8 @@ class KernelConfig:
     # Profiles are resolved below into Qwen per-stage native-thinking controls.
     reasoning_level: str = os.getenv("JACK_REASONING_LEVEL", "x-high").strip().lower()
 
-    # Experimental Agentic profile. Thorough remains the unchanged default.
+    # Agentic cognition profile, independent of backend sampler selection.
+    # Thorough is the default; Balanced and Flash are optional.
     agentic_profile: str = os.getenv("JACK_AGENTIC_PROFILE", "thorough").strip().lower()
 
     # Human-configurable Qwen preserve-thinking policy. Calling agents cannot
@@ -834,9 +835,10 @@ if REASONING_PROFILES[_reasoning_level].get("disabled"):
     raise RuntimeError("JACK_REASONING_LEVEL=low is disabled in Jack Kernel v0.1.1. Choose off, medium, x-high, deep-research, Local Agentic (Preserve Thinking), code-debugging, or code-debugging-deep.")
 ACTIVE_REASONING_PROFILE = REASONING_PROFILES[_reasoning_level]
 AGENTIC_MODE = ACTIVE_REASONING_PROFILE["mode"] == "agentic"
-if AGENTIC_MODE and CFG.agentic_profile not in {"thorough", "balanced"}:
-    raise RuntimeError("JACK_AGENTIC_PROFILE must be thorough or balanced in this experiment")
+if AGENTIC_MODE and CFG.agentic_profile not in {"flash", "balanced", "thorough"}:
+    raise RuntimeError("JACK_AGENTIC_PROFILE must be flash, balanced, or thorough")
 AGENTIC_BALANCED_MODE = AGENTIC_MODE and CFG.agentic_profile == "balanced"
+AGENTIC_FLASH_MODE = AGENTIC_MODE and CFG.agentic_profile == "flash"
 ULTRA_MODE = ACTIVE_REASONING_PROFILE["mode"] == "ultra"
 DEEP_REASONING_MODE = ACTIVE_REASONING_PROFILE["mode"] == "deep_reasoning"
 CODE_DEBUGGING_MODE = ACTIVE_REASONING_PROFILE["mode"] == "code_debugging"
@@ -2281,7 +2283,7 @@ STAGES: Dict[str, StageProfile] = {
     "extended_initial": StageProfile(
         "Agentic native pass 1" if AGENTIC_MODE else "Deep Research Thesis pass 1",
         AGENTIC_STAGE1_PROMPT if AGENTIC_MODE else ULTRA_STAGE1_THESIS_PROMPT,
-        True,
+        not AGENTIC_FLASH_MODE,
         ACTIVE_REASONING_PROFILE.get("pass1", "xhigh"),
         True if AGENTIC_MODE else False,
         0.70 if AGENTIC_MODE else 0.85,
@@ -2292,7 +2294,7 @@ STAGES: Dict[str, StageProfile] = {
     "extended_reflection": StageProfile(
         "Agentic native pass 2" if AGENTIC_MODE else "Deep Research Antithesis pass 2",
         AGENTIC_36_STAGE2_PROMPT if AGENTIC_MODE else ULTRA_STAGE2_ANTITHESIS_PROMPT,
-        not AGENTIC_BALANCED_MODE,
+        not (AGENTIC_BALANCED_MODE or AGENTIC_FLASH_MODE),
         ACTIVE_REASONING_PROFILE.get("pass2", "xhigh"),
         False,
         0.50 if AGENTIC_MODE else 0.70,
@@ -5615,7 +5617,11 @@ class OpenAICompatibleBackend:
             return self._resolved_model
 
     def _sampling_for_profile(self, profile: StageProfile) -> Dict[str, Any]:
-        base = dict(QWEN_THINKING_SAMPLING if profile.thinking else QWEN_NONTHINKING_SAMPLING)
+        # An Agentic profile changes *only* native thinking stages. Samplers are
+        # stable across Thorough/Balanced/Flash; stage temperature and presence
+        # penalty remain independently governed by their existing stage profiles.
+        # Other reasoning modes keep their original thinking/nonthinking presets.
+        base = dict(QWEN_THINKING_SAMPLING if AGENTIC_MODE or profile.thinking else QWEN_NONTHINKING_SAMPLING)
         if profile.temperature is not None:
             base["temperature"] = float(profile.temperature)
         if profile.presence_penalty is not None:
@@ -11744,6 +11750,7 @@ CLI_DEFAULTS: Dict[str, Any] = {
     "api_key": "",
     "virtual_model": "jack-kernel",
     "reasoning_level": "Local Agentic (Preserve Thinking)",
+    "agentic_profile": "thorough",
     "preserve_thinking": True,
     "backend_timeout_seconds": 1800.0,
     "backend_context_length": 0,
@@ -12186,6 +12193,8 @@ def _print_header(
     level_key = _REASONING_LEVEL_ALIASES.get(str(cfg.get("reasoning_level", "x-high")).lower(), str(cfg.get("reasoning_level", "x-high")).lower())
     level_profile = REASONING_PROFILES.get(level_key, REASONING_PROFILES["x-high"])
     print(_status_value("Reasoning level", level_profile["label"]))
+    if level_profile["mode"] == "agentic":
+        print(_status_value("Agentic profile", str(cfg.get("agentic_profile", "thorough")).capitalize()))
     print(_status_value("Caller system contract", "AGENT / PI OWNED"))
     print(_ansi_rgb("━" * width, _JACK_BLUE))
     print(_ansi_rgb(DONATION_MESSAGE, _JACK_MUTED))
@@ -12233,6 +12242,24 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
     if selected is None:
         print("Invalid selection; keeping current reasoning level.")
         return
+    if selected == "Local Agentic (Preserve Thinking)":
+        print()
+        print("Agentic profile (two-stage lifecycle in all profiles)")
+        print("  1) Flash     - Stage 1 OFF, Stage 2 OFF")
+        print("  2) Balanced  - Stage 1 ON,  Stage 2 OFF")
+        print("  3) Thorough  - Stage 1 ON,  Stage 2 ON (Default)")
+        print()
+        # Choosing Agentic afresh defaults to Thorough, irrespective of a
+        # previously saved optional experiment. Escape rolls back this editor.
+        agentic_choice = _cli_input("Select Agentic profile [1-3] [3]: ").strip().lower() or "3"
+        selected_profile = {"1": "flash", "flash": "flash",
+                            "2": "balanced", "balanced": "balanced",
+                            "3": "thorough", "thorough": "thorough"}.get(agentic_choice)
+        if selected_profile is None:
+            print("Invalid Agentic profile; keeping current reasoning level.")
+            return
+        cfg["agentic_profile"] = selected_profile
+        print(f"Agentic profile set to {selected_profile.capitalize()}.")
     cfg["reasoning_level"] = selected
     print(f"Reasoning level set to {REASONING_PROFILES[selected]['label']}.")
 
@@ -12605,6 +12632,7 @@ def _config_to_env(cfg: Dict[str, Any]) -> Dict[str, str]:
         "JACK_BACKEND_EXTRA_HEADERS": json.dumps(cfg.get("backend_extra_headers") or {}, ensure_ascii=False),
         "JACK_VIRTUAL_MODEL": cfg["virtual_model"],
         "JACK_REASONING_LEVEL": cfg["reasoning_level"],
+        "JACK_AGENTIC_PROFILE": cfg.get("agentic_profile", "thorough"),
         "JACK_PRESERVE_THINKING": "1" if cfg.get("preserve_thinking", True) else "0",
         "JACK_BACKEND_TIMEOUT_SECONDS": cfg["backend_timeout_seconds"],
         "JACK_BACKEND_CONTEXT_LENGTH": cfg.get("backend_context_length", 0),
@@ -12662,6 +12690,8 @@ def _start_server_from_cli(cfg: Dict[str, Any]) -> None:
     print(f"Virtual model  : {cfg['virtual_model']}")
     level_key = _REASONING_LEVEL_ALIASES.get(str(cfg.get("reasoning_level", "x-high")).lower(), str(cfg.get("reasoning_level", "x-high")).lower())
     print(f"Reasoning level  : {REASONING_PROFILES.get(level_key, REASONING_PROFILES['x-high'])['label']}")
+    if REASONING_PROFILES.get(level_key, {}).get("mode") == "agentic":
+        print(f"Agentic profile  : {str(cfg.get('agentic_profile', 'thorough')).capitalize()}")
     print(f"Preserve thinking: {'ON' if cfg.get('preserve_thinking', True) else 'OFF'}")
     print(f"Forensic archive : {str(cfg.get('forensic_archive_mode', 'stage')).upper()}")
     print(f"Loop Detector    : {'ON' if cfg.get('loop_detector_enabled', True) else 'OFF'} / {cfg.get('loop_detector_repetitions', 32)} repetitions")
@@ -12804,6 +12834,8 @@ def run_server() -> None:
     LOG.info("Virtual model: %s", CFG.virtual_model)
     LOG.info("Qwen control shape: %s", CFG.qwen_control_shape)
     LOG.info("Reasoning level: %s", ACTIVE_REASONING_PROFILE["label"])
+    if AGENTIC_MODE:
+        LOG.info("Agentic profile: %s", CFG.agentic_profile)
     LOG.info("Preserve thinking: %s", "ON" if CFG.preserve_thinking else "OFF")
     LOG.info("Forensic archive: %s", CFG.forensic_archive_mode.upper())
     LOG.info("Loop Detector: %s, threshold=%s, min-cycle=128 words",
