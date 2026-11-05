@@ -116,8 +116,8 @@ def test_stage2_tool_request_not_authorized_for_execution():
 
 def test_cache_append_is_on_by_default_and_can_be_disabled():
     k=load(None)
-    assert k.AGENTIC_CACHE_APPEND_EXPERIMENT
-    assert k._agentic_cache_append_enabled(k.STAGES["extended_reflection"])
+    assert not k.AGENTIC_CACHE_APPEND_EXPERIMENT
+    assert not k._agentic_cache_append_enabled(k.STAGES["extended_reflection"])
     assert not k._agentic_cache_append_enabled(k.STAGES["extended_reflection"], "required")
     assert not k._agentic_cache_append_enabled(k.STAGES["extended_reflection"], {"type":"function", "function":{"name":"read"}})
     k=load(False)
@@ -125,11 +125,12 @@ def test_cache_append_is_on_by_default_and_can_be_disabled():
     assert not k._agentic_cache_append_enabled(k.STAGES["extended_reflection"])
 
 @pytest.mark.parametrize("stream",[False,True])
-def test_default_request_uses_cache_append(stream):
+def test_default_request_uses_dedicated_system_prompt(stream):
     k=load(None)
-    p=asyncio.run(collect(k,True,stream))
-    assert p["messages"][0]["content"]==k.AGENTIC_STAGE1_PROMPT
-    assert p["messages"][-1]["content"]==k.AGENTIC_36_STAGE2_PROMPT
+    p=asyncio.run(collect(k,False,stream))
+    assert p["messages"][0]["role"] == "system"
+    assert p["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
+    assert p["messages"][-1]["role"] == "user"
     assert "tools" not in p
 
 @pytest.mark.parametrize("stream",[False,True])
