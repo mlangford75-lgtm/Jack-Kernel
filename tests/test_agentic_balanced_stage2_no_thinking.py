@@ -18,7 +18,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def load(monkeypatch, tmp_path, *, profile, cache_enabled=False):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
-    monkeypatch.setenv("JACK_AGENTIC_PROFILE", profile)
+    if profile is None:
+        monkeypatch.delenv("JACK_AGENTIC_PROFILE", raising=False)
+    else:
+        monkeypatch.setenv("JACK_AGENTIC_PROFILE", profile)
     monkeypatch.setenv("JACK_BACKEND_MODEL", "qwen3.8-27b-gsq-rco")
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
     monkeypatch.setenv("JACK_PRESERVE_THINKING", "1")
@@ -128,8 +131,8 @@ def test_thorough_retains_existing_backend_contract(monkeypatch, tmp_path, strea
 
 
 def test_default_is_thorough(monkeypatch, tmp_path):
-    monkeypatch.delenv("JACK_AGENTIC_PROFILE", raising=False)
-    k = load(monkeypatch, tmp_path, profile="thorough")
+    k = load(monkeypatch, tmp_path, profile=None)
+    assert k.CFG.agentic_profile == "thorough"
     assert k.AGENTIC_BALANCED_MODE is False
     assert k.STAGES["extended_reflection"].thinking is True
 
