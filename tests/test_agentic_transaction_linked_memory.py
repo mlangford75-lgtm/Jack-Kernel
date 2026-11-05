@@ -56,7 +56,7 @@ def test_exact_user_and_frozen_answer_with_host_owned_id(monkeypatch, tmp_path, 
     assert history[-1]["content"] == frozen
     continuation = k._stage_continuation(k.STAGES["extended_reflection"], history)
     assert "current user request" in continuation
-    assert "your reasoning while working on it" in continuation
+    assert "reasoning and final response" in continuation
     assert "not a new user request or a report about the process" in continuation
     assert "turn=" not in continuation
     assert label not in continuation
