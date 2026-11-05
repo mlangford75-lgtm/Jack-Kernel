@@ -147,3 +147,85 @@ def test_invalid_experimental_profile_fails_closed(monkeypatch, tmp_path):
     sys.modules[name] = mod
     with pytest.raises(RuntimeError, match="JACK_AGENTIC_PROFILE"):
         spec.loader.exec_module(mod)
+
+
+@pytest.mark.parametrize("profile,initial_thinking,reflection_thinking", [
+    ("thorough", True, True),
+    ("balanced", True, False),
+    ("flash", False, False),
+])
+def test_three_agentic_profiles_share_sampler_without_mutating_stage_temperatures(
+    monkeypatch, tmp_path, profile, initial_thinking, reflection_thinking
+):
+    # Deliberately different OFF sampler: Agentic must not switch samplers.
+    monkeypatch.setenv("JACK_THINKING_TOP_P", "0.95")
+    monkeypatch.setenv("JACK_NONTHINKING_TOP_P", "0.80")
+    k = load(monkeypatch, tmp_path, profile=profile)
+    assert k.STAGES["extended_initial"].thinking is initial_thinking
+    assert k.STAGES["extended_reflection"].thinking is reflection_thinking
+    p1 = backend_payload(k, stage="extended_initial", stream=True)
+    p2 = backend_payload(k, stage="extended_reflection", stream=True)
+    assert p1["top_p"] == 0.95
+    assert p2["top_p"] == 0.95
+    assert p1["temperature"] == 0.7
+    assert p2["temperature"] == 0.5
+    assert p1["presence_penalty"] == 0.0
+    assert p2["presence_penalty"] == 0.0
+    assert p1["chat_template_kwargs"]["enable_thinking"] is initial_thinking
+    assert p2["chat_template_kwargs"]["enable_thinking"] is reflection_thinking
+    assert "tools" not in p2
+    if profile == "flash":
+        # The test fixture includes an artificial R1; Flash must not leak it
+        # into the isolated retrospective without native thinking.
+        assistant = [m for m in p2["messages"] if m.get("role") == "assistant"]
+        assert len(assistant) == 1
+        assert "reasoning_content" not in assistant[0]
+        assert p2["reasoning_effort"] == "none"
+    elif profile == "balanced":
+        assert p2["messages"][-2]["reasoning_content"].startswith("R1:")
+
+
+@pytest.mark.parametrize("choice,profile", [
+    ("1", "flash"),
+    ("2", "balanced"),
+    ("3", "thorough"),
+    ("", "thorough"),
+])
+def test_agentic_submenu_selects_and_persists_profile(monkeypatch, tmp_path, choice, profile):
+    k = load(monkeypatch, tmp_path, profile=None)
+    cfg = dict(k.CLI_DEFAULTS)
+    assert cfg["agentic_profile"] == "thorough"
+    answers = iter(["6", choice])
+    monkeypatch.setattr(k, "_cli_input", lambda *_a, **_kw: next(answers))
+    k._run_transactional_editor(k._edit_reasoning, cfg)
+    assert cfg["reasoning_level"] == "Local Agentic (Preserve Thinking)"
+    assert cfg["agentic_profile"] == profile
+    assert k._config_to_env(cfg)["JACK_AGENTIC_PROFILE"] == profile
+
+
+def test_agentic_submenu_escape_rolls_back(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path, profile=None)
+    cfg = dict(k.CLI_DEFAULTS)
+    original = dict(cfg)
+    answers = iter(["6"])
+    def input_or_escape(*_args, **_kwargs):
+        try:
+            return next(answers)
+        except StopIteration:
+            raise k._ReturnToMainMenu()
+    monkeypatch.setattr(k, "_cli_input", input_or_escape)
+    with pytest.raises(k._ReturnToMainMenu):
+        k._run_transactional_editor(k._edit_reasoning, cfg)
+    assert cfg == original
+
+
+def test_unknown_agentic_profile_rejected(monkeypatch, tmp_path):
+    monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "invalid-profile")
+    monkeypatch.setenv("JACK_FORENSIC_ARCHIVE_MODE", "off")
+    name = "bad_three_profiles_" + uuid.uuid4().hex
+    spec = importlib.util.spec_from_file_location(name, ROOT / "jack_kernel.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    with pytest.raises(RuntimeError, match="JACK_AGENTIC_PROFILE"):
+        spec.loader.exec_module(mod)
