@@ -1,6 +1,6 @@
 """Balanced Agentic: Stage 2 reads R1 but does not generate native thinking.
 
-Experimental opt-in only; the Thorough mainline contract remains default.
+Balanced is the default Agentic profile; Thorough remains explicitly selectable.
 All assertions inspect the exact outgoing LM Studio backend request.
 """
 import asyncio
@@ -130,11 +130,12 @@ def test_thorough_retains_existing_backend_contract(monkeypatch, tmp_path, strea
     assert p2["messages"][-2]["reasoning_content"] == "R1: inspect source then change hand color to gold."
 
 
-def test_default_is_thorough(monkeypatch, tmp_path):
+def test_default_is_balanced(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path, profile=None)
-    assert k.CFG.agentic_profile == "thorough"
-    assert k.AGENTIC_BALANCED_MODE is False
-    assert k.STAGES["extended_reflection"].thinking is True
+    assert k.CFG.agentic_profile == "balanced"
+    assert k.AGENTIC_BALANCED_MODE is True
+    assert k.STAGES["extended_initial"].thinking is True
+    assert k.STAGES["extended_reflection"].thinking is False
 
 
 def test_invalid_experimental_profile_fails_closed(monkeypatch, tmp_path):
@@ -189,12 +190,12 @@ def test_three_agentic_profiles_share_sampler_without_mutating_stage_temperature
     ("1", "flash"),
     ("2", "balanced"),
     ("3", "thorough"),
-    ("", "thorough"),
+    ("", "balanced"),
 ])
 def test_agentic_submenu_selects_and_persists_profile(monkeypatch, tmp_path, choice, profile):
     k = load(monkeypatch, tmp_path, profile=None)
     cfg = dict(k.CLI_DEFAULTS)
-    assert cfg["agentic_profile"] == "thorough"
+    assert cfg["agentic_profile"] == "balanced"
     answers = iter(["6", choice])
     monkeypatch.setattr(k, "_cli_input", lambda *_a, **_kw: next(answers))
     k._run_transactional_editor(k._edit_reasoning, cfg)
