@@ -15,9 +15,10 @@ def _prompt():
 
 def test_memory_contract_and_user_approved_tool_flags():
     prompt = _prompt()
-    boundary = "Begin with a brief description of the current task (a short sentence)"
-    assert prompt.startswith(boundary + ".")
-    assert prompt.endswith(boundary + " and then preserve the consequential working knowledge.")
+    boundary = "Begin with a brief description of the current task (a short sentence) and how it relates to the user request. It should be a short sentence."
+    assert prompt.startswith(boundary)
+    assert prompt.endswith(boundary)
+    assert "To preserve the consequential working knowledge:" in prompt
     assert "Preserve the important working knowledge established for the current user request" in prompt
     assert "Do not reconstruct earlier turns, re-solve the task" in prompt
     assert "The user request, prior reasoning, and completed response are source material" in prompt
