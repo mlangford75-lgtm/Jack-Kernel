@@ -211,3 +211,66 @@ def test_real_stream_disconnect_retries_same_tool_result_without_reexecuting_too
         assert call_id not in k.KERNEL._pending_tool_resumes
         assert state.accepted_tool_results[0]["content"] == "verified file contents"
     asyncio.run(run())
+
+
+def test_stage2_disconnect_reuses_frozen_stage1_without_regeneration(monkeypatch, tmp_path):
+    async def run():
+        k = load(monkeypatch, tmp_path)
+        call_id = "stage2-tool-result"
+        state = await install_pending(k, call_id)
+        messages = [
+            {"role": "user", "content": "Read the clock source."},
+            {"role": "tool", "tool_call_id": call_id, "content": "actual checked source"},
+        ]
+
+        class Backend:
+            def __init__(self):
+                self.calls = 0
+                self.closed = 0
+
+            async def chat_stream(self, **kwargs):
+                self.calls += 1
+                n = self.calls
+                try:
+                    if n == 1:
+                        yield {"choices": [{"index": 0, "delta": {"content": "EXACT A1"},
+                                            "finish_reason": "stop"}], "usage": {}}
+                    elif n == 2:
+                        yield {"choices": [{"index": 0, "delta": {
+                            "content": "partial, uncommitted memory"
+                        }, "finish_reason": None}], "usage": {}}
+                        await asyncio.sleep(3600)
+                    else:
+                        yield {"choices": [{"index": 0, "delta": {
+                            "content": "completed, useful working memory"
+                        }, "finish_reason": "stop"}], "usage": {}}
+                finally:
+                    self.closed += 1
+
+        backend = Backend()
+        k.KERNEL.backend = backend
+        body = {"messages": messages, "stream": True}
+        stream = k.KERNEL.stream(body)
+        try:
+            while True:
+                chunk = await asyncio.wait_for(anext(stream), timeout=3)
+                if b"partial, uncommitted memory" in chunk:
+                    break
+        finally:
+            await stream.aclose()
+
+        assert backend.calls == 2
+        assert backend.closed == 2
+        assert state.frozen_stage1_answer == "EXACT A1"
+        assert state.frozen_stage1_history is not None
+        assert call_id in k.KERNEL._pending_tool_resumes
+        assert not state.in_flight
+        assert k._agentic_forensic_turn(state.frozen_stage1_history).status == "stage2_active"
+
+        chunks = [c async for c in k.KERNEL.stream(body)]
+        wire = b"".join(chunks).decode("utf-8")
+        assert backend.calls == 3, "Stage 1 must never be regenerated after A1 freezes"
+        assert "EXACT A1" in wire
+        assert "completed, useful working memory" in wire
+        assert call_id not in k.KERNEL._pending_tool_resumes
+    asyncio.run(run())
