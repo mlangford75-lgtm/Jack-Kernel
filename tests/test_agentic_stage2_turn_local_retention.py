@@ -262,7 +262,7 @@ def test_default_isolated_retention_and_immutable_prompts(monkeypatch, tmp_path)
     assert "not a new user request or a report about the process" in continuation
     assert "re-solve the task" in continuation
     assert "unresolved matters" in continuation
-    assert "Missing path resolution, independent attestation, or detailed result metadata is not a contradiction" in continuation
+    assert "Missing path resolution, independent attestation, or detailed result metadata alone does not contradict an observed outcome" in continuation
     assert "Preserve concrete outcomes described in the reasoning and final response at their stated certainty" in continuation
     assert "confirmed absence of tool calls or a reported failure" in continuation
     assert "Preserve what was established, not what could plausibly be true" in continuation
@@ -433,7 +433,7 @@ def test_completed_turn_without_tools_reports_explicit_absence(monkeypatch, tmp_
     evidence = payload["messages"][-1]["content"]
     assert "Record coverage: COMPLETE_CURRENT_TURN" in evidence
     assert "NO_TOOL_CALLS_RECORDED" in evidence
-    assert "Use Jack's host-recorded tool evidence only to check execution claims" in evidence
+    assert "Use host-recorded tool evidence to check execution claims" in evidence
     assert evidence.count("Begin with a brief description of the current task (a short sentence).") == 1
     assert evidence.endswith(k.AGENTIC_36_STAGE2_PROMPT)
     assert payload["messages"][1]["content"] == h[0]["content"]
