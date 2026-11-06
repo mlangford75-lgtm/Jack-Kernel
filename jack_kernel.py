@@ -308,8 +308,8 @@ class KernelConfig:
     reasoning_level: str = os.getenv("JACK_REASONING_LEVEL", "x-high").strip().lower()
 
     # Agentic cognition profile, independent of backend sampler selection.
-    # Thorough is the default; Balanced and Flash are optional.
-    agentic_profile: str = os.getenv("JACK_AGENTIC_PROFILE", "thorough").strip().lower()
+    # Balanced is the default; Thorough and Flash remain selectable.
+    agentic_profile: str = os.getenv("JACK_AGENTIC_PROFILE", "balanced").strip().lower()
 
     # Human-configurable Qwen preserve-thinking policy. Calling agents cannot
     # override this value; it is owned by the Jack Kernel runtime.
@@ -11869,7 +11869,7 @@ CLI_DEFAULTS: Dict[str, Any] = {
     "api_key": "",
     "virtual_model": "jack-kernel",
     "reasoning_level": "Local Agentic (Preserve Thinking)",
-    "agentic_profile": "thorough",
+    "agentic_profile": "balanced",
     "preserve_thinking": True,
     "backend_timeout_seconds": 1800.0,
     "reasoning_budget_tokens": 100000,
@@ -12316,7 +12316,7 @@ def _print_header(
     level_profile = REASONING_PROFILES.get(level_key, REASONING_PROFILES["x-high"])
     print(_status_value("Reasoning level", level_profile["label"]))
     if level_profile["mode"] == "agentic":
-        print(_status_value("Agentic profile", str(cfg.get("agentic_profile", "thorough")).capitalize()))
+        print(_status_value("Agentic profile", str(cfg.get("agentic_profile", "balanced")).capitalize()))
     print(_status_value("Caller system contract", "AGENT / PI OWNED"))
     print(_ansi_rgb("━" * width, _JACK_BLUE))
     print(_ansi_rgb(DONATION_MESSAGE, _JACK_MUTED))
@@ -12368,12 +12368,12 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
         print()
         print("Agentic profile (two-stage lifecycle in all profiles)")
         print("  1) Flash     - Stage 1 OFF, Stage 2 OFF")
-        print("  2) Balanced  - Stage 1 ON,  Stage 2 OFF")
-        print("  3) Thorough  - Stage 1 ON,  Stage 2 ON (Default)")
+        print("  2) Balanced  - Stage 1 ON,  Stage 2 OFF (Default)")
+        print("  3) Thorough  - Stage 1 ON,  Stage 2 ON")
         print()
-        # Choosing Agentic afresh defaults to Thorough, irrespective of a
-        # previously saved optional experiment. Escape rolls back this editor.
-        agentic_choice = _cli_input("Select Agentic profile [1-3] [3]: ").strip().lower() or "3"
+        # Choosing Agentic afresh defaults to Balanced, irrespective of a
+        # previously saved optional profile. Escape rolls back this editor.
+        agentic_choice = _cli_input("Select Agentic profile [1-3] [2]: ").strip().lower() or "2"
         selected_profile = {"1": "flash", "flash": "flash",
                             "2": "balanced", "balanced": "balanced",
                             "3": "thorough", "thorough": "thorough"}.get(agentic_choice)
@@ -12776,7 +12776,7 @@ def _config_to_env(cfg: Dict[str, Any]) -> Dict[str, str]:
         "JACK_BACKEND_EXTRA_HEADERS": json.dumps(cfg.get("backend_extra_headers") or {}, ensure_ascii=False),
         "JACK_VIRTUAL_MODEL": cfg["virtual_model"],
         "JACK_REASONING_LEVEL": cfg["reasoning_level"],
-        "JACK_AGENTIC_PROFILE": cfg.get("agentic_profile", "thorough"),
+        "JACK_AGENTIC_PROFILE": cfg.get("agentic_profile", "balanced"),
         "JACK_PRESERVE_THINKING": "1" if cfg.get("preserve_thinking", True) else "0",
         "JACK_BACKEND_TIMEOUT_SECONDS": cfg["backend_timeout_seconds"],
         "JACK_REASONING_BUDGET_TOKENS": cfg.get("reasoning_budget_tokens", 100000),
@@ -12837,7 +12837,7 @@ def _start_server_from_cli(cfg: Dict[str, Any]) -> None:
     level_key = _REASONING_LEVEL_ALIASES.get(str(cfg.get("reasoning_level", "x-high")).lower(), str(cfg.get("reasoning_level", "x-high")).lower())
     print(f"Reasoning level  : {REASONING_PROFILES.get(level_key, REASONING_PROFILES['x-high'])['label']}")
     if REASONING_PROFILES.get(level_key, {}).get("mode") == "agentic":
-        print(f"Agentic profile  : {str(cfg.get('agentic_profile', 'thorough')).capitalize()}")
+        print(f"Agentic profile  : {str(cfg.get('agentic_profile', 'balanced')).capitalize()}")
     print(f"Preserve thinking: {'ON' if cfg.get('preserve_thinking', True) else 'OFF'}")
     print(f"Forensic archive : {str(cfg.get('forensic_archive_mode', 'stage')).upper()}")
     print(f"Loop Detector    : {'ON' if cfg.get('loop_detector_enabled', True) else 'OFF'} / {cfg.get('loop_detector_repetitions', 32)} repetitions")
