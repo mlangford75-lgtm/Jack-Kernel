@@ -19,6 +19,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def load(monkeypatch, tmp_path, *, model, extra=""):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
+    # Exercise the native-reasoning backend contract under explicit Thorough;
+    # Balanced is now the runtime default and disables Stage 2 native thinking.
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "thorough")
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
     monkeypatch.setenv("JACK_BACKEND_MODEL", model)
     monkeypatch.setenv("JACK_BACKEND_MAX_REASONING_OVERRIDES", extra)
