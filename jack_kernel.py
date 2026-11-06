@@ -10997,6 +10997,17 @@ def _agentic_mark_stage1_failure(reason: str) -> None:
     active = _AGENTIC_ACTIVE_TURN.get()
     entry = _AGENTIC_TURN_LIFECYCLES.get(active or "")
     if entry is not None and entry.status in {"stage1_active", "awaiting_tool"}:
+        # A transport exception cannot revoke tool evidence that Jack already
+        # accepted and retained for an exact-result retry. Terminal violations
+        # are failed earlier and therefore cannot take this recovery path.
+        if entry.status == "awaiting_tool" and any(
+            state.accepted_tool_results is not None
+            and not state.in_flight
+            and _agentic_forensic_turn(state.history) is entry
+            for state in KERNEL._pending_tool_resumes.values()
+        ):
+            LOG.info("Preserving authenticated Agentic tool continuation after stream failure: turn=%s", entry.turn_id)
+            return
         if entry.stage1_attempt_id:
             _agentic_forensic_journal().fail(
                 entry.turn_id, entry.stage1_attempt_id, reason
