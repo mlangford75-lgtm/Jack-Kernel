@@ -6345,6 +6345,10 @@ class PendingToolResume:
     # First authenticated tool outcomes are immutable across transport retries.
     # A stream disconnect must not allow the caller to substitute new results.
     accepted_tool_results: Optional[Tuple[Dict[str, Any], ...]] = None
+    # Completed A1 is immutable even if the retrospective stream disconnects.
+    # Resume Stage 2 from this frozen history; never rerun Stage 1 or its tools.
+    frozen_stage1_history: Optional[List[Dict[str, Any]]] = None
+    frozen_stage1_answer: Optional[str] = None
 
 
 class RuntimeActivityTracker:
@@ -8973,7 +8977,24 @@ class JackQwenKernel:
                 _agentic_retire_consumed_one_hop(scope.get("bridge_messages", []))
                 if state is not None:
                     _agentic_retire_consumed_one_hop(state.history)
-                    await self._retire_pending_tool_resume(state)
+                    record = _agentic_forensic_turn(
+                        state.frozen_stage1_history or state.history
+                    )
+                    if (
+                        state.accepted_tool_results is not None
+                        and state.frozen_stage1_history is not None
+                        and state.frozen_stage1_answer is not None
+                        and record is not None
+                        and record.status in {"response_frozen", "stage2_active"}
+                    ):
+                        await self._rearm_pending_tool_resume(state)
+                        LOG.info(
+                            "Agentic retrospective stream detached; preserved "
+                            "frozen Stage-1 answer for Stage-2-only retry: resume_id=%s",
+                            state.resume_id,
+                        )
+                    else:
+                        await self._retire_pending_tool_resume(state)
             elif state is not None:
                 # Disconnect is not invalidation of accepted tool evidence.
                 # The backend stream is closed before this scope runs; re-arm
@@ -9272,6 +9293,22 @@ class JackQwenKernel:
                     state,
                     tool_messages,
                 )
+                if AGENTIC_MODE and state.frozen_stage1_history is not None:
+                    record = _agentic_forensic_turn(state.frozen_stage1_history)
+                    if (
+                        record is None
+                        or record.status not in {"response_frozen", "stage2_active"}
+                        or not state.frozen_stage1_answer
+                    ):
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Frozen Agentic Stage-1 checkpoint has no valid retrospective owner.",
+                        )
+                    history = copy.deepcopy(state.frozen_stage1_history)
+                    resume_stage_key = "extended_reflection"
+                    _AGENTIC_ACTIVE_TURN.set(record.turn_id)
+                    if scope is not None:
+                        scope["stage1_frozen"] = True
                 tools = state.tools
                 tool_choice = state.tool_choice
                 usage = dict(state.usage)
@@ -9514,14 +9551,23 @@ class JackQwenKernel:
 
                 self_adversarial_results: Dict[str, Dict[str, Any]] = {}
                 if AGENTIC_MODE:
-                    sequence = [("extended_initial", False), ("extended_reflection", False)]
+                    sequence = (
+                        [("extended_reflection", False)]
+                        if resume_stage_key == "extended_reflection"
+                        else [("extended_initial", False), ("extended_reflection", False)]
+                    )
                 else:
                     if resume_stage_key == "extended_synthesis":
                         sequence = [("extended_synthesis", False)]
                     else:
                         sequence = [("extended_initial", False), ("extended_reflection", False), ("extended_synthesis", False)]
 
-                agentic_frozen_stage1_answer: Optional[str] = None
+                agentic_frozen_stage1_answer: Optional[str] = (
+                    pending_state.frozen_stage1_answer
+                    if AGENTIC_MODE and pending_state is not None
+                    and resume_stage_key == "extended_reflection"
+                    else None
+                )
 
                 for stage_key, emit_content in sequence:
                     if (
@@ -9606,6 +9652,9 @@ class JackQwenKernel:
                         else:
                             self._agentic_require_completed_stage(stage_result, "Agentic Stage 1")
                             agentic_frozen_stage1_answer = append_extended_candidate_response(history, first_msg)
+                            if pending_state is not None and pending_state.accepted_tool_results is not None:
+                                pending_state.frozen_stage1_history = copy.deepcopy(history)
+                                pending_state.frozen_stage1_answer = agentic_frozen_stage1_answer
                             yield event({"reasoning_content": "\n[END STAGE 1 — A1 FROZEN]\n"})
                     elif ULTRA_MODE and stage_key == "extended_reflection":
                         anti_msg = ((stage_result.get("choices") or [{}])[0].get("message") or {})
@@ -10907,6 +10956,19 @@ def _agentic_forensic_close_request() -> None:
     turn_id = _AGENTIC_ACTIVE_TURN.get()
     record = _AGENTIC_TURN_LIFECYCLES.get(turn_id or "")
     if record is None:
+        return
+    scope = _AGENTIC_DELAY_R2_SCOPE.get()
+    state = scope.get("pending_state") if scope is not None else None
+    if (
+        state is not None
+        and state.frozen_stage1_history is not None
+        and state.frozen_stage1_answer is not None
+        and not state.in_flight
+        and record.status in {"response_frozen", "stage2_active"}
+        and _agentic_forensic_turn(state.frozen_stage1_history) is record
+    ):
+        # Interrupted Stage 2 is retryable from exact frozen A1; its journal
+        # attempt remains owned by the same authenticated transaction.
         return
     if record.status in ("stage1_active", "response_frozen", "stage2_active"):
         attempt = record.stage2_attempt_id or record.stage1_attempt_id
