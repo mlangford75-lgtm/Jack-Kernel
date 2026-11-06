@@ -6342,6 +6342,9 @@ class PendingToolResume:
     deferred_tool_rejection_errors: Tuple[str, ...] = ()
     withheld_tool_call_ids: Tuple[str, ...] = ()
     in_flight: bool = False
+    # First authenticated tool outcomes are immutable across transport retries.
+    # A stream disconnect must not allow the caller to substitute new results.
+    accepted_tool_results: Optional[Tuple[Dict[str, Any], ...]] = None
 
 
 class RuntimeActivityTracker:
@@ -6831,6 +6834,7 @@ class JackQwenKernel:
             tool_choice=effective_tool_choice,
         ).__aiter__()
         pending_next: Optional[asyncio.Task] = None
+        last_public_activity = time.monotonic()
         try:
             while True:
                 pending_next = asyncio.create_task(backend_stream.__anext__())
@@ -6842,6 +6846,7 @@ class JackQwenKernel:
                     # connection. It does not become model content and does not
                     # alter Jack state, but keeps Pi/proxies alive through long
                     # backend prompt processing or queue waits.
+                    last_public_activity = time.monotonic()
                     yield {"kind": "keepalive", "event": f"{profile.name}.wait"}
 
                 try:
@@ -6879,6 +6884,7 @@ class JackQwenKernel:
                         reasoning_content_parts.append(text)
                         if detector is not None and detector.feed(text):
                             raise RepeatedReasoningLoop(detector.detected_cycle_words or 128, detector.repetitions)
+                        last_public_activity = time.monotonic()
                         yield {"kind": "reasoning", "text": text}
                 elif reasoning is not None:
                     text = str(reasoning)
@@ -6887,6 +6893,7 @@ class JackQwenKernel:
                         reasoning_parts.append(text)
                         if detector is not None and detector.feed(text):
                             raise RepeatedReasoningLoop(detector.detected_cycle_words or 128, detector.repetitions)
+                        last_public_activity = time.monotonic()
                         yield {"kind": "reasoning", "text": text}
 
                 content = delta.get("content")
@@ -6895,6 +6902,7 @@ class JackQwenKernel:
                     if text:
                         budget.observe("output", text)
                         content_parts.append(text)
+                        last_public_activity = time.monotonic()
                         yield {"kind": "content", "text": text}
 
                 tool_deltas = delta.get("tool_calls")
@@ -6914,6 +6922,13 @@ class JackQwenKernel:
                     # client/executor from acting on an incomplete or unauthorized
                     # represented target before deterministic authorization runs.
                     self._merge_tool_call_delta(tool_state, tool_deltas)
+
+                # A busy backend can stream tool-call fragments continuously
+                # while Jack correctly withholds executable bytes. That MUST
+                # NOT starve the public Pi connection of keepalive traffic.
+                if time.monotonic() - last_public_activity >= 3.0:
+                    last_public_activity = time.monotonic()
+                    yield {"kind": "keepalive", "event": f"{profile.name}.busy"}
 
                 if choice.get("finish_reason"):
                     finish_reason = str(choice["finish_reason"])
@@ -8135,9 +8150,22 @@ class JackQwenKernel:
                     status_code=409,
                     detail=f"Incomplete {STAGES[state.stage_key].name} tool-result set; missing tool_call_id(s): " + ", ".join(sorted(missing)),
                 )
+            # Bind tool evidence on first acceptance. Later transport retries
+            # may re-enter cognition, but cannot change already accepted outcomes.
+            matched_messages = tuple(sorted(
+                (m for m in tool_messages if m["tool_call_id"] in expected),
+                key=lambda m: m["tool_call_id"],
+            ))
+            if state.accepted_tool_results is None:
+                state.accepted_tool_results = tuple(copy.deepcopy(matched_messages))
+            elif state.accepted_tool_results != matched_messages:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Retried tool results differ from authenticated results already accepted by Jack.",
+                )
             state.in_flight = True
 
-        matched_messages = [m for m in tool_messages if m["tool_call_id"] in expected]
+        matched_messages = list(copy.deepcopy(state.accepted_tool_results))
         LOG.info(
             "Resuming %s transaction in place: resume_id=%s tool_results=%d",
             STAGES[state.stage_key].name,
@@ -8947,11 +8975,25 @@ class JackQwenKernel:
                     _agentic_retire_consumed_one_hop(state.history)
                     await self._retire_pending_tool_resume(state)
             elif state is not None:
-                # A resumed tool transaction that did not complete must not
-                # survive an agent cancellation, stream error, or detected loop.
-                # This does NOT retire an ordinary successful tool suspension;
-                # those carry no pending_state in the consuming request scope.
-                await self._retire_pending_tool_resume(state)
+                # Disconnect is not invalidation of accepted tool evidence.
+                # The backend stream is closed before this scope runs; re-arm
+                # only a checkpoint with authenticated, immutable tool results.
+                # An explicit terminal Stage-1 failure still retires authority.
+                record = _agentic_forensic_turn(state.history)
+                failed = record is not None and record.status in {
+                    "stage1_failed", "memory_failed", "complete",
+                }
+                if state.accepted_tool_results is not None and not failed:
+                    if record is not None:
+                        _agentic_turn_status(state.history, "awaiting_tool")
+                    await self._rearm_pending_tool_resume(state)
+                    LOG.info(
+                        "Agentic resumed Stage-1 stream interrupted; preserved "
+                        "authenticated checkpoint for exact-result retry: resume_id=%s",
+                        state.resume_id,
+                    )
+                else:
+                    await self._retire_pending_tool_resume(state)
         finally:
             try:
                 _agentic_forensic_close_request()
