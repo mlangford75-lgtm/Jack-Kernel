@@ -27,7 +27,7 @@ def test_memory_contract_and_failure_only_tool_flag():
     assert "without any tool-status label" in prompt
     assert "Only when a consequential failure is confirmed" in prompt
     assert "complete tool record" in prompt
-    assert "If tool records are incomplete, preserve that uncertainty" in prompt
+    assert "Incomplete records, missing read-back, and absent independent verification do not establish tool failure" in prompt
     assert "Include exact paths and identifiers when available" in prompt
     assert "Jack's internal memory task" not in prompt
     assert "Stage 1's" not in prompt
