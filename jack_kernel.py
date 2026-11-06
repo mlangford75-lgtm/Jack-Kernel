@@ -856,15 +856,21 @@ _STAGE_CONTINUATIONS = {
 
 # One plain-language memory directive. Jack owns evidence isolation and stage authority.
 # Stage-1 cognition and retrospective prompts are explicitly reviewed independently.
-_AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION = """Begin with a brief description of the current task (a short sentence).
+_AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION = """Begin with a brief description of the current task (a short sentence) and how it relates to the user request. It should be a short sentence. 
 
-Preserve the important working knowledge established for the current user request so it can be used in future turns without repeating the reasoning.
+To preserve the consequential working knowledge:
 
-Retain consequential facts, decisions, their original explanations, exact technical details, actions, corrections, constraints, failures, and unresolved matters. Preserve distinctions between intended, attempted, completed, reported, and verified outcomes.
+- Preserve the important working knowledge established for the current user request so it can be used in future turns without repeating the reasoning.
 
-Preserve concrete outcomes described in the reasoning and final response at their stated certainty. Use host-recorded tool evidence to check execution claims: qualify claims explicitly contradicted by that evidence, including a confirmed absence of tool calls or a reported failure. Missing path resolution, independent attestation, or detailed result metadata alone does not contradict an observed outcome.
+- Retain consequential facts, decisions, their original explanations, exact technical details, actions, corrections, constraints, failures, and unresolved matters. 
+-Preserve distinctions between intended, attempted, completed, reported, and verified outcomes.
 
-Do not reconstruct earlier turns, re-solve the task, introduce new explanations, implementation details, conclusions, recommendations, or possibilities. Preserve what was established, not what could plausibly be true.
+- Preserve concrete outcomes described in the reasoning and final response at their stated certainty. 
+- Use host-recorded tool evidence to check execution claims: qualify claims explicitly contradicted by that evidence, including a confirmed absence of tool calls or a reported failure. 
+- Missing path resolution, independent attestation, or detailed result metadata alone does not contradict an observed outcome.
+
+-Do not reconstruct earlier turns, re-solve the task, introduce new explanations, implementation details, conclusions, recommendations, or possibilities.
+- Preserve what was established, not what could plausibly be true.
 
 - Keep verbatim: proper nouns, dates, numbers, versions, entity names, variable names, identifiers, required actions. Never invent, substitute, merge, or rename.
 - Keep: facts, conclusions, constraints, caveats, causality, polarity, scope, quantifier scope, required actions.
@@ -883,7 +889,7 @@ Compare claims of completed tool actions against Jack's authenticated current-tu
 
 If tool records are incomplete, preserve that uncertainty rather than asserting nonexecution. Include exact paths and identifiers when available.
 
-Begin with a brief description of the current task (a short sentence) and then preserve the consequential working knowledge."""
+Begin with a brief description of the current task (a short sentence) and how it relates to the user request. It should be a short sentence."""
 
 
 def _stage_continuation(
