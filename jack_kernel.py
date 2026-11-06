@@ -9136,6 +9136,8 @@ class JackQwenKernel:
         except GenerationBudgetExceeded as exc:
             # Terminal failure, never a successful Stage-1 freeze or Stage-2
             # memory commit. Do not retry or repeat any agent tool.
+            if AGENTIC_MODE:
+                _agentic_mark_stage1_failure(type(exc).__name__)
             LOG.warning("%s (stream)", exc)
             failure = {
                 "id": f"chatcmpl-jack-budget-{uuid.uuid4().hex}",
