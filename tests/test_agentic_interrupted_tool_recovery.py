@@ -145,3 +145,69 @@ def test_busy_withheld_tool_fragments_emit_heartbeat(monkeypatch, tmp_path):
                    for p in packets), packets
         assert all(p.get("kind") != "tool_calls" for p in packets)
     asyncio.run(run())
+
+
+def test_real_stream_disconnect_retries_same_tool_result_without_reexecuting_tool(
+    monkeypatch, tmp_path
+):
+    async def run():
+        k = load(monkeypatch, tmp_path)
+        call_id = "streamed-tool-accepted"
+        state = await install_pending(k, call_id)
+        messages = [
+            {"role": "user", "content": "Read the clock source."},
+            {"role": "tool", "tool_call_id": call_id, "content": "verified file contents"},
+        ]
+        started = asyncio.Event()
+
+        class Backend:
+            def __init__(self):
+                self.calls = 0
+                self.closed = 0
+
+            async def chat_stream(self, **kwargs):
+                self.calls += 1
+                number = self.calls
+                try:
+                    if number == 1:
+                        yield {"choices": [{"index": 0, "delta": {
+                            "reasoning_content": "Resumed model is working."
+                        }, "finish_reason": None}], "usage": {}}
+                        started.set()
+                        await asyncio.sleep(3600)
+                    else:
+                        text = "Frozen useful answer" if number == 2 else "Consequential memory"
+                        yield {"choices": [{"index": 0, "delta": {
+                            "content": text
+                        }, "finish_reason": "stop"}], "usage": {}}
+                finally:
+                    self.closed += 1
+
+        backend = Backend()
+        k.KERNEL.backend = backend
+        body = {"messages": messages, "stream": True}
+        stream = k.KERNEL.stream(body)
+        try:
+            # Consume through the first real generated token, then detach
+            # the Pi transport while LM Studio's work is unfinished.
+            frames = []
+            while not started.is_set():
+                frames.append(await asyncio.wait_for(anext(stream), timeout=3))
+            assert backend.calls == 1
+        finally:
+            await stream.aclose()
+        assert backend.closed == 1
+        assert call_id in k.KERNEL._pending_tool_resumes
+        assert state.in_flight is False
+        assert state.accepted_tool_results[0]["content"] == "verified file contents"
+        assert k._agentic_forensic_turn(state.history).status == "awaiting_tool"
+
+        # Identical Pi history reenters the same checkpoint. The agent must
+        # not re-execute its completed tool or restart at a fresh user turn.
+        frames = [frame async for frame in k.KERNEL.stream(body)]
+        rendered = b"".join(frames).decode("utf-8")
+        assert backend.calls == 3  # interrupted R1, resumed R1, fresh R2
+        assert "Frozen useful answer" in rendered
+        assert call_id not in k.KERNEL._pending_tool_resumes
+        assert state.accepted_tool_results[0]["content"] == "verified file contents"
+    asyncio.run(run())
