@@ -38,7 +38,7 @@ async def install_pending(k, call_id):
         stage_key="extended_initial",
         history=copy.deepcopy(history),
         secondary_system="",
-        usage={},
+        usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         tools=None,
         tool_choice="auto",
         expected_tool_call_ids=(call_id,),
