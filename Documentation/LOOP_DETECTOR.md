@@ -40,8 +40,21 @@ Detection can be delayed by up to 15 completed words to reduce CPU overhead.
 - **User abort:** Pi owns the action and the conversation. Jack closes its
   inference and discards incomplete internal continuation state; it does
   **not** auto-retry or reinsert the user request.
-- **Token budgets:** No proposed 100K reasoning or output ceilings are
-  imposed by Jack. Backend-native context/generation limits still apply.
+- **Token budgets:** Independent **Reasoning budget** and **Output budget**
+  settings now default to **100,000 estimated tokens each**, per model-stage
+  inference. Set either budget to 0 to disable it. They are separate from the
+  repetition detector and are also active when the detector is disabled.
+  Streaming inference terminates as soon as either configured threshold is
+  reached, with `Jack Failure: Reasoning Budget` or
+  `Jack Failure: Output Budget`. A failure never freezes an incomplete
+  Agentic A1 or commits a fabricated Stage-2 memory, and never triggers an
+  automatic tool re-execution. The current live meter uses accumulated UTF-8
+  bytes / 4 as an **estimate**, because the backend's streaming deltas do not
+  expose exact model-token counts. That estimate is chunk-size invariant but
+  may differ materially from the model's tokenizer. Tool names and generated
+  arguments count as output; prompt/history and externally returned tool data
+  do not. A budget does not reset during one streamed stage, but subsequent
+  stages have independent allocations. Backend-native limits still apply.
 
 This is deliberately narrow. An exact matcher cannot catch all nonterminating
 behaviors or semantic loops with changing language. Nor can any finite
