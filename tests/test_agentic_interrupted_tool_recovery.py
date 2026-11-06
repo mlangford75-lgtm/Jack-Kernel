@@ -127,11 +127,21 @@ def test_busy_withheld_tool_fragments_emit_heartbeat(monkeypatch, tmp_path):
         clock = types.SimpleNamespace(time=real_time, monotonic=lambda: next(ticks))
         monkeypatch.setattr(k, "time", clock)
         kernel = k.JackQwenKernel(Backend(), k.CFG)
-        packets = [p async for p in kernel._run_stage_streamed(
+        packets = []
+        stream = kernel._run_stage_streamed(
             [{"role": "user", "content": "Use tool"}], "",
             "extended_initial", {}, tools=None, append=False,
-        )]
-        busy = [p for p in packets if p.get("kind") == "keepalive" and p.get("event", "").endswith(".busy")]
-        assert busy, packets
-        assert all(p.get("kind") != "tool_calls" for p in packets[:packets.index(busy[0]) + 1])
+        )
+        try:
+            async for packet in stream:
+                packets.append(packet)
+                # Stop before tool-call completion: no executable bytes should
+                # have been released while the arguments were still incomplete.
+                if packet.get("kind") == "keepalive" and packet.get("event", "").endswith(".busy"):
+                    break
+        finally:
+            await stream.aclose()
+        assert any(p.get("kind") == "keepalive" and p.get("event", "").endswith(".busy")
+                   for p in packets), packets
+        assert all(p.get("kind") != "tool_calls" for p in packets)
     asyncio.run(run())
