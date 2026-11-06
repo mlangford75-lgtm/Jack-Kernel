@@ -139,7 +139,7 @@ def test_previous_r2_is_never_projected_into_stage2_on_both_cache_profiles(cache
                 assert model_messages[-1]["content"].endswith(
                     k.AGENTIC_36_STAGE2_PROMPT
                 )
-                assert model_messages[-1]["content"].count("Begin with a brief description of the current task (a short sentence) and how it relates to the user request. It should be a short sentence.") == 2
+                assert model_messages[-1]["content"].count("Begin with a brief description of the current task and how it relates to the user request.") == 2
             assert k.AGENTIC_STAGE1_PROMPT.endswith("Carefully reason on the task before using tools.")
             assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
         finally:

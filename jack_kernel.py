@@ -856,7 +856,9 @@ _STAGE_CONTINUATIONS = {
 
 # One plain-language memory directive. Jack owns evidence isolation and stage authority.
 # Stage-1 cognition and retrospective prompts are explicitly reviewed independently.
-_AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION = """Begin with a brief description of the current task (a short sentence) and how it relates to the user request. It should be a short sentence.
+_AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION = """Begin with a brief description of the current task and how it relates to the user request.
+
+After the brief description, preserve the consequential working knowledge.
 
 To preserve the consequential working knowledge:
 
@@ -891,9 +893,11 @@ Only output a tool discrepancy when an actual consequential discrepancy exists b
 
 If tool records are incomplete, preserve that uncertainty rather than asserting nonexecution. Include exact paths and identifiers when available.
 
+Preserving the verifiable working knowledge of the user's task is the prime directive.
+
 Do not simply repeat what has been stated. Capture the meaningful information that will help an agentic system extract the important information related to this user request.
 
-Begin with a brief description of the current task (a short sentence) and how it relates to the user request. It should be a short sentence."""
+Begin with a brief description of the current task and how it relates to the user request."""
 
 
 def _stage_continuation(
