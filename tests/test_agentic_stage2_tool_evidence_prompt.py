@@ -26,6 +26,9 @@ def test_memory_contract_and_user_approved_tool_flags():
     assert "TOOL ERROR: [discrepancy]" in prompt
     assert "TOOL UNVERIFIED: [discrepancy]" in prompt
     assert "TOOL VERIFIED:" not in prompt
+    assert "Only output a tool discrepancy when an actual consequential discrepancy exists" in prompt
+    assert "Otherwise, say nothing about tools, tool calls, tool records, verification, or the absence of discrepancies." in prompt
+    assert "never describe tool verification as the task itself" in prompt
     assert "between what the output says and what can be verified" in prompt
     assert "complete tool record" in prompt
     assert "If tool records are incomplete, preserve that uncertainty" in prompt

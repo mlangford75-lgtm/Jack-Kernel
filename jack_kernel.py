@@ -887,6 +887,8 @@ Compare claims of completed tool actions against Jack's authenticated current-tu
 - `TOOL ERROR: [discrepancy]` — A claimed action has no matching execution in a complete tool record, or the corresponding tool returned a confirmed failure.
 - `TOOL UNVERIFIED: [discrepancy]` — The action executed, but evidence needed to verify the claimed result is missing.
 
+Only output a tool discrepancy when an actual consequential discrepancy exists between a claim and the authenticated evidence. Otherwise, say nothing about tools, tool calls, tool records, verification, or the absence of discrepancies. Tool checking is secondary to preserving the working knowledge of the user's task; never describe tool verification as the task itself.
+
 If tool records are incomplete, preserve that uncertainty rather than asserting nonexecution. Include exact paths and identifiers when available.
 
 Do not simply repeat what has been stated. Capture the meaningful information that will help an agentic system extract the important information related to this user request.
