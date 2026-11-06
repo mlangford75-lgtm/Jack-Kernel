@@ -9158,7 +9158,20 @@ class JackQwenKernel:
             # Terminal failure, never a successful Stage-1 freeze or Stage-2
             # memory commit. Do not retry or repeat any agent tool.
             if AGENTIC_MODE:
+                # A generation-budget breach is terminal, unlike an ordinary
+                # dropped Pi transport. Never rearm an accepted checkpoint
+                # under a terminal Stage-1 or Stage-2 budget failure.
                 _agentic_mark_stage1_failure(type(exc).__name__)
+                active = _AGENTIC_TURN_LIFECYCLES.get(
+                    _AGENTIC_ACTIVE_TURN.get() or ""
+                )
+                if active is not None and active.status in {"response_frozen", "stage2_active"}:
+                    _agentic_forensic_journal().fail(
+                        active.turn_id,
+                        active.stage2_attempt_id or active.stage1_attempt_id,
+                        type(exc).__name__,
+                    )
+                    active.status = "memory_failed"
             LOG.warning("%s (stream)", exc)
             failure = {
                 "id": f"chatcmpl-jack-budget-{uuid.uuid4().hex}",
