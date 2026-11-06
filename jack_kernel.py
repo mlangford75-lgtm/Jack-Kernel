@@ -9152,8 +9152,9 @@ class JackQwenKernel:
         )
         try:
             async with self._activity_request_scope("stream"):
-                async for chunk in self._stream_impl(request_body):
-                    yield chunk
+                async with contextlib.aclosing(self._stream_impl(request_body)) as stage_stream:
+                    async for chunk in stage_stream:
+                        yield chunk
         except GenerationBudgetExceeded as exc:
             # Terminal failure, never a successful Stage-1 freeze or Stage-2
             # memory commit. Do not retry or repeat any agent tool.
@@ -9473,7 +9474,7 @@ class JackQwenKernel:
                     elif stage_key in {"extended_reflection", "extended_synthesis"}:
                         yield event({"reasoning_content": f"\n===== JACK {STAGES[stage_key].name.upper()} =====\n"})
 
-                    async for packet in self._run_stage_streamed(
+                    async with contextlib.aclosing(self._run_stage_streamed(
                         history,
                         secondary_system,
                         stage_key,
@@ -9482,82 +9483,83 @@ class JackQwenKernel:
                         tool_choice=tool_choice,
                         append=False,
                         same_stage_resume=same_stage_resume,
-                    ):
-                        kind = packet.get("kind")
-                        if kind == "reasoning":
-                            if stage_key in {"extended_reflection", "extended_synthesis"} and not stage_reasoning_started:
-                                stage_reasoning_started = True
-                                yield event({"reasoning_content": "[NATIVE REASONING]\n"})
-                            yield event({"reasoning_content": packet["text"]})
-                        elif kind == "content":
-                            if stage_key == "extended_initial":
-                                if AGENTIC_MODE:
-                                    # Agentic exposes the provisional answer on reasoning while
-                                    # withholding authoritative content until XML commit.
-                                    yield event({"reasoning_content": packet["text"]})
-                                else:
-                                    # Deep Research Thesis has zero answer authority, but its generated
-                                    # plan is part of the live cognitive transaction. Stream it immediately
-                                    # on reasoning_content rather than buffering it until EOS.
+                    )) as stage_packets:
+                        async for packet in stage_packets:
+                            kind = packet.get("kind")
+                            if kind == "reasoning":
+                                if stage_key in {"extended_reflection", "extended_synthesis"} and not stage_reasoning_started:
+                                    stage_reasoning_started = True
+                                    yield event({"reasoning_content": "[NATIVE REASONING]\n"})
+                                yield event({"reasoning_content": packet["text"]})
+                            elif kind == "content":
+                                if stage_key == "extended_initial":
+                                    if AGENTIC_MODE:
+                                        # Agentic exposes the provisional answer on reasoning while
+                                        # withholding authoritative content until XML commit.
+                                        yield event({"reasoning_content": packet["text"]})
+                                    else:
+                                        # Deep Research Thesis has zero answer authority, but its generated
+                                        # plan is part of the live cognitive transaction. Stream it immediately
+                                        # on reasoning_content rather than buffering it until EOS.
+                                        if not stage_content_started:
+                                            stage_content_started = True
+                                            yield event({"reasoning_content": "\n[THESIS OUTPUT]\n"})
+                                        yield event({"reasoning_content": packet["text"]})
+                                elif AGENTIC_MODE:
                                     if not stage_content_started:
                                         stage_content_started = True
-                                        yield event({"reasoning_content": "\n[THESIS OUTPUT]\n"})
+                                        yield event({"reasoning_content": "\n[STAGE 2 REASONING DISTILLATION]\n"})
                                     yield event({"reasoning_content": packet["text"]})
-                            elif AGENTIC_MODE:
-                                if not stage_content_started:
-                                    stage_content_started = True
-                                    yield event({"reasoning_content": "\n[STAGE 2 REASONING DISTILLATION]\n"})
-                                yield event({"reasoning_content": packet["text"]})
-                            elif ULTRA_MODE and stage_key == "extended_reflection":
-                                # Antithesis is advisory and non-authoritative, but it should still be
-                                # observable token-by-token while it is being generated.
-                                if not stage_content_started:
-                                    stage_content_started = True
-                                    yield event({"reasoning_content": "\n[ANTITHESIS OUTPUT]\n"})
-                                yield event({"reasoning_content": packet["text"]})
-                            elif ULTRA_MODE and stage_key == "extended_synthesis":
-                                # Synthesis is Deep Research's sole authoritative response stage.
-                                # Forward its answer deltas immediately as normal content so a client
-                                # actually sees the response being generated instead of receiving one
-                                # buffered block after EOS.
-                                yield event({"content": packet["text"]})
-                        elif kind == "tool_calls":
-                            if AGENTIC_MODE and stage_key == "extended_reflection":
-                                # Cache experiment may expose schemas to the model,
-                                # but Stage 2 cannot execute OR release actions.
-                                pass
-                            elif ULTRA_MODE and stage_key in {"extended_initial", "extended_reflection"}:
-                                # No tool authority: retain only for deterministic in-stage rejection.
-                                pass
-                            elif stage_key == "extended_initial" or (ULTRA_MODE and stage_key == "extended_synthesis"):
-                                # Governed tool-enabled stages buffer executable calls until the full call
-                                # is reconstructed and schema-validated. Tool-generation text remains observable.
-                                calls = packet.get("tool_calls") or []
-                                for call in calls:
-                                    if not isinstance(call, dict):
-                                        continue
-                                    raw_index = call.get("index", 0)
-                                    try:
-                                        index = int(raw_index)
-                                    except (TypeError, ValueError):
-                                        index = 0
-                                    if index not in mirrored_tool_indexes:
-                                        mirrored_tool_indexes.add(index)
-                                        function = call.get("function") if isinstance(call.get("function"), dict) else {}
-                                        name = str(function.get("name") or "tool")
-                                        label = "STAGE 1" if stage_key == "extended_initial" else "SYNTHESIS"
-                                        yield event({"reasoning_content": f"\n[{label} TOOL GENERATION: {name}]\n"})
-                                    # Raw executable arguments are intentionally
-                                    # not mirrored onto caller-visible reasoning.
-                                    # They remain consequential state until Phase-4
-                                    # authorization has completed.
-                            else:
-                                yield event({"tool_calls": packet["tool_calls"]})
-                        elif kind == "keepalive":
-                            label = str(packet.get("event") or "backend.activity")
-                            yield f": jack-keepalive {label}\n\n".encode("utf-8")
-                        elif kind == "result":
-                            result = packet["data"]
+                                elif ULTRA_MODE and stage_key == "extended_reflection":
+                                    # Antithesis is advisory and non-authoritative, but it should still be
+                                    # observable token-by-token while it is being generated.
+                                    if not stage_content_started:
+                                        stage_content_started = True
+                                        yield event({"reasoning_content": "\n[ANTITHESIS OUTPUT]\n"})
+                                    yield event({"reasoning_content": packet["text"]})
+                                elif ULTRA_MODE and stage_key == "extended_synthesis":
+                                    # Synthesis is Deep Research's sole authoritative response stage.
+                                    # Forward its answer deltas immediately as normal content so a client
+                                    # actually sees the response being generated instead of receiving one
+                                    # buffered block after EOS.
+                                    yield event({"content": packet["text"]})
+                            elif kind == "tool_calls":
+                                if AGENTIC_MODE and stage_key == "extended_reflection":
+                                    # Cache experiment may expose schemas to the model,
+                                    # but Stage 2 cannot execute OR release actions.
+                                    pass
+                                elif ULTRA_MODE and stage_key in {"extended_initial", "extended_reflection"}:
+                                    # No tool authority: retain only for deterministic in-stage rejection.
+                                    pass
+                                elif stage_key == "extended_initial" or (ULTRA_MODE and stage_key == "extended_synthesis"):
+                                    # Governed tool-enabled stages buffer executable calls until the full call
+                                    # is reconstructed and schema-validated. Tool-generation text remains observable.
+                                    calls = packet.get("tool_calls") or []
+                                    for call in calls:
+                                        if not isinstance(call, dict):
+                                            continue
+                                        raw_index = call.get("index", 0)
+                                        try:
+                                            index = int(raw_index)
+                                        except (TypeError, ValueError):
+                                            index = 0
+                                        if index not in mirrored_tool_indexes:
+                                            mirrored_tool_indexes.add(index)
+                                            function = call.get("function") if isinstance(call.get("function"), dict) else {}
+                                            name = str(function.get("name") or "tool")
+                                            label = "STAGE 1" if stage_key == "extended_initial" else "SYNTHESIS"
+                                            yield event({"reasoning_content": f"\n[{label} TOOL GENERATION: {name}]\n"})
+                                        # Raw executable arguments are intentionally
+                                        # not mirrored onto caller-visible reasoning.
+                                        # They remain consequential state until Phase-4
+                                        # authorization has completed.
+                                else:
+                                    yield event({"tool_calls": packet["tool_calls"]})
+                            elif kind == "keepalive":
+                                label = str(packet.get("event") or "backend.activity")
+                                yield f": jack-keepalive {label}\n\n".encode("utf-8")
+                            elif kind == "result":
+                                result = packet["data"]
                     if result is None:
                         raise HTTPException(status_code=502, detail=f"Self-adversarial stage {stage_key} produced no result")
                     self_adversarial_results[stage_key] = result
@@ -9590,12 +9592,13 @@ class JackQwenKernel:
                     ):
                         _append_ultra_stage_generation_trigger(history, stage_key)
                     try:
-                        async for wire in run_self_adversarial_stage(
+                        async with contextlib.aclosing(run_self_adversarial_stage(
                             stage_key,
                             emit_content=emit_content,
                             same_stage_resume=(resume_stage_key == stage_key),
-                        ):
-                            yield wire
+                        )) as active_stage:
+                            async for wire in active_stage:
+                                yield wire
                     except Exception as exc:
                         if isinstance(exc, GenerationBudgetExceeded):
                             raise
@@ -11668,8 +11671,9 @@ async def _safe_public_stream(
                 body,
                 executor_context=executor_context,
             )
-        async for chunk in stream:
-            yield chunk
+        async with contextlib.aclosing(stream) as owned_stream:
+            async for chunk in owned_stream:
+                yield chunk
     except Exception as exc:
         if AGENTIC_MODE:
             _agentic_mark_stage1_failure(type(exc).__name__)
