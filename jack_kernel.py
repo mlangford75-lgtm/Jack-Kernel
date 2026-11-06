@@ -322,6 +322,10 @@ class KernelConfig:
     backend_timeout_seconds: float = float(
         os.getenv("JACK_BACKEND_TIMEOUT_SECONDS", "1800")
     )
+    # Independent generated-text budgets, approximate tokens per model inference.
+    # Set either to 0 to disable that particular limit.
+    reasoning_budget_tokens: int = max(0, int(os.getenv("JACK_REASONING_BUDGET_TOKENS", "100000")))
+    output_budget_tokens: int = max(0, int(os.getenv("JACK_OUTPUT_BUDGET_TOKENS", "100000")))
 
     # Optional observability-only context metadata. Zero/empty means unknown.
     # Jack never changes the backend overflow policy from these fields.
@@ -6261,6 +6265,39 @@ class PreparedCommit:
     agentic_turn_id: Optional[str] = None
 
 
+class GenerationBudgetExceeded(RuntimeError):
+    """A model generation exceeded one of Jack's independent token budgets."""
+
+    def __init__(self, kind: str):
+        self.kind = kind
+        label = "Reasoning" if kind == "reasoning" else "Output"
+        super().__init__(f"Jack Failure: {label} Budget")
+
+
+class GenerationBudgetMonitor:
+    """Streaming generated-text meter (UTF-8 bytes/4, approximate tokens).
+
+    Chat Completions streams don't provide a model-token count per delta.
+    Accumulate bytes across chunks instead of rounding each chunk separately:
+    chunk size must not change the budget. Prompt/history tokens are excluded.
+    """
+
+    def __init__(self, reasoning_limit: int, output_limit: int):
+        self.limits = {
+            "reasoning": max(0, int(reasoning_limit)),
+            "output": max(0, int(output_limit)),
+        }
+        self.bytes = {"reasoning": 0, "output": 0}
+
+    def observe(self, kind: str, text: str) -> None:
+        if kind not in self.limits or not text:
+            return
+        self.bytes[kind] += len(str(text).encode("utf-8"))
+        limit = self.limits[kind]
+        if limit > 0 and (self.bytes[kind] + 3) // 4 >= limit:
+            raise GenerationBudgetExceeded(kind)
+
+
 @dataclass
 class PendingDebuggingIntakeResume:
     resume_id: str
@@ -6542,6 +6579,23 @@ class JackQwenKernel:
         aggregate_usage(usage, data.get("usage"))
         choice = (data.get("choices") or [{}])[0]
         msg = choice.get("message") or {}
+        # Nonstream entrypoints cannot interrupt mid-generation; reject an
+        # over-budget result before it can commit or release tool calls.
+        nonstream_budget = GenerationBudgetMonitor(
+            getattr(self.cfg, "reasoning_budget_tokens", 100000),
+            getattr(self.cfg, "output_budget_tokens", 100000),
+        )
+        nonstream_budget.observe(
+            "reasoning",
+            msg.get("reasoning_content") or msg.get("reasoning") or msg.get("thinking") or "",
+        )
+        nonstream_budget.observe("output", msg.get("content") or "")
+        for call in (msg.get("tool_calls") or []):
+            if isinstance(call, dict):
+                function = call.get("function") or {}
+                if isinstance(function, dict):
+                    nonstream_budget.observe("output", str(function.get("name") or ""))
+                    nonstream_budget.observe("output", str(function.get("arguments") or ""))
         if isinstance(msg.get("tool_calls"), list):
             msg["tool_calls"] = normalize_tool_calls_for_distribution(msg.get("tool_calls"))
         governed_stage = bool(SELF_ADVERSARIAL_MODE or (CODE_DEBUGGING_MODE and _debugging_pass_from_stage_key(stage_key) is not None))
@@ -6749,6 +6803,10 @@ class JackQwenKernel:
             else self.cfg.loop_detector_repetitions
         )
         detector = ReasoningLoopDetector(loop_repetitions) if self.cfg.loop_detector_enabled else None
+        budget = GenerationBudgetMonitor(
+            getattr(self.cfg, "reasoning_budget_tokens", 100000),
+            getattr(self.cfg, "output_budget_tokens", 100000),
+        )
         content_parts: List[str] = []
         reasoning_content_parts: List[str] = []
         reasoning_parts: List[str] = []
@@ -6817,6 +6875,7 @@ class JackQwenKernel:
                 if reasoning_content is not None:
                     text = str(reasoning_content)
                     if text:
+                        budget.observe("reasoning", text)
                         reasoning_content_parts.append(text)
                         if detector is not None and detector.feed(text):
                             raise RepeatedReasoningLoop(detector.detected_cycle_words or 128, detector.repetitions)
@@ -6824,6 +6883,7 @@ class JackQwenKernel:
                 elif reasoning is not None:
                     text = str(reasoning)
                     if text:
+                        budget.observe("reasoning", text)
                         reasoning_parts.append(text)
                         if detector is not None and detector.feed(text):
                             raise RepeatedReasoningLoop(detector.detected_cycle_words or 128, detector.repetitions)
@@ -6833,11 +6893,21 @@ class JackQwenKernel:
                 if content is not None:
                     text = str(content)
                     if text:
+                        budget.observe("output", text)
                         content_parts.append(text)
                         yield {"kind": "content", "text": text}
 
                 tool_deltas = delta.get("tool_calls")
                 if tool_deltas:
+                    # Function names and arguments are generated output even when
+                    # Jack withholds them from Pi pending validation.
+                    for tool_delta in tool_deltas:
+                        if not isinstance(tool_delta, dict):
+                            continue
+                        function = tool_delta.get("function")
+                        if isinstance(function, dict):
+                            budget.observe("output", str(function.get("name") or ""))
+                            budget.observe("output", str(function.get("arguments") or ""))
                     # Phase 4 release barrier: executable tool-call fragments stay
                     # private to Jack until the full call is reconstructed. Normal
                     # reasoning/content still streams live above. This prevents a
@@ -8585,6 +8655,8 @@ class JackQwenKernel:
                     stage.get("usage"), xml_stage.get("usage")
                 )
             except Exception as exc:
+                if isinstance(exc, GenerationBudgetExceeded):
+                    raise
                 detail = str(exc.detail) if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
                 completed = self._agentic_degraded_result(history, usage, frozen_stage1_answer, detail)
             await self._retire_pending_tool_resume(state)
@@ -8715,6 +8787,8 @@ class JackQwenKernel:
                 )
                 return completed
             except Exception as exc:
+                if isinstance(exc, GenerationBudgetExceeded):
+                    raise
                 detail = str(exc.detail) if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
                 return self._agentic_degraded_result(history, usage, frozen_stage1_answer, detail)
 
@@ -8900,6 +8974,12 @@ class JackQwenKernel:
         try:
             async with self._activity_request_scope("nonstream"):
                 return await self._run_impl(request_body)
+        except GenerationBudgetExceeded as exc:
+            LOG.warning("%s (nonstream)", exc)
+            return KernelResult(
+                content=str(exc), tool_calls=None, finish_reason="stop",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
         finally:
             try:
                 if scope_token is not None:
@@ -9011,6 +9091,19 @@ class JackQwenKernel:
             async with self._activity_request_scope("stream"):
                 async for chunk in self._stream_impl(request_body):
                     yield chunk
+        except GenerationBudgetExceeded as exc:
+            # Terminal failure, never a successful Stage-1 freeze or Stage-2
+            # memory commit. Do not retry or repeat any agent tool.
+            LOG.warning("%s (stream)", exc)
+            failure = {
+                "id": f"chatcmpl-jack-budget-{uuid.uuid4().hex}",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": self.cfg.virtual_model,
+                "choices": [{"index": 0, "delta": {"content": str(exc)}, "finish_reason": "stop"}],
+            }
+            yield ("data: " + json.dumps(failure) + "\n\n").encode("utf-8")
+            yield b"data: [DONE]\n\n"
         finally:
             try:
                 if scope_token is not None:
@@ -9401,6 +9494,8 @@ class JackQwenKernel:
                         ):
                             yield wire
                     except Exception as exc:
+                        if isinstance(exc, GenerationBudgetExceeded):
+                            raise
                         if isinstance(exc, RepeatedLoopInterrupt) and not (
                             AGENTIC_MODE and stage_key == "extended_reflection"
                             and agentic_frozen_stage1_answer is not None
@@ -9542,6 +9637,8 @@ class JackQwenKernel:
                     _agentic_finish_delayed_one_hop(history)
                     history.clear()
                 except Exception as exc:
+                    if isinstance(exc, GenerationBudgetExceeded):
+                        raise
                     if agentic_frozen_stage1_answer is None:
                         raise
                     detail = str(exc.detail) if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
@@ -11775,6 +11872,8 @@ CLI_DEFAULTS: Dict[str, Any] = {
     "agentic_profile": "thorough",
     "preserve_thinking": True,
     "backend_timeout_seconds": 1800.0,
+    "reasoning_budget_tokens": 100000,
+    "output_budget_tokens": 100000,
     "backend_context_length": 0,
     "max_concurrent_requests": 1,
     "seed": "",
@@ -12211,7 +12310,8 @@ def _print_header(
     print(_status_value("Loop Detector", f"ON / {loop_n} repetitions" if cfg.get("loop_detector_enabled", True) else "OFF"))
     active_mode = _REASONING_LEVEL_ALIASES.get(str(cfg.get("reasoning_level", "x-high")).lower(), str(cfg.get("reasoning_level", "x-high")).lower())
     print(_status_value("Live stage streaming", "BUFFERED  [stream=true; Pi-compatible]" if active_mode == "deep-reasoning" else "ON  [stream=true]"))
-    print(_status_value("Kernel max-token cap", "NONE"))
+    print(_status_value("Reasoning budget", f"{int(cfg.get('reasoning_budget_tokens', 100000)):,} estimated tokens" if cfg.get("reasoning_budget_tokens", 100000) else "OFF"))
+    print(_status_value("Output budget", f"{int(cfg.get('output_budget_tokens', 100000)):,} estimated tokens" if cfg.get("output_budget_tokens", 100000) else "OFF"))
     level_key = _REASONING_LEVEL_ALIASES.get(str(cfg.get("reasoning_level", "x-high")).lower(), str(cfg.get("reasoning_level", "x-high")).lower())
     level_profile = REASONING_PROFILES.get(level_key, REASONING_PROFILES["x-high"])
     print(_status_value("Reasoning level", level_profile["label"]))
@@ -12334,6 +12434,28 @@ def _edit_loop_detector(cfg: Dict[str, Any]) -> None:
             print("Invalid threshold; preserving current setting.")
         else:
             cfg["loop_detector_repetitions"] = parsed
+
+
+def _edit_generation_budgets(cfg: Dict[str, Any]) -> None:
+    _print_back_hint()
+    print("Jack generation budgets (approximate generated tokens per inference)")
+    print("Set 0 to disable a budget. Defaults are 100,000 each.")
+    print("Reasoning and visible/tool output are counted independently.")
+    for name, key in (("Reasoning", "reasoning_budget_tokens"), ("Output", "output_budget_tokens")):
+        current = int(cfg.get(key, 100000))
+        raw = _cli_input(f"{name} budget [{current}]: ").strip().replace(",", "")
+        if not raw:
+            continue
+        try:
+            value = int(raw)
+        except ValueError:
+            print("Invalid integer; keeping current setting.")
+            continue
+        if not 0 <= value <= 10000000:
+            print("Allowed range: 0 to 10,000,000; keeping current setting.")
+            continue
+        cfg[key] = value
+    print("Budget changes take effect when the kernel is restarted.")
 
 
 def _edit_forensic_archive(cfg: Dict[str, Any]) -> None:
@@ -12657,6 +12779,8 @@ def _config_to_env(cfg: Dict[str, Any]) -> Dict[str, str]:
         "JACK_AGENTIC_PROFILE": cfg.get("agentic_profile", "thorough"),
         "JACK_PRESERVE_THINKING": "1" if cfg.get("preserve_thinking", True) else "0",
         "JACK_BACKEND_TIMEOUT_SECONDS": cfg["backend_timeout_seconds"],
+        "JACK_REASONING_BUDGET_TOKENS": cfg.get("reasoning_budget_tokens", 100000),
+        "JACK_OUTPUT_BUDGET_TOKENS": cfg.get("output_budget_tokens", 100000),
         "JACK_BACKEND_CONTEXT_LENGTH": cfg.get("backend_context_length", 0),
         "JACK_MAX_CONCURRENT": cfg["max_concurrent_requests"],
         "JACK_SEED": cfg["seed"],
@@ -12717,7 +12841,8 @@ def _start_server_from_cli(cfg: Dict[str, Any]) -> None:
     print(f"Preserve thinking: {'ON' if cfg.get('preserve_thinking', True) else 'OFF'}")
     print(f"Forensic archive : {str(cfg.get('forensic_archive_mode', 'stage')).upper()}")
     print(f"Loop Detector    : {'ON' if cfg.get('loop_detector_enabled', True) else 'OFF'} / {cfg.get('loop_detector_repetitions', 32)} repetitions")
-    print("Kernel-side max_tokens limits: NONE")
+    print(f"Reasoning budget : {cfg.get('reasoning_budget_tokens', 100000):,} estimated tokens" if cfg.get("reasoning_budget_tokens", 100000) else "Reasoning budget : OFF")
+    print(f"Output budget    : {cfg.get('output_budget_tokens', 100000):,} estimated tokens" if cfg.get("output_budget_tokens", 100000) else "Output budget    : OFF")
     print("Press Ctrl+C to stop the server and return to the launcher.")
     print()
     try:
@@ -12738,6 +12863,7 @@ def _print_main_menu_options() -> None:
     print(_ansi_rgb("  P", _JACK_STEEL, bold=True) + "  Preserve thinking")
     print(_ansi_rgb("  F", _JACK_STEEL, bold=True) + "  Forensic archive")
     print(_ansi_rgb("  L", _JACK_STEEL, bold=True) + "  Loop Detector")
+    print(_ansi_rgb("  B", _JACK_STEEL, bold=True) + "  Generation budgets")
     print(_ansi_rgb("  S", _JACK_STEEL, bold=True) + "  Save settings")
     print(_ansi_rgb("  M", _JACK_STEEL, bold=True) + "  Main screen / refresh")
     print(_ansi_rgb("  Q", _JACK_STEEL, bold=True) + "  Quit")
@@ -12749,7 +12875,7 @@ def _print_compact_main_commands() -> None:
     print()
     print(_ansi_rgb("Main:", _JACK_MUTED) +
           " 1 Start  2 Models  3 Reasoning  4 Sampling  5 Endpoint  6 Advanced")
-    print("      7 Test  8 Reset  P Thinking  F Forensic  L Loop  S Save  M Main screen  Q Quit")
+    print("      7 Test  8 Reset  P Thinking  F Forensic  L Loop  B Budgets  S Save  M Main screen  Q Quit")
     print(_ansi_rgb("Use M only when you want the full status screen redrawn.", _JACK_MUTED))
     print()
 
@@ -12804,6 +12930,8 @@ def run_cli() -> None:
                 _run_transactional_editor(_edit_forensic_archive, cfg)
             elif choice == "l":
                 _run_transactional_editor(_edit_loop_detector, cfg)
+            elif choice == "b":
+                _run_transactional_editor(_edit_generation_budgets, cfg)
             elif choice == "s":
                 _save_cli_config(cfg)
                 print("Settings saved.")
@@ -12863,7 +12991,8 @@ def run_server() -> None:
     LOG.info("Loop Detector: %s, threshold=%s, min-cycle=128 words",
              "ON" if CFG.loop_detector_enabled else "OFF", CFG.loop_detector_repetitions)
     LOG.info("Live stage streaming: ON for OpenAI stream=true requests")
-    LOG.info("Kernel-side max_tokens limits: NONE")
+    LOG.info("Generation budgets (estimated tokens): reasoning=%s output=%s",
+             CFG.reasoning_budget_tokens, CFG.output_budget_tokens)
 
     config = uvicorn.Config(
         APP,
