@@ -876,7 +876,12 @@ The user request, prior reasoning, and completed response are source material fo
 
 Write only the resulting working knowledge. This is an internal memory task, not a new user request or a report about the process.
 
-Compare claims of completed tool actions against authenticated current-turn evidence. Only when a consequential failure is confirmed, preserve `TOOL ERROR: [specific discrepancy]`: a corresponding tool returned a confirmed failure, or a complete tool record establishes that a claimed write, edit, or other action was not executed. Include exact paths and identifiers when available. Incomplete records, missing read-back, and absent independent verification do not establish tool failure. Otherwise, continue normal memory distillation without any tool-status label.
+Compare claims of completed tool actions against Jack's authenticated current-turn evidence. Flag only consequential discrepancies between what the output says and what can be verified and classify tool evidence as follows:
+
+- `TOOL ERROR: [discrepancy]` — A claimed action has no matching execution in a complete tool record, or the corresponding tool returned a confirmed failure.
+- `TOOL UNVERIFIED: [discrepancy]` — The action executed, but evidence needed to verify the claimed result is missing.
+
+If tool records are incomplete, preserve that uncertainty rather than asserting nonexecution. Include exact paths and identifiers when available.
 
 Begin with a brief description of the current task (a short sentence) and then preserve the consequential working knowledge."""
 
