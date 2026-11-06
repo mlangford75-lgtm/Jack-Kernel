@@ -889,6 +889,8 @@ Compare claims of completed tool actions against Jack's authenticated current-tu
 
 If tool records are incomplete, preserve that uncertainty rather than asserting nonexecution. Include exact paths and identifiers when available.
 
+Do not simply repeat what has been stated. Capture the meaningful information that will help an agentic system extract the important information related to this user request.
+
 Begin with a brief description of the current task (a short sentence) and how it relates to the user request. It should be a short sentence."""
 
 
