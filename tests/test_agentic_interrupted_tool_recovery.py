@@ -170,10 +170,10 @@ def test_real_stream_disconnect_retries_same_tool_result_without_reexecuting_too
                 number = self.calls
                 try:
                     if number == 1:
+                        started.set()
                         yield {"choices": [{"index": 0, "delta": {
                             "reasoning_content": "Resumed model is working."
                         }, "finish_reason": None}], "usage": {}}
-                        started.set()
                         await asyncio.sleep(3600)
                     else:
                         text = "Frozen useful answer" if number == 2 else "Consequential memory"
