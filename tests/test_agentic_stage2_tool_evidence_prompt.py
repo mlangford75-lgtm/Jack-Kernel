@@ -19,6 +19,7 @@ def test_memory_contract_and_user_approved_tool_flags():
     assert prompt.startswith(boundary)
     assert prompt.endswith(boundary)
     assert "To preserve the consequential working knowledge:" in prompt
+    assert "Do not simply repeat what has been stated. Capture the meaningful information that will help an agentic system extract the important information related to this user request." in prompt
     assert "Preserve the important working knowledge established for the current user request" in prompt
     assert "Do not reconstruct earlier turns, re-solve the task" in prompt
     assert "The user request, prior reasoning, and completed response are source material" in prompt
