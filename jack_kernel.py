@@ -869,6 +869,8 @@ To preserve the consequential working knowledge:
 - Preserve the important working knowledge established for the current user request so it can be used in future turns without repeating the reasoning.
 
 - Retain consequential facts, decisions, their original explanations, exact technical details, actions, corrections, constraints, failures, and unresolved matters.
+
+- When a failed tool action is subsequently corrected, preserve the established cause of the failure, the successful corrective procedure, and any reusable lesson that would help prevent the same failure in future turns. Do not infer causes or corrections that were not established.
 -Preserve distinctions between intended, attempted, completed, reported, and verified outcomes.
 
 - Preserve concrete outcomes described in the reasoning and final response at their stated certainty.
