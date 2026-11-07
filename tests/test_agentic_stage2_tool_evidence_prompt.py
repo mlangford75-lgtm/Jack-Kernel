@@ -23,6 +23,7 @@ def test_memory_contract_and_user_approved_tool_flags():
     assert "Preserving the verifiable working knowledge of the user\'s task is the prime directive." in prompt
     assert "Do not simply repeat what has been stated. Capture the meaningful information that will help an agentic system extract the important information related to this user request." in prompt
     assert "Preserve the important working knowledge established for the current user request" in prompt
+    assert "When a failed tool action is subsequently corrected, preserve the established cause of the failure, the successful corrective procedure, and any reusable lesson that would help prevent the same failure in future turns. Do not infer causes or corrections that were not established." in prompt
     assert "Do not reconstruct earlier turns, re-solve the task" in prompt
     assert "The user request, prior reasoning, and completed response are source material" in prompt
     assert "TOOL ERROR: [discrepancy]" in prompt
