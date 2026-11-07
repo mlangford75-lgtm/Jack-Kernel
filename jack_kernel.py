@@ -901,6 +901,8 @@ Preserving the verifiable working knowledge of the user's task is the prime dire
 
 Do not simply repeat what has been stated. Capture the meaningful information that will help an agentic system extract the important information related to this user request.
 
+Verify your reasoning and verify anything else needed to fulfill the user request.
+
 Begin with a brief description of the current task and how it relates to the user request."""
 
 
