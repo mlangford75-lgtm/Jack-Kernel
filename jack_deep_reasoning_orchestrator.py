@@ -67,7 +67,7 @@ def _tool_target_locator(stage: str, call: Mapping[str, Any]) -> dict[str, Any] 
 
 TAS_V6_PROMPT_HASHES = {
     "ULTRA_STAGE1_THESIS_PROMPT": "b1552c9fa6398ed0b8c45e5e1119a0e10bf198e8d621c8f8e7beb0813400cae4",
-    "ULTRA_STAGE2_ANTITHESIS_PROMPT": "54c470e77f0c67dce134b00e2b9117bbd7d58dfd39fcdd8e960cf281eda59c21",
+    "ULTRA_STAGE2_ANTITHESIS_PROMPT": "bddca0af7fd03968c8cb4eac4bbea4221429aa07525e829c2bd1bd7b7d871734",
     "ULTRA_STAGE3_SYNTHESIS_PROMPT": "a507ab1934ae62970ef6911b4625d4180fe4aeece9fa2b16ef93476cbeb560cb",
 }
 
