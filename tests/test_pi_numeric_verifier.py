@@ -51,3 +51,42 @@ def test_rejects_resource_abuse():
         result = run(code)
         assert result.returncode == 2
         assert "VERIFICATION_ERROR:" in result.stderr
+
+
+def test_bounded_numeric_loops_and_if_support_majority_vote_check():
+    result = run(
+        "total=0\n"
+        "for correct in range(4):\n"
+        "    if correct >= 2:\n"
+        "        total += comb(3,correct)*(0.9**correct)*(0.1**(3-correct))\n"
+        "print(round(total,3))"
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "0.972"
+
+
+def test_rejects_unbounded_or_nonnumeric_control_flow():
+    for code in (
+        "while True: pass",
+        "for x in range(1000000):\n    print(x)",
+        "for x in range(3):\n    import os",
+        "for x in range(3):\n    print(open('secret'))",
+        "if True:\n    print(1)",
+        "for x in range(3):\n    print((1).__class__)",
+    ):
+        result = run(code)
+        assert result.returncode == 2, (code, result.stdout)
+        assert "VERIFICATION_ERROR:" in result.stderr
+
+
+def test_rejects_numeric_work_that_exceeds_execution_budget():
+    result = run("total=0\nfor x in range(1000):\n    for y in range(1000):\n        total += 1")
+    assert result.returncode == 2
+    assert "execution budget exceeded" in result.stderr
+
+
+def test_large_but_bounded_numeric_check_under_ast_limit():
+    # A modest, finite number of numeric statements is valid.
+    result = run("n=0\n" + "n+=1\n"*100 + "print(n)")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "100"
