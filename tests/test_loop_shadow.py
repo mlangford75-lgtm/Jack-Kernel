@@ -89,3 +89,47 @@ def test_distinct_long_passages_do_not_trip():
     chapters = [[f"chapter-{j}-token-{i:04d}" for i in range(2350)] for j in range(5)]
     detector = LongCycleShadowDetector()
     assert detector.feed(as_text([word for block in chapters for word in block])) is None
+
+
+def test_active_gate_conservatively_rejects_unsourced_document_repetition():
+    """An unrecorded repeated quotation is never sufficient to interrupt."""
+    chapter = [f"article-{i:04d}" for i in range(2300)]
+    monitor = LongCycleShadowDetector()
+    observation = monitor.feed(as_text(chapter * 4 + ["end"] * 256))
+    assert observation is not None
+    assert not observation.suppressed_as_source
+    assert not monitor.interrupt_eligible(observation)
+
+
+def test_active_gate_detects_restarted_unfinished_plan():
+    chapter = [f"draft-{i:04d}" for i in range(2300)]
+    chapter[50:65] = (
+        "Let me write the file now. Let me draft it. "
+        "Actually, let me reconsider the structure."
+    ).split()
+    monitor = LongCycleShadowDetector()
+    observation = monitor.feed(as_text(chapter * 4 + ["end"] * 256))
+    assert observation is not None
+    assert monitor.interrupt_eligible(observation)
+
+
+def test_active_gate_protects_known_source_with_self_replanning_language():
+    chapter = [f"draft-{i:04d}" for i in range(2300)]
+    chapter[50:65] = (
+        "Let me write the file now. Let me draft it. "
+        "Actually, let me reconsider the structure."
+    ).split()
+    monitor = LongCycleShadowDetector(source_texts=[as_text(chapter)])
+    observation = monitor.feed(as_text(chapter * 4 + ["end"] * 256))
+    assert observation is not None
+    assert observation.suppressed_as_source
+    assert not monitor.interrupt_eligible(observation)
+
+
+def test_active_gate_requires_reconsideration_not_just_repeated_work_words():
+    chapter = [f"draft-{i:04d}" for i in range(2300)]
+    chapter[40:48] = "Let me write and let me draft".split()
+    monitor = LongCycleShadowDetector()
+    observation = monitor.feed(as_text(chapter * 4 + ["end"] * 256))
+    assert observation is not None
+    assert not monitor.interrupt_eligible(observation)
