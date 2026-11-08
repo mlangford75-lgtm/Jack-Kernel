@@ -209,6 +209,12 @@ def test_exact_prompt_identity_and_integrity():
     assert prompts["ULTRA_STAGE2_ANTITHESIS_PROMPT"].count(warning) == 1
     assert warning not in prompts["ULTRA_STAGE1_THESIS_PROMPT"]
     assert warning not in prompts["ULTRA_STAGE3_SYNTHESIS_PROMPT"]
+    objective = "The objective should be to find consequential flaws in the model's response. This model is known to produce work that is full of errors and false information."
+    assert prompts["ULTRA_STAGE2_ANTITHESIS_PROMPT"].count(objective) == 1
+    assert "Do not confuse confirming that an artifact was saved" in prompts["ULTRA_STAGE2_ANTITHESIS_PROMPT"]
+    assert "Independently examine the substantive quality" in prompts["ULTRA_STAGE3_SYNTHESIS_PROMPT"]
+    assert objective not in prompts["ULTRA_STAGE1_THESIS_PROMPT"]
+    assert objective not in prompts["ULTRA_STAGE3_SYNTHESIS_PROMPT"]
     with pytest.raises(ValueError, match="missing or changed"):
         import tempfile
         with tempfile.TemporaryDirectory() as root:
