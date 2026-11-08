@@ -70,6 +70,9 @@ def test_conservative_tas_prompts_preserve_verbatim_xhigh_sentence():
     assert prompts['ULTRA_STAGE3_SYNTHESIS_PROMPT'].startswith(sentence + '\n\n')
     assert 'ruthless premise invalidator' not in prompts['ULTRA_STAGE2_ANTITHESIS_PROMPT']
     assert 'Do not presume Thesis is either correct or incorrect.' in prompts['ULTRA_STAGE2_ANTITHESIS_PROMPT']
+    assert 'examine the exact Thesis claim in context' in prompts['ULTRA_STAGE2_ANTITHESIS_PROMPT']
+    assert 'consequential contradictions across sections' in prompts['ULTRA_STAGE2_ANTITHESIS_PROMPT']
+    assert 'Do not report an issue Thesis already adequately addresses as a defect' in prompts['ULTRA_STAGE2_ANTITHESIS_PROMPT']
     assert 'Preserve correct and useful Thesis material.' in prompts['ULTRA_STAGE3_SYNTHESIS_PROMPT']
 
 
