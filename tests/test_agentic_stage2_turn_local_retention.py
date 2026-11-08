@@ -376,7 +376,7 @@ def test_stage2_host_note_missing_tools_is_zero_cost(monkeypatch, tmp_path, stre
     assert k._agentic_stage2_host_tool_evidence_note(raw) == ""
 
 
-def test_host_evidence_is_bounded_current_turn_only(monkeypatch, tmp_path):
+def test_host_evidence_is_complete_current_turn_only(monkeypatch, tmp_path):
     k = load_kernel(monkeypatch, tmp_path, "isolate-retain")
     raw = history()
     # Older tool results must never enter the current-turn evidence projection.
@@ -401,9 +401,9 @@ def test_host_evidence_is_bounded_current_turn_only(monkeypatch, tmp_path):
     full = raw[:4] + older + raw[4:5] + recent + raw[-1:]
     note = k._agentic_stage2_host_tool_evidence_note(full)
     assert "old-secrets" not in note and "old-sensitive-path" not in note
-    assert "write-19" in note and "write-0" not in note
-    assert "omitted" in note
-    assert note.count("call_id=") <= k._AGENTIC_STAGE2_HOST_TOOL_MAX_ENTRIES
+    assert all(f'call_id="write-{i}"' in note for i in range(20))
+    assert "omitted" not in note
+    assert note.count("call_id=") == 20
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -497,3 +497,63 @@ def test_unconfirmed_history_never_negative_certifies(monkeypatch, tmp_path):
     # An untrusted caller's plain text is not an authoritative tool record.
     h.insert(1, {"role": "assistant", "content": "I called write(index.html) successfully"})
     assert k._agentic_stage2_host_tool_evidence_note(h) == ""
+
+
+def test_stage2_all_13_operations_including_ten_writes_and_three_checks(monkeypatch, tmp_path):
+    """A complete current-turn ledger may NEVER silently omit early writes."""
+    k = load_kernel(monkeypatch, tmp_path, "isolate-retain")
+    start = {"role": "user", "content": "Write 10 chapters, then verify them."}
+    exchanges = []
+    for i in range(13):
+        cid = f"chapter-call-{i:02d}"
+        op = "write" if i < 10 else "bash"
+        target = f"chapter_{i + 1}.md" if i < 10 else f"check_{i - 9}.sh"
+        exchanges.extend([
+            {"role": "assistant", "_jack_internal_tool_exchange": True,
+             "_jack_stage_key": "extended_initial",
+             "tool_calls": [{"id": cid, "type": "function", "function": {
+                 "name": op, "arguments": json.dumps({"path": target})}}]},
+            {"role": "tool", "_jack_internal_tool_exchange": True,
+             "tool_call_id": cid, "name": op,
+             "_jack_internal_tool_failed": i in (10, 11),
+             "content": "failed" if i in (10, 11) else "success"},
+        ])
+    ending = {"role": "assistant", "content": "All chapters written.",
+              "_jack_extended_candidate_response": True,
+              "_jack_agentic_stage1_tool_observation_complete": True}
+    full = [start] + exchanges + [ending]
+    note = k._agentic_stage2_host_tool_evidence_note(full)
+    for i in range(13):
+        assert f'call_id="chapter-call-{i:02d}"' in note
+    assert note.count("call_id=") == 13
+    assert note.count("outcome=REPORTED_ERROR") == 2
+    assert "omitted" not in note
+    receipt = k._agentic_tool_history_note(full)
+    for i in range(13):
+        assert f"id=chapter-call-{i:02d}" in receipt
+    assert receipt.count("; result_sha256=") == 13
+    assert "omitted" not in receipt
+
+
+def test_stage2_more_than_1000_records_keeps_every_id(monkeypatch, tmp_path):
+    """No arbitrary cardinality ceiling on user-turn tool accounting."""
+    k = load_kernel(monkeypatch, tmp_path, "isolate-retain")
+    history = [{"role": "user", "content": "Run many tools."}]
+    for i in range(1025):
+        cid = f"call-{i:04d}"
+        history.extend([
+            {"role": "assistant", "_jack_internal_tool_exchange": True,
+             "_jack_stage_key": "extended_initial",
+             "tool_calls": [{"id": cid, "type": "function",
+                             "function": {"name": "write", "arguments": '{"path":"sample.txt"}'}}]},
+            {"role": "tool", "_jack_internal_tool_exchange": True,
+             "tool_call_id": cid, "name": "write", "content": "success"},
+        ])
+    history.append({"role": "assistant", "content": "Done",
+                    "_jack_extended_candidate_response": True,
+                    "_jack_agentic_stage1_tool_observation_complete": True})
+    note = k._agentic_stage2_host_tool_evidence_note(history)
+    assert note.count("call_id=") == 1025
+    assert 'call_id="call-0000"' in note
+    assert 'call_id="call-1024"' in note
+    assert "omitted" not in note
