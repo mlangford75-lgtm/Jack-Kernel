@@ -25,6 +25,14 @@ The authority chain is:
 
 `loaded backend context -> Jack detection -> Jack model metadata -> Pi contextWindow`
 
+### Deep Reasoning numerical verification
+
+The Pi provider extension also registers an optional **`python_repl`** tool when connected to an active Jack runtime. This is a restricted numerical Python evaluator, not a general-purpose interpreter: it supports arithmetic, bounded numeric assignments, `print(...)`, and a small set of mathematical functions. Imports, filesystem/network access, unrestricted execution, and arbitrary Python functions are rejected. It uses a 5-second subprocess timeout and a 64 KiB output buffer.
+
+The installation command above copies both `jack-kernel.ts` and `jack-numeric-verifier.py` into `~/.pi/agent/extensions`. **A fresh Git clone does not update already-installed Pi extensions.** Rerun the installer, then restart Pi or use `/reload` to make the tool visible.
+
+The interpreter defaults to `python` on PATH; set `JACK_PI_PYTHON` to the fully qualified Python executable if needed. Jack's existing quantitative Antithesis gate requires the tool only when the caller's authorized schemas include `python_repl`. The model's proposed calculations still require meaningful evidence checks: successful tool execution alone is not proof.
+
 ## Accepted Orchestration Gateway v2 control bridge
 
 `pi-control-bridge.ts` runs inside the **privileged Primary Pi worker**. It is private to Jack; Jack Orchestrator does not connect to it directly and does not receive its control token.
