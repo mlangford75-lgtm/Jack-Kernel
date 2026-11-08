@@ -213,3 +213,116 @@ def test_creative_request_with_tools_completes_without_irrelevant_tool_call():
             'Thesis: Part B=15',
         ]
     asyncio.run(run())
+
+
+def test_quantitative_request_requires_authorized_python_only_on_first_antithesis_call():
+    async def run():
+        kernel = FakeKernel()
+        install_deep_reasoning(kernel, ns())
+        request = (
+            "A dataset contains 1 million examples, with 10% wrong labels. "
+            "What is the error rate after random removal of 10%?"
+        )
+        offered = tools() + [{
+            "type": "function",
+            "function": {"name": "read", "parameters": {"type": "object"}},
+        }]
+        result = await kernel._prepare_commit({
+            "messages": [{"role": "user", "content": request}],
+            "tools": offered,
+        })
+        assert result.finish_reason == "tool_calls"
+        assert [name for name, *_ in kernel.calls] == [
+            "deep_reasoning_thesis", "deep_reasoning_antithesis"
+        ]
+        assert kernel.calls[0][2] == "auto"
+        assert kernel.calls[1][2] == "required"
+        assert [t["function"]["name"] for t in kernel.calls[1][3]] == ["python_repl"]
+        pending = kernel._pending_tool_resumes[result.tool_calls[0]["id"]]
+        final = await kernel._resume_tool_stage_nonstream(
+            pending, [{"tool_call_id": result.tool_calls[0]["id"], "content": "10 percent"}]
+        )
+        assert final.finish_reason == "stop"
+        assert kernel.calls[2][0] == "deep_reasoning_antithesis"
+        assert kernel.calls[2][2] == "auto"
+        assert kernel.calls[3][0] == "deep_reasoning_synthesis"
+        assert kernel.calls[3][2] == "auto"
+    asyncio.run(run())
+
+
+def test_quantitative_request_without_authorized_python_does_not_force_tools():
+    async def run():
+        class NoPythonKernel(FakeKernel):
+            async def _run_stage(self, messages, secondary_system, stage_key, usage,
+                                 *, tools, tool_choice, append):
+                if stage_key == "deep_reasoning_antithesis":
+                    self.calls.append((stage_key, messages, tool_choice, tools))
+                    return {"choices": [{"message": {"content": "No Python: UNVERIFIED"}}]}
+                return await super()._run_stage(
+                    messages, secondary_system, stage_key, usage,
+                    tools=tools, tool_choice=tool_choice, append=append
+                )
+        kernel = NoPythonKernel()
+        install_deep_reasoning(kernel, ns())
+        result = await kernel._prepare_commit({
+            "messages": [{"role": "user", "content": "Calculate 10% of 900,000."}],
+            "tools": [{"type": "function", "function": {
+                "name": "read", "parameters": {"type": "object"}
+            }}],
+        })
+        assert result.finish_reason == "stop"
+        assert kernel.calls[1][2] == "auto"
+        assert [t["function"]["name"] for t in kernel.calls[1][3]] == ["read"]
+    asyncio.run(run())
+
+
+def test_css_percentage_without_quantitative_question_does_not_force_python():
+    async def run():
+        class CSSKernel(FakeKernel):
+            async def _run_stage(self, messages, secondary_system, stage_key, usage,
+                                 *, tools, tool_choice, append):
+                if stage_key == "deep_reasoning_antithesis":
+                    self.calls.append((stage_key, messages, tool_choice, tools))
+                    return {"choices": [{"message": {"content": "CSS layout verified by inspection"}}]}
+                return await super()._run_stage(
+                    messages, secondary_system, stage_key, usage,
+                    tools=tools, tool_choice=tool_choice, append=append
+                )
+        kernel = CSSKernel()
+        install_deep_reasoning(kernel, ns())
+        result = await kernel._prepare_commit({
+            "messages": [{"role": "user", "content":
+                "Create an HTML card styled with width: 100% and height: 50%."}],
+            "tools": tools(),
+        })
+        assert result.finish_reason == "stop"
+        assert kernel.calls[1][2] == "auto"
+        assert [t["function"]["name"] for t in kernel.calls[1][3]] == ["python_repl"]
+    asyncio.run(run())
+
+
+def test_required_quantitative_verification_rejects_unsupported_model_completion():
+    async def run():
+        class SkippingModelKernel(FakeKernel):
+            async def _run_stage(self, messages, secondary_system, stage_key, usage,
+                                 *, tools, tool_choice, append):
+                if stage_key == "deep_reasoning_antithesis":
+                    self.calls.append((stage_key, messages, tool_choice, tools))
+                    return {"choices": [{"message": {"content":
+                        "I agree with Thesis without testing"}}]}
+                return await super()._run_stage(
+                    messages, secondary_system, stage_key, usage,
+                    tools=tools, tool_choice=tool_choice, append=append
+                )
+        kernel = SkippingModelKernel()
+        install_deep_reasoning(kernel, ns())
+        with pytest.raises(FakeHTTPException) as caught:
+            await kernel._prepare_commit({
+                "messages": [{"role": "user", "content":
+                    "What is the probability of drawing two red cards?"}],
+                "tools": tools(),
+            })
+        assert caught.value.status_code == 502
+        assert kernel.calls[1][2] == "required"
+        assert len(kernel.calls) == 2
+    asyncio.run(run())
