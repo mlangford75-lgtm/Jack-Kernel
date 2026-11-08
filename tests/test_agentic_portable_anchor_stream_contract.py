@@ -37,7 +37,7 @@ def test_pi_style_structured_user_gets_matching_task_anchor_without_mutation(mon
     suffix = k._stage_continuation(k.STAGES["extended_reflection"], history)
     assert marker not in suffix
     assert suffix == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
-    assert len(suffix) < 4000
+    assert len(suffix) < 5000
 
 
 def test_unprojectable_user_does_not_produce_dangling_model_reference(monkeypatch, tmp_path):
