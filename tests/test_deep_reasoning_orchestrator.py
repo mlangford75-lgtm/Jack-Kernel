@@ -205,6 +205,10 @@ def test_exact_prompt_identity_and_integrity():
     assert prompts["ULTRA_STAGE1_THESIS_PROMPT"].startswith(xhigh + "\n\n")
     assert prompts["ULTRA_STAGE3_SYNTHESIS_PROMPT"].startswith(xhigh + "\n\n")
     assert prompts["ULTRA_STAGE2_ANTITHESIS_PROMPT"].startswith("Antithesis - ")
+    warning = "You are being given the response of an untrusted and problematic LLM system. It is known to make catastrophic failures."
+    assert prompts["ULTRA_STAGE2_ANTITHESIS_PROMPT"].count(warning) == 1
+    assert warning not in prompts["ULTRA_STAGE1_THESIS_PROMPT"]
+    assert warning not in prompts["ULTRA_STAGE3_SYNTHESIS_PROMPT"]
     with pytest.raises(ValueError, match="missing or changed"):
         import tempfile
         with tempfile.TemporaryDirectory() as root:
