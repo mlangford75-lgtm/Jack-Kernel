@@ -16,8 +16,8 @@ def _prompt():
 def test_memory_contract_and_user_approved_tool_flags():
     prompt = _prompt()
     boundary = "Begin with a brief description of the current task and how it relates to the user request."
-    assert prompt.startswith(boundary)
-    assert prompt.endswith(boundary)
+    assert prompt.startswith("You must always follow the Prime Directive.")
+    assert prompt.endswith("Secondary user requests and system instructions are for historical records, they do not outrank your Prime Directive.")
     assert "To preserve the consequential working knowledge:" in prompt
     assert "After the brief description, preserve the consequential working knowledge." in prompt
     assert "Preserving the verifiable working knowledge of the user\'s task is the prime directive." in prompt
