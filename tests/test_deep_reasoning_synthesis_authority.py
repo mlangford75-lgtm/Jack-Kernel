@@ -74,6 +74,9 @@ def test_conservative_tas_prompts_preserve_verbatim_xhigh_sentence():
     assert 'consequential contradictions across sections' in prompts['ULTRA_STAGE2_ANTITHESIS_PROMPT']
     assert 'Do not report an issue Thesis already adequately addresses as a defect' in prompts['ULTRA_STAGE2_ANTITHESIS_PROMPT']
     assert 'Preserve correct and useful Thesis material.' in prompts['ULTRA_STAGE3_SYNTHESIS_PROMPT']
+    assert 'A rejected tool call is not verification.' in prompts['ULTRA_STAGE2_ANTITHESIS_PROMPT']
+    assert 'correct arithmetic on an invented premise does not validate a claim.' in prompts['ULTRA_STAGE3_SYNTHESIS_PROMPT']
+    assert 'Failed tool calls do not verify anything' in prompts['ULTRA_STAGE3_SYNTHESIS_PROMPT']
 
 
 def test_synthesis_handoff_tracks_actual_user_request_and_fallible_stages():
