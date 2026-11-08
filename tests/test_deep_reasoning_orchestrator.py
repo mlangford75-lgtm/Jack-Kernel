@@ -237,6 +237,10 @@ def test_exact_prompt_identity_and_integrity():
     assert "avoid irrelevant tool calls" in synth
     assert "Tool-grounded verification:" not in prompts["ULTRA_STAGE1_THESIS_PROMPT"]
     assert "Tool-grounded verification:" not in prompts["ULTRA_STAGE2_ANTITHESIS_PROMPT"]
+    assert synth.count("Both are fallible model-generated drafts prone to hallucinations") == 1
+    assert "do not trust a claim merely because either stage states it or both agree." in synth
+    assert "Both are fallible model-generated drafts" not in prompts["ULTRA_STAGE1_THESIS_PROMPT"]
+    assert "Both are fallible model-generated drafts" not in prompts["ULTRA_STAGE2_ANTITHESIS_PROMPT"]
     with pytest.raises(ValueError, match="missing or changed"):
         import tempfile
         with tempfile.TemporaryDirectory() as root:
