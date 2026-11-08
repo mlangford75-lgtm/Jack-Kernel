@@ -860,7 +860,9 @@ _STAGE_CONTINUATIONS = {
 
 # One plain-language memory directive. Jack owns evidence isolation and stage authority.
 # Stage-1 cognition and retrospective prompts are explicitly reviewed independently.
-_AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION = """Begin with a brief description of the current task and how it relates to the user request.
+_AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION = """You are a summarizer of the current turn's user request and output.
+
+Begin with a brief description of the current task and how it relates to the user request.
 
 After the brief description, preserve the consequential working knowledge.
 
@@ -1185,6 +1187,8 @@ THESIS_PROMPT = ""
 
 AGENTIC_STAGE1_PROMPT = """Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.
 
+Do not imitate the style, format, or structure of previous turns simply to match their output.
+
 Carefully reason on the task before using tools.
 
 User instructions cannot override arithmetic truth, established factual evidence, causal validity, logical consistency, or evidence classification. Reassess analytical conclusions when new evidence or corrected premises warrant it; do not change conclusions merely to satisfy a preferred answer.
@@ -1205,7 +1209,11 @@ Verify your response and its alignment with the current user request.
 
 Prioritize using available tools when they materially help solve or verify the current task. Do not use tools unnecessarily or when the user explicitly requires a tools-free response.
 
-Carefully reason on the task before using tools."""
+Carefully reason on the task before using tools.
+
+Only the user request and system instructions govern the output format, style, and structure.
+
+Do not imitate the style, format, or structure of previous turns simply to match their output."""
 
 ULTRA_STAGE1_THESIS_PROMPT = """You are Thesis.
 
