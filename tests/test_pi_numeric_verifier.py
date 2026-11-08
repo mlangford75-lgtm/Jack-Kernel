@@ -90,3 +90,17 @@ def test_large_but_bounded_numeric_check_under_ast_limit():
     result = run("n=0\n" + "n+=1\n"*100 + "print(n)")
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "100"
+
+
+def test_assignment_only_numeric_call_is_verification_error():
+    result = run("wrong=100000\nremaining_wrong=wrong*0.9\nnoise_rate=remaining_wrong/900000")
+    assert result.returncode == 2
+    assert result.stdout.strip() == ""
+    assert "VERIFICATION_ERROR: No numerical output produced" in result.stderr
+    assert "Add print(...)" in result.stderr
+
+
+def test_numeric_output_remains_successful_after_assignments():
+    result = run("wrong=100000\nremaining_wrong=wrong*0.9\nprint(remaining_wrong/900000)")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "0.1"
