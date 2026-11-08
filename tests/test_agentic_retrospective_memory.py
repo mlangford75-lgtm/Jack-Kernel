@@ -54,6 +54,14 @@ def tool_exchange(n=1):
     return rows
 
 
+def current_turn_tools(n=1):
+    return [
+        {"role": "user", "content": "Current request"},
+        *tool_exchange(n),
+        {"role": "assistant", "content": "Done", "_jack_extended_candidate_response": True},
+    ]
+
+
 def test_stage_contracts_and_frozen_answer_are_separate():
     k = load_kernel()
     assert k.AGENTIC_STAGE1_PROMPT.startswith("Reasoning effort is set to xhigh.")
@@ -92,7 +100,7 @@ def test_agentic_gc_retires_native_reasoning_and_tool_protocol():
 
 def test_receipts_are_host_created_bounded_and_non_authoritative():
     k = load_kernel()
-    note = k._agentic_tool_history_note(tool_exchange(10))
+    note = k._agentic_tool_history_note(current_turn_tools(10))
     assert note.startswith(k._AGENTIC_TOOL_NOTE_OPEN)
     assert note.endswith(k._AGENTIC_TOOL_NOTE_CLOSE)
     assert note.count("; result_sha256=") == 10
@@ -113,7 +121,7 @@ def test_cross_turn_receipt_budget_preserves_semantic_memory_and_a1():
     k = load_kernel()
     turns = []
     for i in range(10):
-        note = k._agentic_tool_history_note(tool_exchange(6))
+        note = k._agentic_tool_history_note(current_turn_tools(6))
         artifact = k._format_agentic_completed_response(
             f"lesson-{i}" + note, f"answer-{i}"
         )
@@ -136,7 +144,7 @@ def test_cross_turn_receipt_budget_preserves_semantic_memory_and_a1():
 
 def test_model_memory_projection_excludes_receipts_and_keeps_original_artifact():
     k = load_kernel()
-    receipt = k._agentic_tool_history_note(tool_exchange(1))
+    receipt = k._agentic_tool_history_note(current_turn_tools(1))
     assert receipt
     assert k._agentic_model_memory_view("Causal lesson", receipt).endswith("Causal lesson")
     assert receipt not in k._agentic_model_memory_view("Causal lesson", receipt)
@@ -160,7 +168,7 @@ def test_model_memory_projection_excludes_receipts_and_keeps_original_artifact()
 
 def test_receipt_projection_is_copy_on_write_and_stage_scoped():
     k = load_kernel()
-    note = k._agentic_tool_history_note(tool_exchange(1))
+    note = k._agentic_tool_history_note(current_turn_tools(1))
     old = {"role": "assistant", "content": "M" + note + chr(10) * 2 + "A1"}
     before = dict(old)
     stage1 = k.BACKEND._stage_messages_for_profile(
@@ -174,3 +182,36 @@ def test_receipt_projection_is_copy_on_write_and_stage_scoped():
         [old], k.STAGES["extended_reflection"]
     )
     assert stage2[0]["content"] == old["content"]
+
+
+def test_receipt_scope_rejects_previous_turn_and_deduplicates_tool_results():
+    k = load_kernel()
+    old = tool_exchange(2)
+    recent = tool_exchange(3)
+    # Same IDs may occur in separate generations. Only the latest authentic
+    # user boundary determines which transactions belong to this receipt.
+    history = [
+        {"role": "user", "content": "prior request"},
+        *old,
+        {"role": "assistant", "content": "Prior completed answer"},
+        {"role": "user", "content": "current request"},
+        *recent,
+        dict(recent[-1]),
+        {"role": "assistant", "content": "Current answer",
+         "_jack_extended_candidate_response": True},
+    ]
+    receipt = k._agentic_tool_history_note(history)
+    assert receipt.count("; result_sha256=") == 3
+    assert "file-2.txt" in receipt
+    assert receipt.count("id=call-2;") == 1
+
+
+def test_receipt_scope_without_frozen_answer_is_empty():
+    k = load_kernel()
+    history = [
+        {"role": "user", "content": "old request"}, *tool_exchange(1),
+        {"role": "assistant", "content": "old answer",
+         "_jack_extended_candidate_response": True},
+        {"role": "user", "content": "new request"}, *tool_exchange(2),
+    ]
+    assert k._agentic_tool_history_note(history) == ""
