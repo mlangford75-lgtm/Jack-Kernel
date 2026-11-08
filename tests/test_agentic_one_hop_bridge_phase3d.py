@@ -138,7 +138,7 @@ def test_tool_receipt_keeps_early_material_edit_over_many_reads():
     assert "reported_result_excerpt=tool result 0" in note
     assert "older tool receipt(s) omitted" not in note
     assert all(f"id=T{i}" in note for i in range(10))
-    assert len(note)>3400
+    assert note.count("; result_sha256=") == 10
 
 def test_prompt_and_client_format_not_changed():
     k=load()
