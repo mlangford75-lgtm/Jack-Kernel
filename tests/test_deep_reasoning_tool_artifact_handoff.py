@@ -116,3 +116,24 @@ def test_operator_configured_cap_is_honored_and_stage_specific():
     p=run(orch.start(request='a',require_verification=False))
     with pytest.raises(DeepReasoningProtocolError,match='configured thesis tool round budget exceeded'):
         run(orch.resume(p,results=[{'tool_call_id':'t1','content':'done'}]))
+
+
+def test_code_quality_precedes_file_existence_in_tas_handoffs():
+    antithesis = antithesis_messages(
+        request="Give me a webpage of an analog clock",
+        thesis_answer="Copy this HTML into index.html to see a working clock.",
+    )
+    anti = antithesis[-1]["content"]
+    assert "consequential flaws" in anti
+    assert "layout geometry" in anti
+    assert "not just whether an artifact was saved" in anti
+    assert "Do not create a file merely to check whether supplied code already exists" in anti
+
+    synthesis = synthesis_messages(
+        request="Give me a webpage of an analog clock",
+        thesis_answer="Copy this HTML into index.html to see a working clock.",
+        antithesis_findings="Pivot logic is flawed.",
+    )
+    final = synthesis[-1]["content"]
+    assert "whether the solution actually works" in final
+    assert "Do not confuse successful file persistence with solution correctness" in final
