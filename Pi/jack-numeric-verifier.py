@@ -168,7 +168,9 @@ def evaluate(source):
     steps = [0]
     for stmt in parsed.body:
         execute(stmt, scope, outputs, steps)
-    return "\n".join(outputs) if outputs else "No result; add print(...) to output values"
+    if not outputs:
+        raise ValueError("No numerical output produced. Add print(...) to display the calculated result.")
+    return "\n".join(outputs)
 
 
 if __name__ == "__main__":
