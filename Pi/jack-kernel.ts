@@ -267,7 +267,7 @@ export default async function (pi) {
         }
         const python = String(process.env.JACK_PI_PYTHON || "python");
         const result = await pi.exec(python, ["-I", "-S", NUMERIC_VERIFIER_PATH, source], {
-          signal, timeout: 5000,
+          signal, timeout: 5000, maxBuffer: 65536,
         });
         if (result.killed || result.code !== 0) {
           throw new Error("Numeric verification failed: " + String(result.stderr || result.stdout || "interpreter error").slice(0, 1000));
