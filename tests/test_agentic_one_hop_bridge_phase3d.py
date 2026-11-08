@@ -124,13 +124,14 @@ def test_tool_receipt_keeps_early_material_edit_over_many_reads():
     original=k._tool_call_metadata
     k._tool_call_metadata=lambda calls:{c["id"]:{"tool":c["function"]["name"],"artifact_target":"clock.html","arguments_sha256":"a"*64} for c in calls}
     try:
-        history=[]
+        history=[{"role":"user","content":"Current request"}]
         for i,name in enumerate(["edit"]+["read"]*9):
             cid=f"T{i}"
             history.append({"role":"assistant","_jack_internal_tool_exchange":True,
                 "tool_calls":[{"id":cid,"type":"function","function":{"name":name,"arguments":"{}"}}]})
             history.append({"role":"tool","_jack_internal_tool_exchange":True,"tool_call_id":cid,
                 "name":name,"content":f"tool result {i}"})
+        history.append({"role":"assistant","content":"Done","_jack_extended_candidate_response":True})
         note=k._agentic_tool_history_note(history)
     finally:
         k._tool_call_metadata=original
