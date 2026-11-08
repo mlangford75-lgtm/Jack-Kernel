@@ -80,7 +80,7 @@ import json
 import logging
 from jack_agentic_forensics import AgenticForensicJournal, ForensicConflict, attempt_id as _new_forensic_attempt_id
 from jack_loop_detector import (ReasoningLoopDetector, RepeatedReasoningLoop, RepeatedLoopInterrupt, PartialOutputLoopInterrupt, LOOP_THRESHOLDS)
-from jack_loop_shadow import LongCycleShadowDetector, source_texts_from_history
+from jack_loop_shadow import LongCycleShadowDetector, LongCycleRepeatedReasoningLoop, source_texts_from_history
 import os
 import shutil
 import socket
@@ -6868,30 +6868,48 @@ class JackQwenKernel:
             else None
         )
 
-        def observe_long_cycle(text: str) -> None:
+        def observe_long_cycle(text: str) -> Optional[Tuple[int, int]]:
             nonlocal shadow
             if shadow is None:
-                return
+                return None
             try:
                 observation = shadow.feed(text)
-                if observation is not None:
-                    LOG.info(
-                        "Long-cycle shadow observation (NO INTERRUPT): stage=%s "
-                        "word=%d cycle=%d copies=%d similarity=%s "
-                        "source_overlap=%.3f source_suppressed=%s source_truncated=%s",
-                        profile.name,
-                        observation.word_index,
-                        observation.cycle_words,
-                        observation.repetitions,
-                        tuple(round(value, 4) for value in observation.similarities),
-                        observation.source_overlap,
-                        observation.suppressed_as_source,
-                        observation.source_truncated,
-                    )
+                if observation is None:
+                    return None
+                # The observer remains diagnostic unless a strict independent
+                # host policy authorizes intervention. In particular, never
+                # abort after visible output or a tool call has begun.
+                eligible = bool(
+                    AGENTIC_MODE
+                    and stage_key == "extended_initial"
+                    and self.cfg.loop_detector_enabled
+                    and not content_parts
+                    and not tool_state
+                    and not tool_call_fragments_streamed
+                    and shadow.interrupt_eligible(observation)
+                )
+                LOG.info(
+                    "Long-cycle observation: stage=%s word=%d cycle=%d copies=%d "
+                    "similarity=%s source_overlap=%.3f source_suppressed=%s "
+                    "source_truncated=%s interrupt_eligible=%s",
+                    profile.name,
+                    observation.word_index,
+                    observation.cycle_words,
+                    observation.repetitions,
+                    tuple(round(value, 4) for value in observation.similarities),
+                    observation.source_overlap,
+                    observation.suppressed_as_source,
+                    observation.source_truncated,
+                    eligible,
+                )
+                if eligible:
+                    return (observation.cycle_words, observation.repetitions)
             except Exception:
-                # Instrumentation must never affect live inference or stream safety.
-                LOG.warning("Long-cycle shadow monitor disabled after error", exc_info=True)
+                # The diagnostic and authorization logic must fail OPEN:
+                # never interrupt an inference if the new detector crashes.
+                LOG.warning("Long-cycle observer disabled after error", exc_info=True)
                 shadow = None
+            return None
 
         budget = GenerationBudgetMonitor(
             getattr(self.cfg, "reasoning_budget_tokens", 100000),
@@ -6971,7 +6989,9 @@ class JackQwenKernel:
                         reasoning_content_parts.append(text)
                         if detector is not None and detector.feed(text):
                             raise RepeatedReasoningLoop(detector.detected_cycle_words or 128, detector.repetitions)
-                        observe_long_cycle(text)
+                        long_loop = observe_long_cycle(text)
+                        if long_loop is not None:
+                            raise LongCycleRepeatedReasoningLoop(*long_loop)
                         last_public_activity = time.monotonic()
                         yield {"kind": "reasoning", "text": text}
                 elif reasoning is not None:
@@ -6981,7 +7001,9 @@ class JackQwenKernel:
                         reasoning_parts.append(text)
                         if detector is not None and detector.feed(text):
                             raise RepeatedReasoningLoop(detector.detected_cycle_words or 128, detector.repetitions)
-                        observe_long_cycle(text)
+                        long_loop = observe_long_cycle(text)
+                        if long_loop is not None:
+                            raise LongCycleRepeatedReasoningLoop(*long_loop)
                         last_public_activity = time.monotonic()
                         yield {"kind": "reasoning", "text": text}
 
