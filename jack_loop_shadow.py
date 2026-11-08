@@ -1,9 +1,9 @@
 """Observation-only long native-reasoning cycle monitor.
 
-Unlike jack_loop_detector.ReasoningLoopDetector this module has NO interruption
-or retry authority. It never inspects generated content, tool calls or history as
-loop evidence: only current backend native-reasoning deltas are fed to it. User
-and tool text supplied at generation start may suppress a source-derived match.
+Long-cycle observation is separate from narrowly gated interruption authority.
+Only current backend native-reasoning deltas are loop evidence. User and tool
+text supplied at generation start may suppress a source-derived match.
+Jack controls whether to interrupt; the monitor itself never aborts streams.
 
 Near-identity is measured with stdlib difflib.SequenceMatcher over word IDs.
 Thresholds are experimental; a report is *not* proof of a model failure.
@@ -14,6 +14,20 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 import re
 from typing import Iterable, Optional
+
+from jack_loop_detector import RepeatedReasoningLoop
+
+
+class LongCycleRepeatedReasoningLoop(RepeatedReasoningLoop):
+    """Qualified long near-duplicate self-replanning, caught by existing recovery."""
+
+    def __init__(self, cycle_words: int, repetitions: int):
+        super().__init__(cycle_words, repetitions)
+        self.args = (
+            f"near-identical long native reasoning self-replanning cycle: "
+            f"{cycle_words} words x {repetitions} consecutive copies",
+        )
+
 
 MIN_LONG_CYCLE_WORDS = 2049
 MAX_LONG_CYCLE_WORDS = 8192
@@ -193,6 +207,41 @@ class LongCycleShadowDetector:
                     source_truncated=self._source_truncated,
                 )
         return None
+
+    def interrupt_eligible(self, observation: LongCycleObservation) -> bool:
+        """Conservative authority gate, separate from diagnostic observation.
+
+        Near-exact long repetition alone is not enough to abort a model: it may
+        be quoting a document. Require source independence AND repeatedly
+        abandoned self-instructions. The caller must additionally require
+        Agentic Stage 1, no streamed output/tools, and an enabled loop detector.
+        """
+        if (
+            self.observation is not observation
+            or observation.repetitions != LONG_CYCLE_REPETITIONS
+            or min(observation.similarities) < LONG_CYCLE_SIMILARITY
+            or observation.source_truncated
+            or observation.source_overlap > 0.15
+            or observation.suppressed_as_source
+        ):
+            return False
+        ids = self._words[-observation.cycle_words:]
+        if len(ids) != observation.cycle_words:
+            return False
+        inverse = {value: key for key, value in self._symbols.items()}
+        cycle = " ".join(inverse.get(word, "") for word in ids)
+        # Four drafts of the same document could be legitimate quotations.
+        # Require a repeatedly restarted model plan, not just repetitive prose.
+        promised_work = re.findall(
+            r"\blet\s+me\s+(?:write|draft|save|read|verify|check)\b",
+            cycle, flags=re.IGNORECASE,
+        )
+        restarted = re.search(
+            r"\b(?:actually[,;:]?\s+let\s+me|wait[,;:]?\s+let\s+me|"
+            r"let\s+me\s+(?:reconsider|rewrite|restart|start\s+over|redraft))\b",
+            cycle, flags=re.IGNORECASE,
+        )
+        return len(promised_work) >= 2 and restarted is not None
 
     def feed(self, text: str) -> Optional[LongCycleObservation]:
         """Observe native reasoning; never raise a loop/retry/interrupt exception."""
