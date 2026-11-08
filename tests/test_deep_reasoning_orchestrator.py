@@ -215,6 +215,11 @@ def test_exact_prompt_identity_and_integrity():
     assert "Independently examine the substantive quality" in prompts["ULTRA_STAGE3_SYNTHESIS_PROMPT"]
     assert objective not in prompts["ULTRA_STAGE1_THESIS_PROMPT"]
     assert objective not in prompts["ULTRA_STAGE3_SYNTHESIS_PROMPT"]
+    anti = prompts["ULTRA_STAGE2_ANTITHESIS_PROMPT"]
+    assert anti.count("Focus on the three most consequential distinct, defensible flaws") == 1
+    assert "Test the simplest decisive counterexample first." in anti
+    assert "Do not enumerate speculative omissions, repeat equivalent objections" in anti
+    assert "or fewer if warranted" in anti
     with pytest.raises(ValueError, match="missing or changed"):
         import tempfile
         with tempfile.TemporaryDirectory() as root:
