@@ -5881,9 +5881,11 @@ class OpenAICompatibleBackend:
         self, payload: Dict[str, Any], profile: StageProfile
     ) -> None:
         # Raw llama.cpp accepts thinking_budget_tokens per chat request when its
-        # server-side --reasoning-budget is unset. LM Studio and other OpenAI-
-        # compatible endpoints have no confirmed equivalent request parameter;
-        # retain their existing template-based thinking controls.
+        # server-side --reasoning-budget is unset. This is a backend generation
+        # control, NOT Jack's generation-budget failure monitor: a backend that
+        # ignores thinking-off requests must not cause an immediate Jack failure.
+        # LM Studio and other OpenAI-compatible endpoints have no confirmed
+        # equivalent numeric request parameter; retain thinking-off controls.
         if self.cfg.backend_profile == "llamacpp" and AGENTIC_MODE:
             if _agentic_zero_reasoning(profile):
                 payload["thinking_budget_tokens"] = 0
@@ -6328,21 +6330,16 @@ class GenerationBudgetMonitor:
     chunk size must not change the budget. Prompt/history tokens are excluded.
     """
 
-    def __init__(self, reasoning_limit: int, output_limit: int, *, forbid_reasoning: bool = False):
+    def __init__(self, reasoning_limit: int, output_limit: int):
         self.limits = {
             "reasoning": max(0, int(reasoning_limit)),
             "output": max(0, int(output_limit)),
         }
-        # Existing config: limit 0 means unlimited. A strict stage-local
-        # zero-reasoning requirement must be a separate explicit policy.
-        self.forbid_reasoning = bool(forbid_reasoning)
         self.bytes = {"reasoning": 0, "output": 0}
 
     def observe(self, kind: str, text: str) -> None:
         if kind not in self.limits or not text:
             return
-        if kind == "reasoning" and self.forbid_reasoning:
-            raise GenerationBudgetExceeded("reasoning")
         self.bytes[kind] += len(str(text).encode("utf-8"))
         limit = self.limits[kind]
         if limit > 0 and (self.bytes[kind] + 3) // 4 >= limit:
@@ -6642,7 +6639,6 @@ class JackQwenKernel:
         nonstream_budget = GenerationBudgetMonitor(
             getattr(self.cfg, "reasoning_budget_tokens", 100000),
             getattr(self.cfg, "output_budget_tokens", 100000),
-            forbid_reasoning=_agentic_zero_reasoning(profile),
         )
         nonstream_budget.observe(
             "reasoning",
@@ -6865,7 +6861,6 @@ class JackQwenKernel:
         budget = GenerationBudgetMonitor(
             getattr(self.cfg, "reasoning_budget_tokens", 100000),
             getattr(self.cfg, "output_budget_tokens", 100000),
-            forbid_reasoning=_agentic_zero_reasoning(profile),
         )
         content_parts: List[str] = []
         reasoning_content_parts: List[str] = []
@@ -11372,7 +11367,6 @@ def _runtime_identity_details() -> Dict[str, Any]:
             "name": profile.name,
             "thinking": bool(profile.thinking),
             "reasoning_effort": profile.reasoning_effort,
-            "reasoning_budget_tokens": (0 if _agentic_zero_reasoning(profile) else CFG.reasoning_budget_tokens),
             "allow_tools": bool(profile.allow_tools),
             "temperature": profile.temperature,
             "force_preserve_thinking": bool(profile.force_preserve_thinking),
