@@ -230,6 +230,13 @@ def test_exact_prompt_identity_and_integrity():
     assert "[What would invalidate or materially change the Thesis answer?]" not in anti
     assert "Numerical verification:" not in prompts["ULTRA_STAGE1_THESIS_PROMPT"]
     assert "Numerical verification:" not in prompts["ULTRA_STAGE3_SYNTHESIS_PROMPT"]
+    synth = prompts["ULTRA_STAGE3_SYNTHESIS_PROMPT"]
+    assert synth.count("Tool-grounded verification: Strongly prefer relevant authorized tools") == 1
+    assert "verify consequential calculations, quantitative comparisons, and newly introduced numerical values with python_repl" in synth
+    assert "Check the test\'s assumptions and actual results" in synth
+    assert "avoid irrelevant tool calls" in synth
+    assert "Tool-grounded verification:" not in prompts["ULTRA_STAGE1_THESIS_PROMPT"]
+    assert "Tool-grounded verification:" not in prompts["ULTRA_STAGE2_ANTITHESIS_PROMPT"]
     with pytest.raises(ValueError, match="missing or changed"):
         import tempfile
         with tempfile.TemporaryDirectory() as root:
