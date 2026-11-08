@@ -4261,7 +4261,9 @@ _AGENTIC_TOOL_CONTEXT_BUDGET_CHARS = 4800
 
 
 def _agentic_tool_history_note(history: List[Dict[str, Any]]) -> str:
-    """Project ALL completed stage-1 tool transactions into factual receipts.
+    """Project only the current turn's completed Stage-1 tool transactions.
+
+    Account for all unique current-turn IDs without arbitrary count/size caps.
 
     The full conversation protocol remains in the active Stage-1 history through
     Stage 2. This host projection keeps only returned result identities and
@@ -4269,8 +4271,25 @@ def _agentic_tool_history_note(history: List[Dict[str, Any]]) -> str:
     Full tool results are recoverable only where Pi history or a successfully
     written forensic snapshot actually exists.
     """
+    # Enforce the SAME current-turn boundary as the Stage-2 evidence projection.
+    # Do not rely on prior tool GC having run: older raw exchanges can survive
+    # in forensic/legacy/recovery histories but must never be re-receipted.
+    target = active_response_target(history)
+    if target is None:
+        return ""
+    start = int(target["history_index"])
+    current_turn = history[start + 1:]
+    frozen_at = next(
+        (i for i, item in enumerate(current_turn)
+         if isinstance(item, dict) and item.get("_jack_extended_candidate_response")),
+        None,
+    )
+    if frozen_at is None:
+        return ""
+
     metadata: Dict[str, Dict[str, str]] = {}
     rows: List[str] = []
+    seen_ids: set[str] = set()
 
     def safe(value: Any, limit: Optional[int] = None) -> str:
         normalized = " ".join(str(value or "UNKNOWN").split())
@@ -4278,7 +4297,7 @@ def _agentic_tool_history_note(history: List[Dict[str, Any]]) -> str:
             normalized = normalized[:limit]  # Result excerpt only, never call identity.
         return html.escape(normalized, quote=True)
 
-    for item in history:
+    for item in current_turn[:frozen_at]:
         if not isinstance(item, dict) or not item.get("_jack_internal_tool_exchange"):
             continue
         if item.get("role") == "assistant" and item.get("tool_calls"):
@@ -4288,8 +4307,9 @@ def _agentic_tool_history_note(history: List[Dict[str, Any]]) -> str:
             continue
         call_id = str(item.get("tool_call_id") or "").strip()
         meta = metadata.get(call_id)
-        if not call_id or not meta:
+        if not call_id or not meta or call_id in seen_ids:
             continue
+        seen_ids.add(call_id)
         target = str(meta.get("artifact_target") or "UNKNOWN")
         is_absolute = bool(re.match(r"^(?:[A-Za-z]:[\\/]|/|\\\\)", target))
         kind = "REPRESENTED_ABSOLUTE_UNVERIFIED" if is_absolute else (
