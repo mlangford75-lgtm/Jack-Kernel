@@ -220,6 +220,16 @@ def test_exact_prompt_identity_and_integrity():
     assert "Test the simplest decisive counterexample first." in anti
     assert "Do not enumerate speculative omissions, repeat equivalent objections" in anti
     assert "or fewer if warranted" in anti
+    assert "Numerical verification: For consequential quantitative claims" in anti
+    assert "python_repl when an authorized Python tool is available" in anti
+    assert "Check the premises and formula as well as the arithmetic" in anti
+    assert "Establish defects actually present in the Thesis" in anti
+    assert "[Established consequential defects: up to three" in anti
+    assert "[Unverified material risks:" in anti
+    assert "[What must be true for the Thesis answer to be correct?]" not in anti
+    assert "[What would invalidate or materially change the Thesis answer?]" not in anti
+    assert "Numerical verification:" not in prompts["ULTRA_STAGE1_THESIS_PROMPT"]
+    assert "Numerical verification:" not in prompts["ULTRA_STAGE3_SYNTHESIS_PROMPT"]
     with pytest.raises(ValueError, match="missing or changed"):
         import tempfile
         with tempfile.TemporaryDirectory() as root:
