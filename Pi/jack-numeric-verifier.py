@@ -1,7 +1,8 @@
 """Bounded numerical Python verifier; NOT a general-purpose Python executor.
 
-Reject imports, attribute access, subscripts, comprehensions, loops, arbitrary
-function calls, filesystem/network access and anything outside numerical AST.
+Supports arithmetic, assignments, finite range loops, and numeric conditions.
+Rejects imports, attributes, subscripts, comprehensions, unbounded loops, arbitrary
+function calls, filesystem/network access, and anything outside numerical AST.
 """
 from __future__ import annotations
 
@@ -23,6 +24,9 @@ FUNCTIONS = {
     "comb": math.comb, "factorial": math.factorial,
 }
 MAX_MAGNITUDE = 10**25
+MAX_AST_NODES = 1200
+MAX_RANGE_ITEMS = 1000
+MAX_STEPS = 10000
 
 
 def bound(value):
@@ -67,33 +71,106 @@ def number(node, scope):
     raise ValueError("Unsupported Python construct; numeric expressions only")
 
 
+def numeric_condition(node, scope):
+    """Evaluate bounded numeric comparisons, never arbitrary Python truthiness."""
+    if isinstance(node, ast.Compare):
+        left = number(node.left, scope)
+        for op, comparator in zip(node.ops, node.comparators):
+            right = number(comparator, scope)
+            actions = {
+                ast.Lt: operator.lt, ast.LtE: operator.le,
+                ast.Gt: operator.gt, ast.GtE: operator.ge,
+                ast.Eq: operator.eq, ast.NotEq: operator.ne,
+            }
+            action = actions.get(type(op))
+            if action is None or not action(left, right):
+                return False
+            left = right
+        return True
+    if isinstance(node, ast.BoolOp):
+        if isinstance(node.op, ast.And):
+            return all(numeric_condition(item, scope) for item in node.values)
+        if isinstance(node.op, ast.Or):
+            return any(numeric_condition(item, scope) for item in node.values)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+        return not numeric_condition(node.operand, scope)
+    raise ValueError("Only numeric comparisons are allowed in conditions")
+
+
+def execute(stmt, scope, outputs, steps):
+    steps[0] += 1
+    if steps[0] > MAX_STEPS:
+        raise ValueError("Numeric verification execution budget exceeded")
+    if (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Name)
+            and not stmt.targets[0].id.startswith("_")):
+        scope[stmt.targets[0].id] = number(stmt.value, scope)
+    elif (isinstance(stmt, ast.AugAssign) and isinstance(stmt.target, ast.Name)
+          and not stmt.target.id.startswith("_")
+          and type(stmt.op) in OPS):
+        name = stmt.target.id
+        if name not in scope:
+            raise ValueError("Unknown variable: " + name)
+        rhs = number(stmt.value, scope)
+        if type(stmt.op) is ast.Pow and abs(rhs) > 40:
+            raise ValueError("Exponent exceeds verifier bound")
+        scope[name] = bound(OPS[type(stmt.op)](scope[name], rhs))
+    elif isinstance(stmt, ast.Expr):
+        expression = stmt.value
+        if (isinstance(expression, ast.Call)
+                and isinstance(expression.func, ast.Name)
+                and expression.func.id == "print" and not expression.keywords
+                and len(expression.args) <= 8):
+            outputs.append(" ".join(str(number(v, scope)) for v in expression.args))
+        else:
+            outputs.append(str(number(expression, scope)))
+    elif (isinstance(stmt, ast.For) and isinstance(stmt.target, ast.Name)
+          and not stmt.target.id.startswith("_") and not stmt.orelse
+          and isinstance(stmt.iter, ast.Call)
+          and isinstance(stmt.iter.func, ast.Name)
+          and stmt.iter.func.id == "range" and not stmt.iter.keywords):
+        if not 1 <= len(stmt.iter.args) <= 3:
+            raise ValueError("range requires one to three numeric arguments")
+        args = [number(arg, scope) for arg in stmt.iter.args]
+        if any(type(arg) is not int for arg in args):
+            raise ValueError("range arguments must be integers")
+        sequence = range(*args)
+        if len(sequence) > MAX_RANGE_ITEMS:
+            raise ValueError("range exceeds numeric verification iteration bound")
+        for value in sequence:
+            steps[0] += 1
+            if steps[0] > MAX_STEPS:
+                raise ValueError("Numeric verification execution budget exceeded")
+            scope[stmt.target.id] = bound(value)
+            for inner in stmt.body:
+                execute(inner, scope, outputs, steps)
+    elif isinstance(stmt, ast.If):
+        chosen = stmt.body if numeric_condition(stmt.test, scope) else stmt.orelse
+        for inner in chosen:
+            execute(inner, scope, outputs, steps)
+    else:
+        raise ValueError(
+            "Only numeric assignments, expressions, finite for/range loops, "
+            "and numeric if comparisons are allowed"
+        )
+    if sum(len(item) for item in outputs) > 12000:
+        raise ValueError("Output limit exceeded")
+
+
 def evaluate(source):
     if not source or len(source) > 4096:
         raise ValueError("Numeric code must have 1-4096 characters")
     parsed = ast.parse(source, mode="exec")
-    if len(list(ast.walk(parsed))) > 200:
+    if len(list(ast.walk(parsed))) > MAX_AST_NODES:
         raise ValueError("Numerical expression exceeds syntax bound")
     scope = {}
     outputs = []
+    steps = [0]
     for stmt in parsed.body:
-        if (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
-                and isinstance(stmt.targets[0], ast.Name)
-                and not stmt.targets[0].id.startswith("_")):
-            scope[stmt.targets[0].id] = number(stmt.value, scope)
-        elif isinstance(stmt, ast.Expr):
-            expression = stmt.value
-            if (isinstance(expression, ast.Call) and
-                    isinstance(expression.func, ast.Name) and
-                    expression.func.id == "print" and not expression.keywords
-                    and len(expression.args) <= 8):
-                outputs.append(" ".join(str(number(v, scope)) for v in expression.args))
-            else:
-                outputs.append(str(number(expression, scope)))
-        else:
-            raise ValueError("Only numeric assignments and expressions are allowed")
-        if sum(len(item) for item in outputs) > 12000:
-            raise ValueError("Output limit exceeded")
-    return "\n".join(outputs) if outputs else "No result; add print(...) to output values"
+        execute(stmt, scope, outputs, steps)
+    if not outputs:
+        raise ValueError("No numerical output produced. Add print(...) to display the calculated result.")
+    return "\n".join(outputs)
 
 
 if __name__ == "__main__":
