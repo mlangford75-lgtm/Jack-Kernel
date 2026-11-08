@@ -136,9 +136,9 @@ def test_tool_receipt_keeps_early_material_edit_over_many_reads():
         k._tool_call_metadata=original
     assert "id=T0" in note and "tool=edit" in note
     assert "reported_result_excerpt=tool result 0" in note
-    assert "older tool receipt(s) omitted" in note
-    assert "id=T9" in note
-    assert len(note)<3400
+    assert "older tool receipt(s) omitted" not in note
+    assert all(f"id=T{i}" in note for i in range(10))
+    assert len(note)>3400
 
 def test_prompt_and_client_format_not_changed():
     k=load()
