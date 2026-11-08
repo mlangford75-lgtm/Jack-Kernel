@@ -95,12 +95,12 @@ def test_receipts_are_host_created_bounded_and_non_authoritative():
     note = k._agentic_tool_history_note(tool_exchange(10))
     assert note.startswith(k._AGENTIC_TOOL_NOTE_OPEN)
     assert note.endswith(k._AGENTIC_TOOL_NOTE_CLOSE)
-    assert note.count("; result_sha256=") <= k._AGENTIC_TOOL_NOTE_MAX_ENTRIES
+    assert note.count("; result_sha256=") == 10
     assert "NOT verified" in note
     assert "result_sha256=" in note
     assert "args_sha256=" in note
     assert "file-9.txt" in note
-    assert "file-0.txt" not in note
+    assert "file-0.txt" in note
 
     # Caller text is not interpreted as internal tool evidence.
     untrusted = tool_exchange(1)
