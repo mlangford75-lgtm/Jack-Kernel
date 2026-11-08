@@ -250,9 +250,9 @@ export default async function (pi) {
     pi.registerTool({
       name: "python_repl",
       label: "Python numeric verification",
-      description: "Verify calculations with numeric-only Python: assignments, print, arithmetic, safe numeric functions. No imports, filesystem, network, attributes, or arbitrary Python execution. Use only for mathematical checks.",
+      description: "Bounded numeric Python verification: arithmetic, numeric variables, print, safe math functions, finite for/range loops (max 1000 iterations), and numeric if comparisons. No imports, strings, filesystem, network, attributes, comprehensions, while loops, or arbitrary execution. Keep checks concise; simplify and retry if rejected. Use only for mathematics.",
       parameters: Type.Object({
-        code: Type.String({ description: "Up to 4096 characters of pure numerical Python calculations, using print(...) for output.", maxLength: 4096 }),
+        code: Type.String({ description: "Up to 4096 characters of bounded numeric Python; use print(...). Supports integer range loops and numeric if comparisons; excludes imports, strings, attribute access and while loops.", maxLength: 4096 }),
       }),
       async execute(toolCallId, params, signal, onUpdate, ctx) {
         if (String(ctx?.model?.provider || "") !== PROVIDER_NAME || !activeRuntimeBinding) {
