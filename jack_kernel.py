@@ -2298,6 +2298,17 @@ class StageProfile:
     max_tokens: Optional[int] = None
 
 
+def _agentic_zero_reasoning(profile: StageProfile) -> bool:
+    """Flash: both stages; Balanced: memory stage only; never other modes."""
+    return bool(
+        AGENTIC_MODE
+        and (
+            (AGENTIC_FLASH_MODE and profile.name in {"Agentic native pass 1", "Agentic native pass 2"})
+            or (AGENTIC_BALANCED_MODE and profile.name == "Agentic native pass 2")
+        )
+    )
+
+
 # No Jack-imposed generation-token ceilings. Backends retain their native
 # context and generation limits; the optional Loop Detector is separate.
 ULTRA_STAGE1_MAX_TOKENS = None
@@ -5860,6 +5871,20 @@ class OpenAICompatibleBackend:
     def _apply_qwen_controls(
         self, payload: Dict[str, Any], profile: StageProfile
     ) -> None:
+        # Raw llama.cpp accepts thinking_budget_tokens per chat request when its
+        # server-side --reasoning-budget is unset. LM Studio and other OpenAI-
+        # compatible endpoints have no confirmed equivalent request parameter;
+        # retain their existing template-based thinking controls.
+        if self.cfg.backend_profile == "llamacpp" and AGENTIC_MODE:
+            if _agentic_zero_reasoning(profile):
+                payload["thinking_budget_tokens"] = 0
+            elif AGENTIC_BALANCED_MODE and profile.name == "Agentic native pass 1":
+                # Balanced Stage 1 gets the configured allowance (100k default).
+                # A Jack budget of 0 still means unlimited; do not turn that
+                # existing configuration into a hard zero at the backend.
+                if self.cfg.reasoning_budget_tokens > 0:
+                    payload["thinking_budget_tokens"] = self.cfg.reasoning_budget_tokens
+
         # Ollama's OpenAI-compatible API maps reasoning_effort onto its native
         # thinking control. xhigh maps to Ollama's current "max" level.
         if self.cfg.backend_profile == "ollama" or self.cfg.qwen_control_shape == "ollama_openai":
@@ -6294,16 +6319,21 @@ class GenerationBudgetMonitor:
     chunk size must not change the budget. Prompt/history tokens are excluded.
     """
 
-    def __init__(self, reasoning_limit: int, output_limit: int):
+    def __init__(self, reasoning_limit: int, output_limit: int, *, forbid_reasoning: bool = False):
         self.limits = {
             "reasoning": max(0, int(reasoning_limit)),
             "output": max(0, int(output_limit)),
         }
+        # Existing config: limit 0 means unlimited. A strict stage-local
+        # zero-reasoning requirement must be a separate explicit policy.
+        self.forbid_reasoning = bool(forbid_reasoning)
         self.bytes = {"reasoning": 0, "output": 0}
 
     def observe(self, kind: str, text: str) -> None:
         if kind not in self.limits or not text:
             return
+        if kind == "reasoning" and self.forbid_reasoning:
+            raise GenerationBudgetExceeded("reasoning")
         self.bytes[kind] += len(str(text).encode("utf-8"))
         limit = self.limits[kind]
         if limit > 0 and (self.bytes[kind] + 3) // 4 >= limit:
@@ -6603,6 +6633,7 @@ class JackQwenKernel:
         nonstream_budget = GenerationBudgetMonitor(
             getattr(self.cfg, "reasoning_budget_tokens", 100000),
             getattr(self.cfg, "output_budget_tokens", 100000),
+            forbid_reasoning=_agentic_zero_reasoning(profile),
         )
         nonstream_budget.observe(
             "reasoning",
@@ -6825,6 +6856,7 @@ class JackQwenKernel:
         budget = GenerationBudgetMonitor(
             getattr(self.cfg, "reasoning_budget_tokens", 100000),
             getattr(self.cfg, "output_budget_tokens", 100000),
+            forbid_reasoning=_agentic_zero_reasoning(profile),
         )
         content_parts: List[str] = []
         reasoning_content_parts: List[str] = []
@@ -11331,6 +11363,7 @@ def _runtime_identity_details() -> Dict[str, Any]:
             "name": profile.name,
             "thinking": bool(profile.thinking),
             "reasoning_effort": profile.reasoning_effort,
+            "reasoning_budget_tokens": (0 if _agentic_zero_reasoning(profile) else CFG.reasoning_budget_tokens),
             "allow_tools": bool(profile.allow_tools),
             "temperature": profile.temperature,
             "force_preserve_thinking": bool(profile.force_preserve_thinking),
