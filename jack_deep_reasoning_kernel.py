@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -19,6 +20,47 @@ from jack_deep_reasoning_orchestrator import (
     CompletedAnswer, DeepReasoningOrchestrator, DeepReasoningProtocolError,
     PendingToolRequest, load_exact_v6_prompts,
 )
+
+
+
+# Host-owned and deliberately narrow: consequential quantitative requests
+# require a first Antithesis verification call only if Pi authorized Python.
+# This tool-choice policy does not claim every numeric statement is wrong.
+_TAS_NUMERIC_TERMS = re.compile(
+    r"\b(?:calculate|calculations?|compute|quantitative|mathematical|math|"
+    r"percentages?|probabilities?|probability|arithmetic|fractions?|ratios?|"
+    r"averages?|mean|median|variance|expected\s+(?:value|count|rate)|error\s+rate)\b",
+    re.IGNORECASE,
+)
+_TAS_PERCENT_VALUE = re.compile(r"\b\d+(?:[.,]\d+)?\s*%")
+_TAS_QUANT_CONTEXT = re.compile(
+    r"\b(?:datasets?|data|samples?|labels?|errors?|noise|costs?|prices?|"
+    r"revenue|accuracy|removal|removed|reduce|reduction|increase|decrease)\b",
+    re.IGNORECASE,
+)
+_TAS_ARITHMETIC = re.compile(r"\b\d+\s*[+*/=]\s*\d+")
+
+
+def _requires_antithesis_python_verification(
+    user_request: str, authorized_tools: list[dict[str, Any]]
+) -> bool:
+    python_available = any(
+        isinstance(tool, dict)
+        and tool.get("type") == "function"
+        and isinstance(tool.get("function"), dict)
+        and tool["function"].get("name") == "python_repl"
+        for tool in authorized_tools
+    )
+    if not python_available:
+        return False
+    return bool(
+        _TAS_NUMERIC_TERMS.search(user_request)
+        or _TAS_ARITHMETIC.search(user_request)
+        or (
+            _TAS_PERCENT_VALUE.search(user_request)
+            and _TAS_QUANT_CONTEXT.search(user_request)
+        )
+    )
 
 
 @dataclass
@@ -347,10 +389,11 @@ def install_deep_reasoning(kernel: Any, namespace: Any) -> None:
                 visible_history=history,
                 prior_synthesis=prior_synthesis,
                 preserve_thinking=bool(preserve_enabled and prior_synthesis is not None),
-                # Authorize meaningful tool tests without forcing a first call simply
-                # because the caller supplied a tool surface. A required call
-                # on a creative/no-evidence request is not verification.
-                require_verification=False,
+                # Require one authorized Python check for quantitative requests.
+                # Creative and tool-less requests stay optional; never invent authority.
+                require_verification=_requires_antithesis_python_verification(
+                    original_request, tools
+                ),
             )
         except BaseException as exc:
             # Failed or cancelled Thesis may retry its one allowed R3 handoff.
