@@ -4254,13 +4254,14 @@ def _split_prior_jack_output(content: Any) -> tuple[Optional[str], Optional[str]
 # establish final filesystem identity, or upgrade caller-replayed text to trusted evidence.
 _AGENTIC_TOOL_NOTE_OPEN = "\n\n[Jack Tool History - Host-Recorded Receipt]\n"
 _AGENTIC_TOOL_NOTE_CLOSE = "\n[/Jack Tool History - Host-Recorded Receipt]"
-_AGENTIC_TOOL_NOTE_MAX_ENTRIES = 6
-_AGENTIC_TOOL_NOTE_MAX_TOTAL_CHARS = 2400
+# Only completed *historical* receipts are subject to the separate model-context
+# budget. Current-turn Stage-2 evidence and the committed host audit have NO
+# operation-count or combined-size caps.
 _AGENTIC_TOOL_CONTEXT_BUDGET_CHARS = 4800
 
 
 def _agentic_tool_history_note(history: List[Dict[str, Any]]) -> str:
-    """Project completed stage-1 tool transactions into bounded factual receipts.
+    """Project ALL completed stage-1 tool transactions into factual receipts.
 
     The full conversation protocol remains in the active Stage-1 history through
     Stage 2. This host projection keeps only returned result identities and
@@ -4270,10 +4271,11 @@ def _agentic_tool_history_note(history: List[Dict[str, Any]]) -> str:
     """
     metadata: Dict[str, Dict[str, str]] = {}
     rows: List[str] = []
-    priorities: List[int] = []
 
-    def safe(value: Any, limit: int = 120) -> str:
-        normalized = " ".join(str(value or "UNKNOWN").split())[:limit]
+    def safe(value: Any, limit: Optional[int] = None) -> str:
+        normalized = " ".join(str(value or "UNKNOWN").split())
+        if limit is not None:
+            normalized = normalized[:limit]  # Result excerpt only, never call identity.
         return html.escape(normalized, quote=True)
 
     for item in history:
@@ -4299,51 +4301,30 @@ def _agentic_tool_history_note(history: List[Dict[str, Any]]) -> str:
         critical = any(word in tool_name for word in (
             "write", "edit", "patch", "delete", "remove", "rename", "move", "save", "create", "mkdir", "replace"
         ))
-        priority = 3 if item.get("_jack_internal_tool_failed") else (2 if critical else 1 if "read" in tool_name else 0)
-        priorities.append(priority)
-        # A short bounded observation excerpt survives rather than only a hash;
+        # A short result excerpt survives rather than only a hash;
         # the word 'reported' ensures it is not mistaken for verified effect.
         observed = safe(result, 140) if (critical or item.get("_jack_internal_tool_failed")) else ""
         rows.append(
-            f"- id={safe(call_id, 110)}; tool={safe(item.get('name') or meta.get('tool'), 55)}; "
-            f"target={safe(target, 150)}; path={kind}; "
+            f"- id={safe(call_id)}; tool={safe(item.get('name') or meta.get('tool'))}; "
+            f"target={safe(target)}; path={kind}; "
             f"outcome={outcome}; result_sha256={_sha256_text(result)}; "
-            f"args_sha256={safe(meta.get('arguments_sha256'), 64)}"
+            f"args_sha256={safe(meta.get('arguments_sha256'))}"
             + (f"; reported_result_excerpt={observed}" if observed else "")
         )
     if not rows:
         return ""
-    # Deterministic relevance-first selection, newest first within each rank;
-    # restore chronological order only after selecting retained transactions.
-    selected = sorted(range(len(rows)), key=lambda i: (-priorities[i], -i))[:_AGENTIC_TOOL_NOTE_MAX_ENTRIES]
-    omitted = len(rows) - len(selected)
-    selected.sort()
-    while selected and len("\n".join(rows[i] for i in selected)) > _AGENTIC_TOOL_NOTE_MAX_TOTAL_CHARS:
-        # Drop lowest-priority oldest observation first. Do not erase the
-        # relevant earlier mutation solely because later routine reads occurred.
-        drop = min(selected, key=lambda i: (priorities[i], i))
-        selected.remove(drop)
-        omitted += 1
-    rows = [rows[i] for i in selected]
-    if not rows:
-        return ""
+    # Current-turn host audit is lossless at the transaction level, regardless
+    # of tool count. Raw result bytes remain represented by hashes/excerpts.
     footnote = (
         "Paths above are representations from tool calls; execution CWD and "
         "resolved on-disk identity are NOT verified. A returned result is NOT "
         "proof of filesystem effect. Tool history is not a new tool request."
     )
-    body = "\n".join(rows)
-    if omitted:
-        body += f"\n[{omitted} older tool receipt(s) omitted from context]"
-    return _AGENTIC_TOOL_NOTE_OPEN + body + "\n" + footnote + _AGENTIC_TOOL_NOTE_CLOSE
-
-
-_AGENTIC_STAGE2_HOST_TOOL_MAX_ENTRIES = 6
-_AGENTIC_STAGE2_HOST_TOOL_MAX_CHARS = 1800
+    return _AGENTIC_TOOL_NOTE_OPEN + "\n".join(rows) + "\n" + footnote + _AGENTIC_TOOL_NOTE_CLOSE
 
 
 def _agentic_stage2_host_tool_evidence_note(history: List[Dict[str, Any]]) -> str:
-    """Bounded Jack-authored tool-return observations for the current Agentic turn.
+    """Complete Jack-authored tool-return observations for the current Agentic turn.
 
     This reads only host-owned raw exchanges and the host's retired evidence
     receipts, not replayed user/model prose. No raw arguments or tool output are
@@ -4365,13 +4346,14 @@ def _agentic_stage2_host_tool_evidence_note(history: List[Dict[str, Any]]) -> st
         return ""
     observation_complete = suffix[frozen_at].get("_jack_agentic_stage1_tool_observation_complete") is True
 
-    def safe(value: Any, limit: int = 100) -> str:
+    def safe(value: Any) -> str:
         # JSON quoting prevents line breaks or role-like delimiters in requested
-        # tool paths/names from becoming structural prompt text.
-        return json.dumps(str(value or "UNKNOWN")[:limit], ensure_ascii=True)
+        # tool paths/names from becoming structural prompt text. Never truncate
+        # tool identities or paths; every operation must remain attributable.
+        return json.dumps(str(value or "UNKNOWN"), ensure_ascii=True)
 
     metadata: Dict[str, Dict[str, Any]] = {}
-    observations: List[Tuple[int, str]] = []
+    observations: List[str] = []
     seen_ids: set[str] = set()
     issued_ids: set[str] = set()
     for item in suffix[:frozen_at]:
@@ -4414,38 +4396,32 @@ def _agentic_stage2_host_tool_evidence_note(history: List[Dict[str, Any]]) -> st
         else:
             path_scope = "RELATIVE_CWD_UNVERIFIED"
         status = "REPORTED_ERROR" if failure else "RESULT_RETURNED_NO_STRUCTURED_ERROR"
-        priority = 3 if failure else 2 if artifact_effect == "MUTATION" else 1
-        observations.append((
-            priority,
-            f"- call_id={safe(call_id, 64)}; tool={safe(name, 60)}; "
-            f"requested_target={safe(requested_target, 130)}; "
-            f"outcome={status}; path_scope={path_scope}",
-        ))
+        observations.append(
+            f"- call_id={safe(call_id)}; tool={safe(name)}; "
+            f"requested_target={safe(requested_target)}; "
+            f"outcome={status}; path_scope={path_scope}"
+        )
 
-    unmatched_calls = len(issued_ids - seen_ids)
-    # Absent records are not evidence of absent tools unless Jack itself froze
-    # the entire turn and there are no outstanding tool-call identities.
-    if not observations and not observation_complete and not unmatched_calls:
+    # Do not prioritize away earlier operations. Stage 2 sees every current-turn
+    # returned transaction in observed order; any missing result is identified by
+    # its actual call ID, not reduced to a count.
+    unmatched_ids = sorted(issued_ids - seen_ids)
+    if not observations and not observation_complete and not unmatched_ids:
         return ""
-    # Keep recent errors and mutations ahead of routine reads. Restore original
-    # order after selection so failures and retries remain intelligible.
-    selected = sorted(range(len(observations)), key=lambda i: (-observations[i][0], -i))
-    selected = sorted(selected[:_AGENTIC_STAGE2_HOST_TOOL_MAX_ENTRIES])
-    omitted = len(observations) - len(selected)
-    while selected and len("\n".join(observations[i][1] for i in selected)) > _AGENTIC_STAGE2_HOST_TOOL_MAX_CHARS:
-        selected.remove(min(selected, key=lambda i: (observations[i][0], i)))
-        omitted += 1
-    if observations and not selected:
-        return ""
-    rows = [observations[i][1] for i in selected]
-    if not observations and observation_complete and not unmatched_calls:
+    rows = list(observations)
+    if not observations and observation_complete and not unmatched_ids:
         rows = ["NO_TOOL_CALLS_RECORDED: Jack recorded no tool calls or returned tool results during this completed user turn."]
-    if unmatched_calls:
-        rows.append(f"RECORD_INCOMPLETE: {unmatched_calls} host-recorded tool call(s) lack a matching returned result.")
-    if omitted:
-        rows.append(f"{omitted} other host-recorded tool return(s) omitted for context budget.")
+    if unmatched_ids:
+        for call_id in unmatched_ids:
+            meta = metadata.get(call_id, {})
+            rows.append(
+                f"- call_id={safe(call_id)}; tool={safe(meta.get('tool'))}; "
+                f"requested_target={safe(meta.get('artifact_target'))}; "
+                "outcome=NO_RETURN_RECORDED"
+            )
+        rows.append(f"RECORD_INCOMPLETE: {len(unmatched_ids)} host-recorded tool call(s) lack a matching returned result.")
     record_scope = (
-        "COMPLETE_CURRENT_TURN" if observation_complete and not unmatched_calls
+        "COMPLETE_CURRENT_TURN" if observation_complete and not unmatched_ids
         else "INCOMPLETE_OR_UNCONFIRMED"
     )
     return (
