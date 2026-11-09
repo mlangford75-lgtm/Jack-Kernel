@@ -241,5 +241,13 @@ def append_stage_local_tool_results(
     for output in outputs:
         if not isinstance(output.get("content"), str):
             raise ValueError("tool outputs must include text content")
-        result.append({"role": "tool", "tool_call_id": output["tool_call_id"], "content": output["content"]})
+        # A reported failed execution is never silently presented as a
+        # successful check. Preserve the original executor output verbatim.
+        outcome = output.get("tool_outcome", "UNKNOWN")
+        if outcome not in {"SUCCESS", "FAILED", "UNKNOWN"}:
+            raise ValueError("tool_outcome must be SUCCESS, FAILED, or UNKNOWN")
+        content = output["content"]
+        if outcome == "FAILED":
+            content = "[Jack: executor reported TOOL FAILURE; no verification established.]\n" + content
+        result.append({"role": "tool", "tool_call_id": output["tool_call_id"], "content": content})
     return result

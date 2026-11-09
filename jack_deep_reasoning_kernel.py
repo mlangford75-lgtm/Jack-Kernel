@@ -20,6 +20,7 @@ from jack_deep_reasoning_orchestrator import (
     CompletedAnswer, DeepReasoningOrchestrator, DeepReasoningProtocolError,
     PendingToolRequest, load_exact_v6_prompts,
 )
+from jack_tool_outcomes import UNKNOWN as TOOL_UNKNOWN
 
 
 
@@ -426,7 +427,9 @@ def install_deep_reasoning(kernel: Any, namespace: Any) -> None:
         try:
             proposal = await active.orchestrator.resume(
                 active.proposal,
-                results=[{"tool_call_id": str(m["tool_call_id"]), "content": str(m.get("content") or "")}
+                results=[{"tool_call_id": str(m["tool_call_id"]),
+                          "content": str(m.get("content") or ""),
+                          "tool_outcome": str(m.get("_jack_tool_outcome") or TOOL_UNKNOWN)}
                          for m in tool_messages],
             )
         except (DeepReasoningProtocolError, ValueError, TypeError) as exc:

@@ -314,6 +314,49 @@ export default async function (pi) {
   await syncProvider();
   await registerNumericVerifier();
 
+  // Pi knows whether a tool actually failed, but its OpenAI-compatible message
+  // serializer may omit isError. Carry only *failed* outcomes to Jack, bound
+  // to the exact tool-call ID and Pi session. Successful calls remain unchanged.
+  const failedToolCalls = new Map();
+  let outcomeSessionId = null;
+  pi.on("tool_execution_end", (event, ctx) => {
+    if (String(ctx?.model?.provider || "") !== PROVIDER_NAME) return;
+    const callId = String(event?.toolCallId || "");
+    const sessionId = String(ctx?.sessionManager?.getSessionId?.() || "");
+    if (!callId || !sessionId) return;
+    if (outcomeSessionId !== sessionId) {
+      failedToolCalls.clear();
+      outcomeSessionId = sessionId;
+    }
+    if (event?.isError === true) {
+      failedToolCalls.delete(callId);
+      failedToolCalls.set(callId, sessionId);
+      while (failedToolCalls.size > 128) {
+        failedToolCalls.delete(failedToolCalls.keys().next().value);
+      }
+    } else {
+      failedToolCalls.delete(callId);
+    }
+  });
+
+  pi.on("before_provider_request", (event, ctx) => {
+    if (!activeRuntimeBinding || String(ctx?.model?.provider || "") !== PROVIDER_NAME) return;
+    const sessionId = String(ctx?.sessionManager?.getSessionId?.() || "");
+    if (!sessionId || sessionId !== outcomeSessionId) return;
+    const payload = event?.payload;
+    if (!payload || typeof payload !== "object" || !Array.isArray(payload.messages)) return;
+    let tagged = false;
+    const messages = payload.messages.map((message) => {
+      if (message?.role !== "tool") return message;
+      const id = String(message.tool_call_id || "");
+      if (!id || failedToolCalls.get(id) !== sessionId) return message;
+      tagged = true;
+      return { ...message, is_error: true };
+    });
+    if (tagged) return { ...payload, messages };
+    return undefined;
+  });
+
   pi.on("before_provider_headers", (event, ctx) => {
     const binding = activeRuntimeBinding;
     if (!binding || String(ctx?.model?.provider || "") !== PROVIDER_NAME) {

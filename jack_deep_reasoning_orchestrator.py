@@ -409,6 +409,8 @@ class DeepReasoningOrchestrator:
                     "raw_result_total_chars": len(content),
                     "raw_result_truncated": len(content) > len(visible_result),
                     "origin": "external_tool_result_not_authenticated_by_phase2",
+                    "tool_outcome": output.get("tool_outcome", "UNKNOWN"),
+                    "execution_succeeded": output.get("tool_outcome") == "SUCCESS",
                     "methodology_verified": False,
                 })
             for call in pending.calls:
@@ -431,7 +433,13 @@ class DeepReasoningOrchestrator:
             session.tool_rounds += 1
             session.outstanding = ()
             session.generation += 1
-            session.first_verification_completed |= session.stage == "antithesis"
+            # A failed tool attempt satisfies the protocol's first-call
+            # requirement, but must never count as successful verification.
+            session.first_verification_completed |= (
+                session.stage == "antithesis"
+                and any(by_id[c["id"]].get("tool_outcome") == "SUCCESS"
+                        for c in pending.calls)
+            )
             return await self._advance(session, "auto")
         except BaseException:
             # Roll back protocol state on backend errors, cancellation and failed

@@ -81,6 +81,7 @@ import logging
 from jack_agentic_forensics import AgenticForensicJournal, ForensicConflict, attempt_id as _new_forensic_attempt_id
 from jack_loop_detector import (ReasoningLoopDetector, RepeatedReasoningLoop, RepeatedLoopInterrupt, PartialOutputLoopInterrupt, LOOP_THRESHOLDS)
 from jack_loop_shadow import LongCycleShadowDetector, LongCycleRepeatedReasoningLoop, source_texts_from_history
+from jack_tool_outcomes import reported_tool_outcome, SUCCESS as TOOL_SUCCESS, FAILED as TOOL_FAILED, UNKNOWN as TOOL_UNKNOWN
 import os
 import shutil
 import socket
@@ -7391,21 +7392,8 @@ class JackQwenKernel:
 
     @staticmethod
     def _tool_result_explicitly_failed(message: Dict[str, Any]) -> bool:
-        """Recognize only structured caller-provided failure signals.
-
-        Jack deliberately does not infer failure from free-text tool output. A
-        caller may explicitly mark a failed tool result with is_error=true,
-        success=false, a failure status, or a non-empty error field.
-        """
-        if not isinstance(message, dict):
-            return False
-        if message.get("is_error") is True or message.get("success") is False:
-            return True
-        status = str(message.get("status") or "").strip().lower()
-        if status in {"error", "failed", "failure"}:
-            return True
-        error = message.get("error")
-        return error not in (None, False, "", {}, [])
+        """Compatibility predicate; all modes share the same outcome contract."""
+        return reported_tool_outcome(message) == TOOL_FAILED
 
     @staticmethod
     def _prune_internal_tool_exchanges(history: List[Dict[str, Any]]) -> int:
@@ -8173,6 +8161,11 @@ class JackQwenKernel:
                 "content": raw.get("content"),
                 "_jack_internal_tool_exchange": True,
             }
+            reported_outcome = reported_tool_outcome(raw)
+            # Keep legacy tool messages byte-for-byte stable when no status
+            # was supplied; explicit statuses alone enter kernel-owned state.
+            if reported_outcome != TOOL_UNKNOWN:
+                item["_jack_tool_outcome"] = reported_outcome
             if raw.get("name") is not None:
                 item["name"] = raw.get("name")
             if self._tool_result_explicitly_failed(raw):
