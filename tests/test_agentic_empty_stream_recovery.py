@@ -55,7 +55,7 @@ def test_single_empty_retries_same_stream_without_replaying_tools(monkeypatch, t
                 {"role": "tool", "tool_call_id": "already-ran", "content": "(no output)"},
             ])
         tools = [{"type": "function", "function": {"name": "bash", "parameters": {
-            "type": "object", "properties": {"command": {"type": "string"}}}}]
+            "type": "object", "properties": {"command": {"type": "string"}}}}}]
         packets = [p async for p in kernel._run_stage_streamed(
             h, "", "extended_initial", {}, tools=tools, tool_choice="auto",
             same_stage_resume=after_tools, append=False)]
