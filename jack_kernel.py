@@ -3928,11 +3928,11 @@ AGENTIC_FINAL_REVIEW_PROMPT = "Hold on, need to verify the reasoning one last ti
 # is not evidence of a NEW user request; label the instruction explicitly so the
 # model continues the original task instead of answering the review cue.
 AGENTIC_FINAL_REVIEW_TRIGGER = (
-    "JACK INTERNAL CONTINUATION — NOT A NEW USER REQUEST.\\n"
+    "JACK INTERNAL CONTINUATION — NOT A NEW USER REQUEST.\n"
     "The previous assistant answer is an uncommitted draft. Review that draft "
     "and the reasoning for the active user request earlier in this conversation. "
-    "This message is a Jack-controlled continuation cue, not the user's task.\\n\\n"
-    + AGENTIC_FINAL_REVIEW_PROMPT + "\\n\\n"
+    "This message is a Jack-controlled continuation cue, not the user's task.\n\n"
+    + AGENTIC_FINAL_REVIEW_PROMPT + "\n\n"
     "Continue the original task and provide its best-supported final response. "
     "Do not respond to the continuation cue itself."
 )
