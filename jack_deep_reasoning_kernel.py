@@ -45,11 +45,15 @@ _TAS_ARITHMETIC = re.compile(r"\b\d+\s*[+*/=]\s*\d+")
 def _requires_antithesis_python_verification(
     user_request: str, authorized_tools: list[dict[str, Any]]
 ) -> bool:
+    # A Python interpreter is available through normal caller-owned shell
+    # tools; do not require a bespoke, restricted Python interpreter.
     python_available = any(
         isinstance(tool, dict)
         and tool.get("type") == "function"
         and isinstance(tool.get("function"), dict)
-        and tool["function"].get("name") == "python_repl"
+        and tool["function"].get("name") in {
+            "bash", "powershell", "pwsh", "python_repl"
+        }
         for tool in authorized_tools
     )
     if not python_available:
@@ -257,14 +261,10 @@ def install_deep_reasoning(kernel: Any, namespace: Any) -> None:
             stage = str(params["stage"])
             offered = params["tools"]
             choice = params["tool_choice"]
-            # First Antithesis request prefers the exact Python tool that TAS v6
-            # used, when it is among caller-authorized schemas.
-            if stage == "antithesis" and choice == "required":
-                python = [t for t in offered if isinstance(t, dict)
-                          and isinstance(t.get("function"), dict)
-                          and t["function"].get("name") == "python_repl"]
-                if python:
-                    offered = python
+            # Leave the entire caller-authorized tool surface available.
+            # Ordinary command tools can execute full Python; restricting the
+            # first Antithesis call to a numeric-only helper would discard
+            # useful verification methods.
             # The incoming message projection, not the preserve flag, enforces
             # TAS independence. Only the completed previous R3 may enter Thesis.
             r3_bridge = bool(
@@ -390,8 +390,8 @@ def install_deep_reasoning(kernel: Any, namespace: Any) -> None:
                 visible_history=history,
                 prior_synthesis=prior_synthesis,
                 preserve_thinking=bool(preserve_enabled and prior_synthesis is not None),
-                # Require one authorized Python check for quantitative requests.
-                # Creative and tool-less requests stay optional; never invent authority.
+                # Require a tool check only when the caller supplied an
+                # eligible Python-capable tool. No new tool authority is created.
                 require_verification=_requires_antithesis_python_verification(
                     original_request, tools
                 ),
