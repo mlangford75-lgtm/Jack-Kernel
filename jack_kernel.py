@@ -81,6 +81,7 @@ import logging
 from jack_agentic_forensics import AgenticForensicJournal, ForensicConflict, attempt_id as _new_forensic_attempt_id
 from jack_loop_detector import (ReasoningLoopDetector, RepeatedReasoningLoop, RepeatedLoopInterrupt, PartialOutputLoopInterrupt, LOOP_THRESHOLDS)
 from jack_loop_shadow import LongCycleShadowDetector, LongCycleRepeatedReasoningLoop, source_texts_from_history
+from jack_tool_outcomes import reported_tool_outcome, SUCCESS as TOOL_SUCCESS, FAILED as TOOL_FAILED, UNKNOWN as TOOL_UNKNOWN
 import os
 import shutil
 import socket
@@ -2843,7 +2844,7 @@ def _tool_evidence_receipts_from_group(group: List[Dict[str, Any]]) -> List[Dict
         result_sha256 = _sha256_text(result_text)
         result_bytes = len(result_text.encode("utf-8"))
         excerpt, truncated = _bounded_evidence_excerpt(result_text)
-        status = "FAILED" if item.get("_jack_internal_tool_failed") else "SUCCESS"
+        status = str(item.get("_jack_tool_outcome") or (TOOL_FAILED if item.get("_jack_internal_tool_failed") else TOOL_UNKNOWN))
         artifact_effect = str(meta.get("artifact_effect") or "NONE")
         artifact_target = str(meta.get("artifact_target") or "UNKNOWN")
         artifact_targets = _artifact_target_list(meta.get("artifact_targets") or artifact_target)
@@ -4316,7 +4317,8 @@ def _agentic_tool_history_note(history: List[Dict[str, Any]]) -> str:
             "UNKNOWN" if target == "UNKNOWN" else "RELATIVE_CWD_UNKNOWN"
         )
         result = _content_to_text(item.get("content"))
-        outcome = "REPORTED_ERROR" if item.get("_jack_internal_tool_failed") else "RESULT_RETURNED"
+        outcome = ("REPORTED_ERROR" if item.get("_jack_internal_tool_failed") else
+                   "REPORTED_SUCCESS" if item.get("_jack_tool_outcome") == TOOL_SUCCESS else "OUTCOME_UNKNOWN")
         tool_name = str(item.get("name") or meta.get("tool") or "").casefold()
         critical = any(word in tool_name for word in (
             "write", "edit", "patch", "delete", "remove", "rename", "move", "save", "create", "mkdir", "replace"
@@ -7391,21 +7393,8 @@ class JackQwenKernel:
 
     @staticmethod
     def _tool_result_explicitly_failed(message: Dict[str, Any]) -> bool:
-        """Recognize only structured caller-provided failure signals.
-
-        Jack deliberately does not infer failure from free-text tool output. A
-        caller may explicitly mark a failed tool result with is_error=true,
-        success=false, a failure status, or a non-empty error field.
-        """
-        if not isinstance(message, dict):
-            return False
-        if message.get("is_error") is True or message.get("success") is False:
-            return True
-        status = str(message.get("status") or "").strip().lower()
-        if status in {"error", "failed", "failure"}:
-            return True
-        error = message.get("error")
-        return error not in (None, False, "", {}, [])
+        """Compatibility predicate; all modes share the same outcome contract."""
+        return reported_tool_outcome(message) == TOOL_FAILED
 
     @staticmethod
     def _prune_internal_tool_exchanges(history: List[Dict[str, Any]]) -> int:
@@ -8172,6 +8161,7 @@ class JackQwenKernel:
                 "tool_call_id": call_id.strip(),
                 "content": raw.get("content"),
                 "_jack_internal_tool_exchange": True,
+                "_jack_tool_outcome": reported_tool_outcome(raw),
             }
             if raw.get("name") is not None:
                 item["name"] = raw.get("name")
