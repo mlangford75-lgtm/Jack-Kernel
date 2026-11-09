@@ -2,16 +2,11 @@ $ErrorActionPreference = 'Stop'
 $source = Join-Path $PSScriptRoot 'jack-kernel.ts'
 $destDir = Join-Path $env:USERPROFILE '.pi\agent\extensions'
 $dest = Join-Path $destDir 'jack-kernel.ts'
-$numericSource = Join-Path $PSScriptRoot 'jack-numeric-verifier.py'
-$numericDest = Join-Path $destDir 'jack-numeric-verifier.py'
-
 New-Item -ItemType Directory -Path $destDir -Force | Out-Null
 Copy-Item -LiteralPath $source -Destination $dest -Force
-Copy-Item -LiteralPath $numericSource -Destination $numericDest -Force
 
-Write-Host "Installed Jack Kernel Pi context-sync extension:" -ForegroundColor Green
+Write-Host "Installed Jack Kernel Pi extension (native command tools retain full Python capabilities):" -ForegroundColor Green
 Write-Host "  $dest"
-Write-Host "  $numericDest"
 Write-Host ""
 Write-Host "Default Jack URL: http://127.0.0.1:8001"
 Write-Host "If Jack uses a different URL or API token, create:" 
