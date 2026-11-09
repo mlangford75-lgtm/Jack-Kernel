@@ -122,3 +122,55 @@ def test_verification_and_alignment_share_turn_identity_without_a1_freeze(monkey
     assert len([x for x in h if x.get("_jack_internal_agentic_final_review_trigger")]) == 1
     with pytest.raises(k.HTTPException, match="already started"):
         k._agentic_begin_stage1_verification(h, stage_result("Duplicate", "R2"))
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_verification_tool_resume_moves_to_alignment_once(monkeypatch, tmp_path, stream):
+    k = load(monkeypatch, tmp_path)
+    h = [{"role": "user", "content": "Inspect the local clock workspace."}]
+    k._agentic_begin_turn(h, fresh=True)
+    k._agentic_begin_stage1_verification(h, stage_result("Initial draft", "Initial reasoning"))
+    # Simulate the host's normal validated tool checkpoint and Pi's tool result
+    # during the first verification continuation. The verification cue remains
+    # in canonical history across resume and must not be fired a second time.
+    h.extend([
+        {"role": "assistant", "tool_calls": [
+            {"id": "tool-verify-1", "type": "function",
+             "function": {"name": "bash", "arguments": '{"command":"ls -a"}'}}],
+         "_jack_stage_key": "extended_initial"},
+        {"role": "tool", "tool_call_id": "tool-verify-1", "content": ".\\n..\\n"},
+    ])
+    class Backend:
+        def __init__(self):
+            self.calls = []
+        async def chat(self, *, messages, **kwargs):
+            self.calls.append([dict(m) for m in messages])
+            return stage_result("Verified" if len(self.calls) == 1 else "Aligned", "R")
+        async def chat_stream(self, *, messages, **kwargs):
+            self.calls.append([dict(m) for m in messages])
+            content = "Verified" if len(self.calls) == 1 else "Aligned"
+            yield {"choices": [{"index": 0, "delta": {"reasoning_content": "R"}, "finish_reason": None}]}
+            yield {"choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}]}
+            yield {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                   "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}
+    b = Backend()
+    kernel = k.JackQwenKernel(b, k.CFG)
+    u = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    if stream:
+        async def run():
+            return [x async for x in kernel._run_stage_streamed(
+                h, "", "extended_initial", u, append=False, same_stage_resume=True)]
+        packets = asyncio.run(run())
+        results = [x["data"] for x in packets if x["kind"] == "result"]
+        assert len(results) == 1
+        result = results[0]
+    else:
+        result = asyncio.run(kernel._run_stage(
+            h, "", "extended_initial", u, append=False, same_stage_resume=True))
+    assert len(b.calls) == 2
+    assert b.calls[0][-1]["role"] == "tool"
+    assert b.calls[0][-1]["content"] == ".\\n..\\n"
+    assert b.calls[1][-1]["content"] == k.AGENTIC_FINAL_REVIEW_TRIGGER
+    assert result["choices"][0]["message"]["content"] == "Aligned"
+    assert len([x for x in h if x.get("_jack_internal_agentic_stage1_verification_trigger")]) == 1
+    assert len([x for x in h if x.get("_jack_internal_agentic_final_review_trigger")]) == 1
