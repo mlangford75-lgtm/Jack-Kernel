@@ -2844,7 +2844,7 @@ def _tool_evidence_receipts_from_group(group: List[Dict[str, Any]]) -> List[Dict
         result_sha256 = _sha256_text(result_text)
         result_bytes = len(result_text.encode("utf-8"))
         excerpt, truncated = _bounded_evidence_excerpt(result_text)
-        status = str(item.get("_jack_tool_outcome") or (TOOL_FAILED if item.get("_jack_internal_tool_failed") else TOOL_UNKNOWN))
+        status = "FAILED" if item.get("_jack_internal_tool_failed") else "SUCCESS"
         artifact_effect = str(meta.get("artifact_effect") or "NONE")
         artifact_target = str(meta.get("artifact_target") or "UNKNOWN")
         artifact_targets = _artifact_target_list(meta.get("artifact_targets") or artifact_target)
@@ -4317,8 +4317,7 @@ def _agentic_tool_history_note(history: List[Dict[str, Any]]) -> str:
             "UNKNOWN" if target == "UNKNOWN" else "RELATIVE_CWD_UNKNOWN"
         )
         result = _content_to_text(item.get("content"))
-        outcome = ("REPORTED_ERROR" if item.get("_jack_internal_tool_failed") else
-                   "REPORTED_SUCCESS" if item.get("_jack_tool_outcome") == TOOL_SUCCESS else "OUTCOME_UNKNOWN")
+        outcome = "REPORTED_ERROR" if item.get("_jack_internal_tool_failed") else "RESULT_RETURNED"
         tool_name = str(item.get("name") or meta.get("tool") or "").casefold()
         critical = any(word in tool_name for word in (
             "write", "edit", "patch", "delete", "remove", "rename", "move", "save", "create", "mkdir", "replace"
@@ -8161,8 +8160,12 @@ class JackQwenKernel:
                 "tool_call_id": call_id.strip(),
                 "content": raw.get("content"),
                 "_jack_internal_tool_exchange": True,
-                "_jack_tool_outcome": reported_tool_outcome(raw),
             }
+            reported_outcome = reported_tool_outcome(raw)
+            # Keep legacy tool messages byte-for-byte stable when no status
+            # was supplied; explicit statuses alone enter kernel-owned state.
+            if reported_outcome != TOOL_UNKNOWN:
+                item["_jack_tool_outcome"] = reported_outcome
             if raw.get("name") is not None:
                 item["name"] = raw.get("name")
             if self._tool_result_explicitly_failed(raw):
