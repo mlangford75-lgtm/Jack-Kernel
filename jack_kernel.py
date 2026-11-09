@@ -1180,6 +1180,35 @@ def _agentic_stage2_test_history(
     projected.extend(review_suffix)
     return projected
 
+
+def _agentic_stage2_restore_review_source_prefix(
+    stage_messages: List[Dict[str, Any]], history: List[Dict[str, Any]],
+    profile: "StageProfile", cache_append: bool,
+) -> None:
+    """Restore the first memory pass's exact source prefix for Stage-2 review.
+
+    The review sees the same original request, accumulated Stage-1 cognition,
+    frozen answer, and authenticated tool note, followed by its memory draft.
+    Reusing the identical prefix preserves cache affinity without mutating A1
+    or the host-owned canonical history.
+    """
+    if not (AGENTIC_MODE and profile.name == "Agentic native pass 2"
+            and _agentic_stage2_review_is_pending(history)):
+        return
+    if (len(stage_messages) < 4 or stage_messages[-2].get("role") != "assistant"
+            or stage_messages[-1].get("role") != "user"):
+        raise HTTPException(status_code=409, detail="Stage 2 review lacks its memory draft and cue")
+    if cache_append:
+        evidence_note = _agentic_stage2_host_tool_evidence_note(history)
+        original_source = {
+            "role": "user",
+            "content": (evidence_note + "\n\n" if evidence_note else "") + AGENTIC_36_STAGE2_PROMPT,
+        }
+    else:
+        original_source = _stage_generation_trigger(profile, history)
+    stage_messages.insert(-2, original_source)
+
+
 # Phase-3G recovery: model-visible U/M/A forensic labels are OFF by default.
 # The durable host-side turn journal, U/A1 hash checks, stage completion gates,
 # and Stage-2 cached-prefix topology remain active regardless of this switch.
@@ -6244,6 +6273,10 @@ class OpenAICompatibleBackend:
         ):
             stage_messages.append(_stage_generation_trigger(profile, messages))
 
+        _agentic_stage2_restore_review_source_prefix(
+            stage_messages, messages, profile, cache_append,
+        )
+
         sampling = self._sampling_for_profile(profile)
         payload: Dict[str, Any] = {
             "model": model,
@@ -6364,6 +6397,10 @@ class OpenAICompatibleBackend:
             and _stage_requires_user_continuation(profile)
         ):
             stage_messages.append(_stage_generation_trigger(profile, messages))
+
+        _agentic_stage2_restore_review_source_prefix(
+            stage_messages, messages, profile, cache_append,
+        )
 
         sampling = self._sampling_for_profile(profile)
         payload: Dict[str, Any] = {
