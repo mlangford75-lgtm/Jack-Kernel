@@ -58,7 +58,7 @@ def test_tas_failed_tool_is_not_verified_and_reaches_synthesis():
     assert final.evidence[0]["methodology_verified"] is False
     assert "reported TOOL FAILURE" in str(observed[2]["messages"])
     assert "VERIFICATION_ERROR" in str(observed[2]["messages"])
-    assert "'tool_outcome': 'FAILED'" in str(observed[-1]["messages"])
+    assert '\\"tool_outcome\\": \\"FAILED\\"' in str(observed[-1]["messages"])
     assert "reported TOOL FAILURE" not in final.answer
 
 
