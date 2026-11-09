@@ -7615,6 +7615,24 @@ class JackQwenKernel:
             "usage": normalize_usage(stage_usage),
             "_jack_tool_call_fragments_streamed": tool_call_fragments_streamed,
         }
+        # Optional continuations are advisory. An already finished, useful
+        # draft remains eligible if the follow-up produces only empty streams.
+        # Count completed tool results; never roll back a draft if a subsequent
+        # continuation executed additional tools (side effects may have changed).
+        optional_draft_tool_count = sum(
+            item.get("role") == "tool" for item in history if isinstance(item, dict)
+        )
+
+        def recover_optional_empty_stream(exc: HTTPException) -> bool:
+            return (
+                isinstance(exc, HTTPException)
+                and exc.status_code == 502
+                and "empty streamed response after one same-stage streaming retry" in str(exc.detail)
+                and sum(
+                    item.get("role") == "tool" for item in history
+                    if isinstance(item, dict)
+                ) == optional_draft_tool_count
+            )
         if (
             AGENTIC_MODE and self.cfg.agentic_stage2_final_review
             and stage_key == "extended_reflection"
@@ -7623,13 +7641,23 @@ class JackQwenKernel:
         ):
             _agentic_begin_stage2_review(history, data)
             yield {"kind": "reasoning", "text": "\n[AGENTIC STAGE 2 FINAL REVIEW — THINKING PROFILE UNCHANGED]\n"}
-            async with contextlib.aclosing(self._run_stage_streamed(
-                history, secondary_system, stage_key, usage,
-                tools=None, tool_choice=None, append=append,
-                same_stage_resume=True,
-            )) as review_packets:
-                async for packet in review_packets:
-                    yield packet
+            try:
+                async with contextlib.aclosing(self._run_stage_streamed(
+                    history, secondary_system, stage_key, usage,
+                    tools=None, tool_choice=None, append=append,
+                    same_stage_resume=True,
+                )) as review_packets:
+                    async for packet in review_packets:
+                        yield packet
+            except HTTPException as exc:
+                if not recover_optional_empty_stream(exc):
+                    raise
+                LOG.warning(
+                    "Optional Agentic continuation returned two empty streams; "
+                    "reusing completed same-turn draft without replaying tools: %s", exc.detail
+                )
+                yield {"kind": "reasoning", "text": "\n[JACK OPTIONAL REVIEW EMPTY — LAST COMPLETED DRAFT PRESERVED]\n"}
+                yield {"kind": "result", "data": data}
             return
         if (
             AGENTIC_MODE and self.cfg.agentic_final_review
@@ -7640,13 +7668,23 @@ class JackQwenKernel:
         ):
             _agentic_begin_stage1_verification(history, data)
             yield {"kind": "reasoning", "text": "\n[AGENTIC STAGE 1 VERIFICATION — SAME TURN]\n"}
-            async with contextlib.aclosing(self._run_stage_streamed(
-                history, secondary_system, stage_key, usage,
-                tools=tools, tool_choice=tool_choice, append=append,
-                same_stage_resume=True,
-            )) as verification_packets:
-                async for packet in verification_packets:
-                    yield packet
+            try:
+                async with contextlib.aclosing(self._run_stage_streamed(
+                    history, secondary_system, stage_key, usage,
+                    tools=tools, tool_choice=tool_choice, append=append,
+                    same_stage_resume=True,
+                )) as verification_packets:
+                    async for packet in verification_packets:
+                        yield packet
+            except HTTPException as exc:
+                if not recover_optional_empty_stream(exc):
+                    raise
+                LOG.warning(
+                    "Optional Agentic continuation returned two empty streams; "
+                    "reusing completed same-turn draft without replaying tools: %s", exc.detail
+                )
+                yield {"kind": "reasoning", "text": "\n[JACK OPTIONAL REVIEW EMPTY — LAST COMPLETED DRAFT PRESERVED]\n"}
+                yield {"kind": "result", "data": data}
             return
         if (
             AGENTIC_MODE and self.cfg.agentic_final_review
@@ -7656,13 +7694,23 @@ class JackQwenKernel:
         ):
             _agentic_begin_final_review(history, data)
             yield {"kind": "reasoning", "text": "\n[AGENTIC FINAL REVIEW — SAME TURN]\n"}
-            async with contextlib.aclosing(self._run_stage_streamed(
-                history, secondary_system, stage_key, usage,
-                tools=tools, tool_choice=tool_choice, append=append,
-                same_stage_resume=True,
-            )) as review_packets:
-                async for packet in review_packets:
-                    yield packet
+            try:
+                async with contextlib.aclosing(self._run_stage_streamed(
+                    history, secondary_system, stage_key, usage,
+                    tools=tools, tool_choice=tool_choice, append=append,
+                    same_stage_resume=True,
+                )) as review_packets:
+                    async for packet in review_packets:
+                        yield packet
+            except HTTPException as exc:
+                if not recover_optional_empty_stream(exc):
+                    raise
+                LOG.warning(
+                    "Optional Agentic continuation returned two empty streams; "
+                    "reusing completed same-turn draft without replaying tools: %s", exc.detail
+                )
+                yield {"kind": "reasoning", "text": "\n[JACK OPTIONAL REVIEW EMPTY — LAST COMPLETED DRAFT PRESERVED]\n"}
+                yield {"kind": "result", "data": data}
             return
         if self.cfg.log_reasoning:
             reason_text = message.get("reasoning_content") or message.get("reasoning") or ""
