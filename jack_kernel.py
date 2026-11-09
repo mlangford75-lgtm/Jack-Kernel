@@ -310,14 +310,14 @@ class KernelConfig:
     reasoning_level: str = os.getenv("JACK_REASONING_LEVEL", "x-high").strip().lower()
 
     # Opt-in one-time native Stage-1 reconsideration before freezing A1.
-    agentic_final_review: bool = os.getenv("JACK_AGENTIC_FINAL_REVIEW", "0").strip().lower() in {"1", "true", "yes", "on"}
+    agentic_final_review: bool = os.getenv("JACK_AGENTIC_FINAL_REVIEW", "1").strip().lower() in {"1", "true", "yes", "on"}
     # Separate, opt-in thinking-enabled Stage-1 verification before the
     # existing alignment continuation. Requires agentic_final_review too.
     agentic_stage1_verify_before_alignment: bool = os.getenv(
-        "JACK_AGENTIC_STAGE1_VERIFY_BEFORE_ALIGNMENT", "0"
+        "JACK_AGENTIC_STAGE1_VERIFY_BEFORE_ALIGNMENT", "1"
     ).strip().lower() in {"1", "true", "yes", "on"}
     # Experimental one-shot retrospective review; independent of Stage-1 review.
-    agentic_stage2_final_review: bool = os.getenv("JACK_AGENTIC_STAGE2_FINAL_REVIEW", "0").strip().lower() in {"1", "true", "yes", "on"}
+    agentic_stage2_final_review: bool = os.getenv("JACK_AGENTIC_STAGE2_FINAL_REVIEW", "1").strip().lower() in {"1", "true", "yes", "on"}
     # Agentic cognition profile, independent of backend sampler selection.
     # Balanced is the default; Thorough and Flash remain selectable.
     agentic_profile: str = os.getenv("JACK_AGENTIC_PROFILE", "balanced").strip().lower()
