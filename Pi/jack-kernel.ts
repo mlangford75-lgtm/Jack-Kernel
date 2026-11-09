@@ -9,7 +9,6 @@ const DEFAULT_JACK_URL = "http://127.0.0.1:8001";
 // reports context capacity, not a separate generation-output ceiling.
 const PI_DEFAULT_MAX_TOKENS = 16384;
 const CONFIG_PATH = path.join(os.homedir(), ".pi", "agent", "jack-kernel.json");
-const NUMERIC_VERIFIER_PATH = path.join(os.homedir(), ".pi", "agent", "extensions", "jack-numeric-verifier.py");
 const EXECUTOR_ADMISSION_PROTOCOL_VERSION = 1;
 const STRUCTURED_PATH_TOOLS = new Set(["read", "edit", "write", "grep", "find", "ls"]);
 const COMMAND_DIALECT_BY_TOOL = new Map([
@@ -232,55 +231,6 @@ async function fetchJackModels(url, token, health) {
 
 export default async function (pi) {
   let activeRuntimeBinding = null;
-  let numericVerifierRegistered = false;
-
-  async function registerNumericVerifier() {
-    if (numericVerifierRegistered || !activeRuntimeBinding || typeof pi.registerTool !== "function") return;
-    let Type;
-    try {
-      ({ Type } = await import("typebox"));
-    } catch {
-      try {
-        ({ Type } = await import("@sinclair/typebox"));
-      } catch (error) {
-        console.error("[jack-kernel] Numeric Python verifier unavailable: TypeBox missing", error);
-        return;
-      }
-    }
-    pi.registerTool({
-      name: "python_repl",
-      label: "Python numeric verification",
-      description: "Bounded numeric Python verification: arithmetic, numeric variables, print, safe math functions, finite for/range loops (max 1000 iterations), and numeric if comparisons. No imports, strings, filesystem, network, attributes, comprehensions, while loops, or arbitrary execution. Keep checks concise; simplify and retry if rejected. Use only for mathematics.",
-      parameters: Type.Object({
-        code: Type.String({ description: "Up to 4096 characters of bounded numeric Python; use print(...). Supports integer range loops and numeric if comparisons; excludes imports, strings, attribute access and while loops.", maxLength: 4096 }),
-      }),
-      async execute(toolCallId, params, signal, onUpdate, ctx) {
-        if (String(ctx?.model?.provider || "") !== PROVIDER_NAME || !activeRuntimeBinding) {
-          throw new Error("python_repl is available only for an active Jack Kernel provider.");
-        }
-        if (!fs.existsSync(NUMERIC_VERIFIER_PATH)) {
-          throw new Error("Numeric verifier helper is missing; reinstall the Jack Pi extension.");
-        }
-        const source = params?.code;
-        if (typeof source !== "string" || !source.trim() || source.length > 4096) {
-          throw new Error("A nonempty numeric Python expression of at most 4096 characters is required.");
-        }
-        const python = String(process.env.JACK_PI_PYTHON || "python");
-        const result = await pi.exec(python, ["-I", "-S", NUMERIC_VERIFIER_PATH, source], {
-          signal, timeout: 5000, maxBuffer: 65536,
-        });
-        if (result.killed || result.code !== 0) {
-          throw new Error("Numeric verification failed: " + String(result.stderr || result.stdout || "interpreter error").slice(0, 1000));
-        }
-        return {
-          content: [{ type: "text", text: String(result.stdout || "").slice(0, 12000) }],
-          details: { verifier: "restricted-python-arithmetic", exitCode: result.code },
-        };
-      },
-    });
-    numericVerifierRegistered = true;
-  }
-
   // Unshared, high-entropy capability; rotate on every Pi session change.
   let tasSessionId = null;
   let tasSessionCapability = null;
@@ -312,7 +262,6 @@ export default async function (pi) {
   }
 
   await syncProvider();
-  await registerNumericVerifier();
 
   // Pi knows whether a tool actually failed, but its OpenAI-compatible message
   // serializer may omit isError. Carry only *failed* outcomes to Jack, bound
@@ -462,8 +411,7 @@ export default async function (pi) {
   pi.on("before_agent_start", async () => {
     refreshedThisTurn = false;
     await syncProvider();
-    await registerNumericVerifier();
-  });
+    });
   pi.on("message_end", async (event) => {
     if (event?.message?.role === "assistant" && !refreshedThisTurn) {
       refreshedThisTurn = true;
