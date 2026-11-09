@@ -41,7 +41,10 @@ def bound(value):
         for member in value:
             bound(member)
     else:
-        raise ValueError("Only numeric values are permitted")
+        raise ValueError(
+            "Only numeric values are permitted in calculations; "
+            "literal text labels are allowed only in print(label, number)"
+        )
     return value
 
 
@@ -68,6 +71,10 @@ def number(node, scope):
             if any(type(x) is not int or x < 0 or x > 100 for x in args):
                 raise ValueError("Combinatorics arguments exceed verifier bounds")
         return bound(FUNCTIONS[node.func.id](*args))
+    if isinstance(node, ast.JoinedStr):
+        raise ValueError(
+            "Formatted strings are unsupported; use print('label:', numeric_expression)"
+        )
     raise ValueError("Unsupported Python construct; numeric expressions only")
 
 
@@ -121,7 +128,23 @@ def execute(stmt, scope, outputs, steps):
                 and isinstance(expression.func, ast.Name)
                 and expression.func.id == "print" and not expression.keywords
                 and len(expression.args) <= 8):
-            outputs.append(" ".join(str(number(v, scope)) for v in expression.args))
+            displayed = []
+            has_numeric = False
+            for argument in expression.args:
+                # Literal labels are presentation only, not Python values.
+                # They must never enter the arithmetic evaluator or scope.
+                if (isinstance(argument, ast.Constant)
+                        and isinstance(argument.value, str)):
+                    label = argument.value
+                    if not (1 <= len(label) <= 120 and label.isprintable()):
+                        raise ValueError("Print labels must be 1-120 printable characters")
+                    displayed.append(label)
+                else:
+                    displayed.append(str(number(argument, scope)))
+                    has_numeric = True
+            if not has_numeric:
+                raise ValueError("print(...) requires at least one numeric expression")
+            outputs.append(" ".join(displayed))
         else:
             outputs.append(str(number(expression, scope)))
     elif (isinstance(stmt, ast.For) and isinstance(stmt.target, ast.Name)
