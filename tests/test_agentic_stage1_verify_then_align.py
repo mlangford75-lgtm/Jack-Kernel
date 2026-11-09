@@ -71,8 +71,8 @@ def test_three_stage1_generations_verification_before_alignment(monkeypatch, tmp
     assert b.calls[0][-1]["content"] == "Verify a claim using available tools."
     assert b.calls[1][-1]["content"] == k.AGENTIC_STAGE1_VERIFICATION_TRIGGER
     assert b.calls[2][-1]["content"] == k.AGENTIC_FINAL_REVIEW_TRIGGER
-    assert b.calls[1][-1]["content"].count(k.AGENTIC_STAGE1_VERIFICATION_PROMPT) == 1
-    assert b.calls[2][-1]["content"].count(k.AGENTIC_FINAL_REVIEW_PROMPT) == 1
+    assert b.calls[1][-1]["content"] == "Wait, more verification is needed. Test the reasoning for errors, mistakes, or poor quality. Make changes, if necessary"
+    assert b.calls[2][-1]["content"] == "Hold on, ensure the response is in full alignment with user request"
     assert b.calls[2][-2]["content"] == "Verified provisional"
     assert len([x for x in h if x.get("_jack_internal_agentic_stage1_verification_trigger")]) == 1
     assert len([x for x in h if x.get("_jack_internal_agentic_final_review_trigger")]) == 1
