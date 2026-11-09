@@ -311,6 +311,11 @@ class KernelConfig:
 
     # Opt-in one-time native Stage-1 reconsideration before freezing A1.
     agentic_final_review: bool = os.getenv("JACK_AGENTIC_FINAL_REVIEW", "0").strip().lower() in {"1", "true", "yes", "on"}
+    # Separate, opt-in thinking-enabled Stage-1 verification before the
+    # existing alignment continuation. Requires agentic_final_review too.
+    agentic_stage1_verify_before_alignment: bool = os.getenv(
+        "JACK_AGENTIC_STAGE1_VERIFY_BEFORE_ALIGNMENT", "0"
+    ).strip().lower() in {"1", "true", "yes", "on"}
     # Experimental one-shot retrospective review; independent of Stage-1 review.
     agentic_stage2_final_review: bool = os.getenv("JACK_AGENTIC_STAGE2_FINAL_REVIEW", "0").strip().lower() in {"1", "true", "yes", "on"}
     # Agentic cognition profile, independent of backend sampler selection.
@@ -3996,6 +4001,65 @@ def self_adversarial_stage_reasoning_trace(
 
 # Experimental final-check continuation, deliberately outside Stage-2 distillation.
 # The text is verbatim and injected once only after a completed Stage-1 draft.
+AGENTIC_STAGE1_VERIFICATION_PROMPT = "Wait — more verification is needed"
+# The verification pass is a continuation of Stage 1, NOT Stage 2 and NOT
+# a new user request. It runs before the existing one-shot alignment pass.
+AGENTIC_STAGE1_VERIFICATION_TRIGGER = (
+    "JACK INTERNAL STAGE 1 CONTINUATION — NOT A NEW USER REQUEST.\n"
+    "The previous assistant answer is an uncommitted draft for the original "
+    "user request earlier in this turn. This message is a Jack-controlled "
+    "continuation cue, not a request from the user.\n\n"
+    + AGENTIC_STAGE1_VERIFICATION_PROMPT + "\n\n"
+    "Check the draft's consequential claims against available evidence. "
+    "Use tools when actual verification is warranted; do not invent problems "
+    "or claim verification that was not performed. Continue the original "
+    "task and provide the revised provisional response. "
+    "Do not answer the continuation cue itself."
+)
+
+
+def _agentic_stage1_verification_is_pending(history: List[Dict[str, Any]]) -> bool:
+    target = active_response_target(history)
+    if target is None:
+        return False
+    return any(
+        isinstance(item, dict) and item.get("_jack_internal_agentic_stage1_verification_trigger") is True
+        for item in history[int(target["history_index"]) + 1:]
+    )
+
+
+def _agentic_begin_stage1_verification(history: List[Dict[str, Any]], data: Dict[str, Any]) -> None:
+    """Introduce exactly one uncommitted verification continuation in Stage 1."""
+    choice = (data.get("choices") or [{}])[0] or {}
+    if choice.get("finish_reason") != "stop":
+        raise HTTPException(status_code=502, detail="Stage 1 verification draft did not finish successfully")
+    message = choice.get("message") or {}
+    if message.get("tool_calls"):
+        raise HTTPException(status_code=502, detail="Stage 1 verification draft has pending tools")
+    draft = _content_to_text(message.get("content"))
+    if not draft.strip():
+        raise HTTPException(status_code=502, detail="Stage 1 verification draft has no answer")
+    if _agentic_stage1_verification_is_pending(history):
+        raise HTTPException(status_code=409, detail="Stage 1 verification already started for this turn")
+    entry: Dict[str, Any] = {
+        "role": "assistant",
+        "content": draft,
+        "_jack_internal_agentic_stage1_verification_draft": True,
+        "_jack_stage_key": "extended_initial",
+    }
+    reasoning = _native_reasoning_text(message)
+    if reasoning:
+        entry["reasoning_content"] = reasoning
+        entry["reasoning"] = reasoning
+    history.append(entry)
+    history.append({
+        "role": "user",
+        "content": AGENTIC_STAGE1_VERIFICATION_TRIGGER,
+        "_jack_internal_agentic_stage1_verification_trigger": True,
+        "_jack_stage_key": "extended_initial",
+    })
+
+
 AGENTIC_FINAL_REVIEW_PROMPT = "Hold on, ensure the response is in full alignment with user request"
 # A user-role transport turn is needed to reopen some chat templates. Its role
 # is not evidence of a NEW user request; label the instruction explicitly so the
@@ -6897,6 +6961,18 @@ class JackQwenKernel:
                     tools=None, tool_choice=None, append=append,
                     same_stage_resume=True,
                 )
+            if (
+                AGENTIC_MODE and self.cfg.agentic_final_review
+                and self.cfg.agentic_stage1_verify_before_alignment
+                and stage_key == "extended_initial"
+                and not _agentic_stage1_verification_is_pending(history)
+            ):
+                _agentic_begin_stage1_verification(history, data)
+                return await self._run_stage(
+                    history, secondary_system, stage_key, usage,
+                    tools=tools, tool_choice=tool_choice, append=append,
+                    same_stage_resume=True,
+                )
             if AGENTIC_MODE and self.cfg.agentic_final_review and stage_key == "extended_initial" and not _agentic_final_review_is_pending(history):
                 _agentic_begin_final_review(history, data)
                 return await self._run_stage(
@@ -7513,6 +7589,23 @@ class JackQwenKernel:
                 same_stage_resume=True,
             )) as review_packets:
                 async for packet in review_packets:
+                    yield packet
+            return
+        if (
+            AGENTIC_MODE and self.cfg.agentic_final_review
+            and self.cfg.agentic_stage1_verify_before_alignment
+            and stage_key == "extended_initial"
+            and not message.get("tool_calls")
+            and not _agentic_stage1_verification_is_pending(history)
+        ):
+            _agentic_begin_stage1_verification(history, data)
+            yield {"kind": "reasoning", "text": "\n[AGENTIC STAGE 1 VERIFICATION — SAME TURN]\n"}
+            async with contextlib.aclosing(self._run_stage_streamed(
+                history, secondary_system, stage_key, usage,
+                tools=tools, tool_choice=tool_choice, append=append,
+                same_stage_resume=True,
+            )) as verification_packets:
+                async for packet in verification_packets:
                     yield packet
             return
         if (
