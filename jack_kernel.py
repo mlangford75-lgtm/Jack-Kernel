@@ -1057,8 +1057,8 @@ AGENTIC_STAGE2_RETENTION_TEST = "isolate-retain"
 
 
 # Internal host bookkeeping still isolates Stage 2 and protects frozen A1.
-# The model sees only the short continuation instruction.
-AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER = "Hold on, ensure the response is in full alignment with user request"
+# The model sees only the short verification continuation instruction.
+AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER = "Wait, more verification is needed. Test the reasoning for errors, mistakes, or poor quality. Make changes, if necessary"
 
 
 def _agentic_stage2_review_is_pending(history: List[Dict[str, Any]]) -> bool:
@@ -7645,7 +7645,7 @@ class JackQwenKernel:
             and not _agentic_stage2_review_is_pending(history)
         ):
             _agentic_begin_stage2_review(history, data)
-            yield {"kind": "reasoning", "text": "\n[AGENTIC STAGE 2 FINAL REVIEW — THINKING PROFILE UNCHANGED]\n"}
+            yield {"kind": "reasoning", "text": "\n[AGENTIC STAGE 2 VERIFICATION — THINKING PROFILE UNCHANGED]\n"}
             try:
                 async with contextlib.aclosing(self._run_stage_streamed(
                     history, secondary_system, stage_key, usage,
