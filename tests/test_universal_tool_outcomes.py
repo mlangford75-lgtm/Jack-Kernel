@@ -82,3 +82,52 @@ def test_tas_success_and_unknown_remain_distinct():
         assert completed.evidence[0]["tool_outcome"] == status
         assert completed.evidence[0]["execution_succeeded"] is (status == SUCCESS)
         assert pending.session.first_verification_completed is (status == SUCCESS)
+
+
+def test_shared_resume_preserves_legacy_shape_and_marks_reported_failures():
+    import time
+    import jack_kernel as kernel
+
+    async def exercise(call_id, raw):
+        state = kernel.PendingToolResume(
+            resume_id="test-tool-outcome-" + call_id,
+            stage_key="thesis",
+            history=[{"role": "user", "content": "test"}],
+            secondary_system="",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            tools=None, tool_choice=None,
+            expected_tool_call_ids=[call_id],
+            created_at=time.time(),
+            debugging_run_id=None,
+        )
+        kernel.KERNEL._pending_tool_resumes[call_id] = state
+        try:
+            selected = await kernel.KERNEL._consume_pending_tool_resume([
+                {"role": "tool", "tool_call_id": call_id, "content": "actual output", **raw}
+            ])
+            assert selected is not None
+            return selected[1][0]
+        finally:
+            await kernel.KERNEL._retire_pending_tool_resume(state)
+
+    legacy = asyncio.run(exercise("outcome-legacy", {}))
+    assert legacy == {
+        "role": "tool", "tool_call_id": "outcome-legacy",
+        "content": "actual output", "_jack_internal_tool_exchange": True,
+    }
+    failed = asyncio.run(exercise("outcome-failed", {"is_error": True}))
+    assert failed["_jack_tool_outcome"] == FAILED
+    assert failed["_jack_internal_tool_failed"] is True
+    assert failed["_jack_failure_carry_hops"] == 1
+    assert failed["content"] == "actual output"
+
+
+def test_pi_forwards_only_failures_to_jack_without_parsing_error_text():
+    from pathlib import Path
+    source = (Path(__file__).resolve().parents[1] / "Pi" / "jack-kernel.ts").read_text(encoding="utf-8")
+    assert 'pi.on("tool_execution_end"' in source
+    assert 'pi.on("before_provider_request"' in source
+    assert 'event?.isError === true' in source
+    assert 'String(ctx?.model?.provider || "") !== PROVIDER_NAME' in source
+    assert "failedToolCalls.get(id) !== sessionId" in source
+    assert 'return { ...message, is_error: true }' in source
