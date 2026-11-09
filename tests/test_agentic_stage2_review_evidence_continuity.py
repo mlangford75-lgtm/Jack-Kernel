@@ -118,7 +118,7 @@ def test_review_preserves_exact_original_source_prefix_and_evidence(monkeypatch,
     assert len(reviewed_messages) == len(first_messages) + 2
     assert reviewed_messages[-2] == {"role": "assistant", "content": "Draft memory"}
     assert reviewed_messages[-1] == {"role": "user", "content": k.AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER}
-    assert reviewed_messages[-1]["content"] == "Hold on, ensure the response is in full alignment with user request"
+    assert reviewed_messages[-1]["content"] == "Wait, more verification is needed. Test the reasoning for errors, mistakes, or poor quality. Make changes, if necessary"
 
     serialized = json.dumps(first_messages)
     for marker in ("R1_INITIAL", "R1_VERIFICATION", "R1_ALIGNMENT", "R1_FINAL",
