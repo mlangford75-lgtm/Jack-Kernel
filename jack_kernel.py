@@ -6819,6 +6819,7 @@ class JackQwenKernel:
         same_stage_resume: bool = False,
         tool_validation_repair_depth: int = 0,
         loop_retry_depth: int = 0,
+        empty_stream_retry_depth: int = 0,
     ) -> AsyncIterator[Dict[str, Any]]:
         """Run one Jack stage with backend streaming and reconstruct its message.
 
@@ -7113,9 +7114,50 @@ class JackQwenKernel:
         }
         if not message["content"] and not reasoning_content_parts and not reasoning_parts and not tool_state:
             if AGENTIC_MODE and stage_key in {"extended_initial", "extended_reflection"}:
+                # A wholly empty SSE completion has released no model content or
+                # executable tool action. Retry exactly once using streaming,
+                # preserving the same turn and authenticated tool results.
+                # Never silently switch transport or re-run a completed Pi tool.
+                if empty_stream_retry_depth == 0:
+                    prior_tools = any(
+                        isinstance(item, dict) and item.get("role") == "tool"
+                        for item in history
+                    )
+                    LOG.warning(
+                        "Agentic stage %s produced an empty stream (finish=%s, "
+                        "reported_completion_tokens=%d); one same-stage streaming "
+                        "recovery, completed_tools_present=%s",
+                        profile.name, finish_reason,
+                        int(stage_usage.get("completion_tokens") or 0),
+                        prior_tools,
+                    )
+                    yield {
+                        "kind": "reasoning",
+                        "text": "\n[JACK EMPTY STREAM — RETRYING SAME STAGE; COMPLETED TOOLS PRESERVED]\n",
+                    }
+                    # After authenticated tool results, the recovery is
+                    # answer-only: asking the model to invoke another tool
+                    # could repeat a side effect under a new tool-call ID.
+                    recovery_tools = None if prior_tools else tools
+                    recovery_choice = "none" if prior_tools else tool_choice
+                    async with contextlib.aclosing(self._run_stage_streamed(
+                        history, secondary_system, stage_key, usage,
+                        tools=recovery_tools, tool_choice=recovery_choice,
+                        append=append, same_stage_resume=True,
+                        tool_validation_repair_depth=tool_validation_repair_depth,
+                        loop_retry_depth=loop_retry_depth,
+                        empty_stream_retry_depth=1,
+                    )) as retry_packets:
+                        async for packet in retry_packets:
+                            yield packet
+                    return
                 raise HTTPException(
                     status_code=502,
-                    detail=f"Agentic stage {profile.name} returned an empty streamed response; refusing non-streaming fallback.",
+                    detail=(
+                        f"Agentic stage {profile.name} returned an empty streamed "
+                        "response after one same-stage streaming retry; no "
+                        "completed tool action was replayed."
+                    ),
                 )
             LOG.warning(
                 "Stage %s completed with an empty streamed backend response; retrying once non-streaming",
