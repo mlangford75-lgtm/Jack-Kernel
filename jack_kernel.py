@@ -7360,9 +7360,14 @@ class JackQwenKernel:
                 # preserving the same turn and authenticated tool results.
                 # Never silently switch transport or re-run a completed Pi tool.
                 if empty_stream_retry_depth == 0:
+                    target = active_response_target(history)
+                    current_turn = (
+                        history[int(target["history_index"]) + 1:]
+                        if target is not None else history
+                    )
                     prior_tools = any(
                         isinstance(item, dict) and item.get("role") == "tool"
-                        for item in history
+                        for item in current_turn
                     )
                     LOG.warning(
                         "Agentic stage %s produced an empty stream (finish=%s, "
