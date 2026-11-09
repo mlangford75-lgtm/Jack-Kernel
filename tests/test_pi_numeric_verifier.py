@@ -104,3 +104,28 @@ def test_numeric_output_remains_successful_after_assignments():
     result = run("wrong=100000\nremaining_wrong=wrong*0.9\nprint(remaining_wrong/900000)")
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "0.1"
+
+
+def test_bounded_literal_labels_with_numeric_results():
+    result = run(
+        "total=1000000\nwrong=100000\n"
+        "remaining=total*0.9\nremaining_wrong=wrong*0.9\n"
+        "print('Remaining label error rate:', remaining_wrong/remaining*100)"
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "Remaining label error rate: 10.0"
+
+
+def test_output_labels_are_not_computational_values():
+    for code in (
+        "label='error rate'\nprint(10)",
+        "print('error rate'+1)",
+        "print('only text')",
+        "print('a'*3, 10)",
+        "print('x'*121, 10)",
+        "print('line\\nsecond', 10)",
+        "print(f'rate={10}')",
+    ):
+        result = run(code)
+        assert result.returncode == 2, (code, result.stdout)
+        assert "VERIFICATION_ERROR:" in result.stderr
