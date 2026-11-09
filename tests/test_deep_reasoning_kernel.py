@@ -237,7 +237,7 @@ def test_quantitative_request_requires_authorized_python_only_on_first_antithesi
         ]
         assert kernel.calls[0][2] == "auto"
         assert kernel.calls[1][2] == "required"
-        assert [t["function"]["name"] for t in kernel.calls[1][3]] == ["python_repl"]
+        assert [t["function"]["name"] for t in kernel.calls[1][3]] == ["python_repl", "read"]
         pending = kernel._pending_tool_resumes[result.tool_calls[0]["id"]]
         final = await kernel._resume_tool_stage_nonstream(
             pending, [{"tool_call_id": result.tool_calls[0]["id"], "content": "10 percent"}]
