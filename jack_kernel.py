@@ -3923,7 +3923,19 @@ def self_adversarial_stage_reasoning_trace(
 
 # Experimental final-check continuation, deliberately outside Stage-2 distillation.
 # The text is verbatim and injected once only after a completed Stage-1 draft.
-AGENTIC_FINAL_REVIEW_PROMPT = "Hold on, I need to verify my work one last time and make sure to align my response with the user request and system instructions."
+AGENTIC_FINAL_REVIEW_PROMPT = "Hold on, need to verify the reasoning one last time and make sure to align response with the user request and system instructions."
+# A user-role transport turn is needed to reopen some chat templates. Its role
+# is not evidence of a NEW user request; label the instruction explicitly so the
+# model continues the original task instead of answering the review cue.
+AGENTIC_FINAL_REVIEW_TRIGGER = (
+    "JACK INTERNAL CONTINUATION — NOT A NEW USER REQUEST.\\n"
+    "The previous assistant answer is an uncommitted draft. Review that draft "
+    "and the reasoning for the active user request earlier in this conversation. "
+    "This message is a Jack-controlled continuation cue, not the user's task.\\n\\n"
+    + AGENTIC_FINAL_REVIEW_PROMPT + "\\n\\n"
+    "Continue the original task and provide its best-supported final response. "
+    "Do not respond to the continuation cue itself."
+)
 
 
 def _agentic_final_review_is_pending(history: List[Dict[str, Any]]) -> bool:
@@ -3967,7 +3979,7 @@ def _agentic_begin_final_review(history: List[Dict[str, Any]], data: Dict[str, A
     history.append(entry)
     history.append({
         "role": "user",
-        "content": AGENTIC_FINAL_REVIEW_PROMPT,
+        "content": AGENTIC_FINAL_REVIEW_TRIGGER,
         "_jack_internal_agentic_final_review_trigger": True,
         "_jack_stage_key": "extended_initial",
     })
