@@ -11,8 +11,8 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-PROMPT = ("Hold on, I need to verify my work one last time and make sure to "
-          "align my response with the user request and system instructions.")
+PROMPT = ("Hold on, need to verify the reasoning one last time and make sure to "
+          "align response with the user request and system instructions.")
 
 
 def load(monkeypatch, tmp_path, enabled):
@@ -61,7 +61,10 @@ def test_exact_prompt_and_single_same_turn_review_nonstream(monkeypatch, tmp_pat
     result = asyncio.run(kernel._run_stage(history, "", "extended_initial", usage, append=False))
     assert len(backend.calls) == 2
     assert backend.calls[0] == [{"role": "user", "content": "What is 7*8?", "_jack_agentic_turn_id": history[0]["_jack_agentic_turn_id"]}]
-    assert backend.calls[1][-1]["content"] == PROMPT
+    assert PROMPT in backend.calls[1][-1]["content"]
+    assert backend.calls[1][-1]["content"] == k.AGENTIC_FINAL_REVIEW_TRIGGER
+    assert "NOT A NEW USER REQUEST" in backend.calls[1][-1]["content"]
+    assert "Do not respond to the continuation cue itself." in backend.calls[1][-1]["content"]
     assert backend.calls[1][-1]["_jack_internal_agentic_final_review_trigger"] is True
     assert backend.calls[1][-2]["content"] == "Unverified draft"
     assert backend.calls[1][-2]["reasoning_content"] == "reasoning-1"
@@ -94,7 +97,7 @@ def test_review_streams_second_generation_and_does_not_repeat(monkeypatch, tmp_p
         )]
     packets = asyncio.run(run())
     assert len(backend.calls) == 2
-    assert backend.calls[1][-1]["content"] == PROMPT
+    assert backend.calls[1][-1]["content"] == k.AGENTIC_FINAL_REVIEW_TRIGGER
     results = [p["data"] for p in packets if p["kind"] == "result"]
     assert len(results) == 1
     assert results[0]["choices"][0]["message"]["content"] == "Revised"
@@ -132,3 +135,19 @@ def test_review_draft_is_not_frozen_a1(monkeypatch, tmp_path):
     assert k._agentic_final_review_is_pending(history)
     with pytest.raises(k.HTTPException, match="already started"):
         k._agentic_begin_final_review(history, stage_result("Duplicate", "R1"))
+
+
+def test_review_transport_trigger_does_not_retarget_user_request(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path, True)
+    history = [{"role": "user", "content": "The original task is to verify the clock workspace."}]
+    k._agentic_begin_turn(history, fresh=True)
+    original_id = k._agentic_forensic_turn(history).turn_id
+    k._agentic_begin_final_review(history, stage_result("Initial answer", "Initial reasoning"))
+    assert k.active_response_target(history)["content"] == "The original task is to verify the clock workspace."
+    assert k._agentic_forensic_turn(history).turn_id == original_id
+    assert k._agentic_final_review_is_pending(history)
+    assert k.AGENTIC_FINAL_REVIEW_PROMPT in history[-1]["content"]
+    assert history[-1]["_jack_internal_agentic_final_review_trigger"] is True
+    assert history[-1]["content"].count(k.AGENTIC_FINAL_REVIEW_PROMPT) == 1
+    assert "NOT A NEW USER REQUEST" in history[-1]["content"]
+    assert "Continue the original task" in history[-1]["content"]
