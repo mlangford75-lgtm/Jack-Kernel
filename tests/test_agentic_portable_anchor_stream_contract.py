@@ -91,7 +91,9 @@ def test_stream_without_terminal_finish_is_rejected(monkeypatch, tmp_path, stage
 def test_empty_agentic_stream_cannot_fallback_to_nonstream(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path)
     history = [{"role": "user", "content": "Task"}]
+    calls = []
     async def empty(**kwargs):
+        calls.append(kwargs)
         if False:
             yield {}
     async def forbidden(**kwargs):
@@ -101,8 +103,10 @@ def test_empty_agentic_stream_cannot_fallback_to_nonstream(monkeypatch, tmp_path
     async def consume():
         async for _ in k.KERNEL._run_stage_streamed(history, "", "extended_initial", {}, append=False):
             pass
-    with pytest.raises(k.HTTPException, match="refusing non-streaming fallback"):
+    with pytest.raises(k.HTTPException, match="after one same-stage streaming retry"):
         asyncio.run(consume())
+    assert len(calls) == 2, "exactly one bounded streaming retry"
+
 
 
 def test_degraded_frozen_answer_survives_shadow_write_error(monkeypatch, tmp_path):
