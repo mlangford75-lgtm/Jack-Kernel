@@ -116,9 +116,9 @@ def test_balanced_review_keeps_no_thinking_and_exact_current_turn(monkeypatch, t
         assert "Analog created and read back as empty." in serialized
     second = captured[1]["messages"]
     assert second[-2]["content"] == memory_for(1)
-    assert k.AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER == k.AGENTIC_STAGE1_VERIFICATION_PROMPT
-    assert k.AGENTIC_FINAL_REVIEW_PROMPT not in second[-1]["content"]
-    assert k.AGENTIC_STAGE1_VERIFICATION_PROMPT in second[-1]["content"]
+    assert k.AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER == k.AGENTIC_36_STAGE2_PROMPT
+    assert second[-1]["content"] == k.AGENTIC_36_STAGE2_PROMPT
+    assert "Remove prose and conversational language" in second[-1]["content"]
     assert second[-1]["content"].count(k.AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER) == 1
     if not cache:
         assert captured[0]["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
