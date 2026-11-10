@@ -22,8 +22,8 @@ STAGE2_EXTENSION = "Wait, follow the Prime Directive"
 
 MATRIX = [
     ("flash", False, False, False, False),
-    ("balanced", True, False, False, True),
-    ("thorough", True, True, False, True),
+    ("balanced", True, False, False, False),
+    ("thorough", True, True, False, False),
     ("exhaustive", True, True, True, True),
 ]
 
@@ -144,4 +144,4 @@ def test_default_profile_is_balanced_and_both_legacy_toggles_ignored(monkeypatch
     k = load(monkeypatch, tmp_path, 'balanced')
     assert k.CFG.agentic_profile == 'balanced'
     assert not k.CFG.agentic_final_review
-    assert k.CFG.agentic_stage2_final_review
+    assert not k.CFG.agentic_stage2_final_review
