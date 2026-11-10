@@ -2930,6 +2930,55 @@ def _agentic_exact_tool_cycle(
     return None
 
 
+def _recovery_repeats_completed_mutation(
+    history: List[Dict[str, Any]],
+    candidate_calls: List[Dict[str, Any]],
+) -> bool:
+    """Detect a byte-identical completed mutation proposed during one recovery.
+
+    Only the authenticated current user turn counts. Read-only repetition is
+    allowed; a prior confirmed failure does not count as completed work.
+    New tool operations remain authorized. The guard never executes a tool.
+    """
+    candidates = {
+        signature
+        for call in candidate_calls
+        if (signature := _agentic_tool_action_signature(call)) is not None
+        and signature[2]
+    }
+    if not candidates:
+        return False
+    target = active_response_target(history)
+    boundary = int(target["history_index"]) if target is not None else -1
+    returned: set[str] = set()
+    for item in reversed(history[boundary + 1:]):
+        if not isinstance(item, dict):
+            continue
+        if item.get("_jack_tool_evidence_receipt"):
+            stored = item.get("_jack_tool_action_signature")
+            outcome = item.get("_jack_tool_outcome") or TOOL_UNKNOWN
+            if (
+                isinstance(stored, (tuple, list))
+                and tuple(stored) in candidates
+                and outcome != TOOL_FAILED
+            ):
+                return True
+        elif item.get("_jack_internal_tool_exchange") and item.get("role") == "tool":
+            call_id = item.get("tool_call_id")
+            if (isinstance(call_id, str)
+                    and (item.get("_jack_tool_outcome") or reported_tool_outcome(item)) != TOOL_FAILED):
+                returned.add(call_id)
+        elif item.get("_jack_internal_tool_exchange") and item.get("role") == "assistant":
+            calls = item.get("tool_calls")
+            if isinstance(calls, list):
+                for call in calls:
+                    if (isinstance(call, dict)
+                            and call.get("id") in returned
+                            and _agentic_tool_action_signature(call) in candidates):
+                        return True
+    return False
+
+
 def _tool_call_metadata(tool_calls: Any) -> Dict[str, Dict[str, str]]:
     """Index normalized OpenAI tool calls by stable id for evidence receipts."""
     out: Dict[str, Dict[str, str]] = {}
@@ -6594,6 +6643,14 @@ class RuntimeActivityTracker:
                 "stage": None,
                 "stage_number": None,
                 "backend_request_active": False,
+                "backend_stream_phase": "idle",
+                "backend_stream_bytes": {"reasoning": 0, "content": 0, "tool_arguments": 0},
+                "backend_prompt_tokens": None,
+                "last_backend_prompt_tokens": None,
+                "backend_total_tokens": None,
+                "last_backend_total_tokens": None,
+                "backend_last_recognized_at_unix": None,
+                "backend_stream_started_at_unix": None,
                 "started_at_unix": started_at,
             }
 
@@ -6634,6 +6691,11 @@ class RuntimeActivityTracker:
         stage_name: Optional[str] = None,
         stage_number: Optional[int] = None,
         backend_request_active: Optional[bool] = None,
+        backend_stream_phase: Optional[str] = None,
+        backend_stream_bytes: Optional[Dict[str, int]] = None,
+        backend_prompt_tokens: Optional[int] = None,
+        backend_total_tokens: Optional[int] = None,
+        backend_last_recognized_at_unix: Optional[float] = None,
     ) -> None:
         request_id = self._current_request_id.get()
         if not request_id:
@@ -6650,8 +6712,32 @@ class RuntimeActivityTracker:
                 entry["stage"] = str(stage_name)
             if stage_number is not None:
                 entry["stage_number"] = int(stage_number)
+            if backend_request_active is True:
+                # A fresh backend request may be a recovery within the same
+                # stage. Never attribute the preceding generation to it.
+                entry["backend_stream_started_at_unix"] = time.time()
+                entry["backend_stream_phase"] = "waiting_backend"
+                entry["backend_stream_bytes"] = {"reasoning": 0, "content": 0, "tool_arguments": 0}
+                entry["backend_prompt_tokens"] = None
+                entry["backend_total_tokens"] = None
+                entry["backend_last_recognized_at_unix"] = None
             if backend_request_active is not None:
                 entry["backend_request_active"] = bool(backend_request_active)
+            if backend_stream_phase is not None:
+                entry["backend_stream_phase"] = str(backend_stream_phase)
+            if backend_stream_bytes is not None:
+                entry["backend_stream_bytes"] = {
+                    key: max(0, int(backend_stream_bytes.get(key, 0)))
+                    for key in ("reasoning", "content", "tool_arguments")
+                }
+            if backend_prompt_tokens is not None:
+                entry["backend_prompt_tokens"] = max(0, int(backend_prompt_tokens))
+                entry["last_backend_prompt_tokens"] = entry["backend_prompt_tokens"]
+            if backend_total_tokens is not None:
+                entry["backend_total_tokens"] = max(0, int(backend_total_tokens))
+                entry["last_backend_total_tokens"] = entry["backend_total_tokens"]
+            if backend_last_recognized_at_unix is not None:
+                entry["backend_last_recognized_at_unix"] = float(backend_last_recognized_at_unix)
 
     async def snapshot(self) -> Dict[str, Any]:
         now = time.time()
@@ -6662,6 +6748,10 @@ class RuntimeActivityTracker:
                 entry["elapsed_seconds"] = round(
                     max(0.0, now - float(entry.get("started_at_unix") or now)),
                     3,
+                )
+                origin = entry.get("backend_last_recognized_at_unix") or entry.get("backend_stream_started_at_unix")
+                entry["seconds_since_recognized_output"] = (
+                    round(max(0.0, now - float(origin)), 1) if origin else None
                 )
                 active.append(entry)
             active.sort(key=lambda item: float(item.get("started_at_unix") or 0.0))
@@ -7089,6 +7179,9 @@ class JackQwenKernel:
         tool_state: Dict[int, Dict[str, Any]] = {}
         tool_call_fragments_streamed = False
         stage_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        observed_stream_bytes = {"reasoning": 0, "content": 0, "tool_arguments": 0}
+        last_telemetry_write = time.monotonic()
+        last_stream_phase = "waiting_backend"
         # An Agentic stream is incomplete until the backend explicitly reports
         # a terminal finish reason. Never manufacture a successful stop.
         finish_reason = None if AGENTIC_MODE and stage_key in {"extended_initial", "extended_reflection"} else "stop"
@@ -7140,12 +7233,21 @@ class JackQwenKernel:
                 if chunk_usage:
                     aggregate_usage(usage, chunk_usage)
                     aggregate_usage(stage_usage, chunk_usage)
+                    # These are backend-reported prompt tokens, never Jack's
+                    # bytes/4 estimate and never an inferred KV-cache count.
+                    reported_prompt = chunk_usage.get("prompt_tokens") if isinstance(chunk_usage, dict) else None
+                    if isinstance(reported_prompt, int) and not isinstance(reported_prompt, bool) and reported_prompt >= 0:
+                        await self._activity_update(backend_prompt_tokens=reported_prompt)
+                    reported_total = chunk_usage.get("total_tokens") if isinstance(chunk_usage, dict) else None
+                    if isinstance(reported_total, int) and not isinstance(reported_total, bool) and reported_total >= 0:
+                        await self._activity_update(backend_total_tokens=reported_total)
 
                 choices = chunk.get("choices") or []
                 if not choices:
                     continue
                 choice = choices[0] or {}
                 delta = choice.get("delta") or {}
+                observed_phase = "unrecognized_chunk"
 
                 # Qwen/LM Studio may expose native reasoning under either field.
                 reasoning_content = delta.get("reasoning_content")
@@ -7154,6 +7256,8 @@ class JackQwenKernel:
                     text = str(reasoning_content)
                     if text:
                         budget.observe("reasoning", text)
+                        observed_stream_bytes["reasoning"] += len(text.encode("utf-8"))
+                        observed_phase = "reasoning"
                         reasoning_content_parts.append(text)
                         if detector is not None and detector.feed(text):
                             raise RepeatedReasoningLoop(detector.detected_cycle_words or 128, detector.repetitions)
@@ -7166,6 +7270,8 @@ class JackQwenKernel:
                     text = str(reasoning)
                     if text:
                         budget.observe("reasoning", text)
+                        observed_stream_bytes["reasoning"] += len(text.encode("utf-8"))
+                        observed_phase = "reasoning"
                         reasoning_parts.append(text)
                         if detector is not None and detector.feed(text):
                             raise RepeatedReasoningLoop(detector.detected_cycle_words or 128, detector.repetitions)
@@ -7180,6 +7286,8 @@ class JackQwenKernel:
                     text = str(content)
                     if text:
                         budget.observe("output", text)
+                        observed_stream_bytes["content"] += len(text.encode("utf-8"))
+                        observed_phase = "content"
                         content_parts.append(text)
                         last_public_activity = time.monotonic()
                         yield {"kind": "content", "text": text}
@@ -7201,6 +7309,30 @@ class JackQwenKernel:
                     # client/executor from acting on an incomplete or unauthorized
                     # represented target before deterministic authorization runs.
                     self._merge_tool_call_delta(tool_state, tool_deltas)
+                    observed_stream_bytes["tool_arguments"] += sum(
+                        len(str(part.get("function", {}).get(key) or "").encode("utf-8"))
+                        for part in tool_deltas if isinstance(part, dict)
+                        and isinstance(part.get("function"), dict) for key in ("name", "arguments")
+                    )
+                    observed_phase = "tool_arguments"
+
+                # Observational only: <=1 update/second for a stable phase.
+                # Never expose tool arguments or raw model text in telemetry.
+                now = time.monotonic()
+                if observed_phase != "unrecognized_chunk" or last_stream_phase == "waiting_backend":
+                    phase = observed_phase
+                else:
+                    phase = last_stream_phase
+                if phase != last_stream_phase or now - last_telemetry_write >= 1.0:
+                    await self._activity_update(
+                        backend_stream_phase=phase,
+                        backend_stream_bytes=observed_stream_bytes,
+                        backend_last_recognized_at_unix=(
+                            time.time() if observed_phase != "unrecognized_chunk" else None
+                        ),
+                    )
+                    last_stream_phase = phase
+                    last_telemetry_write = now
 
                 # A busy backend can stream tool-call fragments continuously
                 # while Jack correctly withholds executable bytes. That MUST
@@ -7310,14 +7442,13 @@ class JackQwenKernel:
                         "kind": "reasoning",
                         "text": "\n[JACK EMPTY STREAM — RETRYING SAME STAGE; COMPLETED TOOLS PRESERVED]\n",
                     }
-                    # After authenticated tool results, the recovery is
-                    # answer-only: asking the model to invoke another tool
-                    # could repeat a side effect under a new tool-call ID.
-                    recovery_tools = None if prior_tools else tools
-                    recovery_choice = "none" if prior_tools else tool_choice
+                    # A completed tool result must not erase the authority to
+                    # perform NEW tools. Checkpoints, Phase-4 authorization and
+                    # the recovery-only completed-mutation replay guard still
+                    # prevent re-executing an already accepted side effect.
                     async with contextlib.aclosing(self._run_stage_streamed(
                         history, secondary_system, stage_key, usage,
-                        tools=recovery_tools, tool_choice=recovery_choice,
+                        tools=tools, tool_choice=tool_choice,
                         append=append, same_stage_resume=True,
                         tool_validation_repair_depth=tool_validation_repair_depth,
                         loop_retry_depth=loop_retry_depth,
@@ -7405,6 +7536,35 @@ class JackQwenKernel:
                 ):
                     yield packet
                 return
+
+        # The empty-stream retry may propose tools, but must not replay an
+        # already completed mutation under a fresh tool-call ID.
+        if (empty_stream_retry_depth > 0 and message.get("tool_calls")
+                and _recovery_repeats_completed_mutation(history, message["tool_calls"])):
+            if tool_validation_repair_depth >= 1:
+                raise HTTPException(status_code=409, detail=(
+                    "Recovery repeated a completed mutation after one correction; "
+                    "no repeated tool was released."
+                ))
+            repair_history = _tool_rejection_history(
+                history, message,
+                ["This exact mutation already returned a tool result in the current turn. "
+                 "Do not repeat it; continue with a new authorized operation or finish."],
+                STAGES[stage_key].name,
+            )
+            yield {"kind": "reasoning", "text": "\n[JACK COMPLETED MUTATION NOT REPLAYED — CORRECTING SAME STAGE]\n"}
+            async with contextlib.aclosing(self._run_stage_streamed(
+                repair_history, secondary_system, stage_key, usage,
+                tools=tools, tool_choice=tool_choice,
+                append=append, same_stage_resume=True,
+                tool_validation_repair_depth=tool_validation_repair_depth + 1,
+                loop_retry_depth=loop_retry_depth,
+                empty_stream_retry_depth=empty_stream_retry_depth,
+                tool_cycle_recovery_depth=tool_cycle_recovery_depth,
+            )) as repair_packets:
+                async for packet in repair_packets:
+                    yield packet
+            return
 
         # Shared tool-cycle recovery before executor release. Give the same
         # stage one bounded correction opportunity without replaying a tool.
@@ -11798,6 +11958,9 @@ async def runtime_activity_status(request: Request) -> Dict[str, Any]:
         "reasoning_level": ACTIVE_REASONING_PROFILE["label"],
         "endpoint": _runtime_endpoint_details(),
         "telemetry_status": telemetry_status,
+        "context_length": BACKEND.context_length,
+        "context_length_source": BACKEND.context_length_source,
+        "context_usage_source": "backend_stream_usage_only",
         **activity,
     }
 
