@@ -206,7 +206,7 @@ def test_real_stream_disconnect_retries_same_tool_result_without_reexecuting_too
         # not re-execute its completed tool or restart at a fresh user turn.
         frames = [frame async for frame in k.KERNEL.stream(body)]
         rendered = b"".join(frames).decode("utf-8")
-        assert backend.calls == 4  # interrupted R1, resumed R1, R2 draft, R2 extension
+        assert backend.calls == 3  # interrupted R1, resumed R1, fresh R2
         assert "Frozen useful answer" in rendered
         assert call_id not in k.KERNEL._pending_tool_resumes
         assert state.accepted_tool_results[0]["content"] == "verified file contents"
@@ -269,7 +269,7 @@ def test_stage2_disconnect_reuses_frozen_stage1_without_regeneration(monkeypatch
 
         chunks = [c async for c in k.KERNEL.stream(body)]
         wire = b"".join(chunks).decode("utf-8")
-        assert backend.calls == 4, "Stage 1 must never be regenerated after A1 freezes"
+        assert backend.calls == 3, "Stage 1 must never be regenerated after A1 freezes"
         assert "EXACT A1" in wire
         assert "completed, useful working memory" in wire
         assert call_id not in k.KERNEL._pending_tool_resumes
