@@ -108,7 +108,12 @@ def test_muse_uses_its_template_max_without_generic_effort(monkeypatch, tmp_path
         # Experimental Balanced/Thorough Stage 2 distills without native thinking.
         assert "reasoning_strength" not in p["chat_template_kwargs"]
     assert "reasoning_effort" not in p["chat_template_kwargs"]
-    assert "reasoning_effort" not in p
+    if stage == "extended_initial":
+        assert "reasoning_effort" not in p
+    else:
+        # LM Studio requires an explicit top-level off switch for no-think Stage 2.
+        assert p["reasoning_effort"] == "none"
+        assert p["chat_template_kwargs"]["enable_thinking"] is False
     assert p["messages"][0]["content"] == k.AGENTIC_STAGE1_PROMPT
     assert p["messages"][1]["content"] == "Build a clock"
     if stage == "extended_initial":
