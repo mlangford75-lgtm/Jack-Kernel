@@ -62,8 +62,8 @@ def test_single_empty_retries_same_stream_without_replaying_tools(monkeypatch, t
         assert len(b.calls) == 2, "only one streaming retry is allowed"
         assert b.calls[0]["messages"] is h and b.calls[1]["messages"] is h
         if after_tools:
-            assert b.calls[1]["tools"] is None
-            assert b.calls[1]["tool_choice"] == "none"
+            assert b.calls[1]["tools"] == tools
+            assert b.calls[1]["tool_choice"] == "auto"
         results = [p["data"] for p in packets if p["kind"] == "result"]
         assert len(results) == 1
         assert results[0]["choices"][0]["message"]["content"] == "Recovered answer"
@@ -88,4 +88,58 @@ def test_double_empty_fails_with_bounded_attempts(monkeypatch, tmp_path):
                     "extended_initial", {}, append=False):
                 pass
         assert b.calls == 2
+    asyncio.run(run())
+
+
+def _call(name, arguments, call_id):
+    import json
+    return {"id": call_id, "type": "function",
+            "function": {"name": name, "arguments": json.dumps(arguments)}}
+
+
+def test_recovery_duplicate_mutation_guard_is_surgical(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path)
+    prior = _call("write", {"path": "created.txt", "content": "done"}, "completed-id")
+    duplicate = _call("write", {"content": "done", "path": "created.txt"}, "new-id")
+    different = _call("write", {"path": "different.txt", "content": "new"}, "fresh-id")
+    listing = _call("bash", {"command": "ls -R ."}, "read-id")
+    history = [
+        {"role": "user", "content": "Create files"},
+        {"role": "assistant", "content": "", "tool_calls": [prior],
+         "_jack_internal_tool_exchange": True, "_jack_stage_key": "extended_initial"},
+        {"role": "tool", "tool_call_id": "completed-id", "content": "written",
+         "_jack_internal_tool_exchange": True},
+    ]
+    assert k._recovery_repeats_completed_mutation(history, [duplicate])
+    assert not k._recovery_repeats_completed_mutation(history, [different])
+    assert not k._recovery_repeats_completed_mutation(history, [listing])
+    # No earlier user turn may cause a duplicate suppression in this one.
+    history.extend([{"role": "user", "content": "New independent request"}])
+    assert not k._recovery_repeats_completed_mutation(history, [duplicate])
+
+
+def test_runtime_activity_reports_only_backend_prompt_usage(monkeypatch, tmp_path):
+    async def run():
+        k = load(monkeypatch, tmp_path)
+        tracker = k.RuntimeActivityTracker()
+        async with tracker.request_scope("stream"):
+            await tracker.update(stage_key="extended_initial", stage_name="Agentic Stage 1",
+                                 backend_request_active=True)
+            initial = await tracker.snapshot()
+            assert initial["requests"][0]["backend_prompt_tokens"] is None
+            await tracker.update(
+                backend_stream_phase="tool_arguments",
+                backend_stream_bytes={"reasoning": 24, "content": 7, "tool_arguments": 130},
+                backend_prompt_tokens=12345,
+                backend_last_recognized_at_unix=__import__("time").time(),
+            )
+            observed = (await tracker.snapshot())["requests"][0]
+            assert observed["backend_prompt_tokens"] == 12345
+            assert observed["backend_stream_phase"] == "tool_arguments"
+            assert observed["backend_stream_bytes"]["tool_arguments"] == 130
+            await tracker.update(backend_request_active=False)
+            await tracker.update(backend_request_active=True)
+            again = (await tracker.snapshot())["requests"][0]
+            assert again["backend_prompt_tokens"] is None
+            assert again["last_backend_prompt_tokens"] == 12345
     asyncio.run(run())
