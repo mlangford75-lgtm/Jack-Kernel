@@ -255,7 +255,8 @@ def test_streamed_authenticated_tool_resume_is_terminal_only_on_enforced_cycle(
         ], "stream": True, "tools": state.tools, "tool_choice": "auto"}
         wire = b"".join([frame async for frame in k._safe_public_stream(body)]).decode("utf-8")
         record = k._agentic_forensic_turn(state.history)
-        assert backend.calls == 1
+        # Enforced cycles get one same-stage correction; observe releases directly.
+        assert backend.calls == (2 if should_interrupt else 1)
         assert "write-3" not in k.KERNEL._pending_tool_resumes
         if should_interrupt:
             assert "Repeated Tool Cycle Failure" in wire
