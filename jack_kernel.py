@@ -6980,6 +6980,12 @@ class JackQwenKernel:
         )
         if governed_stage and msg.get("tool_calls"):
             if not profile.allow_tools:
+                # A stage with zero executor authority is a security boundary,
+                # not a recoverable malformed call. Do not retry it 25 times.
+                raise HTTPException(status_code=502, detail=(
+                    f"{profile.name}: this stage has no tool authority"
+                ))
+            if not profile.allow_tools:
                 validation_errors = [f"{profile.name}: this stage has no tool authority"]
             else:
                 validation_errors = _tool_call_validation_errors(msg.get("tool_calls"), effective_tools)
@@ -7577,6 +7583,12 @@ class JackQwenKernel:
             or (CODE_DEBUGGING_MODE and _debugging_pass_from_stage_key(stage_key) is not None)
         )
         if governed_stage and message.get("tool_calls"):
+            if not profile.allow_tools:
+                # Never turn prohibited stage-level tool authority into
+                # repeatable corrective inference or a policy bypass.
+                raise HTTPException(status_code=502, detail=(
+                    f"{profile.name}: this stage has no tool authority"
+                ))
             if not profile.allow_tools:
                 validation_errors = [f"{profile.name}: this stage has no tool authority"]
             else:
