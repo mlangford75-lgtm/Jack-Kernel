@@ -144,3 +144,47 @@ def test_runtime_activity_reports_only_backend_prompt_usage(monkeypatch, tmp_pat
             assert again["backend_prompt_tokens"] is None
             assert again["last_backend_prompt_tokens"] == 12345
     asyncio.run(run())
+
+
+def test_empty_stream_recovery_can_release_a_new_read_only_tool(monkeypatch, tmp_path):
+    async def run():
+        k = load(monkeypatch, tmp_path)
+        calls = []
+        proposed = _call("bash", {"command": "ls -R newly-created-project"}, "fresh-tool-id")
+
+        class Backend:
+            async def chat_stream(self, **kwargs):
+                calls.append(kwargs)
+                if len(calls) == 1:
+                    yield response()
+                else:
+                    yield {
+                        "choices": [{"index": 0, "delta": {"tool_calls": [
+                            {**proposed, "index": 0}
+                        ]}, "finish_reason": "tool_calls"}],
+                        "usage": {},
+                    }
+
+        tools = [{"type": "function", "function": {"name": "bash",
+                  "parameters": {"type": "object", "properties": {
+                      "command": {"type": "string"}
+                  }}}}]
+        history = [
+            {"role": "user", "content": "Inspect both locations"},
+            {"role": "assistant", "tool_calls": [
+                _call("bash", {"command": "ls -R previous-location"}, "old-id")],
+                "_jack_internal_tool_exchange": True, "_jack_stage_key": "extended_initial"},
+            {"role": "tool", "tool_call_id": "old-id", "content": "Existing files",
+             "_jack_internal_tool_exchange": True},
+        ]
+        kernel = k.JackQwenKernel(Backend(), k.CFG)
+        packets = [packet async for packet in kernel._run_stage_streamed(
+            history, "", "extended_initial", {}, tools=tools,
+            tool_choice="auto", same_stage_resume=True, append=False)]
+        assert len(calls) == 2
+        assert calls[1]["tools"] == tools
+        result = [packet["data"] for packet in packets if packet["kind"] == "result"]
+        assert len(result) == 1
+        assert result[0]["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "bash"
+        assert sum(item.get("role") == "tool" for item in history) == 1
+    asyncio.run(run())
