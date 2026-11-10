@@ -6647,6 +6647,8 @@ class RuntimeActivityTracker:
                 "backend_stream_bytes": {"reasoning": 0, "content": 0, "tool_arguments": 0},
                 "backend_prompt_tokens": None,
                 "last_backend_prompt_tokens": None,
+                "backend_total_tokens": None,
+                "last_backend_total_tokens": None,
                 "backend_last_recognized_at_unix": None,
                 "backend_stream_started_at_unix": None,
                 "started_at_unix": started_at,
@@ -6692,6 +6694,7 @@ class RuntimeActivityTracker:
         backend_stream_phase: Optional[str] = None,
         backend_stream_bytes: Optional[Dict[str, int]] = None,
         backend_prompt_tokens: Optional[int] = None,
+        backend_total_tokens: Optional[int] = None,
         backend_last_recognized_at_unix: Optional[float] = None,
     ) -> None:
         request_id = self._current_request_id.get()
@@ -6716,6 +6719,7 @@ class RuntimeActivityTracker:
                 entry["backend_stream_phase"] = "waiting_backend"
                 entry["backend_stream_bytes"] = {"reasoning": 0, "content": 0, "tool_arguments": 0}
                 entry["backend_prompt_tokens"] = None
+                entry["backend_total_tokens"] = None
                 entry["backend_last_recognized_at_unix"] = None
             if backend_request_active is not None:
                 entry["backend_request_active"] = bool(backend_request_active)
@@ -6729,6 +6733,9 @@ class RuntimeActivityTracker:
             if backend_prompt_tokens is not None:
                 entry["backend_prompt_tokens"] = max(0, int(backend_prompt_tokens))
                 entry["last_backend_prompt_tokens"] = entry["backend_prompt_tokens"]
+            if backend_total_tokens is not None:
+                entry["backend_total_tokens"] = max(0, int(backend_total_tokens))
+                entry["last_backend_total_tokens"] = entry["backend_total_tokens"]
             if backend_last_recognized_at_unix is not None:
                 entry["backend_last_recognized_at_unix"] = float(backend_last_recognized_at_unix)
 
@@ -7231,6 +7238,9 @@ class JackQwenKernel:
                     reported_prompt = chunk_usage.get("prompt_tokens") if isinstance(chunk_usage, dict) else None
                     if isinstance(reported_prompt, int) and not isinstance(reported_prompt, bool) and reported_prompt >= 0:
                         await self._activity_update(backend_prompt_tokens=reported_prompt)
+                    reported_total = chunk_usage.get("total_tokens") if isinstance(chunk_usage, dict) else None
+                    if isinstance(reported_total, int) and not isinstance(reported_total, bool) and reported_total >= 0:
+                        await self._activity_update(backend_total_tokens=reported_total)
 
                 choices = chunk.get("choices") or []
                 if not choices:
