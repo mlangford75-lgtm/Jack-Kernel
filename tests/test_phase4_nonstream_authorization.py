@@ -210,13 +210,13 @@ def test_nonstream_workspace_denial_preserves_cognition_and_corrects_same_stage(
     # Stage-2 Jack XML consolidation must still run. The Phase-4 denial must not
     # accidentally degrade or truncate the Agentic lifecycle.
     if kernel.AGENTIC_MODE:
-        responses.append(
-            content_response(
-                "<Jack XML>\n"
-                "<workspace_state>Phase-4 denial recovered without execution.</workspace_state>\n"
-                "</Jack XML>"
-            )
+        stage2_memory = (
+            "<Jack XML>\n"
+            "<workspace_state>Phase-4 denial recovered without execution.</workspace_state>\n"
+            "</Jack XML>"
         )
+        # Experimental Balanced/Thorough Stage 2 performs draft + review.
+        responses.extend([content_response(stage2_memory), content_response(stage2_memory)])
 
     backend = FakeBackend(*responses)
     jack = kernel.JackQwenKernel(backend, kernel.CFG)
@@ -225,9 +225,10 @@ def test_nonstream_workspace_denial_preserves_cognition_and_corrects_same_stage(
 
     if kernel.AGENTIC_MODE:
         assert result.content is not None
-        assert "<Jack XML>" in result.content
+        assert "Phase-4 denial recovered without execution." in result.content
         assert result.content.endswith(repaired_answer)
-        assert len(backend.requests) == 3
+        assert len(backend.requests) == 4
+        assert "DEGRADED COMMIT" not in str(result.reasoning_content or "")
     else:
         assert result.content == repaired_answer
         assert len(backend.requests) == 2

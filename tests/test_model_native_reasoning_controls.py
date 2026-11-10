@@ -102,7 +102,11 @@ def test_muse_uses_its_template_max_without_generic_effort(monkeypatch, tmp_path
     k = load(monkeypatch, tmp_path, model=model)
     p = asyncio.run(payload(k, stream=stream, profile=stage))
     assert p["stream"] == stream
-    assert p["chat_template_kwargs"]["reasoning_strength"] == "xhigh"
+    if stage == "extended_initial":
+        assert p["chat_template_kwargs"]["reasoning_strength"] == "xhigh"
+    else:
+        # Experimental Balanced/Thorough Stage 2 distills without native thinking.
+        assert "reasoning_strength" not in p["chat_template_kwargs"]
     assert "reasoning_effort" not in p["chat_template_kwargs"]
     assert "reasoning_effort" not in p
     assert p["messages"][0]["content"] == k.AGENTIC_STAGE1_PROMPT
