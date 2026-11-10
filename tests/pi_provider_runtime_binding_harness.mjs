@@ -172,13 +172,14 @@ for (let i = 0; i < 100 && lifecycleReports.filter(r => r.call_id === "server-1"
   await new Promise(resolve => setTimeout(resolve, 15));
 }
 const observed = lifecycleReports.filter(r => r.call_id === "server-1");
-assert.deepEqual(observed.map(r => r.event), ["START", "PROGRESS", "END"]);
+assert.deepEqual(observed.map(r => r.event).sort(), ["END", "PROGRESS", "START"],
+  "Best-effort reports may arrive out of order; all events must be present");
 assert.equal(observed[0].runtime_id, "runtime-agentic-01");
 assert.equal(observed[0].lane_id, "lane-agentic-01");
 assert.equal(observed[0].owner, "recovery-session");
 assert.equal(observed[0].adapter, "pi");
-assert.equal(observed[0].capabilities.cancellation, false);
-assert.equal(observed[2].outcome, "ERROR_REPORTED");
+assert.equal(observed.find(r => r.event === "START").capabilities.cancellation, false);
+assert.equal(observed.find(r => r.event === "END").outcome, "ERROR_REPORTED");
 assert.equal(JSON.stringify(observed).includes("still-running"), false,
   "No output or arguments may enter telemetry");
 console.log("Pi universal tool lifecycle observation: PASS");
