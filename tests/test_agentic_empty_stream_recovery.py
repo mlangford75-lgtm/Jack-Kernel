@@ -132,10 +132,12 @@ def test_runtime_activity_reports_only_backend_prompt_usage(monkeypatch, tmp_pat
                 backend_stream_phase="tool_arguments",
                 backend_stream_bytes={"reasoning": 24, "content": 7, "tool_arguments": 130},
                 backend_prompt_tokens=12345,
+                backend_total_tokens=12389,
                 backend_last_recognized_at_unix=__import__("time").time(),
             )
             observed = (await tracker.snapshot())["requests"][0]
             assert observed["backend_prompt_tokens"] == 12345
+            assert observed["backend_total_tokens"] == 12389
             assert observed["backend_stream_phase"] == "tool_arguments"
             assert observed["backend_stream_bytes"]["tool_arguments"] == 130
             await tracker.update(backend_request_active=False)
@@ -143,6 +145,8 @@ def test_runtime_activity_reports_only_backend_prompt_usage(monkeypatch, tmp_pat
             again = (await tracker.snapshot())["requests"][0]
             assert again["backend_prompt_tokens"] is None
             assert again["last_backend_prompt_tokens"] == 12345
+            assert again["backend_total_tokens"] is None
+            assert again["last_backend_total_tokens"] == 12389
     asyncio.run(run())
 
 
