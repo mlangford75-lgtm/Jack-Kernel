@@ -411,14 +411,28 @@ export default async function (pi) {
         targetIds.push(entry.id);
       }
     }
-    if (!targetIds.length) return;
+    const edits = targetIds.map((targetId) =>
+      ({ type: "context_edit", targetId, replacement: null }));
+    // Stage 2 thinking-OFF profiles cannot rely on a native R2 bridge.
+    // Their final visible assistant text is the only retained answer/memory
+    // payload. Drop old streamed thinking from future model context while
+    // preserving the byte-exact committed response and raw Pi UI/session entry.
+    // Thinking-ON Stage 2 remains untouched to preserve the one-hop R2 bridge.
+    const emittedThinking = Array.isArray(event.message?.content)
+      && event.message.content.some((part) =>
+        part?.type === "thinking" || part?.type === "reasoning");
+    if (snapshot.agentic_stage2_native_thinking === false
+        && emittedThinking && !previouslyEdited.has(event.messageEntryId)) {
+      edits.push({
+        type: "context_edit", targetId: event.messageEntryId,
+        replacement: response,
+      });
+    }
+    if (!edits.length) return;
     // Preserve earlier boundary proposals from other extensions, and do not
     // force an additional provider inference.
     const previous = Array.isArray(event.entries) ? event.entries : [];
-    return {
-      entries: [...previous, ...targetIds.map((targetId) =>
-        ({ type: "context_edit", targetId, replacement: null }))],
-    };
+    return { entries: [...previous, ...edits] };
   }
 
   pi.on("turn_end", async (event, ctx) => {
