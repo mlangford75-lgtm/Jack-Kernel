@@ -304,7 +304,13 @@ export default async function (pi) {
     const silenceLabel = request && Number.isFinite(silence) && silence > 3
       ? ` · ${Math.floor(silence)}s without recognized output` : "";
     const stage = request?.stage || "Jack";
-    return `Jack ${stage} · ${phaseLabel} · ${ctx} · ${totalBytes.toLocaleString()} stream bytes${silenceLabel}`;
+    const lifecycle = snapshot?.tool_lifecycle;
+    const count = Number(lifecycle?.active_unconfirmed);
+    const age = Number(lifecycle?.longest_unconfirmed_seconds);
+    const observedTools = Number.isInteger(count) && count > 0
+      ? ` · ${count} tool execution${count === 1 ? "" : "s"} unconfirmed${Number.isFinite(age) && age >= 0 ? ` (${Math.floor(age)}s longest)` : ""}`
+      : "";
+    return `Jack ${stage} · ${phaseLabel} · ${ctx} · ${totalBytes.toLocaleString()} stream bytes${silenceLabel}${observedTools}`;
   }
 
   async function updateJackTelemetry(ctx, generation) {
@@ -355,6 +361,56 @@ export default async function (pi) {
   pi.on("agent_start", (_event, ctx) => startJackTelemetry(ctx));
   pi.on("agent_end", (_event, ctx) => stopJackTelemetry(ctx));
   pi.on("session_shutdown", (_event, ctx) => stopJackTelemetry(ctx));
+
+  // Universal Jack lifecycle protocol; Pi is one best-effort reporting adapter.
+  // Never delay tool execution, alter its outcome, or infer failure from silence.
+  const lifecycleProgressAt = new Map();
+  const lifecycleInFlight = new Set();
+  const LIFECYCLE_MAX_IN_FLIGHT_REPORTS = 24;
+  function reportToolLifecycle(event, ctx, kind) {
+    const binding = activeRuntimeBinding;
+    if (!binding || String(ctx?.model?.provider || "") !== PROVIDER_NAME) return;
+    const owner = String(ctx?.sessionManager?.getSessionId?.() || "");
+    const callId = String(event?.toolCallId || "");
+    if (!owner || !callId) return;
+    const key = owner + ":" + callId;
+    const now = Date.now();
+    if (kind === "PROGRESS") {
+      if (now - (lifecycleProgressAt.get(key) || 0) < 5000) return;
+      lifecycleProgressAt.set(key, now);
+      if (lifecycleProgressAt.size > 512) {
+        lifecycleProgressAt.delete(lifecycleProgressAt.keys().next().value);
+      }
+    } else if (kind === "END") {
+      lifecycleProgressAt.delete(key);
+    }
+    if (lifecycleInFlight.size >= LIFECYCLE_MAX_IN_FLIGHT_REPORTS) return;
+    const observed = kind === "END"
+      ? (event?.isError === true ? "ERROR_REPORTED"
+          : event?.isError === false ? "SUCCESS_REPORTED" : "UNKNOWN")
+      : undefined;
+    const body = {
+      runtime_id: binding.runtimeId,
+      lane_id: binding.laneId,
+      adapter: "pi",
+      owner,
+      call_id: callId,
+      event: kind,
+      ...(kind === "END" ? { outcome: observed } : {}),
+      ...(kind === "START" ? { capabilities: {
+        start_end: true, progress: true,
+        bounded_return: false, cancellation: false, detached_jobs: false,
+      } } : {}),
+    };
+    const pending = postJson(`${binding.root}/jack/tool-lifecycle/observe`, binding.token, body, 1200);
+    lifecycleInFlight.add(pending);
+    void pending.catch(() => {
+      // Telemetry loss must never alter executor behavior or tool outcomes.
+    }).finally(() => lifecycleInFlight.delete(pending));
+  }
+  pi.on("tool_execution_start", (event, ctx) => reportToolLifecycle(event, ctx, "START"));
+  pi.on("tool_execution_update", (event, ctx) => reportToolLifecycle(event, ctx, "PROGRESS"));
+  pi.on("tool_execution_end", (event, ctx) => reportToolLifecycle(event, ctx, "END"));
 
   // Pi's executor knows both FAILED and SUCCESS. Preserve the existing
   // failure contract and send explicit successful receipts as well, so the
