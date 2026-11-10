@@ -82,6 +82,7 @@ from jack_agentic_forensics import AgenticForensicJournal, ForensicConflict, att
 from jack_loop_detector import (ReasoningLoopDetector, RepeatedReasoningLoop, RepeatedLoopInterrupt, PartialOutputLoopInterrupt, LOOP_THRESHOLDS)
 from jack_loop_shadow import LongCycleShadowDetector, LongCycleRepeatedReasoningLoop, source_texts_from_history
 from jack_tool_outcomes import reported_tool_outcome, SUCCESS as TOOL_SUCCESS, FAILED as TOOL_FAILED, UNKNOWN as TOOL_UNKNOWN
+from jack_tool_recovery import ToolRecoveryState, ToolRecoveryExhausted, operation_key
 import os
 import shutil
 import socket
@@ -3772,6 +3773,65 @@ def _tool_rejection_notice(
     }
 
 
+_TOOL_RECOVERY_STATE: contextvars.ContextVar[Optional[ToolRecoveryState]] = (
+    contextvars.ContextVar("jack_tool_recovery_state", default=None)
+)
+_TOOL_RECOVERY_PENDING: contextvars.ContextVar[Optional["PendingToolResume"]] = (
+    contextvars.ContextVar("jack_tool_recovery_pending", default=None)
+)
+
+
+def _tool_recovery_check(
+    history: List[Dict[str, Any]], message: Dict[str, Any],
+    errors: List[str], stage_key: str, secondary_system: str,
+    usage: Dict[str, int],
+) -> List[Dict[str, Any]]:
+    """Preserve reasoning and prior tool results, rejecting only invalid actions."""
+    repaired = _tool_rejection_history(history, message, errors, STAGES[stage_key].name)
+    tracker = _TOOL_RECOVERY_STATE.get()
+    if tracker is None:
+        tracker = ToolRecoveryState()
+        _TOOL_RECOVERY_STATE.set(tracker)
+    calls = message.get("tool_calls")
+    operations = [operation_key(item) for item in calls if isinstance(item, dict)] if isinstance(calls, list) else []
+    operation = operations[0] if operations else "rejected_tool_operation"
+    count = tracker.fail(operation, "; ".join(errors))
+    advisory = tracker.advice()
+    if advisory:
+        repaired[-1]["content"] += "\n[JACK TOOL RECOVERY GUIDANCE]\n" + advisory
+    if tracker.exhausted:
+        raise ToolRecoveryExhausted(
+            state=tracker, history=repaired, stage_key=stage_key,
+            secondary_system=secondary_system, usage=usage,
+            pending_state=_TOOL_RECOVERY_PENDING.get(),
+        )
+    LOG.warning("Stage %s tool recovery attempt %d; operation=%s", STAGES[stage_key].name, count, operation)
+    return repaired
+
+
+def _tool_recovery_record_results(state: "PendingToolResume", results: List[Dict[str, Any]]) -> None:
+    """Count only explicit host-authenticated failures and successes."""
+    tracker = state.tool_recovery
+    if tracker is None:
+        return
+    calls_by_id: Dict[str, Dict[str, Any]] = {}
+    for entry in reversed(state.history):
+        if isinstance(entry, dict) and isinstance(entry.get("tool_calls"), list):
+            for call in entry["tool_calls"]:
+                if isinstance(call, dict) and isinstance(call.get("id"), str):
+                    calls_by_id.setdefault(call["id"], call)
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        call_id = str(item.get("tool_call_id") or "")
+        status = item.get("_jack_tool_outcome") or TOOL_UNKNOWN
+        op = operation_key(calls_by_id.get(call_id, {}))
+        if status == TOOL_FAILED:
+            tracker.fail(op, _content_to_text(item.get("content")), call_id=call_id)
+        elif status == TOOL_SUCCESS:
+            tracker.progress(op, call_id=call_id)
+
+
 def _tool_rejection_history(
     history: List[Dict[str, Any]], message: Dict[str, Any], errors: List[str], stage_name: str
 ) -> List[Dict[str, Any]]:
@@ -6791,6 +6851,7 @@ class PendingToolResume:
     # Resume Stage 2 from this frozen history; never rerun Stage 1 or its tools.
     frozen_stage1_history: Optional[List[Dict[str, Any]]] = None
     frozen_stage1_answer: Optional[str] = None
+    tool_recovery: Optional[ToolRecoveryState] = None
 
 
 class RuntimeActivityTracker:
@@ -7088,19 +7149,24 @@ class JackQwenKernel:
                     nonstream_budget.observe("output", str(function.get("arguments") or ""))
         if isinstance(msg.get("tool_calls"), list):
             msg["tool_calls"] = normalize_tool_calls_for_distribution(msg.get("tool_calls"))
-        governed_stage = bool(SELF_ADVERSARIAL_MODE or (CODE_DEBUGGING_MODE and _debugging_pass_from_stage_key(stage_key) is not None))
+        # Tool validation is a universal kernel control, not a cognition-mode
+        # feature. Native and Deep Reasoning tool calls require the same schema
+        # checks as Agentic, Deep Research, and Code Debugging.
+        governed_stage = bool(
+            profile.allow_tools or SELF_ADVERSARIAL_MODE
+            or (CODE_DEBUGGING_MODE and _debugging_pass_from_stage_key(stage_key) is not None)
+        )
         if governed_stage and msg.get("tool_calls"):
             if not profile.allow_tools:
-                validation_errors = [f"{profile.name}: this stage has no tool authority"]
-            else:
-                validation_errors = _tool_call_validation_errors(msg.get("tool_calls"), effective_tools)
+                # A stage with zero executor authority is a security boundary,
+                # not a recoverable malformed call. Do not retry it 25 times.
+                raise HTTPException(status_code=502, detail=(
+                    f"{profile.name}: this stage has no tool authority"
+                ))
+            validation_errors = _tool_call_validation_errors(msg.get("tool_calls"), effective_tools)
             if validation_errors:
-                if tool_validation_repair_depth >= 2:
-                    raise HTTPException(status_code=502, detail=(
-                        f"{STAGES[stage_key].name} repeatedly emitted rejected tool actions: " + "; ".join(validation_errors)
-                    ))
                 LOG.warning("%s rejected tool action before execution: %s", STAGES[stage_key].name, "; ".join(validation_errors))
-                repair_history = _tool_rejection_history(history, msg, validation_errors, STAGES[stage_key].name)
+                repair_history = _tool_recovery_check(history, msg, validation_errors, stage_key, secondary_system, usage)
                 return await self._run_stage(
                     repair_history, secondary_system, stage_key, usage, tools=tools, tool_choice=tool_choice,
                     append=append, same_stage_resume=True, tool_validation_repair_depth=tool_validation_repair_depth + 1,
@@ -7118,23 +7184,13 @@ class JackQwenKernel:
             )
             if path_authorization_errors:
                 if not allowed_calls:
-                    if tool_validation_repair_depth >= 2:
-                        raise HTTPException(
-                            status_code=502,
-                            detail=(
-                                f"{STAGES[stage_key].name} repeatedly emitted "
-                                "rejected Phase-4 filesystem actions"
-                            ),
-                        )
                     LOG.warning(
                         "%s rejected Phase-4 filesystem action before execution",
                         STAGES[stage_key].name,
                     )
-                    repair_history = _tool_rejection_history(
-                        history,
-                        msg,
-                        path_authorization_errors,
-                        STAGES[stage_key].name,
+                    repair_history = _tool_recovery_check(
+                        history, msg, path_authorization_errors,
+                        stage_key, secondary_system, usage,
                     )
                     return await self._run_stage(
                         repair_history,
@@ -7708,19 +7764,24 @@ class JackQwenKernel:
         if tool_state:
             message["tool_calls"] = normalize_tool_calls_for_distribution([tool_state[i] for i in sorted(tool_state)])
 
-        governed_stage = bool(SELF_ADVERSARIAL_MODE or (CODE_DEBUGGING_MODE and _debugging_pass_from_stage_key(stage_key) is not None))
+        # Tool validation is a universal kernel control, not a cognition-mode
+        # feature. Native and Deep Reasoning tool calls require the same schema
+        # checks as Agentic, Deep Research, and Code Debugging.
+        governed_stage = bool(
+            profile.allow_tools or SELF_ADVERSARIAL_MODE
+            or (CODE_DEBUGGING_MODE and _debugging_pass_from_stage_key(stage_key) is not None)
+        )
         if governed_stage and message.get("tool_calls"):
             if not profile.allow_tools:
-                validation_errors = [f"{profile.name}: this stage has no tool authority"]
-            else:
-                validation_errors = _tool_call_validation_errors(message.get("tool_calls"), effective_tools)
+                # Never turn prohibited stage-level tool authority into
+                # repeatable corrective inference or a policy bypass.
+                raise HTTPException(status_code=502, detail=(
+                    f"{profile.name}: this stage has no tool authority"
+                ))
+            validation_errors = _tool_call_validation_errors(message.get("tool_calls"), effective_tools)
             if validation_errors:
-                if tool_validation_repair_depth >= 2:
-                    raise HTTPException(status_code=502, detail=(
-                        f"{STAGES[stage_key].name} repeatedly emitted rejected tool actions: " + "; ".join(validation_errors)
-                    ))
                 LOG.warning("%s rejected streamed tool action before execution: %s", STAGES[stage_key].name, "; ".join(validation_errors))
-                repair_history = _tool_rejection_history(history, message, validation_errors, STAGES[stage_key].name)
+                repair_history = _tool_recovery_check(history, message, validation_errors, stage_key, secondary_system, usage)
                 yield {"kind": "reasoning", "text": "\n[JACK TOOL ACTION REJECTED BEFORE EXECUTION — CORRECTING IN SAME STAGE]\n"}
                 async for packet in self._run_stage_streamed(
                     repair_history, secondary_system, stage_key, usage, tools=tools, tool_choice=tool_choice,
@@ -7733,16 +7794,11 @@ class JackQwenKernel:
         # already completed mutation under a fresh tool-call ID.
         if (empty_stream_retry_depth > 0 and message.get("tool_calls")
                 and _recovery_repeats_completed_mutation(history, message["tool_calls"])):
-            if tool_validation_repair_depth >= 1:
-                raise HTTPException(status_code=409, detail=(
-                    "Recovery repeated a completed mutation after one correction; "
-                    "no repeated tool was released."
-                ))
-            repair_history = _tool_rejection_history(
+            repair_history = _tool_recovery_check(
                 history, message,
                 ["This exact mutation already returned a tool result in the current turn. "
                  "Do not repeat it; continue with a new authorized operation or finish."],
-                STAGES[stage_key].name,
+                stage_key, secondary_system, usage,
             )
             yield {"kind": "reasoning", "text": "\n[JACK COMPLETED MUTATION NOT REPLAYED — CORRECTING SAME STAGE]\n"}
             async with contextlib.aclosing(self._run_stage_streamed(
@@ -7758,8 +7814,9 @@ class JackQwenKernel:
                     yield packet
             return
 
-        # Shared tool-cycle recovery before executor release. Give the same
-        # stage one bounded correction opportunity without replaying a tool.
+        # Preserve the independent exact tool-cycle safety policy.
+        # The 25-attempt universal ceiling applies to recoverable tool failures,
+        # not to a separately enforced repeated-action cycle.
         if (message.get("tool_calls") and self.cfg.loop_detector_enabled
                 and self.cfg.tool_cycle_mode == "enforce"
                 and tool_cycle_recovery_depth == 0):
@@ -7800,23 +7857,13 @@ class JackQwenKernel:
             )
             if path_authorization_errors:
                 if not allowed_calls:
-                    if tool_validation_repair_depth >= 2:
-                        raise HTTPException(
-                            status_code=502,
-                            detail=(
-                                f"{STAGES[stage_key].name} repeatedly emitted "
-                                "rejected Phase-4 filesystem actions"
-                            ),
-                        )
                     LOG.warning(
                         "%s rejected streamed Phase-4 filesystem action before execution",
                         STAGES[stage_key].name,
                     )
-                    repair_history = _tool_rejection_history(
-                        history,
-                        message,
-                        path_authorization_errors,
-                        STAGES[stage_key].name,
+                    repair_history = _tool_recovery_check(
+                        history, message, path_authorization_errors,
+                        stage_key, secondary_system, usage,
                     )
                     yield {
                         "kind": "reasoning",
@@ -8736,6 +8783,7 @@ class JackQwenKernel:
             )
         state = PendingToolResume(
             resume_id=f"jack-resume-{uuid.uuid4().hex}",
+            tool_recovery=_TOOL_RECOVERY_STATE.get(),
             stage_key=stage_key,
             history=resume_history,
             secondary_system=secondary_system,
@@ -8956,15 +9004,49 @@ class JackQwenKernel:
         state: PendingToolResume,
         tool_messages: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
+        _TOOL_RECOVERY_STATE.set(state.tool_recovery or ToolRecoveryState())
+        _TOOL_RECOVERY_PENDING.set(state)
+        _tool_recovery_record_results(state, tool_messages)
         history = list(state.history)
         history.extend(tool_messages)
+        if state.tool_recovery is not None and state.tool_recovery.exhausted:
+            raise ToolRecoveryExhausted(
+                state=state.tool_recovery, history=history, stage_key=state.stage_key,
+                secondary_system=state.secondary_system, usage=state.usage,
+                pending_state=state,
+            )
         if state.deferred_tool_rejection_errors:
+            tracker = state.tool_recovery
+            if tracker is not None:
+                for index, error in enumerate(state.deferred_tool_rejection_errors):
+                    # Mixed batches may execute authorized siblings. Count the
+                    # denied siblings once after their actual results return;
+                    # never rerun the rejected operation under a new ID.
+                    tracker.fail(
+                        "phase4_withheld_action", error,
+                        call_id=f"{state.resume_id}:withheld:{index}",
+                    )
+                if tracker.exhausted:
+                    raise ToolRecoveryExhausted(
+                        state=tracker, history=history, stage_key=state.stage_key,
+                        secondary_system=state.secondary_system, usage=state.usage,
+                        pending_state=state,
+                    )
             history.append(
                 _tool_rejection_notice(
                     state.deferred_tool_rejection_errors,
                     STAGES[state.stage_key].name,
                 )
             )
+        tracker = state.tool_recovery
+        if tracker is not None and tracker.consecutive_failures:
+            advisory = tracker.advice()
+            if advisory:
+                history.append({
+                    "role": "user",
+                    "content": "[JACK INTERNAL TOOL RECOVERY — NOT A NEW USER REQUEST]\n" + advisory,
+                    "_jack_internal_tool_validation_rejection": True,
+                })
         return history
 
     async def _retire_pending_tool_resume(self, state: PendingToolResume) -> None:
@@ -9794,6 +9876,86 @@ class JackQwenKernel:
             finally:
                 _AGENTIC_DELAY_R2_SCOPE.reset(scope_token)
 
+    @staticmethod
+    def _tool_recovery_handoff_history(exc: ToolRecoveryExhausted) -> List[Dict[str, Any]]:
+        history = list(exc.history)
+        history.append({
+            "role": "user",
+            "content": exc.state.handoff_instruction(),
+            "_jack_internal_tool_validation_rejection": True,
+        })
+        return history
+
+    async def _tool_recovery_handoff_nonstream(self, exc: ToolRecoveryExhausted) -> KernelResult:
+        """One tools-off final generation; always return an honest host record."""
+        _agentic_mark_stage1_failure("ToolRecoveryExhausted")
+        if exc.pending_state is not None:
+            await self._retire_pending_tool_resume(exc.pending_state)
+        record = exc.state.host_report()
+        answer = ""
+        try:
+            profile = replace(STAGES[exc.stage_key], allow_tools=False)
+            response = await self.backend.chat(
+                messages=self._tool_recovery_handoff_history(exc),
+                secondary_system=exc.secondary_system,
+                profile=profile, tools=None, tool_choice="none",
+            )
+            choice = (response.get("choices") or [{}])[0] or {}
+            message = choice.get("message") or {}
+            if not message.get("tool_calls"):
+                answer = _content_to_text(message.get("content")).strip()
+        except Exception as error:
+            LOG.warning("Tools-off recovery handoff generation unavailable: %s", type(error).__name__)
+        return KernelResult(
+            content=record + (answer if answer else "Unable to generate an additional summary. "
+                               "The verified host failure record above remains available.\n")
+                + "\n[END RECOVERY HANDOFF — TASK INCOMPLETE]",
+            tool_calls=None, finish_reason="stop",
+            usage=normalize_usage(dict(exc.usage)),
+        )
+
+    async def _tool_recovery_handoff_stream(self, exc: ToolRecoveryExhausted) -> AsyncIterator[bytes]:
+        """Stream a useful failure handoff; forbid further tool execution."""
+        _agentic_mark_stage1_failure("ToolRecoveryExhausted")
+        if exc.pending_state is not None:
+            await self._retire_pending_tool_resume(exc.pending_state)
+        response_id = "chatcmpl-jack-recovery-" + uuid.uuid4().hex
+        created = int(time.time())
+        def chunk(delta: Dict[str, Any], finish_reason: Optional[str] = None) -> bytes:
+            return ("data: " + json.dumps({
+                "id": response_id, "object": "chat.completion.chunk",
+                "created": created, "model": self.cfg.virtual_model,
+                "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+            }, ensure_ascii=False) + "\n\n").encode("utf-8")
+        yield chunk({"role": "assistant"})
+        yield chunk({"content": exc.state.host_report()})
+        emitted = False
+        try:
+            profile = replace(STAGES[exc.stage_key], allow_tools=False)
+            async for event in self.backend.chat_stream(
+                messages=self._tool_recovery_handoff_history(exc),
+                secondary_system=exc.secondary_system, profile=profile,
+                tools=None, tool_choice="none",
+            ):
+                for choice in (event.get("choices") or []):
+                    delta = choice.get("delta") or {}
+                    reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                    if isinstance(reasoning, str) and reasoning:
+                        yield chunk({"reasoning_content": reasoning})
+                    content = delta.get("content")
+                    if isinstance(content, str) and content:
+                        emitted = True
+                        yield chunk({"content": content})
+                    # Tool-shaped deltas are discarded, never passed to Pi.
+        except Exception as error:
+            LOG.warning("Tools-off streamed recovery handoff unavailable: %s", type(error).__name__)
+        if not emitted:
+            yield chunk({"content": "Additional model summary unavailable; "
+                         "consult the authenticated host failure record above.\n"})
+        yield chunk({"content": "\n[END RECOVERY HANDOFF — TASK INCOMPLETE]"})
+        yield chunk({}, "stop")
+        yield b"data: [DONE]\n\n"
+
     async def run(
         self,
         request_body: Dict[str, Any],
@@ -9801,6 +9963,8 @@ class JackQwenKernel:
         executor_context: Optional[Phase4ExecutorRequestContext] = None,
     ) -> KernelResult:
         token = _PHASE4_EXECUTOR_REQUEST_CONTEXT.set(executor_context)
+        recovery_token = _TOOL_RECOVERY_STATE.set(ToolRecoveryState())
+        pending_recovery_token = _TOOL_RECOVERY_PENDING.set(None)
         scope_token = (
             _AGENTIC_DELAY_R2_SCOPE.set({
                 "stage1_frozen": False, "bridge_messages": [], "pending_state": None,
@@ -9810,6 +9974,8 @@ class JackQwenKernel:
         try:
             async with self._activity_request_scope("nonstream"):
                 return await self._run_impl(request_body)
+        except ToolRecoveryExhausted as exc:
+            return await self._tool_recovery_handoff_nonstream(exc)
         except RepeatedToolCycleInterrupt as exc:
             _agentic_mark_stage1_failure("RepeatedToolCycleInterrupt")
             return KernelResult(
@@ -9827,6 +9993,8 @@ class JackQwenKernel:
                 if scope_token is not None:
                     await self._agentic_phase3g_close_scope(scope_token)
             finally:
+                _TOOL_RECOVERY_PENDING.reset(pending_recovery_token)
+                _TOOL_RECOVERY_STATE.reset(recovery_token)
                 _PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
 
     async def _run_impl(self, request_body: Dict[str, Any]) -> KernelResult:
@@ -9923,6 +10091,8 @@ class JackQwenKernel:
         executor_context: Optional[Phase4ExecutorRequestContext] = None,
     ) -> AsyncIterator[bytes]:
         token = _PHASE4_EXECUTOR_REQUEST_CONTEXT.set(executor_context)
+        recovery_token = _TOOL_RECOVERY_STATE.set(ToolRecoveryState())
+        pending_recovery_token = _TOOL_RECOVERY_PENDING.set(None)
         scope_token = (
             _AGENTIC_DELAY_R2_SCOPE.set({
                 "stage1_frozen": False, "bridge_messages": [], "pending_state": None,
@@ -9934,6 +10104,9 @@ class JackQwenKernel:
                 async with contextlib.aclosing(self._stream_impl(request_body)) as stage_stream:
                     async for chunk in stage_stream:
                         yield chunk
+        except ToolRecoveryExhausted as exc:
+            async for chunk in self._tool_recovery_handoff_stream(exc):
+                yield chunk
         except GenerationBudgetExceeded as exc:
             # Terminal failure, never a successful Stage-1 freeze or Stage-2
             # memory commit. Do not retry or repeat any agent tool.
@@ -9967,6 +10140,8 @@ class JackQwenKernel:
                 if scope_token is not None:
                     await self._agentic_phase3g_close_scope(scope_token)
             finally:
+                _TOOL_RECOVERY_PENDING.reset(pending_recovery_token)
+                _TOOL_RECOVERY_STATE.reset(recovery_token)
                 _PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
 
     async def _stream_impl(self, request_body: Dict[str, Any]) -> AsyncIterator[bytes]:
