@@ -281,9 +281,15 @@ export default async function (pi) {
     const prompt = request?.backend_prompt_tokens;
     const reported = typeof prompt === "number" && Number.isFinite(prompt) && prompt >= 0
       ? Math.floor(prompt) : null;
-    // A terminal stream-usage report often arrives only at completion;
-    // display unknown until the backend supplies a number.
-    const ctx = `ctx ${reported === null ? "—" : reported.toLocaleString()}/${availableCapacity === null ? "?" : availableCapacity.toLocaleString()}`;
+    const previousPrompt = request?.last_backend_prompt_tokens;
+    const lastReported = typeof previousPrompt === "number" && Number.isFinite(previousPrompt) && previousPrompt >= 0
+      ? Math.floor(previousPrompt) : null;
+    // Never present a previous stage's usage as a live model-server count.
+    // Stream usage is normally terminal, so live unknown is expected.
+    const contextNumerator = reported === null
+      ? (lastReported === null ? "—" : `last ${lastReported.toLocaleString()}`)
+      : reported.toLocaleString();
+    const ctx = `ctx ${contextNumerator}/${availableCapacity === null ? "?" : availableCapacity.toLocaleString()}`;
     const phase = String(request?.backend_stream_phase || (request ? "waiting_backend" : "idle"));
     const phaseLabel = ({
       reasoning: "reasoning", content: "answer",
