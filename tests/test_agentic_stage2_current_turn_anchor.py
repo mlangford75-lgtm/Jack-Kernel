@@ -130,3 +130,39 @@ def test_historical_u_m_a_is_still_available_without_r2():
     assert h[1]["content"] == "Turn 1 retrospective"
     assert h[2]["content"] == "Turn 1 frozen answer"
     assert h[-1]["reasoning_content"] == "R1_2 created SVG"
+
+
+@pytest.mark.parametrize("cache", [False, True])
+def test_stage2_authentic_request_survives_internal_stage1_extension(cache):
+    """A review-induced audit cannot replace the authentic user task in Stage-2 projection."""
+    k = load(cache)
+    original = "it needs a luxury look. use black, gold, and diamonds"
+    extension = ("Wait, more verification is needed. Test the reasoning for errors, mistakes, "
+                 "or poor quality. Make changes, if necessary, to ensure alignment with "
+                 "instructions and user request before responding")
+    assert "Identify the user's task exclusively from the original user request. Treat subsequent reasoning as work performed, not as a new user request." in k.AGENTIC_36_STAGE2_PROMPT
+    h = [
+        {"role": "user", "content": original},
+        {"role": "assistant", "content": "Black and gold clock design draft",
+         "reasoning_content": "Created black gold diamond dial",
+         "_jack_internal_agentic_final_review_draft": True},
+        {"role": "user", "content": extension,
+         "_jack_internal_agentic_final_review_trigger": True},
+        {"role": "assistant", "content": "Luxury clock implemented and inspected",
+         "reasoning_content": "The user wants a code audit; removed unused variables.",
+         "_jack_extended_candidate_response": True},
+    ]
+    old = json.dumps(h, sort_keys=True)
+    projected = k._agentic_stage2_test_history(h, k.STAGES["extended_reflection"])
+    assert json.dumps(h, sort_keys=True) == old
+    assert projected[0]["role"] == "user" and projected[0]["content"] == original
+    assert len(projected) == 2
+    assert extension not in json.dumps(projected)
+    assert "The user wants a code audit" in projected[1]["reasoning_content"]
+    assert "Created black gold diamond dial" in projected[1]["reasoning_content"]
+    assert projected[1]["content"] == "Luxury clock implemented and inspected"
+    outbound = asyncio.run(payloads(k, h, cache))
+    serialized = json.dumps(outbound["messages"])
+    assert original in serialized
+    assert extension not in serialized
+    assert "Identify the user's task exclusively from the original user request. Treat subsequent reasoning as work performed, not as a new user request." in serialized
