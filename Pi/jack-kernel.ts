@@ -399,7 +399,7 @@ export default async function (pi) {
 
     const targetIds = [];
     const previouslyEdited = new Set(branch
-      .filter((entry) => entry?.type === "context_edit" && entry.replacement === null)
+      .filter((entry) => entry?.type === "context_edit")
       .map((entry) => entry.targetId));
     for (let i = lastUser + 1; i < end; i += 1) {
       const entry = branch[i];
