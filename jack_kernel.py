@@ -4013,11 +4013,7 @@ def self_adversarial_stage_reasoning_trace(
 # One Stage-1 continuation: verify the draft and its alignment together.
 # Preserve both user-approved sentences unchanged in one appended user message.
 AGENTIC_STAGE1_VERIFICATION_PROMPT = "Wait, more verification is needed. Test the reasoning for errors, mistakes, or poor quality. Make changes, if necessary"
-AGENTIC_FINAL_REVIEW_PROMPT = (
-    AGENTIC_STAGE1_VERIFICATION_PROMPT
-    + "\n"
-    + "Hold on, ensure the response is in full alignment with user request"
-)
+AGENTIC_FINAL_REVIEW_PROMPT = "Hold on, ensure the response is in full alignment with user request. Test the reasoning for errors, mistakes, or poor quality. Make changes, if necessary"
 AGENTIC_FINAL_REVIEW_TRIGGER = AGENTIC_FINAL_REVIEW_PROMPT
 
 
