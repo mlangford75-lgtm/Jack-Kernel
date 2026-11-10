@@ -83,6 +83,7 @@ from jack_loop_detector import (ReasoningLoopDetector, RepeatedReasoningLoop, Re
 from jack_loop_shadow import LongCycleShadowDetector, LongCycleRepeatedReasoningLoop, source_texts_from_history
 from jack_tool_outcomes import reported_tool_outcome, SUCCESS as TOOL_SUCCESS, FAILED as TOOL_FAILED, UNKNOWN as TOOL_UNKNOWN
 from jack_tool_recovery import ToolRecoveryState, ToolRecoveryExhausted, operation_key
+from jack_tool_lifecycle import ToolLifecycleObserver
 import os
 import shutil
 import socket
@@ -400,6 +401,7 @@ RUNTIME_ID = _safe_runtime_identifier(
     f"jack-{_safe_runtime_identifier(CFG.reasoning_level, 'runtime')}-{uuid.uuid4().hex[:12]}",
 )
 LANE_ID = _safe_runtime_identifier(CFG.lane_id, RUNTIME_ID)
+TOOL_LIFECYCLE_OBSERVER = ToolLifecycleObserver()
 
 # Phase 4 path authority is host-owned startup state. It is deliberately
 # separate from ordinary request fields and model-visible conversation state.
@@ -12371,6 +12373,31 @@ async def runtime_registry(request: Request) -> Dict[str, Any]:
     }
 
 
+@APP.post("/jack/tool-lifecycle/observe")
+async def tool_lifecycle_observe(request: Request) -> Dict[str, Any]:
+    """Authenticated, passive reporting by cooperating agent executors."""
+    await enforce_kernel_auth(request)
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid lifecycle JSON") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Lifecycle event must be an object")
+    if payload.get("runtime_id") != RUNTIME_ID or payload.get("lane_id") != LANE_ID:
+        raise HTTPException(status_code=409, detail="Lifecycle event runtime/lane mismatch")
+    try:
+        return TOOL_LIFECYCLE_OBSERVER.observe(
+            adapter=payload.get("adapter"),
+            owner=payload.get("owner"),
+            call_id=payload.get("call_id"),
+            event=payload.get("event"),
+            outcome=payload.get("outcome"),
+            capabilities=payload.get("capabilities"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @APP.get("/jack/runtime/status")
 async def runtime_activity_status(request: Request) -> Dict[str, Any]:
     """Authenticated out-of-band runtime activity; never model-visible state."""
@@ -12399,6 +12426,7 @@ async def runtime_activity_status(request: Request) -> Dict[str, Any]:
         "context_length": BACKEND.context_length,
         "context_length_source": BACKEND.context_length_source,
         "context_usage_source": "backend_stream_usage_only",
+        "tool_lifecycle": TOOL_LIFECYCLE_OBSERVER.snapshot(),
         **activity,
     }
 
