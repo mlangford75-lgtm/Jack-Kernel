@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-PROMPT = "Hold on, ensure the response is in full alignment with user request. Test the reasoning for errors, mistakes, or poor quality. Make changes, if necessary"
+PROMPT = " Hold on, re-verify response and reasoning to ensure alignment with instructions and user request"
 
 
 def load(monkeypatch, tmp_path, enabled):
