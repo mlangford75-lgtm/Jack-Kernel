@@ -278,18 +278,18 @@ export default async function (pi) {
     const capacity = Number(snapshot?.context_length);
     const availableCapacity = Number.isFinite(capacity) && capacity > 0
       ? Math.floor(capacity) : null;
+    const total = request?.backend_total_tokens;
     const prompt = request?.backend_prompt_tokens;
-    const reported = typeof prompt === "number" && Number.isFinite(prompt) && prompt >= 0
-      ? Math.floor(prompt) : null;
+    const previousTotal = request?.last_backend_total_tokens;
     const previousPrompt = request?.last_backend_prompt_tokens;
-    const lastReported = typeof previousPrompt === "number" && Number.isFinite(previousPrompt) && previousPrompt >= 0
-      ? Math.floor(previousPrompt) : null;
-    // Never present a previous stage's usage as a live model-server count.
-    // Stream usage is normally terminal, so live unknown is expected.
-    const contextNumerator = reported === null
-      ? (lastReported === null ? "—" : `last ${lastReported.toLocaleString()}`)
-      : reported.toLocaleString();
-    const ctx = `ctx ${contextNumerator}/${availableCapacity === null ? "?" : availableCapacity.toLocaleString()}`;
+    const valid = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0;
+    // Prefer actual server-reported total context usage (prompt + output).
+    // Otherwise identify prompt-only usage. Never substitute a host estimate.
+    const currentNumber = valid(total) ? `${Math.floor(total).toLocaleString()}`
+      : (valid(prompt) ? `${Math.floor(prompt).toLocaleString()} prompt` : null);
+    const previousNumber = valid(previousTotal) ? `last ${Math.floor(previousTotal).toLocaleString()}`
+      : (valid(previousPrompt) ? `last ${Math.floor(previousPrompt).toLocaleString()} prompt` : "—");
+    const ctx = `ctx ${currentNumber || previousNumber}/${availableCapacity === null ? "?" : availableCapacity.toLocaleString()}`;
     const phase = String(request?.backend_stream_phase || (request ? "waiting_backend" : "idle"));
     const phaseLabel = ({
       reasoning: "reasoning", content: "answer",
