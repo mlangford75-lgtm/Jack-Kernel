@@ -6971,7 +6971,13 @@ class JackQwenKernel:
                     nonstream_budget.observe("output", str(function.get("arguments") or ""))
         if isinstance(msg.get("tool_calls"), list):
             msg["tool_calls"] = normalize_tool_calls_for_distribution(msg.get("tool_calls"))
-        governed_stage = bool(SELF_ADVERSARIAL_MODE or (CODE_DEBUGGING_MODE and _debugging_pass_from_stage_key(stage_key) is not None))
+        # Tool validation is a universal kernel control, not a cognition-mode
+        # feature. Native and Deep Reasoning tool calls require the same schema
+        # checks as Agentic, Deep Research, and Code Debugging.
+        governed_stage = bool(
+            profile.allow_tools or SELF_ADVERSARIAL_MODE
+            or (CODE_DEBUGGING_MODE and _debugging_pass_from_stage_key(stage_key) is not None)
+        )
         if governed_stage and msg.get("tool_calls"):
             if not profile.allow_tools:
                 validation_errors = [f"{profile.name}: this stage has no tool authority"]
@@ -7563,7 +7569,13 @@ class JackQwenKernel:
         if tool_state:
             message["tool_calls"] = normalize_tool_calls_for_distribution([tool_state[i] for i in sorted(tool_state)])
 
-        governed_stage = bool(SELF_ADVERSARIAL_MODE or (CODE_DEBUGGING_MODE and _debugging_pass_from_stage_key(stage_key) is not None))
+        # Tool validation is a universal kernel control, not a cognition-mode
+        # feature. Native and Deep Reasoning tool calls require the same schema
+        # checks as Agentic, Deep Research, and Code Debugging.
+        governed_stage = bool(
+            profile.allow_tools or SELF_ADVERSARIAL_MODE
+            or (CODE_DEBUGGING_MODE and _debugging_pass_from_stage_key(stage_key) is not None)
+        )
         if governed_stage and message.get("tool_calls"):
             if not profile.allow_tools:
                 validation_errors = [f"{profile.name}: this stage has no tool authority"]
