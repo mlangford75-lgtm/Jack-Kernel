@@ -205,42 +205,43 @@ def test_exact_prompt_identity_and_integrity():
     assert prompts["ULTRA_STAGE1_THESIS_PROMPT"].startswith(xhigh + "\n\n")
     assert prompts["ULTRA_STAGE3_SYNTHESIS_PROMPT"].startswith(xhigh + "\n\n")
     assert prompts["ULTRA_STAGE2_ANTITHESIS_PROMPT"].startswith("Antithesis - ")
-    warning = "You are being given the response of an untrusted and problematic LLM system. It is known to make catastrophic failures."
-    assert prompts["ULTRA_STAGE2_ANTITHESIS_PROMPT"].count(warning) == 1
-    assert warning not in prompts["ULTRA_STAGE1_THESIS_PROMPT"]
-    assert warning not in prompts["ULTRA_STAGE3_SYNTHESIS_PROMPT"]
-    objective = "The objective should be to find consequential flaws in the model's response. This model is known to produce work that is full of errors and false information."
-    assert prompts["ULTRA_STAGE2_ANTITHESIS_PROMPT"].count(objective) == 1
-    assert "Do not confuse confirming that an artifact was saved" in prompts["ULTRA_STAGE2_ANTITHESIS_PROMPT"]
-    assert "Independently examine the substantive quality" in prompts["ULTRA_STAGE3_SYNTHESIS_PROMPT"]
-    assert objective not in prompts["ULTRA_STAGE1_THESIS_PROMPT"]
-    assert objective not in prompts["ULTRA_STAGE3_SYNTHESIS_PROMPT"]
+    # Audit the current approved, evidence-grounded Antithesis and Synthesis
+    # contracts without reverting to superseded model-warning wording.
     anti = prompts["ULTRA_STAGE2_ANTITHESIS_PROMPT"]
+    synth = prompts["ULTRA_STAGE3_SYNTHESIS_PROMPT"]
+    thesis = prompts["ULTRA_STAGE1_THESIS_PROMPT"]
+    assert anti.count("Thesis is a fallible candidate, not established evidence.") == 1
+    assert "Do not presume Thesis is either correct or incorrect." in anti
+    assert "Do not confuse confirming that an artifact was saved" in anti
+    assert "Independently examine the substantive quality" in synth
+    assert "Thesis is a fallible candidate, not established evidence." not in thesis
+    assert "Thesis is a fallible candidate, not established evidence." not in synth
     assert anti.count("Focus on the three most consequential distinct, defensible flaws") == 1
     assert "Test the simplest decisive counterexample first." in anti
     assert "Do not enumerate speculative omissions, repeat equivalent objections" in anti
     assert "or fewer if warranted" in anti
     assert "Numerical verification: For consequential quantitative claims" in anti
-    assert "python_repl when an authorized Python tool is available" in anti
+    assert "For Python work use the caller's authorized command tool" in anti
+    assert "do not assume a restricted Python grammar or a special-purpose python_repl exists" in anti
     assert "Check the premises and formula as well as the arithmetic" in anti
-    assert "Establish defects actually present in the Thesis" in anti
+    assert "For each established defect, give the exact claim" in anti
     assert "[Established consequential defects: up to three" in anti
     assert "[Unverified material risks:" in anti
     assert "[What must be true for the Thesis answer to be correct?]" not in anti
     assert "[What would invalidate or materially change the Thesis answer?]" not in anti
-    assert "Numerical verification:" not in prompts["ULTRA_STAGE1_THESIS_PROMPT"]
-    assert "Numerical verification:" not in prompts["ULTRA_STAGE3_SYNTHESIS_PROMPT"]
-    synth = prompts["ULTRA_STAGE3_SYNTHESIS_PROMPT"]
+    assert "Numerical verification:" not in thesis
+    assert "Numerical verification:" not in synth
     assert synth.count("Tool-grounded verification: Strongly prefer relevant authorized tools") == 1
-    assert "verify consequential calculations, quantitative comparisons, and newly introduced numerical values with python_repl" in synth
-    assert "Check the test\'s assumptions and actual results" in synth
+    assert "verify consequential calculations, quantitative comparisons, and newly introduced numerical values with the caller's authorized Python-capable command tool" in synth
+    assert "Check the test's assumptions and actual results" in synth
     assert "avoid irrelevant tool calls" in synth
-    assert "Tool-grounded verification:" not in prompts["ULTRA_STAGE1_THESIS_PROMPT"]
-    assert "Tool-grounded verification:" not in prompts["ULTRA_STAGE2_ANTITHESIS_PROMPT"]
-    assert synth.count("Both are fallible model-generated drafts prone to hallucinations") == 1
-    assert "do not trust a claim merely because either stage states it or both agree." in synth
-    assert "Both are fallible model-generated drafts" not in prompts["ULTRA_STAGE1_THESIS_PROMPT"]
-    assert "Both are fallible model-generated drafts" not in prompts["ULTRA_STAGE2_ANTITHESIS_PROMPT"]
+    assert "Tool-grounded verification:" not in thesis
+    assert "Tool-grounded verification:" not in anti
+    assert synth.count("Treat both Thesis and Antithesis as unverified proposals, not authorities or independent evidence.") == 1
+    assert "Failed tool calls do not verify anything" in synth
+    assert "Do not adopt Antithesis criticism just because it sounds rigorous" in synth
+    assert "Treat both Thesis and Antithesis as unverified proposals" not in thesis
+    assert "Treat both Thesis and Antithesis as unverified proposals" not in anti
     with pytest.raises(ValueError, match="missing or changed"):
         import tempfile
         with tempfile.TemporaryDirectory() as root:
@@ -340,9 +341,9 @@ def test_synthesis_final_claim_review_prompt_integrity_and_stage_isolation():
     )
     assert actual["ULTRA_STAGE1_THESIS_PROMPT"].startswith(xhigh)
     assert actual["ULTRA_STAGE3_SYNTHESIS_PROMPT"].startswith(xhigh)
-    addition = "Before producing the final answer, perform an independent final verification review"
+    addition = "Before finalizing, check the material claims in your intended answer against the current user request and available evidence"
     assert actual["ULTRA_STAGE3_SYNTHESIS_PROMPT"].count(addition) == 1
-    assert "any new or altered factual claims, numerical values, or assumptions introduced during Synthesis itself" in actual["ULTRA_STAGE3_SYNTHESIS_PROMPT"]
+    assert "including new or altered claims introduced by Synthesis" in actual["ULTRA_STAGE3_SYNTHESIS_PROMPT"]
     assert addition not in actual["ULTRA_STAGE1_THESIS_PROMPT"]
     assert addition not in actual["ULTRA_STAGE2_ANTITHESIS_PROMPT"]
     backend = FakeBackend([
