@@ -2940,10 +2940,13 @@ def _recovery_repeats_completed_mutation(
     allowed; a prior confirmed failure does not count as completed work.
     New tool operations remain authorized. The guard never executes a tool.
     """
-    if len(candidate_calls) != 1:
-        return False
-    candidate = _agentic_tool_action_signature(candidate_calls[0])
-    if candidate is None or not candidate[2]:
+    candidates = {
+        signature
+        for call in candidate_calls
+        if (signature := _agentic_tool_action_signature(call)) is not None
+        and signature[2]
+    }
+    if not candidates:
         return False
     target = active_response_target(history)
     boundary = int(target["history_index"]) if target is not None else -1
@@ -2956,7 +2959,7 @@ def _recovery_repeats_completed_mutation(
             outcome = item.get("_jack_tool_outcome") or TOOL_UNKNOWN
             if (
                 isinstance(stored, (tuple, list))
-                and tuple(stored) == candidate
+                and tuple(stored) in candidates
                 and outcome != TOOL_FAILED
             ):
                 return True
@@ -2971,7 +2974,7 @@ def _recovery_repeats_completed_mutation(
                 for call in calls:
                     if (isinstance(call, dict)
                             and call.get("id") in returned
-                            and _agentic_tool_action_signature(call) == candidate):
+                            and _agentic_tool_action_signature(call) in candidates):
                         return True
     return False
 
