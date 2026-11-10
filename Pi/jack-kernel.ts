@@ -356,6 +356,84 @@ export default async function (pi) {
   pi.on("agent_end", (_event, ctx) => stopJackTelemetry(ctx));
   pi.on("session_shutdown", (_event, ctx) => stopJackTelemetry(ctx));
 
+  // Pi retains the user-visible transcript even when Jack has already
+  // compacted consumed tool protocol. On an authenticated completed Agentic
+  // answer, append non-destructive context edits so the NEXT Pi model context
+  // omits the same consumed tool exchanges. Never edit an unfinished tool turn,
+  // failed/degraded response, user message, or a final answer.
+  function assistantOutput(message) {
+    if (message?.role !== "assistant" || !Array.isArray(message.content)) return null;
+    return message.content.filter((block) => block?.type === "text")
+      .map((block) => block.text || "").join("");
+  }
+
+  async function syncCommittedAgenticTurn(event, ctx) {
+    if (String(ctx?.model?.provider || "") !== PROVIDER_NAME
+        || event?.outcome !== "completed"
+        || !event?.messageEntryId
+        || (event.toolResults || []).length) return;
+    const response = assistantOutput(event.message);
+    if (!response || !response.includes("[END AGENTIC STAGE 2")) {
+      // The end marker is in Pi's reasoning channel, not the response.
+      // The authenticated host digest below is the commit authority.
+    }
+    if (!response || !event.message?.content?.some((part) => part?.type === "text")) return;
+    const binding = activeRuntimeBinding;
+    if (!binding) return;
+
+    let snapshot;
+    try {
+      snapshot = await fetchJson(`${binding.root}/jack/runtime/status`, binding.token, 1200);
+    } catch {
+      return; // Fail open: never erase context on an unavailable host receipt.
+    }
+    if (snapshot?.runtime_id !== binding.runtimeId
+        || !Array.isArray(snapshot.completed_agentic_digests)) return;
+    const digest = crypto.createHash("sha256").update(response, "utf8").digest("hex");
+    if (!snapshot.completed_agentic_digests.includes(digest)) return;
+
+    const branch = ctx.sessionManager?.getBranch?.();
+    if (!Array.isArray(branch) || !branch.length) return;
+    const lastUser = branch.findLastIndex((entry) =>
+      entry?.type === "message" && entry?.message?.role === "user");
+    const end = branch.findIndex((entry) => entry?.id === event.messageEntryId);
+    if (lastUser < 0 || end <= lastUser) return;
+    if (branch[end]?.type !== "message"
+        || branch[end]?.message?.role !== "assistant") return;
+
+    const targetIds = [];
+    const previouslyEdited = new Set(branch
+      .filter((entry) => entry?.type === "context_edit" && entry.replacement === null)
+      .map((entry) => entry.targetId));
+    for (let i = lastUser + 1; i < end; i += 1) {
+      const entry = branch[i];
+      if (entry?.type !== "message" || !entry.id || previouslyEdited.has(entry.id)) continue;
+      const message = entry.message;
+      if (message?.role === "toolResult"
+          || (message?.role === "assistant" && Array.isArray(message.content)
+              && message.content.some((part) => part?.type === "toolCall"))) {
+        targetIds.push(entry.id);
+      }
+    }
+    if (!targetIds.length) return;
+    // Preserve earlier boundary proposals from other extensions, and do not
+    // force an additional provider inference.
+    const previous = Array.isArray(event.entries) ? event.entries : [];
+    return {
+      entries: [...previous, ...targetIds.map((targetId) =>
+        ({ type: "context_edit", targetId, replacement: null }))],
+    };
+  }
+
+  pi.on("turn_end", async (event, ctx) => {
+    try {
+      return await syncCommittedAgenticTurn(event, ctx);
+    } catch (error) {
+      console.error("[jack-kernel] Context sync skipped:", error);
+      return undefined;
+    }
+  });
+
   // Pi knows whether a tool actually failed, but its OpenAI-compatible message
   // serializer may omit isError. Carry only *failed* outcomes to Jack, bound
   // to the exact tool-call ID and Pi session. Successful calls remain unchanged.
