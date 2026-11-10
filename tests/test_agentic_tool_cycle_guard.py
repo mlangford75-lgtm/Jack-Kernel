@@ -8,6 +8,7 @@ import copy
 import importlib.util
 import json
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -201,5 +202,71 @@ def test_disabling_parent_loop_detector_disables_tool_cycle_guard(monkeypatch, t
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
             tools=[], tool_choice="auto", data=data)
         assert candidate["id"] in k.KERNEL._pending_tool_resumes
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("mode,should_interrupt", [("enforce", True), ("observe", False)])
+def test_streamed_authenticated_tool_resume_is_terminal_only_on_enforced_cycle(
+    monkeypatch, tmp_path, mode, should_interrupt
+):
+    """A detected loop must not rearm its already-consumed tool checkpoint."""
+    async def scenario():
+        k = load(monkeypatch, tmp_path, mode=mode)
+        h = [{"role": "user", "content": "Build and verify the financial model"}]
+        k._agentic_begin_turn(h, fresh=True)
+        for i in (1, 2):
+            push(h, write_call(i), "wrote 9 bytes")
+            push(h, run_call(i), "(no output)")
+        last = write_call(3)
+        h.append({"role": "assistant", "content": "", "tool_calls": [last],
+                  "_jack_internal_tool_exchange": True,
+                  "_jack_stage_key": "extended_initial"})
+        k._agentic_turn_status(h, "awaiting_tool")
+        state = k.PendingToolResume(
+            resume_id="resume-last-write", stage_key="extended_initial", history=h,
+            secondary_system="", usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            tools=[{"type": "function", "function": {"name": "bash", "parameters": {
+                "type": "object", "properties": {"command": {"type": "string"}}
+            }}}],
+            tool_choice="auto", expected_tool_call_ids=("write-3",),
+            created_at=time.time(),
+        )
+        k.KERNEL._pending_tool_resumes["write-3"] = state
+
+        class StreamedBackend:
+            def __init__(self):
+                self.calls = 0
+
+            async def chat_stream(self, **kwargs):
+                self.calls += 1
+                proposed = run_call(3)
+                yield {"choices": [{"index": 0, "delta": {
+                    "tool_calls": [dict(proposed, index=0)]
+                }, "finish_reason": None}], "usage": {}}
+                yield {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+                       "usage": {}}
+
+        backend = StreamedBackend()
+        k.KERNEL.backend = backend
+        body = {"messages": [
+            {"role": "user", "content": "Build and verify the financial model"},
+            {"role": "tool", "tool_call_id": "write-3", "content": "wrote 9 bytes"},
+        ], "stream": True, "tools": state.tools, "tool_choice": "auto"}
+        wire = b"".join([frame async for frame in k._safe_public_stream(body)]).decode("utf-8")
+        record = k._agentic_forensic_turn(state.history)
+        assert backend.calls == 1
+        assert "write-3" not in k.KERNEL._pending_tool_resumes
+        if should_interrupt:
+            assert "Repeated Tool Cycle Failure" in wire
+            assert '"tool_calls"' not in wire
+            assert "run-3" not in k.KERNEL._pending_tool_resumes
+            assert record.status == "stage1_failed"
+            assert not record.frozen_a1_sha256
+        else:
+            assert "Repeated Tool Cycle Failure" not in wire
+            assert '"tool_calls"' in wire
+            assert "run-3" in k.KERNEL._pending_tool_resumes
+            assert record.status == "awaiting_tool"
 
     asyncio.run(scenario())
