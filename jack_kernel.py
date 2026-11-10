@@ -311,6 +311,8 @@ class KernelConfig:
     # Profiles are resolved below into Qwen per-stage native-thinking controls.
     reasoning_level: str = os.getenv("JACK_REASONING_LEVEL", "x-high").strip().lower()
 
+    # Opt-in one-time native Stage-1 reconsideration before freezing A1.
+    agentic_final_review: bool = os.getenv("JACK_AGENTIC_FINAL_REVIEW", "0").strip().lower() in {"1", "true", "yes", "on"}
     # Agentic cognition profile, independent of backend sampler selection.
     # Balanced is the default; Thorough and Flash remain selectable.
     agentic_profile: str = os.getenv("JACK_AGENTIC_PROFILE", "balanced").strip().lower()
@@ -4200,6 +4202,70 @@ def self_adversarial_stage_reasoning_trace(
     return "\n\n".join(parts).strip()
 
 
+# Experimental final-check continuation, deliberately outside Stage-2 distillation.
+# The text is verbatim and injected once only after a completed Stage-1 draft.
+AGENTIC_FINAL_REVIEW_PROMPT = "Hold on, need to verify the reasoning one last time and make sure to align response with the user request and system instructions."
+# A user-role transport turn is needed to reopen some chat templates. Its role
+# is not evidence of a NEW user request; label the instruction explicitly so the
+# model continues the original task instead of answering the review cue.
+AGENTIC_FINAL_REVIEW_TRIGGER = (
+    "JACK INTERNAL CONTINUATION — NOT A NEW USER REQUEST.\n"
+    "The previous assistant answer is an uncommitted draft. Review that draft "
+    "and the reasoning for the active user request earlier in this conversation. "
+    "This message is a Jack-controlled continuation cue, not the user's task.\n\n"
+    + AGENTIC_FINAL_REVIEW_PROMPT + "\n\n"
+    "Continue the original task and provide its best-supported final response. "
+    "Do not respond to the continuation cue itself."
+)
+
+
+def _agentic_final_review_is_pending(history: List[Dict[str, Any]]) -> bool:
+    """Whether this authenticated current turn has already entered its final review."""
+    target = active_response_target(history)
+    if target is None:
+        return False
+    return any(
+        isinstance(item, dict) and item.get("_jack_internal_agentic_final_review_trigger") is True
+        for item in history[int(target["history_index"]) + 1:]
+    )
+
+
+def _agentic_begin_final_review(history: List[Dict[str, Any]], data: Dict[str, Any]) -> None:
+    """Capture an uncommitted first draft and start one same-turn review continuation.
+
+    Do not freeze A1, advance the forensic journal, or expose a new user task.
+    Normal Stage-1 tool checkpoint/resume remains in force across this boundary.
+    """
+    choice = (data.get("choices") or [{}])[0] or {}
+    if choice.get("finish_reason") != "stop":
+        raise HTTPException(status_code=502, detail="Agentic final-review draft did not finish successfully")
+    message = choice.get("message") or {}
+    if message.get("tool_calls"):
+        raise HTTPException(status_code=502, detail="Agentic final-review draft still has pending tools")
+    draft = _content_to_text(message.get("content"))
+    if not draft.strip():
+        raise HTTPException(status_code=502, detail="Agentic final-review draft has no answer")
+    if _agentic_final_review_is_pending(history):
+        raise HTTPException(status_code=409, detail="Agentic final review already started for this turn")
+    entry: Dict[str, Any] = {
+        "role": "assistant",
+        "content": draft,
+        "_jack_internal_agentic_final_review_draft": True,
+        "_jack_stage_key": "extended_initial",
+    }
+    reasoning = _native_reasoning_text(message)
+    if reasoning:
+        entry["reasoning_content"] = reasoning
+        entry["reasoning"] = reasoning
+    history.append(entry)
+    history.append({
+        "role": "user",
+        "content": AGENTIC_FINAL_REVIEW_TRIGGER,
+        "_jack_internal_agentic_final_review_trigger": True,
+        "_jack_stage_key": "extended_initial",
+    })
+
+
 def append_extended_candidate_response(
     history: List[Dict[str, Any]], message: Dict[str, Any]
 ) -> str:
@@ -7055,6 +7121,13 @@ class JackQwenKernel:
                 msg["_jack_phase4_withheld_tool_call_ids"] = withheld_ids
 
         if not msg.get("tool_calls"):
+            if AGENTIC_MODE and self.cfg.agentic_final_review and stage_key == "extended_initial" and not _agentic_final_review_is_pending(history):
+                _agentic_begin_final_review(history, data)
+                return await self._run_stage(
+                    history, secondary_system, stage_key, usage,
+                    tools=tools, tool_choice=tool_choice, append=append,
+                    same_stage_resume=True,
+                )
             if SELF_ADVERSARIAL_MODE and stage_key == "extended_initial":
                 if AGENTIC_MODE and CFG.forensic_archive_mode == "stage":
                     msg["_jack_agentic_stage1_forensic_snapshot"] = _capture_agentic_stage1_forensic_snapshot(
@@ -7771,6 +7844,22 @@ class JackQwenKernel:
             "usage": normalize_usage(stage_usage),
             "_jack_tool_call_fragments_streamed": tool_call_fragments_streamed,
         }
+        if (
+            AGENTIC_MODE and self.cfg.agentic_final_review
+            and stage_key == "extended_initial"
+            and not message.get("tool_calls")
+            and not _agentic_final_review_is_pending(history)
+        ):
+            _agentic_begin_final_review(history, data)
+            yield {"kind": "reasoning", "text": "\n[AGENTIC FINAL REVIEW — SAME TURN]\n"}
+            async with contextlib.aclosing(self._run_stage_streamed(
+                history, secondary_system, stage_key, usage,
+                tools=tools, tool_choice=tool_choice, append=append,
+                same_stage_resume=True,
+            )) as review_packets:
+                async for packet in review_packets:
+                    yield packet
+            return
         if self.cfg.log_reasoning:
             reason_text = message.get("reasoning_content") or message.get("reasoning") or ""
             if reason_text:
