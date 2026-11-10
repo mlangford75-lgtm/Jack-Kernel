@@ -304,7 +304,13 @@ export default async function (pi) {
     const silenceLabel = request && Number.isFinite(silence) && silence > 3
       ? ` · ${Math.floor(silence)}s without recognized output` : "";
     const stage = request?.stage || "Jack";
-    return `Jack ${stage} · ${phaseLabel} · ${ctx} · ${totalBytes.toLocaleString()} stream bytes${silenceLabel}`;
+    const lifecycle = snapshot?.tool_lifecycle;
+    const count = Number(lifecycle?.active_unconfirmed);
+    const age = Number(lifecycle?.longest_unconfirmed_seconds);
+    const observedTools = Number.isInteger(count) && count > 0
+      ? ` · ${count} tool execution${count === 1 ? "" : "s"} unconfirmed${Number.isFinite(age) && age >= 0 ? ` (${Math.floor(age)}s longest)` : ""}`
+      : "";
+    return `Jack ${stage} · ${phaseLabel} · ${ctx} · ${totalBytes.toLocaleString()} stream bytes${silenceLabel}${observedTools}`;
   }
 
   async function updateJackTelemetry(ctx, generation) {
@@ -372,6 +378,9 @@ export default async function (pi) {
     if (kind === "PROGRESS") {
       if (now - (lifecycleProgressAt.get(key) || 0) < 5000) return;
       lifecycleProgressAt.set(key, now);
+      if (lifecycleProgressAt.size > 512) {
+        lifecycleProgressAt.delete(lifecycleProgressAt.keys().next().value);
+      }
     } else if (kind === "END") {
       lifecycleProgressAt.delete(key);
     }
