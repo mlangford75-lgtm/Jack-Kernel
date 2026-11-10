@@ -164,6 +164,7 @@ class ToolRecoveryExhausted(Exception):
         self, *, state: ToolRecoveryState,
         history: List[Dict[str, Any]], stage_key: str,
         secondary_system: str, usage: Dict[str, int],
+        pending_state: Any = None,
     ) -> None:
         super().__init__("tool recovery exhausted; produce incomplete-turn handoff")
         self.state = state
@@ -171,3 +172,4 @@ class ToolRecoveryExhausted(Exception):
         self.stage_key = stage_key
         self.secondary_system = secondary_system
         self.usage = dict(usage)
+        self.pending_state = pending_state
