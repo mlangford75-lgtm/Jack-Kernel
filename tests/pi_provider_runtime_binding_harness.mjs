@@ -34,6 +34,7 @@ let activeEffort = "xhigh";
 let mockLoadedContext = 16384;
 let mockMaxContext = 32768;
 let validCommitDigests = [];
+let mockStage2Thinking = false;
 const server = http.createServer((req, res) => {
   res.setHeader("Content-Type", "application/json");
   if (req.url === "/health") {
@@ -50,7 +51,7 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (req.url === "/jack/runtime/status") {
-    res.end(JSON.stringify({runtime_id: healthRuntimeId, completed_agentic_digests: validCommitDigests}));
+    res.end(JSON.stringify({runtime_id: healthRuntimeId, completed_agentic_digests: validCommitDigests, agentic_stage2_native_thinking: mockStage2Thinking}));
     return;
   }
   if (req.url === "/api/v1/models") {
@@ -190,7 +191,10 @@ for (const scenario of [
 const committedResponse = "Verified working memory\\n\\nFrozen answer";
 validCommitDigests = [crypto.createHash("sha256").update(committedResponse).digest("hex")];
 const finalMessage = {
-  role: "assistant", stopReason: "stop", content: [{type: "text", text: committedResponse}],
+  role: "assistant", stopReason: "stop", content: [
+    {type: "thinking", thinking: "Transient native Stage 1 draft"},
+    {type: "text", text: committedResponse},
+  ],
 };
 const branch = [
   {type: "message", id: "before-user", message: {role: "assistant", content: [{type: "text", text: "older"}]}},
@@ -212,8 +216,15 @@ const event = {
 };
 const results = await Promise.all((handlers.get("turn_end") || []).map(fn => fn(event, context)));
 assert.equal(results.length, 1);
-assert.deepEqual(results[0]?.entries.map(x => x.type), ["custom", "context_edit", "context_edit"]);
-assert.deepEqual(results[0].entries.slice(1).map(x => x.targetId), ["tool-assistant", "tool-result"]);
+assert.deepEqual(results[0]?.entries.map(x => x.type), ["custom", "context_edit", "context_edit", "context_edit"]);
+assert.deepEqual(results[0].entries.slice(1).map(x => x.targetId), ["tool-assistant", "tool-result", "final-response"]);
+assert.equal(results[0].entries.at(-1).replacement, committedResponse,
+  "Thinking-OFF memory stage must remove obsolete native reasoning from Pi's next context");
+mockStage2Thinking = true;
+const thinkingOn = await handlers.get("turn_end")[0](event, context);
+assert.deepEqual(thinkingOn.entries.slice(1).map(x => x.targetId), ["tool-assistant", "tool-result"],
+  "Thinking-ON Stage 2 bridge must remain intact");
+mockStage2Thinking = false;
 assert.equal(results[0]?.continue, undefined, "Context synchronization must not cause an inference");
 assert.equal((await handlers.get("turn_end")[0]({...event, outcome: "failed"}, context)), undefined);
 validCommitDigests = [];
