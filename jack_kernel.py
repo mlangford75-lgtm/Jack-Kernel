@@ -7604,22 +7604,22 @@ class JackQwenKernel:
                     yield packet
             return
 
-        # Shared tool-cycle recovery before executor release. Give the same
-        # stage one bounded correction opportunity without replaying a tool.
+        # A repeated exact tool/result cycle is still prohibited from reaching
+        # the executor. Route all its failed proposals through the same
+        # universal 5/15/25 recovery policy, rather than one brittle retry.
         if (message.get("tool_calls") and self.cfg.loop_detector_enabled
-                and self.cfg.tool_cycle_mode == "enforce"
-                and tool_cycle_recovery_depth == 0):
+                and self.cfg.tool_cycle_mode == "enforce"):
             cycle = _agentic_exact_tool_cycle(
                 history, message["tool_calls"],
                 repetitions=self.cfg.tool_cycle_repetitions,
                 stage_key=stage_key,
             )
             if cycle is not None:
-                repair_history = _tool_rejection_history(
+                repair_history = _tool_recovery_check(
                     history, message,
                     ["Host rejected another exact repeated tool/action-result cycle; "
                      "no tool was executed. Use a different operation or finish the task."],
-                    STAGES[stage_key].name,
+                    stage_key, secondary_system, usage,
                 )
                 async with contextlib.aclosing(self._run_stage_streamed(
                     repair_history, secondary_system, stage_key, usage,
