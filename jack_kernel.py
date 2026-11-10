@@ -362,6 +362,9 @@ class KernelConfig:
     # transactions across backend generations. No model-facing prompt changes.
     agentic_tool_cycle_mode: str = os.getenv("JACK_AGENTIC_TOOL_CYCLE_MODE", "enforce").strip().lower()
     agentic_tool_cycle_repetitions: int = max(3, int(os.getenv("JACK_AGENTIC_TOOL_CYCLE_REPETITIONS", "3")))
+    # Shared kernel policy, preserving the original environment names.
+    tool_cycle_mode: str = os.getenv("JACK_TOOL_CYCLE_MODE", os.getenv("JACK_AGENTIC_TOOL_CYCLE_MODE", "enforce")).strip().lower()
+    tool_cycle_repetitions: int = max(3, int(os.getenv("JACK_TOOL_CYCLE_REPETITIONS", os.getenv("JACK_AGENTIC_TOOL_CYCLE_REPETITIONS", "3"))))
 
     # Optional local forensic checkpointing is host-owned and never model context.
     # ``stage`` archives the completed Agentic Stage-1 trajectory only after Stage 2
@@ -2820,10 +2823,11 @@ def _agentic_exact_tool_cycle(
     *,
     repetitions: int = 3,
     max_cycle: int = 4,
+    stage_key: Optional[str] = None,
 ) -> Optional[Tuple[int, int]]:
     """Detect an exactly repeated, completed, mutation-bearing tool cycle.
 
-    Bounded suffix of one Stage-1 turn only. A pending/missing tool result,
+    Bounded suffix of the current tool-owning stage. A pending/missing result,
     malformed call, changed arguments, changed returned evidence, or a
     non-mutating cycle never authorizes an interruption. Never use names/IDs
     alone: tool-call IDs are expected to change every generation.
@@ -2836,10 +2840,15 @@ def _agentic_exact_tool_cycle(
     repeats = max(3, int(repetitions))
     maximum = max(1, min(4, int(max_cycle)))
     needed = repeats * maximum - 1
+    # The current user turn bounds detection independently of cognition mode.
     target = active_response_target(history)
-    if target is None:
-        return None
-    boundary = int(target["history_index"])
+    boundary = int(target["history_index"]) if target is not None else max(
+        (i for i, item in enumerate(history)
+         if isinstance(item, dict) and item.get("role") == "user"
+         and not (item.get("_jack_internal_protocol_recovery") or
+                  item.get("_jack_internal_tool_validation_rejection"))),
+        default=-1,
+    )
     returned: Dict[str, Tuple[str, str]] = {}
     recent: List[Tuple[Tuple[str, str, bool], Tuple[str, str]]] = []
     # Scan backwards only until enough completed exchanges have been recovered.
@@ -2847,7 +2856,21 @@ def _agentic_exact_tool_cycle(
         message = history[index]
         if not isinstance(message, dict):
             return None
-        if message.get("_jack_internal_tool_exchange") and message.get("role") == "tool":
+        if stage_key is not None and (message.get("_jack_internal_tool_exchange") or message.get("_jack_tool_evidence_receipt")):
+            if message.get("_jack_stage_key") not in {None, stage_key}:
+                break
+        if message.get("_jack_tool_evidence_receipt"):
+            signature = message.get("_jack_tool_action_signature")
+            result_hash = message.get("_jack_tool_result_sha256")
+            outcome = message.get("_jack_tool_outcome") or TOOL_UNKNOWN
+            if not isinstance(signature, (tuple, list)) or len(signature) != 3 or not isinstance(result_hash, str):
+                return None
+            if outcome == TOOL_FAILED:
+                return None
+            recent.append((tuple(signature), (outcome, result_hash)))
+            if len(recent) >= needed:
+                break
+        elif message.get("_jack_internal_tool_exchange") and message.get("role") == "tool":
             call_id = message.get("tool_call_id")
             if not isinstance(call_id, str) or not call_id:
                 return None
@@ -2876,7 +2899,8 @@ def _agentic_exact_tool_cycle(
         elif message.get("_jack_internal_tool_exchange"):
             return None
         elif message.get("role") == "user":
-            # Stage-local continuation cues are not tool protocol.
+            if message.get("_jack_internal_protocol_recovery") or message.get("_jack_internal_tool_validation_rejection"):
+                continue
             return None
     previous = list(reversed(recent))
     # A candidate has no authenticated result yet. A cycle's previously
@@ -3016,6 +3040,11 @@ def _tool_evidence_receipts_from_group(group: List[Dict[str, Any]]) -> List[Dict
             "_jack_tool_call_id": call_id,
             "_jack_tool_name": tool_name,
             "_jack_tool_result_sha256": result_sha256,
+            "_jack_tool_action_signature": (
+                _agentic_tool_action_signature(next((call for call in assistant.get("tool_calls", [])
+                    if isinstance(call, dict) and str(call.get("id") or "").strip() == call_id), None))
+            ),
+            "_jack_tool_outcome": item.get("_jack_tool_outcome") or reported_tool_outcome(item),
             "_jack_tool_status": status,
             "_jack_stage_key": stage_key,
             "_jack_artifact_effect": artifact_effect,
@@ -6960,6 +6989,7 @@ class JackQwenKernel:
         tool_validation_repair_depth: int = 0,
         loop_retry_depth: int = 0,
         empty_stream_retry_depth: int = 0,
+        tool_cycle_recovery_depth: int = 0,
     ) -> AsyncIterator[Dict[str, Any]]:
         """Run one Jack stage with backend streaming and reconstruct its message.
 
@@ -7304,61 +7334,43 @@ class JackQwenKernel:
                         "completed tool action was replayed."
                     ),
                 )
-            LOG.warning(
-                "Stage %s completed with an empty streamed backend response; retrying once non-streaming",
-                profile.name,
+        # Recover incomplete backend generations across all modes. Thinking
+        # text without a final answer or structured call is NOT completed work.
+        # Never interpret raw tool-shaped text as executor authority.
+        if not message["content"].strip() and not tool_state:
+            if empty_stream_retry_depth == 0:
+                LOG.warning("Stage %s ended without an answer/tool call (finish=%s, reasoning=%s); "
+                            "one same-stage streamed recovery", profile.name, finish_reason,
+                            bool(reasoning_content_parts or reasoning_parts))
+                recovery_history = list(history)
+                recovery_history.append({
+                    "role": "user",
+                    "content": (
+                        "Jack protocol continuation: The prior backend generation produced "
+                        "neither a final answer nor a structured executable tool call. "
+                        "Continue the existing task from the completed tool results. "
+                        "If a tool is needed, use its structured tool interface. "
+                        "Do not repeat completed work."
+                    ),
+                    "_jack_internal_protocol_recovery": True,
+                })
+                async with contextlib.aclosing(self._run_stage_streamed(
+                    recovery_history, secondary_system, stage_key, usage,
+                    tools=tools, tool_choice=tool_choice,
+                    append=append, same_stage_resume=True,
+                    tool_validation_repair_depth=tool_validation_repair_depth,
+                    loop_retry_depth=loop_retry_depth,
+                    empty_stream_retry_depth=1,
+                )) as retry_packets:
+                    async for packet in retry_packets:
+                        yield packet
+                return
+            raise HTTPException(
+                status_code=502,
+                detail=(f"Stage {profile.name} produced neither a final answer nor a "
+                        "structured tool call after one same-stage recovery; "
+                        "authenticated tool work has not been replayed."),
             )
-            await self._activity_update(backend_request_active=True)
-            try:
-                recovery = await self.backend.chat(
-                    messages=history,
-                    secondary_system=secondary_system,
-                    profile=profile,
-                    tools=effective_tools,
-                    tool_choice=effective_tool_choice,
-                )
-            finally:
-                await self._activity_update(backend_request_active=False)
-            recovery_usage = recovery.get("usage")
-            if recovery_usage:
-                aggregate_usage(usage, recovery_usage)
-                aggregate_usage(stage_usage, recovery_usage)
-            recovery_choice = (recovery.get("choices") or [{}])[0] or {}
-            recovered = recovery_choice.get("message") or {}
-            recovered_content = str(recovered.get("content") or "")
-            recovered_reasoning_content = str(recovered.get("reasoning_content") or "")
-            recovered_reasoning = str(recovered.get("reasoning") or "")
-            recovered_tool_calls = recovered.get("tool_calls") if isinstance(recovered.get("tool_calls"), list) else []
-
-            if recovered_reasoning_content:
-                reasoning_content_parts.append(recovered_reasoning_content)
-                yield {"kind": "reasoning", "text": recovered_reasoning_content}
-            elif recovered_reasoning:
-                reasoning_parts.append(recovered_reasoning)
-                yield {"kind": "reasoning", "text": recovered_reasoning}
-            if recovered_content:
-                content_parts.append(recovered_content)
-                yield {"kind": "content", "text": recovered_content}
-            if recovered_tool_calls:
-                for index, call in enumerate(recovered_tool_calls):
-                    if not isinstance(call, dict):
-                        continue
-                    delta_call = copy.deepcopy(call)
-                    delta_call["index"] = index
-                    self._merge_tool_call_delta(tool_state, [delta_call])
-            if recovery_choice.get("finish_reason"):
-                finish_reason = str(recovery_choice["finish_reason"])
-
-            if not content_parts and not reasoning_content_parts and not reasoning_parts and not tool_state:
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"Stage {profile.name} returned an empty response in both streaming and non-streaming modes.",
-                )
-
-            message = {
-                "role": "assistant",
-                "content": "".join(content_parts),
-            }
         if AGENTIC_MODE and stage_key in {"extended_initial", "extended_reflection"} and finish_reason is None:
             raise HTTPException(
                 status_code=502,
@@ -7392,6 +7404,36 @@ class JackQwenKernel:
                     append=append, same_stage_resume=True, tool_validation_repair_depth=tool_validation_repair_depth + 1,
                 ):
                     yield packet
+                return
+
+        # Shared tool-cycle recovery before executor release. Give the same
+        # stage one bounded correction opportunity without replaying a tool.
+        if (message.get("tool_calls") and self.cfg.loop_detector_enabled
+                and self.cfg.tool_cycle_mode == "enforce"
+                and tool_cycle_recovery_depth == 0):
+            cycle = _agentic_exact_tool_cycle(
+                history, message["tool_calls"],
+                repetitions=self.cfg.tool_cycle_repetitions,
+                stage_key=stage_key,
+            )
+            if cycle is not None:
+                repair_history = _tool_rejection_history(
+                    history, message,
+                    ["Host rejected another exact repeated tool/action-result cycle; "
+                     "no tool was executed. Use a different operation or finish the task."],
+                    STAGES[stage_key].name,
+                )
+                async with contextlib.aclosing(self._run_stage_streamed(
+                    repair_history, secondary_system, stage_key, usage,
+                    tools=tools, tool_choice=tool_choice,
+                    append=append, same_stage_resume=True,
+                    tool_validation_repair_depth=tool_validation_repair_depth,
+                    loop_retry_depth=loop_retry_depth,
+                    empty_stream_retry_depth=empty_stream_retry_depth,
+                    tool_cycle_recovery_depth=1,
+                )) as repair_packets:
+                    async for packet in repair_packets:
+                        yield packet
                 return
 
         # Streaming reconstruction creates host-owned message state, but clear the
@@ -8164,25 +8206,27 @@ class JackQwenKernel:
         # The stream already reconstructed and validated the complete call,
         # but no tool bytes have been released to Pi yet. Check host evidence
         # here, before establishing a new executable checkpoint.
-        if AGENTIC_MODE and stage_key == "extended_initial" and self.cfg.loop_detector_enabled:
-            mode = self.cfg.agentic_tool_cycle_mode
+        if self.cfg.loop_detector_enabled:
+            mode = self.cfg.tool_cycle_mode
             if mode in {"observe", "enforce"}:
                 cycle = _agentic_exact_tool_cycle(
                     history, calls,
-                    repetitions=self.cfg.agentic_tool_cycle_repetitions,
+                    repetitions=self.cfg.tool_cycle_repetitions,
+                    stage_key=stage_key,
                 )
                 if cycle is not None:
                     length, count = cycle
                     LOG.warning(
-                        "Agentic exact tool-cycle detected: length=%d repetitions=%d policy=%s; "
+                        "Kernel exact tool-cycle detected: stage=%s length=%d repetitions=%d policy=%s; "
                         "no tool arguments emitted in this log",
-                        length, count, mode,
+                        stage_key, length, count, mode,
                     )
                     if mode == "enforce":
                         # Fail while the checkpoint is in-flight. Otherwise
                         # close_scope treats this terminal loop interrupt as a
                         # recoverable transport disconnect and rearms old work.
-                        _agentic_mark_stage1_failure("RepeatedToolCycleInterrupt")
+                        if AGENTIC_MODE and stage_key == "extended_initial":
+                            _agentic_mark_stage1_failure("RepeatedToolCycleInterrupt")
                         raise RepeatedToolCycleInterrupt(length, count)
 
         # Active Agentic/Deep Research stages are uninterrupted cognitive stages. Code
