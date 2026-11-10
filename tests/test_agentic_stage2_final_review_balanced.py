@@ -1,4 +1,4 @@
-"""Balanced Stage-2 review: one memory-only continuation, with thinking OFF.
+"""Exhaustive Stage-2 review: one additional memory-only continuation.
 
 Tests inspect outbound backend payloads, not merely the model's willingness to comply.
 """
@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def load(monkeypatch, tmp_path, *, enabled, cache=False, stage1_review=False):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
-    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "flash" if enabled is False else "balanced")
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "flash" if enabled is False else ("exhaustive" if enabled is True else "balanced"))
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT", "1" if cache else "0")
     monkeypatch.setenv("JACK_BACKEND_MODEL", "test-model")
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
@@ -91,9 +91,9 @@ async def run_backend(k, *, stream):
 
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("cache", [False, True])
-def test_balanced_review_keeps_no_thinking_and_exact_current_turn(monkeypatch, tmp_path, stream, cache):
+def test_exhaustive_review_keeps_current_turn_and_tool_isolation(monkeypatch, tmp_path, stream, cache):
     k = load(monkeypatch, tmp_path, enabled=True, cache=cache)
-    assert k.STAGES["extended_reflection"].thinking is False
+    assert k.STAGES["extended_reflection"].thinking is True
     assert k.STAGES["extended_reflection"].allow_tools is False
     captured, h, u, result = asyncio.run(run_backend(k, stream=stream))
     assert len(captured) == 2
@@ -103,9 +103,8 @@ def test_balanced_review_keeps_no_thinking_and_exact_current_turn(monkeypatch, t
     assert len([x for x in h if x.get("_jack_internal_agentic_stage2_review_trigger")]) == 1
     assert not any(x.get("_jack_internal_tool_exchange") for x in h)
     for payload in captured:
-        assert payload["chat_template_kwargs"]["enable_thinking"] is False
+        assert payload["chat_template_kwargs"]["enable_thinking"] is True
         assert payload["chat_template_kwargs"]["preserve_thinking"] is True
-        assert payload["reasoning_effort"] == "none"
         assert "tools" not in payload and "tool_choice" not in payload
         serialized = json.dumps(payload["messages"])
         assert "Historical turn: ignore this." not in serialized
@@ -126,16 +125,16 @@ def test_balanced_review_keeps_no_thinking_and_exact_current_turn(monkeypatch, t
 
 
 @pytest.mark.parametrize("stream", [False, True])
-def test_default_balanced_has_one_stage2_review_generation(monkeypatch, tmp_path, stream):
+def test_default_balanced_has_only_one_stage2_memory_generation(monkeypatch, tmp_path, stream):
     k = load(monkeypatch, tmp_path, enabled=None)
-    assert k.CFG.agentic_stage2_final_review is True
+    assert k.CFG.agentic_stage2_final_review is False
     assert k.AGENTIC_36_STAGE2_PROMPT.count("Remove unnecessary conversational language") == 1
     captured, h, u, result = asyncio.run(run_backend(k, stream=stream))
-    assert len(captured) == 2
-    assert result["choices"][0]["message"]["content"] == memory_for(2)
-    assert k._agentic_stage2_review_is_pending(h)
+    assert len(captured) == 1
+    assert result["choices"][0]["message"]["content"] == memory_for(1)
+    assert not k._agentic_stage2_review_is_pending(h)
     assert k.STAGES["extended_reflection"].thinking is False
-    assert u["completion_tokens"] == 18
+    assert u["completion_tokens"] == 9
 
 
 @pytest.mark.parametrize("stream", [False, True])
