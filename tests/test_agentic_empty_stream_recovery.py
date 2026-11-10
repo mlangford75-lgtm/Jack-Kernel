@@ -111,6 +111,7 @@ def test_recovery_duplicate_mutation_guard_is_surgical(monkeypatch, tmp_path):
          "_jack_internal_tool_exchange": True},
     ]
     assert k._recovery_repeats_completed_mutation(history, [duplicate])
+    assert k._recovery_repeats_completed_mutation(history, [listing, duplicate])
     assert not k._recovery_repeats_completed_mutation(history, [different])
     assert not k._recovery_repeats_completed_mutation(history, [listing])
     # No earlier user turn may cause a duplicate suppression in this one.
