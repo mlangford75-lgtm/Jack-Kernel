@@ -7622,22 +7622,23 @@ class JackQwenKernel:
                     yield packet
             return
 
-        # A repeated exact tool/result cycle is still prohibited from reaching
-        # the executor. Route all its failed proposals through the same
-        # universal 5/15/25 recovery policy, rather than one brittle retry.
+        # Preserve the independent exact tool-cycle safety policy.
+        # The 25-attempt universal ceiling applies to recoverable tool failures,
+        # not to a separately enforced repeated-action cycle.
         if (message.get("tool_calls") and self.cfg.loop_detector_enabled
-                and self.cfg.tool_cycle_mode == "enforce"):
+                and self.cfg.tool_cycle_mode == "enforce"
+                and tool_cycle_recovery_depth == 0):
             cycle = _agentic_exact_tool_cycle(
                 history, message["tool_calls"],
                 repetitions=self.cfg.tool_cycle_repetitions,
                 stage_key=stage_key,
             )
             if cycle is not None:
-                repair_history = _tool_recovery_check(
+                repair_history = _tool_rejection_history(
                     history, message,
                     ["Host rejected another exact repeated tool/action-result cycle; "
                      "no tool was executed. Use a different operation or finish the task."],
-                    stage_key, secondary_system, usage,
+                    STAGES[stage_key].name,
                 )
                 async with contextlib.aclosing(self._run_stage_streamed(
                     repair_history, secondary_system, stage_key, usage,
