@@ -373,10 +373,6 @@ export default async function (pi) {
         || !event?.messageEntryId
         || (event.toolResults || []).length) return;
     const response = assistantOutput(event.message);
-    if (!response || !response.includes("[END AGENTIC STAGE 2")) {
-      // The end marker is in Pi's reasoning channel, not the response.
-      // The authenticated host digest below is the commit authority.
-    }
     if (!response || !event.message?.content?.some((part) => part?.type === "text")) return;
     const binding = activeRuntimeBinding;
     if (!binding) return;
