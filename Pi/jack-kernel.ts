@@ -356,10 +356,12 @@ export default async function (pi) {
   pi.on("agent_end", (_event, ctx) => stopJackTelemetry(ctx));
   pi.on("session_shutdown", (_event, ctx) => stopJackTelemetry(ctx));
 
-  // Pi knows whether a tool actually failed, but its OpenAI-compatible message
-  // serializer may omit isError. Carry only *failed* outcomes to Jack, bound
-  // to the exact tool-call ID and Pi session. Successful calls remain unchanged.
+  // Pi's executor knows both FAILED and SUCCESS. Preserve the existing
+  // failure contract and send explicit successful receipts as well, so the
+  // universal 25-failure ceiling resets only on actual executor success.
+  // Both are observational and bound to tool-call ID and Pi session.
   const failedToolCalls = new Map();
+  const successfulToolCalls = new Map();
   let outcomeSessionId = null;
   pi.on("tool_execution_end", (event, ctx) => {
     if (String(ctx?.model?.provider || "") !== PROVIDER_NAME) return;
@@ -368,16 +370,26 @@ export default async function (pi) {
     if (!callId || !sessionId) return;
     if (outcomeSessionId !== sessionId) {
       failedToolCalls.clear();
+      successfulToolCalls.clear();
       outcomeSessionId = sessionId;
     }
     if (event?.isError === true) {
+      successfulToolCalls.delete(callId);
       failedToolCalls.delete(callId);
       failedToolCalls.set(callId, sessionId);
-      while (failedToolCalls.size > 128) {
-        failedToolCalls.delete(failedToolCalls.keys().next().value);
-      }
+    } else if (event?.isError === false) {
+      failedToolCalls.delete(callId);
+      successfulToolCalls.delete(callId);
+      successfulToolCalls.set(callId, sessionId);
     } else {
       failedToolCalls.delete(callId);
+      successfulToolCalls.delete(callId);
+    }
+    while (failedToolCalls.size > 128) {
+      failedToolCalls.delete(failedToolCalls.keys().next().value);
+    }
+    while (successfulToolCalls.size > 128) {
+      successfulToolCalls.delete(successfulToolCalls.keys().next().value);
     }
   });
 
@@ -391,9 +403,16 @@ export default async function (pi) {
     const messages = payload.messages.map((message) => {
       if (message?.role !== "tool") return message;
       const id = String(message.tool_call_id || "");
-      if (!id || failedToolCalls.get(id) !== sessionId) return message;
-      tagged = true;
-      return { ...message, is_error: true };
+      if (!id) return message;
+      if (failedToolCalls.get(id) === sessionId) {
+        tagged = true;
+        return { ...message, is_error: true };
+      }
+      if (successfulToolCalls.get(id) === sessionId) {
+        tagged = true;
+        return { ...message, is_error: false };
+      }
+      return message;
     });
     if (tagged) return { ...payload, messages };
     return undefined;
