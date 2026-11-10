@@ -63,7 +63,7 @@ def test_optional_empty_followup_preserves_completed_draft(monkeypatch, tmp_path
     asyncio.run(run())
 
 
-def test_alignment_empty_preserves_verified_draft(monkeypatch, tmp_path):
+def test_combined_review_preserves_initial_draft_on_empty_stream(monkeypatch, tmp_path):
     async def run():
         k = load(monkeypatch, tmp_path)
         class Backend:
@@ -71,7 +71,7 @@ def test_alignment_empty_preserves_verified_draft(monkeypatch, tmp_path):
                 self.calls = 0
             async def chat_stream(self, **kwargs):
                 self.calls += 1
-                yield response({1: "Initial draft", 2: "Verified result"}.get(self.calls))
+                yield response("Initial draft" if self.calls == 1 else None)
         b = Backend()
         kernel = k.JackQwenKernel(b, k.CFG)
         packets = [p async for p in kernel._run_stage_streamed(
@@ -79,6 +79,6 @@ def test_alignment_empty_preserves_verified_draft(monkeypatch, tmp_path):
             "extended_initial", {}, append=False)]
         results = [p["data"] for p in packets if p["kind"] == "result"]
         assert len(results) == 1
-        assert results[0]["choices"][0]["message"]["content"] == "Verified result"
-        assert b.calls == 4
+        assert results[0]["choices"][0]["message"]["content"] == "Initial draft"
+        assert b.calls == 3
     asyncio.run(run())
