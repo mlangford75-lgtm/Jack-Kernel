@@ -263,6 +263,93 @@ export default async function (pi) {
 
   await syncProvider();
 
+  // Live out-of-band host telemetry appears in Pi's existing footer only.
+  // It does not enter the conversation, add a model request or open a window.
+  // Polling errors have no effect on model generation or execution.
+  const TELEMETRY_STATUS_KEY = "jack-live";
+  let telemetryTimer = null;
+  let telemetryGeneration = 0;
+  let telemetryBusy = false;
+  let telemetryLastLine = null;
+
+  function formatJackLive(snapshot) {
+    const active = Array.isArray(snapshot?.requests) ? snapshot.requests : [];
+    const request = active.find((item) => item?.backend_request_active) || active[0];
+    const capacity = Number(snapshot?.context_length);
+    const availableCapacity = Number.isFinite(capacity) && capacity > 0
+      ? Math.floor(capacity) : null;
+    const prompt = request?.backend_prompt_tokens;
+    const reported = typeof prompt === "number" && Number.isFinite(prompt) && prompt >= 0
+      ? Math.floor(prompt) : null;
+    // A terminal stream-usage report often arrives only at completion;
+    // display unknown until the backend supplies a number.
+    const ctx = `ctx ${reported === null ? "—" : reported.toLocaleString()}/${availableCapacity === null ? "?" : availableCapacity.toLocaleString()}`;
+    const phase = String(request?.backend_stream_phase || (request ? "waiting_backend" : "idle"));
+    const phaseLabel = ({
+      reasoning: "reasoning", content: "answer",
+      tool_arguments: "tool args buffered", waiting_backend: "waiting on model",
+      unrecognized_chunk: "unrecognized stream", idle: "idle",
+    })[phase] || phase;
+    const bytes = request?.backend_stream_bytes || {};
+    const observed = ["reasoning", "content", "tool_arguments"]
+      .map((key) => Number(bytes[key]) || 0);
+    const totalBytes = observed.reduce((a, b) => a + b, 0);
+    const silence = Number(request?.seconds_since_recognized_output);
+    const silenceLabel = request && Number.isFinite(silence) && silence > 3
+      ? ` · ${Math.floor(silence)}s without recognized output` : "";
+    const stage = request?.stage || "Jack";
+    return `Jack ${stage} · ${phaseLabel} · ${ctx} · ${totalBytes.toLocaleString()} stream bytes${silenceLabel}`;
+  }
+
+  async function updateJackTelemetry(ctx, generation) {
+    if (generation !== telemetryGeneration || telemetryBusy || !ctx?.hasUI) return;
+    const binding = activeRuntimeBinding;
+    if (!binding) return;
+    telemetryBusy = true;
+    try {
+      const snapshot = await fetchJson(`${binding.root}/jack/runtime/status`, binding.token, 1200);
+      if (generation !== telemetryGeneration || binding !== activeRuntimeBinding) return;
+      if (snapshot?.runtime_id !== binding.runtimeId) return;
+      const line = formatJackLive(snapshot);
+      if (line !== telemetryLastLine) {
+        ctx.ui.setStatus(TELEMETRY_STATUS_KEY, line);
+        telemetryLastLine = line;
+      }
+    } catch {
+      // The dashboard is observational. No retries, exceptions or control
+      // side effects are introduced into the agent's execution.
+    } finally {
+      telemetryBusy = false;
+    }
+  }
+
+  function startJackTelemetry(ctx) {
+    stopJackTelemetry(ctx);
+    if (!ctx?.hasUI || String(ctx?.model?.provider || "") !== PROVIDER_NAME) return;
+    const generation = telemetryGeneration;
+    telemetryLastLine = "Jack · waiting on backend telemetry";
+    ctx.ui.setStatus(TELEMETRY_STATUS_KEY, telemetryLastLine);
+    void updateJackTelemetry(ctx, generation);
+    telemetryTimer = setInterval(() => {
+      void updateJackTelemetry(ctx, generation);
+    }, 1500);
+    telemetryTimer.unref?.();
+  }
+
+  function stopJackTelemetry(ctx) {
+    telemetryGeneration += 1;
+    if (telemetryTimer !== null) {
+      clearInterval(telemetryTimer);
+      telemetryTimer = null;
+    }
+    telemetryLastLine = null;
+    if (ctx?.hasUI) ctx.ui.setStatus(TELEMETRY_STATUS_KEY, undefined);
+  }
+
+  pi.on("agent_start", (_event, ctx) => startJackTelemetry(ctx));
+  pi.on("agent_end", (_event, ctx) => stopJackTelemetry(ctx));
+  pi.on("session_shutdown", (_event, ctx) => stopJackTelemetry(ctx));
+
   // Pi knows whether a tool actually failed, but its OpenAI-compatible message
   // serializer may omit isError. Carry only *failed* outcomes to Jack, bound
   // to the exact tool-call ID and Pi session. Successful calls remain unchanged.
