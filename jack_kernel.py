@@ -6985,10 +6985,7 @@ class JackQwenKernel:
                 raise HTTPException(status_code=502, detail=(
                     f"{profile.name}: this stage has no tool authority"
                 ))
-            if not profile.allow_tools:
-                validation_errors = [f"{profile.name}: this stage has no tool authority"]
-            else:
-                validation_errors = _tool_call_validation_errors(msg.get("tool_calls"), effective_tools)
+            validation_errors = _tool_call_validation_errors(msg.get("tool_calls"), effective_tools)
             if validation_errors:
                 LOG.warning("%s rejected tool action before execution: %s", STAGES[stage_key].name, "; ".join(validation_errors))
                 repair_history = _tool_recovery_check(history, msg, validation_errors, stage_key, secondary_system, usage)
@@ -7589,10 +7586,7 @@ class JackQwenKernel:
                 raise HTTPException(status_code=502, detail=(
                     f"{profile.name}: this stage has no tool authority"
                 ))
-            if not profile.allow_tools:
-                validation_errors = [f"{profile.name}: this stage has no tool authority"]
-            else:
-                validation_errors = _tool_call_validation_errors(message.get("tool_calls"), effective_tools)
+            validation_errors = _tool_call_validation_errors(message.get("tool_calls"), effective_tools)
             if validation_errors:
                 LOG.warning("%s rejected streamed tool action before execution: %s", STAGES[stage_key].name, "; ".join(validation_errors))
                 repair_history = _tool_recovery_check(history, message, validation_errors, stage_key, secondary_system, usage)
