@@ -32,7 +32,16 @@ let activeMode = "agentic";
 let activeEffort = "xhigh";
 let mockLoadedContext = 16384;
 let mockMaxContext = 32768;
-const server = http.createServer((req, res) => {
+const lifecycleReports = [];
+const server = http.createServer(async (req, res) => {
+  if (req.url === "/jack/tool-lifecycle/observe" && req.method === "POST") {
+    const parts = [];
+    for await (const part of req) parts.push(part);
+    lifecycleReports.push(JSON.parse(Buffer.concat(parts).toString("utf8")));
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ accepted: true, state: "OBSERVED" }));
+    return;
+  }
   res.setHeader("Content-Type", "application/json");
   if (req.url === "/health") {
     res.end(JSON.stringify({
@@ -147,6 +156,32 @@ assert.equal((handlers.get("before_provider_request") || [])
   .map(fn => fn(outgoing, otherSession)).filter(Boolean).length, 0,
   "No outcome status may leak across Pi sessions");
 console.log("Pi explicit tool success/failure receipts: PASS");
+
+// Executor lifecycle reports are asynchronous observation only. They cannot
+// block tools or change the existing success/failure receipt behavior.
+for (const fn of handlers.get("tool_execution_start") || []) {
+  assert.equal(fn({toolCallId: "server-1"}, outcomeCtx), undefined);
+}
+for (const fn of handlers.get("tool_execution_update") || []) {
+  assert.equal(fn({toolCallId: "server-1", content: "still-running"}, outcomeCtx), undefined);
+}
+for (const fn of handlers.get("tool_execution_end") || []) {
+  assert.equal(fn({toolCallId: "server-1", isError: true}, outcomeCtx), undefined);
+}
+for (let i = 0; i < 100 && lifecycleReports.filter(r => r.call_id === "server-1").length < 3; i++) {
+  await new Promise(resolve => setTimeout(resolve, 15));
+}
+const observed = lifecycleReports.filter(r => r.call_id === "server-1");
+assert.deepEqual(observed.map(r => r.event), ["START", "PROGRESS", "END"]);
+assert.equal(observed[0].runtime_id, "runtime-agentic-01");
+assert.equal(observed[0].lane_id, "lane-agentic-01");
+assert.equal(observed[0].owner, "recovery-session");
+assert.equal(observed[0].adapter, "pi");
+assert.equal(observed[0].capabilities.cancellation, false);
+assert.equal(observed[2].outcome, "ERROR_REPORTED");
+assert.equal(JSON.stringify(observed).includes("still-running"), false,
+  "No output or arguments may enter telemetry");
+console.log("Pi universal tool lifecycle observation: PASS");
 
 // Provider refresh follows host-owned stage capability, not display label.
 activeThinking = false;
