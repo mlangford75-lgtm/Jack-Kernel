@@ -1,4 +1,4 @@
-"""One combined Stage-1 verification and alignment continuation, streamed or nonstream."""
+"""Profile-scoped Stage-1 verification and alignment continuation, streamed or nonstream."""
 import asyncio
 import importlib.util
 import sys
@@ -8,14 +8,12 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-COMBINED_PROMPT = "Hold on, re-verify work and reasoning to ensure alignment with instructions and user request before responding"
+COMBINED_PROMPT = "Wait, more verification is needed. Test the reasoning for errors, mistakes, or poor quality. Make changes, if necessary, to ensure alignment with instructions and user request before responding"
 
 
 def load(monkeypatch, tmp_path, *, enabled=True):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
-    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "balanced")
-    monkeypatch.setenv("JACK_AGENTIC_FINAL_REVIEW", "1" if enabled else "0")
-    monkeypatch.setenv("JACK_AGENTIC_STAGE2_FINAL_REVIEW", "0")
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "thorough" if enabled else "balanced")
     monkeypatch.setenv("JACK_BACKEND_MODEL", "unit-test-model")
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
     monkeypatch.setenv("JACK_LOOP_DETECTOR", "0")

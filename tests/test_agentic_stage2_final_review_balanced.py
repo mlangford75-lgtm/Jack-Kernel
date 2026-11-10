@@ -1,4 +1,4 @@
-"""Experimental Agentic Stage-2 review: one memory-only continuation, with thinking OFF.
+"""Balanced Stage-2 review: one memory-only continuation, with thinking OFF.
 
 Tests inspect outbound backend payloads, not merely the model's willingness to comply.
 """
@@ -17,12 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def load(monkeypatch, tmp_path, *, enabled, cache=False, stage1_review=False):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
-    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "balanced")
-    if enabled is None:
-        monkeypatch.delenv("JACK_AGENTIC_STAGE2_FINAL_REVIEW", raising=False)
-    else:
-        monkeypatch.setenv("JACK_AGENTIC_STAGE2_FINAL_REVIEW", "1" if enabled else "0")
-    monkeypatch.setenv("JACK_AGENTIC_FINAL_REVIEW", "1" if stage1_review else "0")
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "flash" if enabled is False else "balanced")
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT", "1" if cache else "0")
     monkeypatch.setenv("JACK_BACKEND_MODEL", "test-model")
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
@@ -119,32 +114,32 @@ def test_balanced_review_keeps_no_thinking_and_exact_current_turn(monkeypatch, t
         assert "Analog created and read back as empty." in serialized
     second = captured[1]["messages"]
     assert second[-2]["content"] == memory_for(1)
-    assert k.AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER == k.AGENTIC_36_STAGE2_PROMPT
-    assert second[-1]["content"] == k.AGENTIC_36_STAGE2_PROMPT
-    assert "Remove unnecessary conversational language" in second[-1]["content"]
+    assert k.AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER == "Wait, follow the Prime Directive"
+    assert second[-1]["content"] == "Wait, follow the Prime Directive"
+    assert "Remove unnecessary conversational language" in captured[0]["messages"][0 if not cache else -1]["content"]
     assert second[-1]["content"].count(k.AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER) == 1
     if not cache:
         assert captured[0]["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
         assert captured[1]["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
     else:
-        assert second[-1]["content"].startswith(k.AGENTIC_36_STAGE2_PROMPT)
+        assert captured[0]["messages"][-1]["content"].endswith(k.AGENTIC_36_STAGE2_PROMPT)
 
 
 @pytest.mark.parametrize("stream", [False, True])
-def test_default_retains_original_single_stage2_generation(monkeypatch, tmp_path, stream):
+def test_default_balanced_has_one_stage2_review_generation(monkeypatch, tmp_path, stream):
     k = load(monkeypatch, tmp_path, enabled=None)
-    assert k.CFG.agentic_stage2_final_review is False
+    assert k.CFG.agentic_stage2_final_review is True
     assert k.AGENTIC_36_STAGE2_PROMPT.count("Remove unnecessary conversational language") == 1
     captured, h, u, result = asyncio.run(run_backend(k, stream=stream))
-    assert len(captured) == 1
-    assert result["choices"][0]["message"]["content"] == memory_for(1)
-    assert not k._agentic_stage2_review_is_pending(h)
+    assert len(captured) == 2
+    assert result["choices"][0]["message"]["content"] == memory_for(2)
+    assert k._agentic_stage2_review_is_pending(h)
     assert k.STAGES["extended_reflection"].thinking is False
-    assert u["completion_tokens"] == 9
+    assert u["completion_tokens"] == 18
 
 
 @pytest.mark.parametrize("stream", [False, True])
-def test_disabled_keeps_exact_single_stage2_generation(monkeypatch, tmp_path, stream):
+def test_flash_keeps_exact_single_stage2_generation(monkeypatch, tmp_path, stream):
     k = load(monkeypatch, tmp_path, enabled=False)
     captured, h, u, result = asyncio.run(run_backend(k, stream=stream))
     assert len(captured) == 1

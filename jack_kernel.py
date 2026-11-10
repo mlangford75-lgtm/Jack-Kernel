@@ -309,14 +309,21 @@ class KernelConfig:
     # Profiles are resolved below into Qwen per-stage native-thinking controls.
     reasoning_level: str = os.getenv("JACK_REASONING_LEVEL", "x-high").strip().lower()
 
-    # Opt-in one-time native Stage-1 reconsideration before freezing A1.
-    agentic_final_review: bool = os.getenv("JACK_AGENTIC_FINAL_REVIEW", "1").strip().lower() in {"1", "true", "yes", "on"}
-    # Original one-pass Stage 2 is the default. The experimental second
-    # generation is opt-in only and does not run during normal Agentic use.
-    agentic_stage2_final_review: bool = os.getenv("JACK_AGENTIC_STAGE2_FINAL_REVIEW", "0").strip().lower() in {"1", "true", "yes", "on"}
-    # Agentic cognition profile, independent of backend sampler selection.
-    # Balanced is the default; Thorough and Flash remain selectable.
+    # Profiles own extension scheduling. Legacy JACK_AGENTIC_FINAL_REVIEW and
+    # JACK_AGENTIC_STAGE2_FINAL_REVIEW environment toggles cannot silently
+    # override the selected profile's thinking and continuation contract.
+    # Balanced remains the default.
     agentic_profile: str = os.getenv("JACK_AGENTIC_PROFILE", "balanced").strip().lower()
+
+    @property
+    def agentic_final_review(self) -> bool:
+        # A Stage-1 review generation only in Thorough and Exhaustive.
+        return self.agentic_profile in {"thorough", "exhaustive"}
+
+    @property
+    def agentic_stage2_final_review(self) -> bool:
+        # One Stage-2 review generation, absent from Flash.
+        return self.agentic_profile in {"balanced", "thorough", "exhaustive"}
 
     # Human-configurable Qwen preserve-thinking policy. Calling agents cannot
     # override this value; it is owned by the Jack Kernel runtime.
@@ -846,10 +853,14 @@ if REASONING_PROFILES[_reasoning_level].get("disabled"):
     raise RuntimeError("JACK_REASONING_LEVEL=low is disabled in Jack Kernel v0.1.1. Choose off, medium, x-high, deep-research, Local Agentic (Preserve Thinking), code-debugging, or code-debugging-deep.")
 ACTIVE_REASONING_PROFILE = REASONING_PROFILES[_reasoning_level]
 AGENTIC_MODE = ACTIVE_REASONING_PROFILE["mode"] == "agentic"
-if AGENTIC_MODE and CFG.agentic_profile not in {"flash", "balanced", "thorough"}:
-    raise RuntimeError("JACK_AGENTIC_PROFILE must be flash, balanced, or thorough")
+if AGENTIC_MODE and CFG.agentic_profile not in {"flash", "balanced", "thorough", "exhaustive"}:
+    raise RuntimeError("JACK_AGENTIC_PROFILE must be flash, balanced, thorough, or exhaustive")
 AGENTIC_BALANCED_MODE = AGENTIC_MODE and CFG.agentic_profile == "balanced"
 AGENTIC_FLASH_MODE = AGENTIC_MODE and CFG.agentic_profile == "flash"
+AGENTIC_EXHAUSTIVE_MODE = AGENTIC_MODE and CFG.agentic_profile == "exhaustive"
+# Balanced and Thorough generate Stage-2 memory without new native thinking,
+# while still reading Stage-1's preserved reasoning as distillation source.
+AGENTIC_THINKING_OFF_MEMORY_MODE = AGENTIC_MODE and CFG.agentic_profile in {"balanced", "thorough"}
 ULTRA_MODE = ACTIVE_REASONING_PROFILE["mode"] == "ultra"
 DEEP_REASONING_MODE = ACTIVE_REASONING_PROFILE["mode"] == "deep_reasoning"
 CODE_DEBUGGING_MODE = ACTIVE_REASONING_PROFILE["mode"] == "code_debugging"
@@ -1326,7 +1337,7 @@ You have no tools in this stage. Synthesis may receive the caller's tools and is
 Output only the plan."""
 
 AGENTIC_36_STAGE2_PROMPT = _AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
-AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER = AGENTIC_36_STAGE2_PROMPT
+AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER = "Wait, follow the Prime Directive"
 
 ULTRA_STAGE2_ANTITHESIS_PROMPT = """You are Antithesis.
 
@@ -2446,7 +2457,7 @@ STAGES: Dict[str, StageProfile] = {
     "extended_reflection": StageProfile(
         "Agentic native pass 2" if AGENTIC_MODE else "Deep Research Antithesis pass 2",
         AGENTIC_36_STAGE2_PROMPT if AGENTIC_MODE else ULTRA_STAGE2_ANTITHESIS_PROMPT,
-        not (AGENTIC_BALANCED_MODE or AGENTIC_FLASH_MODE),
+        not AGENTIC_MODE or AGENTIC_EXHAUSTIVE_MODE,
         ACTIVE_REASONING_PROFILE.get("pass2", "xhigh"),
         False,
         0.50 if AGENTIC_MODE else 0.70,
@@ -4011,10 +4022,9 @@ def self_adversarial_stage_reasoning_trace(
     return "\n\n".join(parts).strip()
 
 
-# One Stage-1 continuation: verify the draft and its alignment together.
-# Preserve both user-approved sentences unchanged in one appended user message.
-AGENTIC_STAGE1_VERIFICATION_PROMPT = "Wait, more verification is needed. Test the reasoning for errors, mistakes, or poor quality. Make changes, if necessary"
-AGENTIC_FINAL_REVIEW_PROMPT = "Hold on, re-verify work and reasoning to ensure alignment with instructions and user request before responding"
+# One Stage-1 continuation, in Thorough and Exhaustive only. Exact user wording.
+AGENTIC_STAGE1_VERIFICATION_PROMPT = "Wait, more verification is needed. Test the reasoning for errors, mistakes, or poor quality. Make changes, if necessary, to ensure alignment with instructions and user request before responding"
+AGENTIC_FINAL_REVIEW_PROMPT = AGENTIC_STAGE1_VERIFICATION_PROMPT
 AGENTIC_FINAL_REVIEW_TRIGGER = AGENTIC_FINAL_REVIEW_PROMPT
 
 
@@ -5880,9 +5890,9 @@ class OpenAICompatibleBackend:
         stages keep their native reasoning because those profiles run thinking-ON with
         Preserve Thinking under their stage contracts.
         """
-        # Balanced disables NEW Stage-2 thinking, not Stage-1 R1 as input.
-        balanced_r1_reader = AGENTIC_BALANCED_MODE and profile.name == "Agentic native pass 2"
-        strip_reasoning = not profile.thinking and not balanced_r1_reader
+        # Balanced/Thorough disable NEW Stage-2 thinking, not Stage-1 R1 as input.
+        thinking_off_r1_reader = AGENTIC_THINKING_OFF_MEMORY_MODE and profile.name == "Agentic native pass 2"
+        strip_reasoning = not profile.thinking and not thinking_off_r1_reader
         source_messages = (
             self._ultra_thesis_history_projection(messages)
             if ULTRA_MODE and profile.name == "Deep Research Thesis pass 1"
@@ -6060,9 +6070,9 @@ class OpenAICompatibleBackend:
         debugging_fresh_boundary = profile.name.startswith("Code Debugging Pass ") or profile.name == "Code Debugging Summary"
         # Preserve Thinking controls whether supplied R1 remains visible in the
         # Stage-2 chat template; it is independent of Stage-2 generation.
-        balanced_r1_reader = AGENTIC_BALANCED_MODE and profile.name == "Agentic native pass 2"
+        thinking_off_r1_reader = AGENTIC_THINKING_OFF_MEMORY_MODE and profile.name == "Agentic native pass 2"
         effective_preserve = bool(
-            (profile.thinking or balanced_r1_reader)
+            (profile.thinking or thinking_off_r1_reader)
             and (
                 profile.force_preserve_thinking
                 or (self.cfg.preserve_thinking and not debugging_fresh_boundary)
@@ -12896,16 +12906,18 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
     if selected == "Local Agentic (Preserve Thinking)":
         print()
         print("Agentic profile (two-stage lifecycle in all profiles)")
-        print("  1) Flash     - Stage 1 OFF, Stage 2 OFF")
-        print("  2) Balanced  - Stage 1 ON,  Stage 2 OFF (Default)")
-        print("  3) Thorough  - Stage 1 ON,  Stage 2 ON")
+        print("  1) Flash      - Stage 1 OFF, Stage 2 OFF, no extensions")
+        print("  2) Balanced   - Stage 1 ON,  Stage 2 OFF + review OFF (Default)")
+        print("  3) Thorough   - Stage 1 ON + review ON, Stage 2 OFF + review OFF")
+        print("  4) Exhaustive - Stage 1 ON + review ON, Stage 2 ON + review ON")
         print()
         # Choosing Agentic afresh defaults to Balanced, irrespective of a
         # previously saved optional profile. Escape rolls back this editor.
-        agentic_choice = _cli_input("Select Agentic profile [1-3] [2]: ").strip().lower() or "2"
+        agentic_choice = _cli_input("Select Agentic profile [1-4] [2]: ").strip().lower() or "2"
         selected_profile = {"1": "flash", "flash": "flash",
                             "2": "balanced", "balanced": "balanced",
-                            "3": "thorough", "thorough": "thorough"}.get(agentic_choice)
+                            "3": "thorough", "thorough": "thorough",
+                            "4": "exhaustive", "exhaustive": "exhaustive"}.get(agentic_choice)
         if selected_profile is None:
             print("Invalid Agentic profile; keeping current reasoning level.")
             return

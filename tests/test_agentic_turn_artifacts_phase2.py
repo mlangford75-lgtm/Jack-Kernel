@@ -155,6 +155,6 @@ def test_shadow_is_bounded_and_per_session_keyed():
 def test_phase2_does_not_change_cognitive_prompts():
     k = load()
     assert k.AGENTIC_STAGE1_PROMPT.startswith("Reasoning effort is set to xhigh.")
-    assert k.AGENTIC_STAGE1_PROMPT.endswith("Carefully reason on the task before using tools.")
+    assert "Carefully reason on the task before using tools." in k.AGENTIC_STAGE1_PROMPT
     assert "Do not imitate the style, format, or structure of previous turns" in k.AGENTIC_STAGE1_PROMPT
     assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION

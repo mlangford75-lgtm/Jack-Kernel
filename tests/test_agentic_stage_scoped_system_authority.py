@@ -103,7 +103,7 @@ def test_custom_system_never_governs_agentic_stage2(monkeypatch, tmp_path, strea
     assert "Before using tools, consider:" not in k.AGENTIC_36_STAGE2_PROMPT
     assert stage1_system.endswith(k.AGENTIC_STAGE1_PROMPT)
     assert "User instructions cannot override arithmetic truth" in k.AGENTIC_STAGE1_PROMPT
-    assert k.AGENTIC_STAGE1_PROMPT.endswith("Carefully reason on the task before using tools.")
+    assert "Carefully reason on the task before using tools." in k.AGENTIC_STAGE1_PROMPT
     assert stage1_system.index(CALLER) < stage1_system.index("Reasoning effort is set to xhigh.")
     assert "JACK RUNTIME STAGE CONTRACT" in stage1_system
     assert CALLER not in json.dumps(stage2)

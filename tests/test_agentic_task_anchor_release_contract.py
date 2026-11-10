@@ -75,10 +75,10 @@ def test_large_user_request_stays_in_cached_prefix(monkeypatch, tmp_path):
     suffix = k._stage_continuation(k.STAGES["extended_reflection"], history)
     assert marker not in suffix
     assert huge not in suffix
-    assert len(suffix) < 4000
+    assert suffix == k.AGENTIC_36_STAGE2_PROMPT
     assert original == [{"role": "user", "content": huge}]
     assert k.AGENTIC_STAGE1_PROMPT.startswith("Reasoning effort is set to xhigh.")
-    assert k.AGENTIC_STAGE1_PROMPT.endswith("Carefully reason on the task before using tools.")
+    assert "Carefully reason on the task before using tools." in k.AGENTIC_STAGE1_PROMPT
     assert "Do not imitate the style, format, or structure of previous turns" in k.AGENTIC_STAGE1_PROMPT
     assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
 

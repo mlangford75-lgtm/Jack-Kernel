@@ -140,7 +140,7 @@ def test_previous_r2_is_never_projected_into_stage2_on_both_cache_profiles(cache
                     k.AGENTIC_36_STAGE2_PROMPT
                 )
                 assert model_messages[-1]["content"].count("Begin with a brief description of the current task and how it relates to the user request.") == 2
-            assert k.AGENTIC_STAGE1_PROMPT.endswith("Carefully reason on the task before using tools.")
+            assert "Carefully reason on the task before using tools." in k.AGENTIC_STAGE1_PROMPT
             assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
         finally:
             await backend._client.aclose()

@@ -283,7 +283,7 @@ def test_default_isolated_retention_and_immutable_prompts(monkeypatch, tmp_path)
     assert "Keep as much detail as is genuinely useful." in continuation
     assert "Begin with a brief description of the current task and how it relates to the user request." in continuation
     assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
-    assert k.AGENTIC_STAGE1_PROMPT.endswith("Carefully reason on the task before using tools.")
+    assert "Carefully reason on the task before using tools." in k.AGENTIC_STAGE1_PROMPT
     assert "Do not imitate the style, format, or structure of previous turns" in k.AGENTIC_STAGE1_PROMPT
     assert k._agentic_stage2_test_history(
         history(), k.STAGES["extended_reflection"],

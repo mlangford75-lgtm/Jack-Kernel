@@ -119,14 +119,14 @@ def test_balanced_preserves_stage1_reasoning_in_stage2_request(monkeypatch, tmp_
 
 
 @pytest.mark.parametrize("stream", [False, True])
-def test_thorough_retains_existing_backend_contract(monkeypatch, tmp_path, stream):
+def test_thorough_uses_thinking_off_memory_but_preserves_stage1_reasoning(monkeypatch, tmp_path, stream):
     k = load(monkeypatch, tmp_path, profile="thorough")
     assert k.STAGES["extended_initial"].thinking is True
-    assert k.STAGES["extended_reflection"].thinking is True
+    assert k.STAGES["extended_reflection"].thinking is False
     p2 = backend_payload(k, stage="extended_reflection", stream=stream)
-    assert p2["chat_template_kwargs"]["enable_thinking"] is True
+    assert p2["chat_template_kwargs"]["enable_thinking"] is False
     assert p2["chat_template_kwargs"]["preserve_thinking"] is True
-    assert p2["reasoning_effort"] == "xhigh"
+    assert p2["reasoning_effort"] == "none"
     assert p2["messages"][-2]["reasoning_content"] == "R1: inspect source then change hand color to gold."
 
 
@@ -151,11 +151,12 @@ def test_invalid_experimental_profile_fails_closed(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("profile,initial_thinking,reflection_thinking", [
-    ("thorough", True, True),
+    ("exhaustive", True, True),
+    ("thorough", True, False),
     ("balanced", True, False),
     ("flash", False, False),
 ])
-def test_three_agentic_profiles_share_sampler_without_mutating_stage_temperatures(
+def test_four_agentic_profiles_share_sampler_without_mutating_stage_temperatures(
     monkeypatch, tmp_path, profile, initial_thinking, reflection_thinking
 ):
     # Deliberately different OFF sampler: Agentic must not switch samplers.
@@ -182,7 +183,7 @@ def test_three_agentic_profiles_share_sampler_without_mutating_stage_temperature
         assert len(assistant) == 1
         assert "reasoning_content" not in assistant[0]
         assert p2["reasoning_effort"] == "none"
-    elif profile == "balanced":
+    elif profile in {"balanced", "thorough", "exhaustive"}:
         assert p2["messages"][-2]["reasoning_content"].startswith("R1:")
 
 
@@ -190,6 +191,7 @@ def test_three_agentic_profiles_share_sampler_without_mutating_stage_temperature
     ("1", "flash"),
     ("2", "balanced"),
     ("3", "thorough"),
+    ("4", "exhaustive"),
     ("", "balanced"),
 ])
 def test_agentic_submenu_selects_and_persists_profile(monkeypatch, tmp_path, choice, profile):

@@ -12,10 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def load(monkeypatch, tmp_path, *, stage2=False):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
-    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "balanced")
-    monkeypatch.setenv("JACK_AGENTIC_FINAL_REVIEW", "0" if stage2 else "1")
-    monkeypatch.setenv("JACK_AGENTIC_STAGE1_VERIFY_BEFORE_ALIGNMENT", "0" if stage2 else "1")
-    monkeypatch.setenv("JACK_AGENTIC_STAGE2_FINAL_REVIEW", "1" if stage2 else "0")
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "balanced" if stage2 else "thorough")
     monkeypatch.setenv("JACK_BACKEND_MODEL", "test-model")
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
     monkeypatch.setenv("JACK_LOOP_DETECTOR", "0")
