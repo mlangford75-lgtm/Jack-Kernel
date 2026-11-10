@@ -12250,6 +12250,9 @@ async def runtime_activity_status(request: Request) -> Dict[str, Any]:
         "context_length": BACKEND.context_length,
         "context_length_source": BACKEND.context_length_source,
         "context_usage_source": "backend_stream_usage_only",
+        "agentic_stage2_native_thinking": (
+            bool(STAGES["extended_reflection"].thinking) if AGENTIC_MODE else None
+        ),
         **activity,
     }
 
