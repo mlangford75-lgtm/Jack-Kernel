@@ -238,6 +238,7 @@ const noEdits = {
     ...branch.slice(0, 2),
     {type: "context_edit", targetId: "tool-assistant", replacement: null},
     {type: "context_edit", targetId: "tool-result", replacement: null},
+    {type: "context_edit", targetId: "final-response", replacement: committedResponse},
     ...branch.slice(2),
   ]},
 };
