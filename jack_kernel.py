@@ -8754,6 +8754,22 @@ class JackQwenKernel:
                 pending_state=state,
             )
         if state.deferred_tool_rejection_errors:
+            tracker = state.tool_recovery
+            if tracker is not None:
+                for index, error in enumerate(state.deferred_tool_rejection_errors):
+                    # Mixed batches may execute authorized siblings. Count the
+                    # denied siblings once after their actual results return;
+                    # never rerun the rejected operation under a new ID.
+                    tracker.fail(
+                        "phase4_withheld_action", error,
+                        call_id=f"{state.resume_id}:withheld:{index}",
+                    )
+                if tracker.exhausted:
+                    raise ToolRecoveryExhausted(
+                        state=tracker, history=history, stage_key=state.stage_key,
+                        secondary_system=state.secondary_system, usage=state.usage,
+                        pending_state=state,
+                    )
             history.append(
                 _tool_rejection_notice(
                     state.deferred_tool_rejection_errors,
