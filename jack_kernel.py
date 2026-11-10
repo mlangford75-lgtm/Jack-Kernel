@@ -8179,6 +8179,10 @@ class JackQwenKernel:
                         length, count, mode,
                     )
                     if mode == "enforce":
+                        # Fail while the checkpoint is in-flight. Otherwise
+                        # close_scope treats this terminal loop interrupt as a
+                        # recoverable transport disconnect and rearms old work.
+                        _agentic_mark_stage1_failure("RepeatedToolCycleInterrupt")
                         raise RepeatedToolCycleInterrupt(length, count)
 
         # Active Agentic/Deep Research stages are uninterrupted cognitive stages. Code
