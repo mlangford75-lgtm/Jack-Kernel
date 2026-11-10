@@ -225,6 +225,14 @@ const thinkingOn = await handlers.get("turn_end")[0](event, context);
 assert.deepEqual(thinkingOn.entries.slice(1).map(x => x.targetId), ["tool-assistant", "tool-result"],
   "Thinking-ON Stage 2 bridge must remain intact");
 mockStage2Thinking = false;
+const noToolContext = {
+  ...context, sessionManager: {getBranch: () => [
+    branch[1], branch[4],
+  ]},
+};
+const onlyReasoning = await handlers.get("turn_end")[0](event, noToolContext);
+assert.equal(onlyReasoning.entries.at(-1).targetId, "final-response",
+  "A committed thinking-OFF result should prune reasoning even without any tool calls");
 assert.equal(results[0]?.continue, undefined, "Context synchronization must not cause an inference");
 assert.equal((await handlers.get("turn_end")[0]({...event, outcome: "failed"}, context)), undefined);
 validCommitDigests = [];
