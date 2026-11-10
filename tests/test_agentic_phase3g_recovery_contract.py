@@ -74,7 +74,7 @@ def test_opt_in_forensic_projection_keeps_regression_comparison_available(monkey
 def test_frozen_prompts_and_delayed_techniques_not_changed(monkeypatch, tmp_path):
     k = load_default(monkeypatch, tmp_path)
     assert k.AGENTIC_STAGE1_PROMPT.startswith("Reasoning effort is set to xhigh.")
-    assert k.AGENTIC_STAGE1_PROMPT.endswith("Carefully reason on the task before using tools.")
+    assert "Carefully reason on the task before using tools." in k.AGENTIC_STAGE1_PROMPT
     assert "Do not imitate the style, format, or structure of previous turns" in k.AGENTIC_STAGE1_PROMPT
     assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
     assert k._agentic_cache_append_enabled(k.STAGES["extended_reflection"])

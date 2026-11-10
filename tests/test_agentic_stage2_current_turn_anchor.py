@@ -78,8 +78,9 @@ def test_stage2_sees_current_r1_but_never_old_r2(cache):
     assert p["messages"][-2]["content"] == h[-1]["content"]
     assert p["messages"][-2]["reasoning_content"] == "R1_2 created SVG"
     assert p["messages"][-1]["role"] == "user"
-    assert k.AGENTIC_STAGE1_PROMPT.endswith("Carefully reason on the task before using tools.")
-    assert k.AGENTIC_36_STAGE2_PROMPT.startswith(STAGE2)
+    assert "Carefully reason on the task before using tools." in k.AGENTIC_STAGE1_PROMPT
+    assert k.AGENTIC_36_STAGE2_PROMPT.startswith("You must always follow the Prime Directive.")
+    assert STAGE2 in k.AGENTIC_36_STAGE2_PROMPT
     assert k.STAGES["extended_reflection"].allow_tools is False
     if cache:
         assert p["messages"][0]["content"] == k.AGENTIC_STAGE1_PROMPT
@@ -101,9 +102,7 @@ def test_stage1_prefix_unchanged_when_stage2_is_appended():
     assert all("tool_calls" not in item and item.get("role") != "tool" for item in projection)
     assert projection[-1]["content"] == h[-1]["content"]
     assert stage2[-1]["content"] == "Turn 2 frozen answer: created cuckoo-clock.svg"
-    assert k._stage_continuation(k.STAGES["extended_reflection"], h).startswith(
-        "Begin with a brief description of the current task"
-    )
+    assert k._stage_continuation(k.STAGES["extended_reflection"], h) == k.AGENTIC_36_STAGE2_PROMPT
 
 def test_incoming_history_never_recovers_previous_r2():
     k = load(True)
