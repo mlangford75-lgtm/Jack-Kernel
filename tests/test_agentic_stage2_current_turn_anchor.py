@@ -137,7 +137,9 @@ def test_stage2_authentic_request_survives_internal_stage1_extension(cache):
     """A review-induced audit cannot replace the authentic user task in Stage-2 projection."""
     k = load(cache)
     original = "it needs a luxury look. use black, gold, and diamonds"
-    extension = k.AGENTIC_FINAL_REVIEW_TRIGGER
+    extension = ("Wait, more verification is needed. Test the reasoning for errors, mistakes, "
+                 "or poor quality. Make changes, if necessary, to ensure alignment with "
+                 "instructions and user request before responding")
     assert "Identify the user's task exclusively from the original user request. Treat subsequent reasoning as work performed, not as a new user request." in k.AGENTIC_36_STAGE2_PROMPT
     h = [
         {"role": "user", "content": original},
