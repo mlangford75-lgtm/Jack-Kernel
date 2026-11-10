@@ -322,8 +322,8 @@ class KernelConfig:
 
     @property
     def agentic_stage2_final_review(self) -> bool:
-        # One Stage-2 review generation, absent from Flash.
-        return self.agentic_profile in {"balanced", "thorough", "exhaustive"}
+        # One extra Stage-2 memory review only in Exhaustive.
+        return self.agentic_profile == "exhaustive"
 
     # Human-configurable Qwen preserve-thinking policy. Calling agents cannot
     # override this value; it is owned by the Jack Kernel runtime.
