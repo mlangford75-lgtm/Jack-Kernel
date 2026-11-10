@@ -113,6 +113,41 @@ assert.equal(registrations[0].provider.models[0].thinkingLevelMap.max, undefined
 assert.equal(registrations[0].provider.models[0].compat.supportsDeveloperRole, false);
 assert.equal(registrations[0].provider.models[0].compat.supportsReasoningEffort, false);
 
+// Universal recovery receives explicit host-observed execution status, not
+// guesses from tool-result prose. Bound statuses to the current Pi session.
+const outcomeCtx = {
+  model: {provider: "jack-kernel"},
+  sessionManager: {getSessionId: () => "recovery-session"},
+};
+for (const outcome of [
+  {id: "success-id", failed: false, expected: false},
+  {id: "failed-id", failed: true, expected: true},
+]) {
+  for (const fn of handlers.get("tool_execution_end") || []) {
+    fn({toolCallId: outcome.id, isError: outcome.failed}, outcomeCtx);
+  }
+}
+const outgoing = {payload: {messages: [
+  {role: "tool", tool_call_id: "success-id", content: "ok"},
+  {role: "tool", tool_call_id: "failed-id", content: "error"},
+  {role: "tool", tool_call_id: "unknown-id", content: "unknown"},
+]}};
+const proposals = (handlers.get("before_provider_request") || [])
+  .map(fn => fn(outgoing, outcomeCtx)).filter(Boolean);
+assert.equal(proposals.length, 1);
+assert.equal(proposals[0].messages[0].is_error, false,
+  "Authenticated tool success must reset repeated failure counters");
+assert.equal(proposals[0].messages[1].is_error, true,
+  "Real executor failure must count");
+assert.equal(proposals[0].messages[2].is_error, undefined,
+  "Unknown status must remain unknown");
+const otherSession = { ...outcomeCtx,
+  sessionManager: {getSessionId: () => "other-session"} };
+assert.equal((handlers.get("before_provider_request") || [])
+  .map(fn => fn(outgoing, otherSession)).filter(Boolean).length, 0,
+  "No outcome status may leak across Pi sessions");
+console.log("Pi explicit tool success/failure receipts: PASS");
+
 // Provider refresh follows host-owned stage capability, not display label.
 activeThinking = false;
 activeMode = "off";

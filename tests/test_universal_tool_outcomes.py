@@ -122,12 +122,14 @@ def test_shared_resume_preserves_legacy_shape_and_marks_reported_failures():
     assert failed["content"] == "actual output"
 
 
-def test_pi_forwards_only_failures_to_jack_without_parsing_error_text():
+def test_pi_forwards_explicit_host_outcomes_without_parsing_error_text():
     from pathlib import Path
     source = (Path(__file__).resolve().parents[1] / "Pi" / "jack-kernel.ts").read_text(encoding="utf-8")
     assert 'pi.on("tool_execution_end"' in source
     assert 'pi.on("before_provider_request"' in source
     assert 'event?.isError === true' in source
     assert 'String(ctx?.model?.provider || "") !== PROVIDER_NAME' in source
-    assert "failedToolCalls.get(id) !== sessionId" in source
+    assert "failedToolCalls.get(id) === sessionId" in source
+    assert "successfulToolCalls.get(id) === sessionId" in source
     assert 'return { ...message, is_error: true }' in source
+    assert 'return { ...message, is_error: false }' in source
