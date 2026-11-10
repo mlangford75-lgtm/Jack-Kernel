@@ -357,6 +357,11 @@ class KernelConfig:
     log_reasoning: bool = os.getenv("JACK_LOG_REASONING", "0") == "1"
     loop_detector_enabled: bool = os.getenv("JACK_LOOP_DETECTOR", "1").strip().lower() not in {"0", "false", "no", "off"}
     loop_detector_repetitions: int = int(os.getenv("JACK_LOOP_REPETITIONS", "32"))
+    # Deterministic, host-only Agentic tool-cycle gate. Unlike the native
+    # reasoning loop detector, this compares consecutive completed tool
+    # transactions across backend generations. No model-facing prompt changes.
+    agentic_tool_cycle_mode: str = os.getenv("JACK_AGENTIC_TOOL_CYCLE_MODE", "enforce").strip().lower()
+    agentic_tool_cycle_repetitions: int = max(3, int(os.getenv("JACK_AGENTIC_TOOL_CYCLE_REPETITIONS", "3")))
 
     # Optional local forensic checkpointing is host-owned and never model context.
     # ``stage`` archives the completed Agentic Stage-1 trajectory only after Stage 2
@@ -2764,6 +2769,141 @@ def _tool_call_artifact_effect(tool_name: str, arguments_text: str) -> Tuple[str
                 return "MUTATION", " | ".join(targets)
             return "MUTATION", "UNKNOWN"
     return "NONE", target
+
+
+class RepeatedToolCycleInterrupt(HTTPException):
+    """A completed-tool sequence would repeat again without new tool evidence."""
+
+    def __init__(self, cycle_length: int, repetitions: int):
+        self.cycle_length = int(cycle_length)
+        self.repetitions = int(repetitions)
+        super().__init__(
+            status_code=409,
+            detail=(
+                "Jack Kernel interrupt - Repeated Tool Cycle Failure: "
+                f"{repetitions} repetitions of an exact {cycle_length}-action "
+                "tool sequence including a mutation; no new executable call was released"
+            ),
+        )
+
+
+def _agentic_tool_action_signature(call: Any) -> Optional[Tuple[str, str, bool]]:
+    """Canonical callable identity, independent of generated tool-call IDs.
+
+    JSON key ordering is not semantically significant; argument values and
+    executable body ARE. Fail open for malformed tool calls.
+    """
+    if not isinstance(call, dict):
+        return None
+    fn = call.get("function")
+    if not isinstance(fn, dict):
+        return None
+    name = fn.get("name")
+    raw = fn.get("arguments")
+    if not isinstance(name, str) or not name.strip() or not isinstance(raw, str):
+        return None
+    try:
+        args = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(args, dict):
+        return None
+    canonical = json.dumps(args, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    normalized = name.strip().casefold()
+    effect, _ = _tool_call_artifact_effect(name, canonical)
+    return normalized, _sha256_text(canonical), effect == "MUTATION"
+
+
+def _agentic_exact_tool_cycle(
+    history: List[Dict[str, Any]],
+    candidate_calls: List[Dict[str, Any]],
+    *,
+    repetitions: int = 3,
+    max_cycle: int = 4,
+) -> Optional[Tuple[int, int]]:
+    """Detect an exactly repeated, completed, mutation-bearing tool cycle.
+
+    Bounded suffix of one Stage-1 turn only. A pending/missing tool result,
+    malformed call, changed arguments, changed returned evidence, or a
+    non-mutating cycle never authorizes an interruption. Never use names/IDs
+    alone: tool-call IDs are expected to change every generation.
+    """
+    if len(candidate_calls) != 1:
+        return None
+    proposed = _agentic_tool_action_signature(candidate_calls[0])
+    if proposed is None:
+        return None
+    repeats = max(3, int(repetitions))
+    maximum = max(1, min(4, int(max_cycle)))
+    needed = repeats * maximum - 1
+    target = active_response_target(history)
+    if target is None:
+        return None
+    boundary = int(target["history_index"])
+    returned: Dict[str, Tuple[str, str]] = {}
+    recent: List[Tuple[Tuple[str, str, bool], Tuple[str, str]]] = []
+    # Scan backwards only until enough completed exchanges have been recovered.
+    for index in range(len(history) - 1, boundary, -1):
+        message = history[index]
+        if not isinstance(message, dict):
+            return None
+        if message.get("_jack_internal_tool_exchange") and message.get("role") == "tool":
+            call_id = message.get("tool_call_id")
+            if not isinstance(call_id, str) or not call_id:
+                return None
+            result = _content_to_text(message.get("content"))
+            outcome = message.get("_jack_tool_outcome") or reported_tool_outcome(message)
+            returned[call_id] = (outcome, _sha256_text(result))
+        elif message.get("_jack_internal_tool_exchange") and message.get("role") == "assistant":
+            calls = message.get("tool_calls")
+            if not isinstance(calls, list) or not calls:
+                return None
+            for call in reversed(calls):
+                call_id = call.get("id") if isinstance(call, dict) else None
+                action = _agentic_tool_action_signature(call)
+                if not isinstance(call_id, str) or not call_id or action is None or call_id not in returned:
+                    return None
+                evidence = returned.pop(call_id)
+                # A confirmed failure may justify retrying, so don't infer
+                # repeated successful work across an explicit failure.
+                if evidence[0] == TOOL_FAILED:
+                    return None
+                recent.append((action, evidence))
+                if len(recent) >= needed:
+                    break
+            if len(recent) >= needed:
+                break
+        elif message.get("_jack_internal_tool_exchange"):
+            return None
+        elif message.get("role") == "user":
+            # Stage-local continuation cues are not tool protocol.
+            return None
+    previous = list(reversed(recent))
+    # A candidate has no authenticated result yet. A cycle's previously
+    # completed positions must have IDENTICAL tool-result evidence to qualify.
+    actions = [x[0] for x in previous] + [proposed]
+    evidences: List[Optional[Tuple[str, str]]] = [x[1] for x in previous] + [None]
+    for cycle_length in range(1, maximum + 1):
+        required = repeats * cycle_length
+        if len(actions) < required:
+            continue
+        tail = actions[-required:]
+        pattern = tail[-cycle_length:]
+        if not any(x[2] for x in pattern):
+            continue
+        if any(tail[i:i + cycle_length] != pattern for i in range(0, required, cycle_length)):
+            continue
+        evidence_tail = evidences[-required:]
+        stable = True
+        for offset in range(cycle_length):
+            comparisons = [evidence_tail[index] for index in range(offset, required, cycle_length)]
+            comparisons = [item for item in comparisons if item is not None]
+            if not comparisons or any(x != comparisons[0] for x in comparisons[1:]):
+                stable = False
+                break
+        if stable:
+            return cycle_length, repeats
+    return None
 
 
 def _tool_call_metadata(tool_calls: Any) -> Dict[str, Dict[str, str]]:
@@ -8021,6 +8161,26 @@ class JackQwenKernel:
         if not calls or not call_ids:
             raise HTTPException(status_code=500, detail=f"Attempted to checkpoint {stage_key} without a tool call")
 
+        # The stream already reconstructed and validated the complete call,
+        # but no tool bytes have been released to Pi yet. Check host evidence
+        # here, before establishing a new executable checkpoint.
+        if AGENTIC_MODE and stage_key == "extended_initial" and self.cfg.loop_detector_enabled:
+            mode = self.cfg.agentic_tool_cycle_mode
+            if mode in {"observe", "enforce"}:
+                cycle = _agentic_exact_tool_cycle(
+                    history, calls,
+                    repetitions=self.cfg.agentic_tool_cycle_repetitions,
+                )
+                if cycle is not None:
+                    length, count = cycle
+                    LOG.warning(
+                        "Agentic exact tool-cycle detected: length=%d repetitions=%d policy=%s; "
+                        "no tool arguments emitted in this log",
+                        length, count, mode,
+                    )
+                    if mode == "enforce":
+                        raise RepeatedToolCycleInterrupt(length, count)
+
         # Active Agentic/Deep Research stages are uninterrupted cognitive stages. Code
         # Debugging also preserves complete native reasoning/tool protocol, but only while
         # one pass is active. At pass commit Jack drops that entire context and the next
@@ -9180,6 +9340,12 @@ class JackQwenKernel:
         try:
             async with self._activity_request_scope("nonstream"):
                 return await self._run_impl(request_body)
+        except RepeatedToolCycleInterrupt as exc:
+            _agentic_mark_stage1_failure("RepeatedToolCycleInterrupt")
+            return KernelResult(
+                content=str(exc.detail), tool_calls=None, finish_reason="stop",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
         except GenerationBudgetExceeded as exc:
             LOG.warning("%s (nonstream)", exc)
             return KernelResult(
@@ -11821,7 +11987,7 @@ async def _safe_public_stream(
         if AGENTIC_MODE:
             _agentic_mark_stage1_failure(type(exc).__name__)
         LOG.exception("Jack streamed request failed; closing SSE cleanly")
-        if not isinstance(exc, RepeatedLoopInterrupt):
+        if not isinstance(exc, (RepeatedLoopInterrupt, RepeatedToolCycleInterrupt)):
             await KERNEL._rearm_pending_tool_resume_for_messages(body.get("messages"))
         await KERNEL._rearm_pending_debugging_resumes_for_messages(body.get("messages"))
         detail = str(exc.detail) if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
@@ -11840,6 +12006,8 @@ async def _safe_public_stream(
 
         if isinstance(exc, RepeatedLoopInterrupt):
             failure_text = "Jack Kernel interrupt - Repeated Loop Failure"
+        elif isinstance(exc, RepeatedToolCycleInterrupt):
+            failure_text = str(exc.detail)
         elif isinstance(exc, PartialOutputLoopInterrupt):
             failure_text = "Jack Kernel interrupt - Loop Detected After Partial Output"
         elif ULTRA_MODE:
