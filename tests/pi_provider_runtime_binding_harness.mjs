@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -32,6 +33,7 @@ let activeMode = "agentic";
 let activeEffort = "xhigh";
 let mockLoadedContext = 16384;
 let mockMaxContext = 32768;
+let validCommitDigests = [];
 const server = http.createServer((req, res) => {
   res.setHeader("Content-Type", "application/json");
   if (req.url === "/health") {
@@ -45,6 +47,10 @@ const server = http.createServer((req, res) => {
         stage_controls: { extended_initial: { thinking: activeThinking, reasoning_effort: activeEffort } },
       },
     }));
+    return;
+  }
+  if (req.url === "/jack/runtime/status") {
+    res.end(JSON.stringify({runtime_id: healthRuntimeId, completed_agentic_digests: validCommitDigests}));
     return;
   }
   if (req.url === "/api/v1/models") {
@@ -178,6 +184,55 @@ for (const scenario of [
   assert.equal(model.maxTokens, scenario.output);
   assert.ok(model.maxTokens <= model.contextWindow);
 }
+
+// Pi should prune only authenticated, successfully committed Agentic tool
+// exchanges after the turn is complete, never user or final answer entries.
+const committedResponse = "Verified working memory\\n\\nFrozen answer";
+validCommitDigests = [crypto.createHash("sha256").update(committedResponse).digest("hex")];
+const finalMessage = {
+  role: "assistant", stopReason: "stop", content: [{type: "text", text: committedResponse}],
+};
+const branch = [
+  {type: "message", id: "before-user", message: {role: "assistant", content: [{type: "text", text: "older"}]}},
+  {type: "message", id: "user-current", message: {role: "user", content: "Do work"}},
+  {type: "message", id: "tool-assistant", message: {role: "assistant", content: [{type: "toolCall", id: "call", name: "bash", arguments: {command: "ls"}}]}},
+  {type: "message", id: "tool-result", message: {role: "toolResult", toolCallId: "call", content: [{type: "text", text: "files"}]}},
+  {type: "message", id: "final-response", message: finalMessage},
+];
+const context = {
+  model: {provider: "jack-kernel"},
+  sessionManager: {getBranch: () => branch},
+};
+const event = {
+  outcome: "completed",
+  toolResults: [],
+  message: finalMessage,
+  messageEntryId: "final-response",
+  entries: [{type: "custom", customType: "existing", data: 1}],
+};
+const results = await Promise.all((handlers.get("turn_end") || []).map(fn => fn(event, context)));
+assert.equal(results.length, 1);
+assert.deepEqual(results[0]?.entries.map(x => x.type), ["custom", "context_edit", "context_edit"]);
+assert.deepEqual(results[0].entries.slice(1).map(x => x.targetId), ["tool-assistant", "tool-result"]);
+assert.equal(results[0]?.continue, undefined, "Context synchronization must not cause an inference");
+assert.equal((await handlers.get("turn_end")[0]({...event, outcome: "failed"}, context)), undefined);
+validCommitDigests = [];
+assert.equal((await handlers.get("turn_end")[0](event, context)), undefined,
+  "No digest receipt must preserve all caller context");
+validCommitDigests = [crypto.createHash("sha256").update(committedResponse).digest("hex")];
+assert.equal((await handlers.get("turn_end")[0]({...event, toolResults: [{}]}, context)), undefined,
+  "Tool-suspension boundary must not compact caller protocol");
+const noEdits = {
+  ...context, sessionManager: {getBranch: () => [
+    ...branch.slice(0, 2),
+    {type: "context_edit", targetId: "tool-assistant", replacement: null},
+    {type: "context_edit", targetId: "tool-result", replacement: null},
+    ...branch.slice(2),
+  ]},
+};
+assert.equal((await handlers.get("turn_end")[0](event, noEdits)), undefined,
+  "Previously omitted tool protocol must not produce duplicate edits");
+console.log("Pi committed Agentic context synchronization: PASS");
 
 // Missing both context measurements must fail closed.
 mockLoadedContext = 0;

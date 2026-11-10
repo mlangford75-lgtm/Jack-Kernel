@@ -6800,6 +6800,10 @@ class RuntimeActivityTracker:
         self._lock = asyncio.Lock()
         self._active: Dict[str, Dict[str, Any]] = {}
         self._last_request: Optional[Dict[str, Any]] = None
+        # Short-lived, digest-only proof of a completed Agentic A1/M commit.
+        # Pi may use it to align its next-turn model context, not to
+        # authorize tools, edits, or change inference behaviour.
+        self._committed_agentic_digests: List[Tuple[str, float]] = []
         self._current_request_id: contextvars.ContextVar[Optional[str]] = (
             contextvars.ContextVar(
                 f"jack_runtime_activity_request_{id(self)}",
@@ -6917,6 +6921,16 @@ class RuntimeActivityTracker:
             if backend_last_recognized_at_unix is not None:
                 entry["backend_last_recognized_at_unix"] = float(backend_last_recognized_at_unix)
 
+    async def record_agentic_commit(self, committed_output: str) -> None:
+        """Record only a digest after durable memory and frozen A1 commit."""
+        digest = _sha256_text(committed_output)
+        now = time.time()
+        async with self._lock:
+            self._committed_agentic_digests = [
+                (value, ts) for value, ts in self._committed_agentic_digests
+                if now - ts <= 120
+            ][-15:] + [(digest, now)]
+
     async def snapshot(self) -> Dict[str, Any]:
         now = time.time()
         async with self._lock:
@@ -6939,9 +6953,14 @@ class RuntimeActivityTracker:
                 1 for item in active if item.get("backend_request_active") is True
             )
             last_request = dict(self._last_request) if self._last_request else None
+            completed_agentic_digests = [
+                digest for digest, ts in self._committed_agentic_digests
+                if now - ts <= 120
+            ]
 
         return {
             "status": "busy" if active else "idle",
+            "completed_agentic_digests": completed_agentic_digests,
             "active_count": len(active),
             "queued_count": queued,
             "running_count": running,
@@ -10541,6 +10560,14 @@ class JackQwenKernel:
                     return
                 if pending_state is not None:
                     await self._retire_pending_tool_resume(pending_state)
+                # The Pi adapter must never infer a committed/pruned turn from
+                # generated prose. Publish a digest of this byte-exact A1/M
+                # response only after both stages have committed successfully.
+                # A telemetry failure cannot undo the committed response.
+                try:
+                    await self.activity.record_agentic_commit(committed_output)
+                except Exception:
+                    LOG.exception("Agentic context-sync receipt failed; committed answer preserved")
                 yield event({"reasoning_content": "\n[END AGENTIC STAGE 2 — MEMORY COMPLETE; A1 COMMIT]\n"})
                 yield event({"content": committed_output})
                 yield event({}, "stop")
