@@ -214,7 +214,7 @@ def test_agentic_submenu_selects_and_persists_profile(monkeypatch, tmp_path, cho
     assert "Stage 2 ON + review ON" in menu
     assert "Stage 2 ON, no Stage 2 extension" not in menu
     assert "Stage 2 OFF, no extensions (Default)" in menu
-    assert k.CFG.agentic_stage2_final_review is (profile == "thorough")
+    assert k.KernelConfig(agentic_profile=cfg["agentic_profile"]).agentic_stage2_final_review is (profile == "thorough")
 
 
 def test_agentic_submenu_escape_rolls_back(monkeypatch, tmp_path):
