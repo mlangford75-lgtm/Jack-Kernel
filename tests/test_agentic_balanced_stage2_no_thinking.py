@@ -151,7 +151,6 @@ def test_invalid_experimental_profile_fails_closed(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("profile,initial_thinking,reflection_thinking", [
-    ("exhaustive", True, True),
     ("thorough", True, True),
     ("balanced", True, False),
     ("flash", False, False),
@@ -183,7 +182,7 @@ def test_four_agentic_profiles_share_sampler_without_mutating_stage_temperatures
         assert len(assistant) == 1
         assert "reasoning_content" not in assistant[0]
         assert p2["reasoning_effort"] == "none"
-    elif profile in {"balanced", "thorough", "exhaustive"}:
+    elif profile in {"balanced", "thorough"}:
         assert p2["messages"][-2]["reasoning_content"].startswith("R1:")
 
 
@@ -191,7 +190,6 @@ def test_four_agentic_profiles_share_sampler_without_mutating_stage_temperatures
     ("1", "flash"),
     ("2", "balanced"),
     ("3", "thorough"),
-    ("4", "exhaustive"),
     ("", "balanced"),
 ])
 def test_agentic_submenu_selects_and_persists_profile(monkeypatch, tmp_path, choice, profile):
