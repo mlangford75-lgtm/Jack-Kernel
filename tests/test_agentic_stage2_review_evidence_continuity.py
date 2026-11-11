@@ -131,5 +131,6 @@ def test_stage2_single_pass_preserves_current_turn_evidence(monkeypatch, tmp_pat
     assert "tools" not in first
     assert "tool_choice" not in first
     assert k.active_response_target(history)["content"] == "Plan a family picnic for a rainy afternoon."
-    assert history[-2]["content"] == "Use an indoor option."
+    assert history[-2]["content"] == "Draft memory"
+    assert history[-3]["content"] == "Suggest an indoor picnic without asserting opening hours."
     assert json.dumps(history[:-2], sort_keys=True) == original
