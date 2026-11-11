@@ -1,4 +1,4 @@
-"""Four Agentic profiles: exact user directives and deterministic stage scheduling.
+"""Three Agentic profiles: exact Stage-1 directive and deterministic stage scheduling.
 
 Tests exercise outbound generations and native-thinking controls, not model quality.
 """
@@ -18,13 +18,11 @@ STAGE1_EXTENSION = (
     "or poor quality. Make changes, if necessary, to ensure alignment with "
     "instructions and user request before responding"
 )
-STAGE2_EXTENSION = "Wait, re-verify that the Prime Directive was followed and then output the correct response"
 
 MATRIX = [
-    ("flash", False, False, False, False),
-    ("balanced", True, False, False, False),
-    ("thorough", True, True, True, True),
-    ("exhaustive", True, True, True, True),
+    ("flash", False, False, False),
+    ("balanced", True, False, False),
+    ("thorough", True, True, True),
 ]
 
 
@@ -33,7 +31,7 @@ def load(monkeypatch, tmp_path, profile):
     monkeypatch.setenv("JACK_AGENTIC_PROFILE", profile)
     # Intentionally set conflicting legacy toggles: profiles own their routing.
     monkeypatch.setenv("JACK_AGENTIC_FINAL_REVIEW", "1" if profile in {"flash", "balanced"} else "0")
-    monkeypatch.setenv("JACK_AGENTIC_STAGE2_FINAL_REVIEW", "1" if profile == "flash" else "0")
+    monkeypatch.setenv("JACK_AGENTIC_STAGE2_FINAL_REVIEW", "1")  # obsolete override must have no effect
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT", "0")
     monkeypatch.setenv("JACK_BACKEND_MODEL", "test-model")
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
@@ -98,18 +96,16 @@ async def run_stage(k, stage_key, streaming):
 
 
 @pytest.mark.parametrize('streaming', [False, True])
-@pytest.mark.parametrize('profile,stage1_thinking,stage1_extra,stage2_thinking,stage2_extra', MATRIX)
+@pytest.mark.parametrize('profile,stage1_thinking,stage1_extra,stage2_thinking', MATRIX)
 def test_profile_matrix_and_exact_continuations(
-    monkeypatch, tmp_path, streaming, profile, stage1_thinking, stage1_extra, stage2_thinking, stage2_extra
+    monkeypatch, tmp_path, streaming, profile, stage1_thinking, stage1_extra, stage2_thinking
 ):
     k = load(monkeypatch, tmp_path, profile)
     assert k.CFG.agentic_final_review is stage1_extra
-    assert k.CFG.agentic_stage2_final_review is stage2_extra
     assert k.STAGES['extended_initial'].thinking is stage1_thinking
     assert k.STAGES['extended_reflection'].thinking is stage2_thinking
     assert not k.STAGES['extended_reflection'].allow_tools
     assert k.AGENTIC_FINAL_REVIEW_TRIGGER == STAGE1_EXTENSION
-    assert k.AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER == STAGE2_EXTENSION
     assert k.AGENTIC_36_STAGE2_PROMPT.count('Remove unnecessary conversational language') == 1
 
     first, h1, usage1, out1 = asyncio.run(run_stage(k, 'extended_initial', streaming))
@@ -123,16 +119,15 @@ def test_profile_matrix_and_exact_continuations(
         assert first[1]['messages'][-2]['content'] == 'Output 1'
 
     second, h2, usage2, out2 = asyncio.run(run_stage(k, 'extended_reflection', streaming))
-    assert len(second) == 1 + int(stage2_extra)
+    assert len(second) == 1
     assert usage2['completion_tokens'] == len(second) * 5
     assert out2['choices'][0]['message']['content'] == f'Output {len(second)}'
     for payload in second:
         assert payload['chat_template_kwargs']['enable_thinking'] is stage2_thinking
         assert 'tools' not in payload
-    if stage2_extra:
-        assert second[1]['messages'][-1]['content'] == STAGE2_EXTENSION
-        assert second[1]['messages'][-2]['content'] == 'Output 1'
-    if profile in {'balanced', 'thorough', 'exhaustive'}:
+    assert not any(m.get('_jack_internal_agentic_stage2_review_trigger') for m in h2)
+    assert not any('re-verify that the Prime Directive' in str(m.get('content', '')) for m in second[0]['messages'])
+    if profile in {'balanced', 'thorough'}:
         assert second[0]['messages'][-2]['reasoning_content'] == 'R1 source content'
         assert second[0]['chat_template_kwargs']['preserve_thinking'] is True
     else:
@@ -144,4 +139,3 @@ def test_default_profile_is_balanced_and_both_legacy_toggles_ignored(monkeypatch
     k = load(monkeypatch, tmp_path, 'balanced')
     assert k.CFG.agentic_profile == 'balanced'
     assert not k.CFG.agentic_final_review
-    assert not k.CFG.agentic_stage2_final_review
