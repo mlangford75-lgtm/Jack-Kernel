@@ -1,4 +1,4 @@
-"""Thorough/Exhaustive one-shot final-review continuation before A1 freeze.
+"""Thorough one-shot Stage-1 final-review continuation before A1 freeze.
 
 The test isolates Jack's transaction behavior from stochastic model competence.
 """
