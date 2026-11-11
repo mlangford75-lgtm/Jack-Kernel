@@ -108,7 +108,6 @@ def test_stage2_single_pass_preserves_current_turn_evidence(monkeypatch, tmp_pat
     original = json.dumps(history, sort_keys=True)
     (first,) = asyncio.run(capture_payloads(k, history, cache, stream))
 
-    assert len([first]) == 1
     first_messages = first["messages"]
     assert not hasattr(k, "AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER")
     assert not hasattr(k.CFG, "agentic_stage2_final_review")
@@ -125,4 +124,4 @@ def test_stage2_single_pass_preserves_current_turn_evidence(monkeypatch, tmp_pat
     assert "tool_choice" not in first
     assert k.active_response_target(history)["content"] == "Plan a family picnic for a rainy afternoon."
     assert history[-2]["content"] == "Use an indoor option."
-    assert json.dumps(history[:-2], sort_keys=True) == original
+    assert json.dumps(history, sort_keys=True) == original
