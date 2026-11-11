@@ -1,4 +1,4 @@
-"""Thorough Stage-2 memory verification preserves the original source evidence and cache prefix."""
+"""Single-pass Thorough Stage-2 memory retains source evidence without a review suffix."""
 
 import asyncio
 import importlib.util
@@ -95,10 +95,6 @@ async def capture_payloads(k, history, cache, stream):
 
     try:
         await once()
-        k._agentic_begin_stage2_review(history, {
-            "choices":[{"message":{"content":"Draft memory"},"finish_reason":"stop"}]
-        })
-        await once()
     finally:
         await backend._client.aclose()
     return payloads
@@ -110,15 +106,13 @@ def test_stage2_single_pass_preserves_current_turn_evidence(monkeypatch, tmp_pat
     k = load(monkeypatch, tmp_path, cache)
     history = current_turn_history()
     original = json.dumps(history, sort_keys=True)
-    first, review = asyncio.run(capture_payloads(k, history, cache, stream))
+    payloads = asyncio.run(capture_payloads(k, history, cache, stream))
+    assert len(payloads) == 1
+    first = payloads[0]
 
     first_messages = first["messages"]
-    assert k.CFG.agentic_stage2_final_review is True
-    assert k.AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER == "Wait, review the working knowledge for consequential omissions or inaccuracies. The objective is to preserve consequential working knowledge accurately, not independently solve the user's task again. Re-state the brief description of the current task and how it relates to the authenticated user request."
-    assert review["messages"][:len(first_messages)] == first_messages
-    assert review["messages"][-2] == {"role":"assistant","content":"Draft memory"}
-    assert review["messages"][-1] == {"role":"user","content":k.AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER}
-    assert review["chat_template_kwargs"]["enable_thinking"] is True
+    assert not hasattr(k.CFG, "agentic_stage2_final_review")
+    assert first["chat_template_kwargs"]["enable_thinking"] is True
     assert "re-verify that the Prime Directive" not in json.dumps(first_messages)
     assert "Remove unnecessary conversational language" in json.dumps(first_messages)
 
@@ -131,6 +125,4 @@ def test_stage2_single_pass_preserves_current_turn_evidence(monkeypatch, tmp_pat
     assert "tools" not in first
     assert "tool_choice" not in first
     assert k.active_response_target(history)["content"] == "Plan a family picnic for a rainy afternoon."
-    assert history[-2]["content"] == "Draft memory"
-    assert history[-3]["content"] == "Suggest an indoor picnic without asserting opening hours."
-    assert json.dumps(history[:-2], sort_keys=True) == original
+    assert json.dumps(history, sort_keys=True) == original
