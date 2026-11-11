@@ -37,7 +37,7 @@ def load(monkeypatch, tmp_path, profile):
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
     monkeypatch.setenv("JACK_FORENSIC_ARCHIVE_MODE", "off")
     monkeypatch.setenv("JACK_AGENTIC_FORENSIC_DB", str(tmp_path / (uuid.uuid4().hex + '.sqlite')))
-    name = 'agentic_four_profiles_' + uuid.uuid4().hex
+    name = 'agentic_three_profiles_' + uuid.uuid4().hex
     spec = importlib.util.spec_from_file_location(name, ROOT / 'jack_kernel.py')
     k = importlib.util.module_from_spec(spec)
     sys.modules[name] = k
@@ -139,3 +139,32 @@ def test_default_profile_is_balanced_and_both_legacy_toggles_ignored(monkeypatch
     k = load(monkeypatch, tmp_path, 'balanced')
     assert k.CFG.agentic_profile == 'balanced'
     assert not k.CFG.agentic_final_review
+
+
+def test_exhaustive_is_not_a_runtime_profile(monkeypatch, tmp_path):
+    monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "exhaustive")
+    monkeypatch.setenv("JACK_FORENSIC_ARCHIVE_MODE", "off")
+    name = "obsolete_exhaustive_" + uuid.uuid4().hex
+    spec = importlib.util.spec_from_file_location(name, ROOT / "jack_kernel.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    with pytest.raises(RuntimeError, match="must be flash, balanced, or thorough"):
+        spec.loader.exec_module(module)
+
+
+def test_legacy_exhaustive_saved_config_migrates_to_thorough(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path, "balanced")
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({
+        "config_schema_version": k.CONFIG_SCHEMA_VERSION,
+        "agentic_profile": "exhaustive",
+        "backend_model": "test-model",
+    }), encoding="utf-8")
+    monkeypatch.setattr(k, "_config_paths", lambda: (config_path, tmp_path / "secondary.txt"))
+    loaded = k._load_cli_config()
+    assert loaded["agentic_profile"] == "thorough"
+    assert k._config_to_env(loaded)["JACK_AGENTIC_PROFILE"] == "thorough"
+    assert k._config_to_env({"agentic_profile":"exhaustive", **{
+        key: val for key, val in loaded.items() if key != "agentic_profile"
+    }})["JACK_AGENTIC_PROFILE"] == "thorough"
