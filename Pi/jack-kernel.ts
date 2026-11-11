@@ -263,6 +263,52 @@ export default async function (pi) {
 
   await syncProvider();
 
+  // Pi extensions may replace the built-in "edit" tool under the same name.
+  // Determine the active executor's origin from Pi-owned registration metadata,
+  // not from model-supplied names, arguments, or tool-result prose.
+  let editHiddenByJack = false;
+  function editToolOrigin() {
+    if (typeof pi.getAllTools !== "function") return "unknown";
+    try {
+      const registered = pi.getAllTools();
+      if (!Array.isArray(registered)) return "unknown";
+      const tool = registered.find((entry) => entry?.name === "edit");
+      if (!tool) return "absent";
+      const source = tool.sourceInfo?.source;
+      const sourcePath = tool.sourceInfo?.path;
+      if (source === "builtin") return "builtin";
+      if (typeof source === "string" && source && source !== "builtin" && source !== "sdk" &&
+          typeof sourcePath === "string" && sourcePath) return "custom";
+    } catch {
+      // Unknown origin is not evidence that an override is installed.
+    }
+    return "unknown";
+  }
+
+  function reconcileEditToolAvailability(ctx) {
+    const provider = String(ctx?.model?.provider || "");
+    if (!provider || typeof pi.getActiveTools !== "function" ||
+        typeof pi.setActiveTools !== "function") return;
+    const active = pi.getActiveTools();
+    if (!Array.isArray(active)) return;
+    const origin = editToolOrigin();
+    if (provider === PROVIDER_NAME) {
+      if (origin !== "custom" && active.includes("edit")) {
+        pi.setActiveTools(active.filter((name) => name !== "edit"));
+        editHiddenByJack = true;
+      } else if (origin === "custom" && editHiddenByJack) {
+        if (!active.includes("edit")) pi.setActiveTools([...active, "edit"]);
+        editHiddenByJack = false;
+      }
+    } else if (editHiddenByJack) {
+      // Do not change other providers' tool selection permanently.
+      if (origin !== "absent" && !active.includes("edit")) {
+        pi.setActiveTools([...active, "edit"]);
+      }
+      editHiddenByJack = false;
+    }
+  }
+
   // Live out-of-band host telemetry appears in Pi's existing footer only.
   // It does not enter the conversation, add a model request or open a window.
   // Polling errors have no effect on model generation or execution.
@@ -508,6 +554,17 @@ export default async function (pi) {
     }
 
     const toolName = String(event?.toolName || "");
+    if (toolName === "edit" && editToolOrigin() !== "custom") {
+      // A stale model tool declaration can still generate a call after edit was
+      // removed from the active loadout. Block only the built-in/unknown editor;
+      // Pi-registered extension overrides retain the normal path admission.
+      return {
+        block: true,
+        reason: "Pi's built-in edit tool is disabled by Jack. Use a different " +
+          "authorized method (read plus write, a patch tool, or a script), then " +
+          "read back and verify the change. Do not retry this edit tool.",
+      };
+    }
     const commandDialect = COMMAND_DIALECT_BY_TOOL.get(toolName) || null;
     if (!STRUCTURED_PATH_TOOLS.has(toolName) && !commandDialect) {
       return undefined;
@@ -576,10 +633,11 @@ export default async function (pi) {
   });
 
   let refreshedThisTurn = false;
-  pi.on("before_agent_start", async () => {
+  pi.on("before_agent_start", async (_event, ctx) => {
+    reconcileEditToolAvailability(ctx);
     refreshedThisTurn = false;
     await syncProvider();
-    });
+  });
   pi.on("message_end", async (event) => {
     if (event?.message?.role === "assistant" && !refreshedThisTurn) {
       refreshedThisTurn = true;
