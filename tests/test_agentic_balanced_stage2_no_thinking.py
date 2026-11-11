@@ -202,6 +202,19 @@ def test_agentic_submenu_selects_and_persists_profile(monkeypatch, tmp_path, cho
     assert cfg["reasoning_level"] == "Local Agentic (Preserve Thinking)"
     assert cfg["agentic_profile"] == profile
     assert k._config_to_env(cfg)["JACK_AGENTIC_PROFILE"] == profile
+    # The menu must accurately describe the runtime's profile-owned extensions.
+    from io import StringIO
+    from contextlib import redirect_stdout
+    output = StringIO()
+    with redirect_stdout(output):
+        answers_again = iter(["6", choice])
+        monkeypatch.setattr(k, "_cli_input", lambda *_a, **_kw: next(answers_again))
+        k._run_transactional_editor(k._edit_reasoning, dict(k.CLI_DEFAULTS))
+    menu = output.getvalue()
+    assert "Stage 2 ON + review ON" in menu
+    assert "Stage 2 ON, no Stage 2 extension" not in menu
+    assert "Stage 2 OFF, no extensions (Default)" in menu
+    assert k.KernelConfig(agentic_profile=cfg["agentic_profile"]).agentic_stage2_final_review is (profile == "thorough")
 
 
 def test_agentic_submenu_escape_rolls_back(monkeypatch, tmp_path):
