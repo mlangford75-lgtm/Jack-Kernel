@@ -276,8 +276,9 @@ export default async function (pi) {
       if (!tool) return "absent";
       const source = tool.sourceInfo?.source;
       const sourcePath = tool.sourceInfo?.path;
-      if (source === "builtin" && sourcePath === "builtin:edit") return "builtin";
-      if (typeof source === "string" && source && source !== "builtin") return "custom";
+      if (source === "builtin") return "builtin";
+      if (typeof source === "string" && source && source !== "builtin" && source !== "sdk" &&
+          typeof sourcePath === "string" && sourcePath) return "custom";
     } catch {
       // Unknown origin is not evidence that an override is installed.
     }
