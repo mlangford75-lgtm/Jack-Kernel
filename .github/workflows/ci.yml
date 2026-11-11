@@ -97,3 +97,4 @@ jobs:
           node tests/pi_control_bridge_multi_endpoint_harness.mjs
           node tests/pi_provider_runtime_binding_harness.mjs
           node tests/pi_phase4_executor_admission_harness.mjs
+          node tests/pi_edit_origin_policy_harness.mjs
