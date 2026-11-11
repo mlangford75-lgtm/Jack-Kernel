@@ -18,12 +18,12 @@ STAGE1_EXTENSION = (
     "or poor quality. Make changes, if necessary, to ensure alignment with "
     "instructions and user request before responding"
 )
-STAGE2_EXTENSION = "Wait, follow the Prime Directive"
+STAGE2_EXTENSION = "Wait, re-verify that the Prime Directive was followed and then output the correct response"
 
 MATRIX = [
     ("flash", False, False, False, False),
     ("balanced", True, False, False, False),
-    ("thorough", True, True, False, False),
+    ("thorough", True, True, True, True),
     ("exhaustive", True, True, True, True),
 ]
 
