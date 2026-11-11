@@ -324,8 +324,8 @@ class KernelConfig:
 
     @property
     def agentic_stage2_final_review(self) -> bool:
-        # One extra Stage-2 memory review only in Exhaustive.
-        return self.agentic_profile == "exhaustive"
+        # One Stage-2 verification continuation in Thorough and Exhaustive only.
+        return self.agentic_profile in {"thorough", "exhaustive"}
 
     # Human-configurable Qwen preserve-thinking policy. Calling agents cannot
     # override this value; it is owned by the Jack Kernel runtime.
@@ -869,9 +869,10 @@ if AGENTIC_MODE and CFG.agentic_profile not in {"flash", "balanced", "thorough",
 AGENTIC_BALANCED_MODE = AGENTIC_MODE and CFG.agentic_profile == "balanced"
 AGENTIC_FLASH_MODE = AGENTIC_MODE and CFG.agentic_profile == "flash"
 AGENTIC_EXHAUSTIVE_MODE = AGENTIC_MODE and CFG.agentic_profile == "exhaustive"
-# Balanced and Thorough generate Stage-2 memory without new native thinking,
-# while still reading Stage-1's preserved reasoning as distillation source.
-AGENTIC_THINKING_OFF_MEMORY_MODE = AGENTIC_MODE and CFG.agentic_profile in {"balanced", "thorough"}
+AGENTIC_THOROUGH_MODE = AGENTIC_MODE and CFG.agentic_profile == "thorough"
+# Balanced generates Stage-2 memory without new native thinking, but still reads
+# Stage-1's preserved reasoning as source material. Thorough and Exhaustive think.
+AGENTIC_THINKING_OFF_MEMORY_MODE = AGENTIC_BALANCED_MODE
 ULTRA_MODE = ACTIVE_REASONING_PROFILE["mode"] == "ultra"
 DEEP_REASONING_MODE = ACTIVE_REASONING_PROFILE["mode"] == "deep_reasoning"
 CODE_DEBUGGING_MODE = ACTIVE_REASONING_PROFILE["mode"] == "code_debugging"
@@ -1349,7 +1350,7 @@ You have no tools in this stage. Synthesis may receive the caller's tools and is
 Output only the plan."""
 
 AGENTIC_36_STAGE2_PROMPT = _AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
-AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER = "Wait, follow the Prime Directive"
+AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER = "Wait, re-verify that the Prime Directive was followed and then output the correct response"
 
 ULTRA_STAGE2_ANTITHESIS_PROMPT = """You are Antithesis.
 
@@ -2469,7 +2470,7 @@ STAGES: Dict[str, StageProfile] = {
     "extended_reflection": StageProfile(
         "Agentic native pass 2" if AGENTIC_MODE else "Deep Research Antithesis pass 2",
         AGENTIC_36_STAGE2_PROMPT if AGENTIC_MODE else ULTRA_STAGE2_ANTITHESIS_PROMPT,
-        not AGENTIC_MODE or AGENTIC_EXHAUSTIVE_MODE,
+        not AGENTIC_MODE or AGENTIC_THOROUGH_MODE or AGENTIC_EXHAUSTIVE_MODE,
         ACTIVE_REASONING_PROFILE.get("pass2", "xhigh"),
         False,
         0.50 if AGENTIC_MODE else 0.70,
@@ -13491,7 +13492,7 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
         print("Agentic profile (two-stage lifecycle in all profiles)")
         print("  1) Flash      - Stage 1 OFF, Stage 2 OFF, no extensions")
         print("  2) Balanced   - Stage 1 ON,  Stage 2 OFF + review OFF (Default)")
-        print("  3) Thorough   - Stage 1 ON + review ON, Stage 2 OFF + review OFF")
+        print("  3) Thorough   - Stage 1 ON + review ON, Stage 2 ON + review ON")
         print("  4) Exhaustive - Stage 1 ON + review ON, Stage 2 ON + review ON")
         print()
         # Choosing Agentic afresh defaults to Balanced, irrespective of a
