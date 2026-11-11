@@ -13493,8 +13493,8 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
         print()
         print("Agentic profile (two-stage lifecycle in all profiles)")
         print("  1) Flash      - Stage 1 OFF, Stage 2 OFF, no extensions")
-        print("  2) Balanced   - Stage 1 ON,  Stage 2 OFF + review OFF (Default)")
-        print("  3) Thorough   - Stage 1 ON + review ON, Stage 2 ON, no Stage 2 extension")
+        print("  2) Balanced   - Stage 1 ON,  Stage 2 OFF, no extensions (Default)")
+        print("  3) Thorough   - Stage 1 ON + review ON, Stage 2 ON + review ON")
         print()
         # Choosing Agentic afresh defaults to Balanced, irrespective of a
         # previously saved optional profile. Escape rolls back this editor.
