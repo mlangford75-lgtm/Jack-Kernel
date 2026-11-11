@@ -1,4 +1,4 @@
-"""Three Agentic profiles: only Thorough executes the Stage-2 verification extension.
+"""Three Agentic profiles: Stage 2 is single-pass, including Thorough.
 
 Check actual backend payloads across streaming/cache layouts, preserving the
 exact current-turn U/R1/A1 and tools-off authority.
@@ -80,25 +80,19 @@ def test_stage2_review_scheduling_by_profile(monkeypatch, tmp_path, profile, thi
                     history, "", "extended_reflection", {}, tools=None, tool_choice=None, append=False)
         finally:
             await backend._client.aclose()
-        assert json.dumps(history, sort_keys=True) == original or profile == "thorough"
+        assert json.dumps(history, sort_keys=True) == original
         return answer
 
     answer = asyncio.run(run())
     assert answer["choices"][0]["message"]["content"] == "Working knowledge"
-    assert len(captured) == (2 if profile == "thorough" else 1)
+    assert len(captured) == 1
     payload = captured[0]
     assert payload["chat_template_kwargs"]["enable_thinking"] is thinking
     assert "tools" not in payload and "tool_choice" not in payload
     all_messages = json.dumps(payload["messages"])
     assert "Unrelated historical request" not in all_messages
     assert "Clock updated and read back." in all_messages
-    assert k.CFG.agentic_stage2_final_review is (profile == "thorough")
-    assert k.AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER == "Wait, review the working knowledge for consequential omissions or inaccuracies. The objective is to preserve consequential working knowledge accurately, not independently solve the user's task again. Re-state the brief description of the current task and how it relates to the authenticated user request."
-    if profile == "thorough":
-        review = captured[1]
-        assert review["messages"][-1]["content"] == k.AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER
-        assert review["messages"][-2]["content"] == "Working knowledge"
-        assert review["chat_template_kwargs"]["enable_thinking"] is True
-        assert "tools" not in review
-    else:
-        assert all(k.AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER not in str(m.get("content", "")) for m in payload["messages"])
+    assert not hasattr(k.CFG, "agentic_stage2_final_review")
+    assert "Remove unnecessary conversational language" in all_messages
+    assert not any("review the working knowledge for consequential omissions" in
+                   str(msg.get("content", "")) for msg in payload["messages"])
