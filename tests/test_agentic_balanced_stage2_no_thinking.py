@@ -119,14 +119,14 @@ def test_balanced_preserves_stage1_reasoning_in_stage2_request(monkeypatch, tmp_
 
 
 @pytest.mark.parametrize("stream", [False, True])
-def test_thorough_uses_thinking_off_memory_but_preserves_stage1_reasoning(monkeypatch, tmp_path, stream):
+def test_thorough_uses_thinking_on_memory_and_preserves_stage1_reasoning(monkeypatch, tmp_path, stream):
     k = load(monkeypatch, tmp_path, profile="thorough")
     assert k.STAGES["extended_initial"].thinking is True
-    assert k.STAGES["extended_reflection"].thinking is False
+    assert k.STAGES["extended_reflection"].thinking is True
     p2 = backend_payload(k, stage="extended_reflection", stream=stream)
-    assert p2["chat_template_kwargs"]["enable_thinking"] is False
+    assert p2["chat_template_kwargs"]["enable_thinking"] is True
     assert p2["chat_template_kwargs"]["preserve_thinking"] is True
-    assert p2["reasoning_effort"] == "none"
+    assert p2["reasoning_effort"] == "xhigh"
     assert p2["messages"][-2]["reasoning_content"] == "R1: inspect source then change hand color to gold."
 
 
@@ -152,7 +152,7 @@ def test_invalid_experimental_profile_fails_closed(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("profile,initial_thinking,reflection_thinking", [
     ("exhaustive", True, True),
-    ("thorough", True, False),
+    ("thorough", True, True),
     ("balanced", True, False),
     ("flash", False, False),
 ])

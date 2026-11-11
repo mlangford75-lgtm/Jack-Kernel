@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def load(monkeypatch, tmp_path, cache):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
-    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "balanced")
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "thorough")
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
     monkeypatch.setenv("JACK_BACKEND_MODEL", "test-model")
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT", "1" if cache else "0")
@@ -118,7 +118,7 @@ def test_review_preserves_exact_original_source_prefix_and_evidence(monkeypatch,
     assert len(reviewed_messages) == len(first_messages) + 2
     assert reviewed_messages[-2] == {"role": "assistant", "content": "Draft memory"}
     assert reviewed_messages[-1] == {"role": "user", "content": k.AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER}
-    assert reviewed_messages[-1]["content"] == "Wait, follow the Prime Directive"
+    assert reviewed_messages[-1]["content"] == "Wait, re-verify that the Prime Directive was followed and then output the correct response"
     assert "Remove unnecessary conversational language" in json.dumps(first_messages)
 
     serialized = json.dumps(first_messages)

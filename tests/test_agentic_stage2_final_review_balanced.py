@@ -1,4 +1,4 @@
-"""Exhaustive Stage-2 review: one additional memory-only continuation.
+"""Thorough/Exhaustive Stage-2 review: one additional memory-only continuation.
 
 Tests inspect outbound backend payloads, not merely the model's willingness to comply.
 """
@@ -113,8 +113,8 @@ def test_exhaustive_review_keeps_current_turn_and_tool_isolation(monkeypatch, tm
         assert "Analog created and read back as empty." in serialized
     second = captured[1]["messages"]
     assert second[-2]["content"] == memory_for(1)
-    assert k.AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER == "Wait, follow the Prime Directive"
-    assert second[-1]["content"] == "Wait, follow the Prime Directive"
+    assert k.AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER == "Wait, re-verify that the Prime Directive was followed and then output the correct response"
+    assert second[-1]["content"] == "Wait, re-verify that the Prime Directive was followed and then output the correct response"
     assert "Remove unnecessary conversational language" in captured[0]["messages"][0 if not cache else -1]["content"]
     assert second[-1]["content"].count(k.AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER) == 1
     if not cache:
