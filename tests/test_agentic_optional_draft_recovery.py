@@ -10,9 +10,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def load(monkeypatch, tmp_path, *, stage2=False):
+def load(monkeypatch, tmp_path):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
-    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "exhaustive" if stage2 else "thorough")
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "thorough")
     monkeypatch.setenv("JACK_BACKEND_MODEL", "test-model")
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
     monkeypatch.setenv("JACK_LOOP_DETECTOR", "0")
@@ -31,10 +31,9 @@ def response(text=None):
              "finish_reason": "stop"}], "usage": {}}
 
 
-@pytest.mark.parametrize("stage2", [False, True])
-def test_optional_empty_followup_preserves_completed_draft(monkeypatch, tmp_path, stage2):
+def test_optional_stage1_empty_followup_preserves_completed_draft(monkeypatch, tmp_path):
     async def run():
-        k = load(monkeypatch, tmp_path, stage2=stage2)
+        k = load(monkeypatch, tmp_path)
         class Backend:
             def __init__(self):
                 self.calls = 0
@@ -44,11 +43,7 @@ def test_optional_empty_followup_preserves_completed_draft(monkeypatch, tmp_path
         b = Backend()
         kernel = k.JackQwenKernel(b, k.CFG)
         history = [{"role": "user", "content": "Check the clock"}]
-        stage = "extended_reflection" if stage2 else "extended_initial"
-        if stage2:
-            history.append({"role": "assistant", "content": "Frozen answer",
-                            "_jack_extended_candidate_response": True,
-                            "_jack_stage_key": "extended_initial"})
+        stage = "extended_initial"
         packets = [p async for p in kernel._run_stage_streamed(
             history, "", stage, {}, append=False)]
         results = [p["data"] for p in packets if p["kind"] == "result"]

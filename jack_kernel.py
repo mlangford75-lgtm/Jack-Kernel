@@ -319,13 +319,8 @@ class KernelConfig:
 
     @property
     def agentic_final_review(self) -> bool:
-        # A Stage-1 review generation only in Thorough and Exhaustive.
-        return self.agentic_profile in {"thorough", "exhaustive"}
-
-    @property
-    def agentic_stage2_final_review(self) -> bool:
-        # One Stage-2 verification continuation in Thorough and Exhaustive only.
-        return self.agentic_profile in {"thorough", "exhaustive"}
+        # One Stage-1 verification continuation in Thorough only.
+        return self.agentic_profile == "thorough"
 
     # Human-configurable Qwen preserve-thinking policy. Calling agents cannot
     # override this value; it is owned by the Jack Kernel runtime.
@@ -864,14 +859,13 @@ if REASONING_PROFILES[_reasoning_level].get("disabled"):
     raise RuntimeError("JACK_REASONING_LEVEL=low is disabled in Jack Kernel v0.1.1. Choose off, medium, x-high, deep-research, Local Agentic (Preserve Thinking), code-debugging, or code-debugging-deep.")
 ACTIVE_REASONING_PROFILE = REASONING_PROFILES[_reasoning_level]
 AGENTIC_MODE = ACTIVE_REASONING_PROFILE["mode"] == "agentic"
-if AGENTIC_MODE and CFG.agentic_profile not in {"flash", "balanced", "thorough", "exhaustive"}:
-    raise RuntimeError("JACK_AGENTIC_PROFILE must be flash, balanced, thorough, or exhaustive")
+if AGENTIC_MODE and CFG.agentic_profile not in {"flash", "balanced", "thorough"}:
+    raise RuntimeError("JACK_AGENTIC_PROFILE must be flash, balanced, or thorough")
 AGENTIC_BALANCED_MODE = AGENTIC_MODE and CFG.agentic_profile == "balanced"
 AGENTIC_FLASH_MODE = AGENTIC_MODE and CFG.agentic_profile == "flash"
-AGENTIC_EXHAUSTIVE_MODE = AGENTIC_MODE and CFG.agentic_profile == "exhaustive"
 AGENTIC_THOROUGH_MODE = AGENTIC_MODE and CFG.agentic_profile == "thorough"
 # Balanced generates Stage-2 memory without new native thinking, but still reads
-# Stage-1's preserved reasoning as source material. Thorough and Exhaustive think.
+# Stage-1's preserved reasoning as source material. Thorough Stage 2 thinks.
 AGENTIC_THINKING_OFF_MEMORY_MODE = AGENTIC_BALANCED_MODE
 ULTRA_MODE = ACTIVE_REASONING_PROFILE["mode"] == "ultra"
 DEEP_REASONING_MODE = ACTIVE_REASONING_PROFILE["mode"] == "deep_reasoning"
@@ -1077,46 +1071,6 @@ AGENTIC_CACHE_APPEND_EXPERIMENT = (
 AGENTIC_STAGE2_RETENTION_TEST = "isolate-retain"
 
 
-# Internal host bookkeeping still isolates Stage 2 and protects frozen A1.
-# Stage 2's continuation repeats the complete Stage 2 directive verbatim;
-# the trigger itself is assigned after the directive is defined.
-
-
-def _agentic_stage2_review_is_pending(history: List[Dict[str, Any]]) -> bool:
-    target = active_response_target(history)
-    if target is None:
-        return False
-    return any(
-        isinstance(item, dict) and item.get("_jack_internal_agentic_stage2_review_trigger") is True
-        for item in history[int(target["history_index"]) + 1:]
-    )
-
-
-def _agentic_begin_stage2_review(history: List[Dict[str, Any]], data: Dict[str, Any]) -> None:
-    """Stage-2-only continuation with no change to the frozen A1 or tool state."""
-    choice = (data.get("choices") or [{}])[0] or {}
-    if choice.get("finish_reason") != "stop":
-        raise HTTPException(status_code=502, detail="Stage 2 review draft did not finish successfully")
-    message = choice.get("message") or {}
-    if message.get("tool_calls"):
-        raise HTTPException(status_code=502, detail="Stage 2 review draft attempted tools")
-    draft = _content_to_text(message.get("content"))
-    if not draft.strip():
-        raise HTTPException(status_code=502, detail="Stage 2 review draft has no memory")
-    if _agentic_stage2_review_is_pending(history):
-        raise HTTPException(status_code=409, detail="Stage 2 review was already started")
-    history.append({
-        "role": "assistant", "content": draft,
-        "_jack_internal_agentic_stage2_review_draft": True,
-        "_jack_stage_key": "extended_reflection",
-    })
-    history.append({
-        "role": "user", "content": AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER,
-        "_jack_internal_agentic_stage2_review_trigger": True,
-        "_jack_stage_key": "extended_reflection",
-    })
-
-
 def _agentic_stage2_test_history(
     messages: List[Dict[str, Any]], profile: "StageProfile"
 ) -> List[Dict[str, Any]]:
@@ -1147,21 +1101,6 @@ def _agentic_stage2_test_history(
     if frozen.get("role") != "assistant" or not _content_to_text(frozen.get("content")).strip():
         raise HTTPException(status_code=409, detail="Isolated Stage 2 missing exact frozen Stage-1 answer")
     recovery = view[frozen_index + 1:]
-    # Exactly one host-owned Stage-2 review draft and cue may follow A1.
-    # Neither can replace the original user turn or alter A1's authority.
-    review_suffix: List[Dict[str, Any]] = []
-    if len(recovery) >= 2 and isinstance(recovery[-1], dict) and recovery[-1].get("_jack_internal_agentic_stage2_review_trigger") is True:
-        draft, trigger = recovery[-2:]
-        if not (
-            isinstance(draft, dict) and draft.get("role") == "assistant"
-            and draft.get("_jack_internal_agentic_stage2_review_draft") is True
-            and isinstance(draft.get("content"), str) and draft["content"].strip()
-            and trigger.get("role") == "user"
-            and trigger.get("content") == AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER
-        ):
-            raise HTTPException(status_code=409, detail="Invalid Stage 2 review suffix")
-        review_suffix = [dict(draft), dict(trigger)]
-        recovery = recovery[:-2]
     if len(recovery) % 2:
         raise HTTPException(status_code=409, detail="Isolated Stage 2 has an invalid recovery suffix")
     for idx in range(0, len(recovery), 2):
@@ -1198,36 +1137,7 @@ def _agentic_stage2_test_history(
     # the host's corrective notice, not the proposed tool or its reasoning.
     for idx in range(1, len(recovery), 2):
         projected.append(dict(recovery[idx]))
-    projected.extend(review_suffix)
     return projected
-
-
-def _agentic_stage2_restore_review_source_prefix(
-    stage_messages: List[Dict[str, Any]], history: List[Dict[str, Any]],
-    profile: "StageProfile", cache_append: bool,
-) -> None:
-    """Restore the first memory pass's exact source prefix for Stage-2 review.
-
-    The review sees the same original request, accumulated Stage-1 cognition,
-    frozen answer, and authenticated tool note, followed by its memory draft.
-    Reusing the identical prefix preserves cache affinity without mutating A1
-    or the host-owned canonical history.
-    """
-    if not (AGENTIC_MODE and profile.name == "Agentic native pass 2"
-            and _agentic_stage2_review_is_pending(history)):
-        return
-    if (len(stage_messages) < 4 or stage_messages[-2].get("role") != "assistant"
-            or stage_messages[-1].get("role") != "user"):
-        raise HTTPException(status_code=409, detail="Stage 2 review lacks its memory draft and cue")
-    if cache_append:
-        evidence_note = _agentic_stage2_host_tool_evidence_note(history)
-        original_source = {
-            "role": "user",
-            "content": (evidence_note + "\n\n" if evidence_note else "") + AGENTIC_36_STAGE2_PROMPT,
-        }
-    else:
-        original_source = _stage_generation_trigger(profile, history)
-    stage_messages.insert(-2, original_source)
 
 
 # Phase-3G recovery: model-visible U/M/A forensic labels are OFF by default.
@@ -1350,7 +1260,6 @@ You have no tools in this stage. Synthesis may receive the caller's tools and is
 Output only the plan."""
 
 AGENTIC_36_STAGE2_PROMPT = _AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
-AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER = "Wait, re-verify that the Prime Directive was followed and then output the correct response"
 
 ULTRA_STAGE2_ANTITHESIS_PROMPT = """You are Antithesis.
 
@@ -2470,7 +2379,7 @@ STAGES: Dict[str, StageProfile] = {
     "extended_reflection": StageProfile(
         "Agentic native pass 2" if AGENTIC_MODE else "Deep Research Antithesis pass 2",
         AGENTIC_36_STAGE2_PROMPT if AGENTIC_MODE else ULTRA_STAGE2_ANTITHESIS_PROMPT,
-        not AGENTIC_MODE or AGENTIC_THOROUGH_MODE or AGENTIC_EXHAUSTIVE_MODE,
+        not AGENTIC_MODE or AGENTIC_THOROUGH_MODE,
         ACTIVE_REASONING_PROFILE.get("pass2", "xhigh"),
         False,
         0.50 if AGENTIC_MODE else 0.70,
@@ -4304,7 +4213,7 @@ def self_adversarial_stage_reasoning_trace(
     return "\n\n".join(parts).strip()
 
 
-# One Stage-1 continuation, in Thorough and Exhaustive only. Exact user wording.
+# One Stage-1 continuation, in Thorough only. Exact user wording.
 AGENTIC_STAGE1_VERIFICATION_PROMPT = "Wait, more verification is needed. Test the reasoning for errors, mistakes, or poor quality. Make changes, if necessary, to ensure alignment with instructions and user request before responding"
 AGENTIC_FINAL_REVIEW_PROMPT = AGENTIC_STAGE1_VERIFICATION_PROMPT
 AGENTIC_FINAL_REVIEW_TRIGGER = AGENTIC_FINAL_REVIEW_PROMPT
@@ -6499,28 +6408,15 @@ class OpenAICompatibleBackend:
             [{"role": "system", "content": stage_system}] if stage_system else []
         ) + prepared_messages
         if cache_append:
-            # Reassert Stage-2 authority in the experimental review suffix.
-            # Never append a separate user message after the internal review cue:
-            # it would cause the model to treat the cue as an earlier task.
-            if _agentic_stage2_review_is_pending(messages):
-                if not stage_messages or stage_messages[-1].get("role") != "user":
-                    raise HTTPException(status_code=409, detail="Stage 2 review missing its continuation cue")
-                stage_messages[-1] = dict(stage_messages[-1])
-                stage_messages[-1]["content"] = AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER
-            else:
-                evidence_note = _agentic_stage2_host_tool_evidence_note(messages)
-                stage_messages.append({"role": "user", "content": (evidence_note + "\n\n" if evidence_note else "") + AGENTIC_36_STAGE2_PROMPT})
-                LOG.info("AGENTIC CACHE EXPERIMENT: appended Stage-2 directive; only U/R1/A1 projected; no tool schemas")
+            evidence_note = _agentic_stage2_host_tool_evidence_note(messages)
+            stage_messages.append({"role": "user", "content": (evidence_note + "\n\n" if evidence_note else "") + AGENTIC_36_STAGE2_PROMPT})
+            LOG.info("AGENTIC CACHE EXPERIMENT: appended Stage-2 directive; only U/R1/A1 projected; no tool schemas")
         elif (
             prepared_messages
             and prepared_messages[-1].get("role") == "assistant"
             and _stage_requires_user_continuation(profile)
         ):
             stage_messages.append(_stage_generation_trigger(profile, messages))
-
-        _agentic_stage2_restore_review_source_prefix(
-            stage_messages, messages, profile, cache_append,
-        )
 
         sampling = self._sampling_for_profile(profile)
         payload: Dict[str, Any] = {
@@ -6624,28 +6520,15 @@ class OpenAICompatibleBackend:
             [{"role": "system", "content": stage_system}] if stage_system else []
         ) + prepared_messages
         if cache_append:
-            # Reassert Stage-2 authority in the experimental review suffix.
-            # Never append a separate user message after the internal review cue:
-            # it would cause the model to treat the cue as an earlier task.
-            if _agentic_stage2_review_is_pending(messages):
-                if not stage_messages or stage_messages[-1].get("role") != "user":
-                    raise HTTPException(status_code=409, detail="Stage 2 review missing its continuation cue")
-                stage_messages[-1] = dict(stage_messages[-1])
-                stage_messages[-1]["content"] = AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER
-            else:
-                evidence_note = _agentic_stage2_host_tool_evidence_note(messages)
-                stage_messages.append({"role": "user", "content": (evidence_note + "\n\n" if evidence_note else "") + AGENTIC_36_STAGE2_PROMPT})
-                LOG.info("AGENTIC CACHE EXPERIMENT: appended Stage-2 directive; only U/R1/A1 projected; no tool schemas")
+            evidence_note = _agentic_stage2_host_tool_evidence_note(messages)
+            stage_messages.append({"role": "user", "content": (evidence_note + "\n\n" if evidence_note else "") + AGENTIC_36_STAGE2_PROMPT})
+            LOG.info("AGENTIC CACHE EXPERIMENT: appended Stage-2 directive; only U/R1/A1 projected; no tool schemas")
         elif (
             prepared_messages
             and prepared_messages[-1].get("role") == "assistant"
             and _stage_requires_user_continuation(profile)
         ):
             stage_messages.append(_stage_generation_trigger(profile, messages))
-
-        _agentic_stage2_restore_review_source_prefix(
-            stage_messages, messages, profile, cache_append,
-        )
 
         sampling = self._sampling_for_profile(profile)
         payload: Dict[str, Any] = {
@@ -7234,13 +7117,6 @@ class JackQwenKernel:
                 msg["_jack_phase4_withheld_tool_call_ids"] = withheld_ids
 
         if not msg.get("tool_calls"):
-            if AGENTIC_MODE and self.cfg.agentic_stage2_final_review and stage_key == "extended_reflection" and not _agentic_stage2_review_is_pending(history):
-                _agentic_begin_stage2_review(history, data)
-                return await self._run_stage(
-                    history, secondary_system, stage_key, usage,
-                    tools=None, tool_choice=None, append=append,
-                    same_stage_resume=True,
-                )
             if AGENTIC_MODE and self.cfg.agentic_final_review and stage_key == "extended_initial" and not _agentic_final_review_is_pending(history):
                 _agentic_begin_final_review(history, data)
                 return await self._run_stage(
@@ -7982,32 +7858,6 @@ class JackQwenKernel:
                     if isinstance(item, dict)
                 ) == optional_draft_tool_count
             )
-        if (
-            AGENTIC_MODE and self.cfg.agentic_stage2_final_review
-            and stage_key == "extended_reflection"
-            and not message.get("tool_calls")
-            and not _agentic_stage2_review_is_pending(history)
-        ):
-            _agentic_begin_stage2_review(history, data)
-            yield {"kind": "reasoning", "text": "\n[AGENTIC STAGE 2 DIRECTIVE REPEAT — THINKING PROFILE UNCHANGED]\n"}
-            try:
-                async with contextlib.aclosing(self._run_stage_streamed(
-                    history, secondary_system, stage_key, usage,
-                    tools=None, tool_choice=None, append=append,
-                    same_stage_resume=True,
-                )) as review_packets:
-                    async for packet in review_packets:
-                        yield packet
-            except HTTPException as exc:
-                if not recover_optional_empty_stream(exc):
-                    raise
-                LOG.warning(
-                    "Optional Agentic continuation returned two empty streams; "
-                    "reusing completed same-turn draft without replaying tools: %s", exc.detail
-                )
-                yield {"kind": "reasoning", "text": "\n[JACK OPTIONAL REVIEW EMPTY — LAST COMPLETED DRAFT PRESERVED]\n"}
-                yield {"kind": "result", "data": data}
-            return
         if (
             AGENTIC_MODE and self.cfg.agentic_final_review
             and stage_key == "extended_initial"
@@ -13072,6 +12922,9 @@ def _load_cli_config() -> Dict[str, Any]:
             for key in cfg:
                 if key in loaded:
                     cfg[key] = loaded[key]
+            # Existing saved Exhaustive selection keeps native-thinking behavior.
+            if str(cfg.get("agentic_profile", "")).strip().lower() == "exhaustive":
+                cfg["agentic_profile"] = "thorough"
             cfg["backend_profile"] = _normalize_backend_profile(str(cfg.get("backend_profile", "lmstudio")))
             legacy_reasoning = str(cfg.get("reasoning_level", "x-high")).strip().lower()
             migrated_reasoning = _REASONING_LEVEL_ALIASES.get(legacy_reasoning, legacy_reasoning)
@@ -13492,16 +13345,14 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
         print("Agentic profile (two-stage lifecycle in all profiles)")
         print("  1) Flash      - Stage 1 OFF, Stage 2 OFF, no extensions")
         print("  2) Balanced   - Stage 1 ON,  Stage 2 OFF + review OFF (Default)")
-        print("  3) Thorough   - Stage 1 ON + review ON, Stage 2 ON + review ON")
-        print("  4) Exhaustive - Stage 1 ON + review ON, Stage 2 ON + review ON")
+        print("  3) Thorough   - Stage 1 ON + review ON, Stage 2 ON, no Stage 2 extension")
         print()
         # Choosing Agentic afresh defaults to Balanced, irrespective of a
         # previously saved optional profile. Escape rolls back this editor.
-        agentic_choice = _cli_input("Select Agentic profile [1-4] [2]: ").strip().lower() or "2"
+        agentic_choice = _cli_input("Select Agentic profile [1-3] [2]: ").strip().lower() or "2"
         selected_profile = {"1": "flash", "flash": "flash",
                             "2": "balanced", "balanced": "balanced",
-                            "3": "thorough", "thorough": "thorough",
-                            "4": "exhaustive", "exhaustive": "exhaustive"}.get(agentic_choice)
+                            "3": "thorough", "thorough": "thorough"}.get(agentic_choice)
         if selected_profile is None:
             print("Invalid Agentic profile; keeping current reasoning level.")
             return
@@ -13901,7 +13752,7 @@ def _config_to_env(cfg: Dict[str, Any]) -> Dict[str, str]:
         "JACK_BACKEND_EXTRA_HEADERS": json.dumps(cfg.get("backend_extra_headers") or {}, ensure_ascii=False),
         "JACK_VIRTUAL_MODEL": cfg["virtual_model"],
         "JACK_REASONING_LEVEL": cfg["reasoning_level"],
-        "JACK_AGENTIC_PROFILE": cfg.get("agentic_profile", "balanced"),
+        "JACK_AGENTIC_PROFILE": ("thorough" if str(cfg.get("agentic_profile", "balanced")).strip().lower() == "exhaustive" else cfg.get("agentic_profile", "balanced")),
         "JACK_PRESERVE_THINKING": "1" if cfg.get("preserve_thinking", True) else "0",
         "JACK_BACKEND_TIMEOUT_SECONDS": cfg["backend_timeout_seconds"],
         "JACK_REASONING_BUDGET_TOKENS": cfg.get("reasoning_budget_tokens", 100000),

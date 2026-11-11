@@ -1,4 +1,4 @@
-"""Stage-2 review must preserve source evidence and cached prefix, not re-digest it."""
+"""Single Stage-2 memory generation preserves source evidence in both cache layouts."""
 
 import asyncio
 import importlib.util
@@ -19,7 +19,7 @@ def load(monkeypatch, tmp_path, cache):
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
     monkeypatch.setenv("JACK_BACKEND_MODEL", "test-model")
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT", "1" if cache else "0")
-    monkeypatch.setenv("JACK_AGENTIC_STAGE2_FINAL_REVIEW", "1")
+    monkeypatch.setenv("JACK_AGENTIC_STAGE2_FINAL_REVIEW", "1")  # legacy toggle ignored
     monkeypatch.setenv("JACK_FORENSIC_ARCHIVE_MODE", "off")
     monkeypatch.setenv("JACK_AGENTIC_FORENSIC_DB", str(tmp_path / (uuid.uuid4().hex + ".sqlite")))
     name = "jack_review_evidence_" + uuid.uuid4().hex
@@ -95,10 +95,6 @@ async def capture_payloads(k, history, cache, stream):
 
     try:
         await once()
-        k._agentic_begin_stage2_review(history, {
-            "choices": [{"message": {"content": "Draft memory"}, "finish_reason": "stop"}]
-        })
-        await once()
     finally:
         await backend._client.aclose()
     return payloads
@@ -106,19 +102,16 @@ async def capture_payloads(k, history, cache, stream):
 
 @pytest.mark.parametrize("cache", [False, True])
 @pytest.mark.parametrize("stream", [False, True])
-def test_review_preserves_exact_original_source_prefix_and_evidence(monkeypatch, tmp_path, cache, stream):
+def test_stage2_single_pass_preserves_current_turn_evidence(monkeypatch, tmp_path, cache, stream):
     k = load(monkeypatch, tmp_path, cache)
     history = current_turn_history()
     original = json.dumps(history, sort_keys=True)
-    first, review = asyncio.run(capture_payloads(k, history, cache, stream))
+    (first,) = asyncio.run(capture_payloads(k, history, cache, stream))
 
     first_messages = first["messages"]
-    reviewed_messages = review["messages"]
-    assert reviewed_messages[:len(first_messages)] == first_messages
-    assert len(reviewed_messages) == len(first_messages) + 2
-    assert reviewed_messages[-2] == {"role": "assistant", "content": "Draft memory"}
-    assert reviewed_messages[-1] == {"role": "user", "content": k.AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER}
-    assert reviewed_messages[-1]["content"] == "Wait, re-verify that the Prime Directive was followed and then output the correct response"
+    assert not hasattr(k, "AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER")
+    assert not hasattr(k.CFG, "agentic_stage2_final_review")
+    assert "re-verify that the Prime Directive" not in json.dumps(first_messages)
     assert "Remove unnecessary conversational language" in json.dumps(first_messages)
 
     serialized = json.dumps(first_messages)
@@ -127,8 +120,8 @@ def test_review_preserves_exact_original_source_prefix_and_evidence(monkeypatch,
         assert marker in serialized
     assert "Earlier unrelated question" not in serialized
     assert "Earlier answer" not in serialized
-    assert "tools" not in first and "tools" not in review
-    assert "tool_choice" not in first and "tool_choice" not in review
+    assert "tools" not in first
+    assert "tool_choice" not in first
     assert k.active_response_target(history)["content"] == "Plan a family picnic for a rainy afternoon."
-    assert history[-2]["content"] == "Draft memory"
-    assert json.dumps(history[:-2], sort_keys=True) == original
+    assert history[-2]["content"] == "Use an indoor option."
+    assert json.dumps(history, sort_keys=True) == original
