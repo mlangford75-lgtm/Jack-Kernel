@@ -311,20 +311,14 @@ class KernelConfig:
     # Profiles are resolved below into Qwen per-stage native-thinking controls.
     reasoning_level: str = os.getenv("JACK_REASONING_LEVEL", "x-high").strip().lower()
 
-    # Profiles own extension scheduling. Legacy JACK_AGENTIC_FINAL_REVIEW and
-    # JACK_AGENTIC_STAGE2_FINAL_REVIEW environment toggles cannot silently
-    # override the selected profile's thinking and continuation contract.
+    # Profiles own Stage-1 review scheduling. Legacy review environment toggles
+    # cannot override the selected profile's thinking and continuation contract.
     # Balanced remains the default.
     agentic_profile: str = os.getenv("JACK_AGENTIC_PROFILE", "balanced").strip().lower()
 
     @property
     def agentic_final_review(self) -> bool:
         # One Stage-1 verification continuation in Thorough only.
-        return self.agentic_profile == "thorough"
-
-    @property
-    def agentic_stage2_final_review(self) -> bool:
-        # One optional Stage-2 memory verification continuation in Thorough only.
         return self.agentic_profile == "thorough"
 
     # Human-configurable Qwen preserve-thinking policy. Calling agents cannot
@@ -912,7 +906,7 @@ To preserve the consequential working knowledge:
 -Preserve distinctions between intended, attempted, completed, reported, and verified outcomes.
 
 - Preserve concrete outcomes described in the reasoning and final response at their stated certainty.
-- Use host-recorded tool evidence to check execution claims: qualify claims explicitly contradicted by that evidence, including a confirmed absence of tool calls or a reported failure.
+- Do not treat claims of tool execution, completion, or verification as established facts unless supported by the host-recorded tool history. Preserve consequential unverified claims only when useful, explicitly distinguishing them from verified outcomes. Do not infer that an action failed merely because its tool record is missing.
 - Missing path resolution, independent attestation, or detailed result metadata alone does not contradict an observed outcome.
 
 -Do not reconstruct earlier turns, re-solve the task, introduce new explanations, implementation details, conclusions, recommendations, or possibilities.
@@ -1077,45 +1071,6 @@ AGENTIC_STAGE2_RETENTION_TEST = "isolate-retain"
 
 
 # Internal host bookkeeping still isolates Stage 2 and protects frozen A1.
-# Stage 2's continuation repeats the complete Stage 2 directive verbatim;
-# the trigger itself is assigned after the directive is defined.
-
-
-def _agentic_stage2_review_is_pending(history: List[Dict[str, Any]]) -> bool:
-    target = active_response_target(history)
-    if target is None:
-        return False
-    return any(
-        isinstance(item, dict) and item.get("_jack_internal_agentic_stage2_review_trigger") is True
-        for item in history[int(target["history_index"]) + 1:]
-    )
-
-
-def _agentic_begin_stage2_review(history: List[Dict[str, Any]], data: Dict[str, Any]) -> None:
-    """Stage-2-only continuation with no change to the frozen A1 or tool state."""
-    choice = (data.get("choices") or [{}])[0] or {}
-    if choice.get("finish_reason") != "stop":
-        raise HTTPException(status_code=502, detail="Stage 2 review draft did not finish successfully")
-    message = choice.get("message") or {}
-    if message.get("tool_calls"):
-        raise HTTPException(status_code=502, detail="Stage 2 review draft attempted tools")
-    draft = _content_to_text(message.get("content"))
-    if not draft.strip():
-        raise HTTPException(status_code=502, detail="Stage 2 review draft has no memory")
-    if _agentic_stage2_review_is_pending(history):
-        raise HTTPException(status_code=409, detail="Stage 2 review was already started")
-    history.append({
-        "role": "assistant", "content": draft,
-        "_jack_internal_agentic_stage2_review_draft": True,
-        "_jack_stage_key": "extended_reflection",
-    })
-    history.append({
-        "role": "user", "content": AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER,
-        "_jack_internal_agentic_stage2_review_trigger": True,
-        "_jack_stage_key": "extended_reflection",
-    })
-
-
 def _agentic_stage2_test_history(
     messages: List[Dict[str, Any]], profile: "StageProfile"
 ) -> List[Dict[str, Any]]:
@@ -1146,21 +1101,6 @@ def _agentic_stage2_test_history(
     if frozen.get("role") != "assistant" or not _content_to_text(frozen.get("content")).strip():
         raise HTTPException(status_code=409, detail="Isolated Stage 2 missing exact frozen Stage-1 answer")
     recovery = view[frozen_index + 1:]
-    # Exactly one host-owned Stage-2 review draft and cue may follow A1.
-    # Neither can replace the original user turn or alter A1's authority.
-    review_suffix: List[Dict[str, Any]] = []
-    if len(recovery) >= 2 and isinstance(recovery[-1], dict) and recovery[-1].get("_jack_internal_agentic_stage2_review_trigger") is True:
-        draft, trigger = recovery[-2:]
-        if not (
-            isinstance(draft, dict) and draft.get("role") == "assistant"
-            and draft.get("_jack_internal_agentic_stage2_review_draft") is True
-            and isinstance(draft.get("content"), str) and draft["content"].strip()
-            and trigger.get("role") == "user"
-            and trigger.get("content") == AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER
-        ):
-            raise HTTPException(status_code=409, detail="Invalid Stage 2 review suffix")
-        review_suffix = [dict(draft), dict(trigger)]
-        recovery = recovery[:-2]
     if len(recovery) % 2:
         raise HTTPException(status_code=409, detail="Isolated Stage 2 has an invalid recovery suffix")
     for idx in range(0, len(recovery), 2):
@@ -1197,36 +1137,7 @@ def _agentic_stage2_test_history(
     # the host's corrective notice, not the proposed tool or its reasoning.
     for idx in range(1, len(recovery), 2):
         projected.append(dict(recovery[idx]))
-    projected.extend(review_suffix)
     return projected
-
-
-def _agentic_stage2_restore_review_source_prefix(
-    stage_messages: List[Dict[str, Any]], history: List[Dict[str, Any]],
-    profile: "StageProfile", cache_append: bool,
-) -> None:
-    """Restore the first memory pass's exact source prefix for Stage-2 review.
-
-    The review sees the same original request, accumulated Stage-1 cognition,
-    frozen answer, and authenticated tool note, followed by its memory draft.
-    Reusing the identical prefix preserves cache affinity without mutating A1
-    or the host-owned canonical history.
-    """
-    if not (AGENTIC_MODE and profile.name == "Agentic native pass 2"
-            and _agentic_stage2_review_is_pending(history)):
-        return
-    if (len(stage_messages) < 4 or stage_messages[-2].get("role") != "assistant"
-            or stage_messages[-1].get("role") != "user"):
-        raise HTTPException(status_code=409, detail="Stage 2 review lacks its memory draft and cue")
-    if cache_append:
-        evidence_note = _agentic_stage2_host_tool_evidence_note(history)
-        original_source = {
-            "role": "user",
-            "content": (evidence_note + "\n\n" if evidence_note else "") + AGENTIC_36_STAGE2_PROMPT,
-        }
-    else:
-        original_source = _stage_generation_trigger(profile, history)
-    stage_messages.insert(-2, original_source)
 
 
 # Phase-3G recovery: model-visible U/M/A forensic labels are OFF by default.
@@ -1326,7 +1237,7 @@ Before using tools, consider:
 - For state-changing actions like writing files, treat the tool as a commit after you have a clear picture of the correct final state.
 - Whenever you use a write or edit tool, read back the saved file or changed range to verify the requested changes were persisted. A tool success message by itself does not establish the file's contents. Never claim a file was created or modified without both an executed tool action and a confirming read-back; report failure or unverified status if verification is unavailable.
 
-Do not imitate the style, format, or structure of previous turns simply to match their output.
+Use previous user requests for intent and constraints, distilled memory for consequential working knowledge, tool history for evidence of attempted actions, reported outcomes, and failures, and previous responses for what was communicated. Prioritize authenticated tool evidence and user corrections over conflicting claims. Preserve uncertainty and build on completed work without unnecessary repetition.
 
 Follow the style, format, and structure required by the current user request. Do not carry forward earlier formatting conventions unless they remain appropriate to the current request.
 
@@ -1349,7 +1260,6 @@ You have no tools in this stage. Synthesis may receive the caller's tools and is
 Output only the plan."""
 
 AGENTIC_36_STAGE2_PROMPT = _AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
-AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER = "Wait, review the working knowledge for consequential omissions or inaccuracies. The objective is to preserve consequential working knowledge accurately, not independently solve the user's task again. Re-state the brief description of the current task and how it relates to the authenticated user request."
 
 ULTRA_STAGE2_ANTITHESIS_PROMPT = """You are Antithesis.
 
@@ -6498,28 +6408,15 @@ class OpenAICompatibleBackend:
             [{"role": "system", "content": stage_system}] if stage_system else []
         ) + prepared_messages
         if cache_append:
-            # Reassert Stage-2 authority in the experimental review suffix.
-            # Never append a separate user message after the internal review cue:
-            # it would cause the model to treat the cue as an earlier task.
-            if _agentic_stage2_review_is_pending(messages):
-                if not stage_messages or stage_messages[-1].get("role") != "user":
-                    raise HTTPException(status_code=409, detail="Stage 2 review missing its continuation cue")
-                stage_messages[-1] = dict(stage_messages[-1])
-                stage_messages[-1]["content"] = AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER
-            else:
-                evidence_note = _agentic_stage2_host_tool_evidence_note(messages)
-                stage_messages.append({"role": "user", "content": (evidence_note + "\n\n" if evidence_note else "") + AGENTIC_36_STAGE2_PROMPT})
-                LOG.info("AGENTIC CACHE EXPERIMENT: appended Stage-2 directive; only U/R1/A1 projected; no tool schemas")
+            evidence_note = _agentic_stage2_host_tool_evidence_note(messages)
+            stage_messages.append({"role": "user", "content": (evidence_note + "\n\n" if evidence_note else "") + AGENTIC_36_STAGE2_PROMPT})
+            LOG.info("AGENTIC CACHE EXPERIMENT: appended Stage-2 directive; only U/R1/A1 projected; no tool schemas")
         elif (
             prepared_messages
             and prepared_messages[-1].get("role") == "assistant"
             and _stage_requires_user_continuation(profile)
         ):
             stage_messages.append(_stage_generation_trigger(profile, messages))
-
-        _agentic_stage2_restore_review_source_prefix(
-            stage_messages, messages, profile, cache_append,
-        )
 
         sampling = self._sampling_for_profile(profile)
         payload: Dict[str, Any] = {
@@ -6623,28 +6520,15 @@ class OpenAICompatibleBackend:
             [{"role": "system", "content": stage_system}] if stage_system else []
         ) + prepared_messages
         if cache_append:
-            # Reassert Stage-2 authority in the experimental review suffix.
-            # Never append a separate user message after the internal review cue:
-            # it would cause the model to treat the cue as an earlier task.
-            if _agentic_stage2_review_is_pending(messages):
-                if not stage_messages or stage_messages[-1].get("role") != "user":
-                    raise HTTPException(status_code=409, detail="Stage 2 review missing its continuation cue")
-                stage_messages[-1] = dict(stage_messages[-1])
-                stage_messages[-1]["content"] = AGENTIC_STAGE2_FINAL_REVIEW_TRIGGER
-            else:
-                evidence_note = _agentic_stage2_host_tool_evidence_note(messages)
-                stage_messages.append({"role": "user", "content": (evidence_note + "\n\n" if evidence_note else "") + AGENTIC_36_STAGE2_PROMPT})
-                LOG.info("AGENTIC CACHE EXPERIMENT: appended Stage-2 directive; only U/R1/A1 projected; no tool schemas")
+            evidence_note = _agentic_stage2_host_tool_evidence_note(messages)
+            stage_messages.append({"role": "user", "content": (evidence_note + "\n\n" if evidence_note else "") + AGENTIC_36_STAGE2_PROMPT})
+            LOG.info("AGENTIC CACHE EXPERIMENT: appended Stage-2 directive; only U/R1/A1 projected; no tool schemas")
         elif (
             prepared_messages
             and prepared_messages[-1].get("role") == "assistant"
             and _stage_requires_user_continuation(profile)
         ):
             stage_messages.append(_stage_generation_trigger(profile, messages))
-
-        _agentic_stage2_restore_review_source_prefix(
-            stage_messages, messages, profile, cache_append,
-        )
 
         sampling = self._sampling_for_profile(profile)
         payload: Dict[str, Any] = {
@@ -7233,13 +7117,6 @@ class JackQwenKernel:
                 msg["_jack_phase4_withheld_tool_call_ids"] = withheld_ids
 
         if not msg.get("tool_calls"):
-            if AGENTIC_MODE and self.cfg.agentic_stage2_final_review and stage_key == "extended_reflection" and not _agentic_stage2_review_is_pending(history):
-                _agentic_begin_stage2_review(history, data)
-                return await self._run_stage(
-                    history, secondary_system, stage_key, usage,
-                    tools=None, tool_choice=None, append=append,
-                    same_stage_resume=True,
-                )
             if AGENTIC_MODE and self.cfg.agentic_final_review and stage_key == "extended_initial" and not _agentic_final_review_is_pending(history):
                 _agentic_begin_final_review(history, data)
                 return await self._run_stage(
@@ -7981,32 +7858,6 @@ class JackQwenKernel:
                     if isinstance(item, dict)
                 ) == optional_draft_tool_count
             )
-        if (
-            AGENTIC_MODE and self.cfg.agentic_stage2_final_review
-            and stage_key == "extended_reflection"
-            and not message.get("tool_calls")
-            and not _agentic_stage2_review_is_pending(history)
-        ):
-            _agentic_begin_stage2_review(history, data)
-            yield {"kind": "reasoning", "text": "\n[AGENTIC STAGE 2 MEMORY VERIFICATION — THINKING PROFILE UNCHANGED]\n"}
-            try:
-                async with contextlib.aclosing(self._run_stage_streamed(
-                    history, secondary_system, stage_key, usage,
-                    tools=None, tool_choice=None, append=append,
-                    same_stage_resume=True,
-                )) as review_packets:
-                    async for packet in review_packets:
-                        yield packet
-            except HTTPException as exc:
-                if not recover_optional_empty_stream(exc):
-                    raise
-                LOG.warning(
-                    "Optional Agentic continuation returned two empty streams; "
-                    "reusing completed same-turn draft without replaying tools: %s", exc.detail
-                )
-                yield {"kind": "reasoning", "text": "\n[JACK OPTIONAL REVIEW EMPTY — LAST COMPLETED DRAFT PRESERVED]\n"}
-                yield {"kind": "result", "data": data}
-            return
         if (
             AGENTIC_MODE and self.cfg.agentic_final_review
             and stage_key == "extended_initial"
@@ -13494,7 +13345,7 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
         print("Agentic profile (two-stage lifecycle in all profiles)")
         print("  1) Flash      - Stage 1 OFF, Stage 2 OFF, no extensions")
         print("  2) Balanced   - Stage 1 ON,  Stage 2 OFF, no extensions (Default)")
-        print("  3) Thorough   - Stage 1 ON + review ON, Stage 2 ON + review ON")
+        print("  3) Thorough   - Stage 1 ON + review ON, Stage 2 ON, no Stage 2 extension")
         print()
         # Choosing Agentic afresh defaults to Balanced, irrespective of a
         # previously saved optional profile. Escape rolls back this editor.

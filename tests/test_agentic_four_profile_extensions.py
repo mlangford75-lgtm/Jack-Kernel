@@ -1,4 +1,4 @@
-"""Three Agentic profiles: exact Stage-1 directive and deterministic stage scheduling.
+"""Three Agentic profiles: exact Stage-1 directive, single-pass Stage-2 scheduling.
 
 Tests exercise outbound generations and native-thinking controls, not model quality.
 """
@@ -14,7 +14,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 STAGE1_EXTENSION = "Wait, re-verify your reasoning. Test for errors, mistakes, or poor quality. Make changes, if necessary, to ensure alignment with the instructions and user request before responding"
-STAGE2_EXTENSION = "Wait, review the working knowledge for consequential omissions or inaccuracies. The objective is to preserve consequential working knowledge accurately, not independently solve the user's task again. Re-state the brief description of the current task and how it relates to the authenticated user request."
 
 MATRIX = [
     ("flash", False, False, False),
@@ -99,7 +98,7 @@ def test_profile_matrix_and_exact_continuations(
 ):
     k = load(monkeypatch, tmp_path, profile)
     assert k.CFG.agentic_final_review is stage1_extra
-    assert k.CFG.agentic_stage2_final_review is (profile == 'thorough')
+    assert not hasattr(k.CFG, 'agentic_stage2_final_review')
     assert k.STAGES['extended_initial'].thinking is stage1_thinking
     assert k.STAGES['extended_reflection'].thinking is stage2_thinking
     assert not k.STAGES['extended_reflection'].allow_tools
@@ -117,20 +116,13 @@ def test_profile_matrix_and_exact_continuations(
         assert first[1]['messages'][-2]['content'] == 'Output 1'
 
     second, h2, usage2, out2 = asyncio.run(run_stage(k, 'extended_reflection', streaming))
-    assert len(second) == (2 if profile == 'thorough' else 1)
-    assert usage2['completion_tokens'] == len(second) * 5
-    assert out2['choices'][0]['message']['content'] == f'Output {len(second)}'
+    assert len(second) == 1
+    assert usage2['completion_tokens'] == 5
+    assert out2['choices'][0]['message']['content'] == 'Output 1'
     for payload in second:
         assert payload['chat_template_kwargs']['enable_thinking'] is stage2_thinking
         assert 'tools' not in payload
-    assert bool(any(m.get('_jack_internal_agentic_stage2_review_trigger') for m in h2)) is (profile == 'thorough')
-    if profile == 'thorough':
-        assert second[1]['messages'][-1]['content'] == STAGE2_EXTENSION
-        assert second[1]['messages'][-2]['content'] == 'Output 1'
-        assert second[1]['chat_template_kwargs']['enable_thinking'] is True
-        assert second[1]['chat_template_kwargs']['preserve_thinking'] is True
-    else:
-        assert all(STAGE2_EXTENSION not in str(m.get('content', '')) for m in second[0]['messages'])
+    assert not any(m.get('_jack_internal_agentic_stage2_review_trigger') for m in h2)
     if profile in {'balanced', 'thorough'}:
         assert second[0]['messages'][-2]['reasoning_content'] == 'R1 source content'
         assert second[0]['chat_template_kwargs']['preserve_thinking'] is True
@@ -143,7 +135,7 @@ def test_default_profile_is_balanced_and_both_legacy_toggles_ignored(monkeypatch
     k = load(monkeypatch, tmp_path, 'balanced')
     assert k.CFG.agentic_profile == 'balanced'
     assert not k.CFG.agentic_final_review
-    assert not k.CFG.agentic_stage2_final_review
+    assert not hasattr(k.CFG, 'agentic_stage2_final_review')
 
 
 def test_exhaustive_is_not_a_runtime_profile(monkeypatch, tmp_path):

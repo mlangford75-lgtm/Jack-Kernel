@@ -76,10 +76,10 @@ def test_combined_review_preserves_initial_draft_on_empty_stream(monkeypatch, tm
     asyncio.run(run())
 
 
-def test_optional_stage2_empty_followup_preserves_completed_memory(monkeypatch, tmp_path):
+def test_single_pass_stage2_returns_completed_memory_without_review(monkeypatch, tmp_path):
     async def run():
         k = load(monkeypatch, tmp_path)
-        assert k.CFG.agentic_stage2_final_review is True
+        assert not hasattr(k.CFG, "agentic_stage2_final_review")
         class Backend:
             def __init__(self):
                 self.calls = 0
@@ -97,6 +97,6 @@ def test_optional_stage2_empty_followup_preserves_completed_memory(monkeypatch, 
         results = [p["data"] for p in packets if p["kind"] == "result"]
         assert len(results) == 1
         assert results[0]["choices"][0]["message"]["content"] == "Original completed memory"
-        assert b.calls == 3
-        assert any("LAST COMPLETED DRAFT PRESERVED" in p.get("text", "") for p in packets)
+        assert b.calls == 1
+        assert not any("LAST COMPLETED DRAFT PRESERVED" in p.get("text", "") for p in packets)
     asyncio.run(run())
