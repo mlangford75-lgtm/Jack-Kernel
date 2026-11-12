@@ -163,7 +163,7 @@ def test_model_memory_projection_carries_receipts_and_keeps_original_artifact():
     )
     assert raw == original
     assert projected[1]["content"] == capsule
-    assert receipt in str(projected)
+    assert receipt in projected[1]["content"]
     assert "result_sha256=" in str(projected)
     assert projected[1]["role"] == "assistant"
 
