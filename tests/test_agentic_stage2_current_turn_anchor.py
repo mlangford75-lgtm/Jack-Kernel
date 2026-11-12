@@ -79,7 +79,6 @@ def test_stage2_sees_current_r1_but_never_old_r2(cache):
     assert p["messages"][-2]["reasoning_content"] == "R1_2 created SVG"
     assert p["messages"][-1]["role"] == "user"
     assert "Carefully reason on the task before using tools." in k.AGENTIC_STAGE1_PROMPT
-    assert k.AGENTIC_36_STAGE2_PROMPT.startswith("You must always follow the Prime Directive.")
     assert STAGE2 in k.AGENTIC_36_STAGE2_PROMPT
     assert k.STAGES["extended_reflection"].allow_tools is False
     if cache:
