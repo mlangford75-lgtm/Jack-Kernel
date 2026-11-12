@@ -1,4 +1,4 @@
-"""Three Agentic profiles: exact Stage-1 directive, single-pass Stage-2 scheduling.
+"""Four Agentic profiles: exact Stage-1 directive, single-pass Stage-2 scheduling.
 
 Tests exercise outbound generations and native-thinking controls, not model quality.
 """
@@ -18,7 +18,8 @@ STAGE1_EXTENSION = "Wait, re-verify your reasoning. Test for errors, mistakes, o
 MATRIX = [
     ("flash", False, False, False),
     ("balanced", True, False, False),
-    ("thorough", True, True, True),
+    ("thorough", True, False, True),
+    ("exhaustive", True, True, True),
 ]
 
 
@@ -123,7 +124,7 @@ def test_profile_matrix_and_exact_continuations(
         assert payload['chat_template_kwargs']['enable_thinking'] is stage2_thinking
         assert 'tools' not in payload
     assert not any(m.get('_jack_internal_agentic_stage2_review_trigger') for m in h2)
-    if profile in {'balanced', 'thorough'}:
+    if profile in {'balanced', 'thorough', 'exhaustive'}:
         assert second[0]['messages'][-2]['reasoning_content'] == 'R1 source content'
         assert second[0]['chat_template_kwargs']['preserve_thinking'] is True
     else:
@@ -138,19 +139,21 @@ def test_default_profile_is_balanced_and_both_legacy_toggles_ignored(monkeypatch
     assert not hasattr(k.CFG, 'agentic_stage2_final_review')
 
 
-def test_exhaustive_is_not_a_runtime_profile(monkeypatch, tmp_path):
+def test_exhaustive_is_a_runtime_profile(monkeypatch, tmp_path):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
     monkeypatch.setenv("JACK_AGENTIC_PROFILE", "exhaustive")
     monkeypatch.setenv("JACK_FORENSIC_ARCHIVE_MODE", "off")
-    name = "obsolete_exhaustive_" + uuid.uuid4().hex
+    name = "active_exhaustive_" + uuid.uuid4().hex
     spec = importlib.util.spec_from_file_location(name, ROOT / "jack_kernel.py")
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
-    with pytest.raises(RuntimeError, match="must be flash, balanced, or thorough"):
-        spec.loader.exec_module(module)
+    spec.loader.exec_module(module)
+    assert module.CFG.agentic_profile == "exhaustive"
+    assert module.CFG.agentic_final_review is True
+    assert module.STAGES["extended_reflection"].thinking is True
 
 
-def test_legacy_exhaustive_saved_config_migrates_to_thorough(monkeypatch, tmp_path):
+def test_saved_exhaustive_config_remains_exhaustive(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path, "balanced")
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps({
@@ -160,8 +163,8 @@ def test_legacy_exhaustive_saved_config_migrates_to_thorough(monkeypatch, tmp_pa
     }), encoding="utf-8")
     monkeypatch.setattr(k, "_config_paths", lambda: (config_path, tmp_path / "secondary.txt"))
     loaded = k._load_cli_config()
-    assert loaded["agentic_profile"] == "thorough"
-    assert k._config_to_env(loaded)["JACK_AGENTIC_PROFILE"] == "thorough"
+    assert loaded["agentic_profile"] == "exhaustive"
+    assert k._config_to_env(loaded)["JACK_AGENTIC_PROFILE"] == "exhaustive"
     assert k._config_to_env({"agentic_profile":"exhaustive", **{
         key: val for key, val in loaded.items() if key != "agentic_profile"
-    }})["JACK_AGENTIC_PROFILE"] == "thorough"
+    }})["JACK_AGENTIC_PROFILE"] == "exhaustive"

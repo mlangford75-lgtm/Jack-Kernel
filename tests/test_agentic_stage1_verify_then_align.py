@@ -13,7 +13,7 @@ COMBINED_PROMPT = "Wait, re-verify your reasoning. Test for errors, mistakes, or
 
 def load(monkeypatch, tmp_path, *, enabled=True):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
-    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "thorough" if enabled else "balanced")
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "exhaustive" if enabled else "balanced")
     monkeypatch.setenv("JACK_BACKEND_MODEL", "unit-test-model")
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
     monkeypatch.setenv("JACK_LOOP_DETECTOR", "0")

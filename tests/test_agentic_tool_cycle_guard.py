@@ -64,7 +64,7 @@ def incident(history, *, runs=2, content="print(1)"):
     push(history, write_call(runs + 1, content), "wrote 9 bytes")
 
 
-@pytest.mark.parametrize("profile", ["flash", "balanced", "thorough"])
+@pytest.mark.parametrize("profile", ["flash", "balanced", "thorough", "exhaustive"])
 def test_exact_stable_write_run_cycle_is_detected_without_ids(monkeypatch, tmp_path, profile):
     k = load(monkeypatch, tmp_path, profile=profile)
     h = [{"role": "user", "content": "Build and verify a model"}]

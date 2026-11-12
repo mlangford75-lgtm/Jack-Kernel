@@ -318,8 +318,8 @@ class KernelConfig:
 
     @property
     def agentic_final_review(self) -> bool:
-        # One Stage-1 verification continuation in Thorough only.
-        return self.agentic_profile == "thorough"
+        # One Stage-1 verification continuation in Exhaustive only.
+        return self.agentic_profile == "exhaustive"
 
     # Human-configurable Qwen preserve-thinking policy. Calling agents cannot
     # override this value; it is owned by the Jack Kernel runtime.
@@ -340,6 +340,10 @@ class KernelConfig:
     # Optional observability-only context metadata. Zero/empty means unknown.
     # Jack never changes the backend overflow policy from these fields.
     backend_context_length: int = int(os.getenv("JACK_BACKEND_CONTEXT_LENGTH", "0") or "0")
+    # Windows-only, detached, read-only monitor; failure is never inference failure.
+    context_monitor_enabled: bool = os.getenv("JACK_CONTEXT_MONITOR", "1").strip().lower() not in {
+        "0", "false", "no", "off"
+    }
 
     # One local 27B model is generally best served serially unless the backend
     # has explicitly been configured for parallel inference.
@@ -858,11 +862,12 @@ if REASONING_PROFILES[_reasoning_level].get("disabled"):
     raise RuntimeError("JACK_REASONING_LEVEL=low is disabled in Jack Kernel v0.1.1. Choose off, medium, x-high, deep-research, Local Agentic (Preserve Thinking), code-debugging, or code-debugging-deep.")
 ACTIVE_REASONING_PROFILE = REASONING_PROFILES[_reasoning_level]
 AGENTIC_MODE = ACTIVE_REASONING_PROFILE["mode"] == "agentic"
-if AGENTIC_MODE and CFG.agentic_profile not in {"flash", "balanced", "thorough"}:
-    raise RuntimeError("JACK_AGENTIC_PROFILE must be flash, balanced, or thorough")
+if AGENTIC_MODE and CFG.agentic_profile not in {"flash", "balanced", "thorough", "exhaustive"}:
+    raise RuntimeError("JACK_AGENTIC_PROFILE must be flash, balanced, thorough, or exhaustive")
 AGENTIC_BALANCED_MODE = AGENTIC_MODE and CFG.agentic_profile == "balanced"
 AGENTIC_FLASH_MODE = AGENTIC_MODE and CFG.agentic_profile == "flash"
 AGENTIC_THOROUGH_MODE = AGENTIC_MODE and CFG.agentic_profile == "thorough"
+AGENTIC_EXHAUSTIVE_MODE = AGENTIC_MODE and CFG.agentic_profile == "exhaustive"
 # Balanced generates Stage-2 memory without new native thinking, but still reads
 # Stage-1's preserved reasoning as source material. Thorough Stage 2 thinks.
 AGENTIC_THINKING_OFF_MEMORY_MODE = AGENTIC_BALANCED_MODE
@@ -2361,7 +2366,7 @@ STAGES: Dict[str, StageProfile] = {
     "extended_reflection": StageProfile(
         "Agentic native pass 2" if AGENTIC_MODE else "Deep Research Antithesis pass 2",
         AGENTIC_36_STAGE2_PROMPT if AGENTIC_MODE else ULTRA_STAGE2_ANTITHESIS_PROMPT,
-        not AGENTIC_MODE or AGENTIC_THOROUGH_MODE,
+        not AGENTIC_MODE or AGENTIC_THOROUGH_MODE or AGENTIC_EXHAUSTIVE_MODE,
         ACTIVE_REASONING_PROFILE.get("pass2", "xhigh"),
         False,
         0.50 if AGENTIC_MODE else 0.70,
@@ -8649,11 +8654,17 @@ class JackQwenKernel:
         # Tool IDs in history are not sufficient evidence of resume authority.
         if not messages or not isinstance(messages[-1], dict) or messages[-1].get("role") != "tool":
             return None
+        # The caller replays historical tool results, sometimes from still-live
+        # recovery checkpoints. Only the final contiguous tool-result batch is
+        # the continuation being submitted now. Earlier results remain
+        # historical evidence, never a request to resume their old checkpoint.
+        # Genuine mixed live transactions *within this trailing batch* are
+        # still rejected below; this does not weaken checkpoint authentication.
         tool_messages: List[Dict[str, Any]] = []
         ids_in_request: List[str] = []
-        for raw in messages:
+        for raw in reversed(messages):
             if not isinstance(raw, dict) or raw.get("role") != "tool":
-                continue
+                break
             call_id = raw.get("tool_call_id")
             if not isinstance(call_id, str) or not call_id.strip():
                 continue
@@ -8676,19 +8687,21 @@ class JackQwenKernel:
                 item["_jack_failure_carry_hops"] = 1
             tool_messages.append(item)
 
+        # Reversal made the contiguous frontier easy to identify; preserve the
+        # exact caller order for evidence classification and later processing.
+        tool_messages.reverse()
+        ids_in_request.reverse()
         if not ids_in_request:
             return None
 
         async with self._pending_tool_resume_lock:
             await self._expire_pending_tool_resumes_locked()
 
-            # Calling agents commonly replay full conversation history on a tool
-            # result turn. Retired historical tool results carry no authority over
-            # the currently pending Jack transaction and must not poison it merely
-            # because their IDs remain in caller history. Only IDs that still map
-            # to a live pending Jack checkpoint participate in transaction
-            # selection/validation. Historical nonpending results are ignored and
-            # are never appended to the resumed stage history.
+            # The trailing frontier alone supplies continuation candidates.
+            # Older caller-replayed tool results, including those whose
+            # checkpoints remain pending for transport retry, have no authority
+            # to select or reject the current transaction. They are not appended
+            # to the resumed stage; independent historical evidence remains intact.
             live_states = {
                 id(pending_state): pending_state
                 for pending_state in self._pending_tool_resumes.values()
@@ -12201,6 +12214,7 @@ async def runtime_activity_status(request: Request) -> Dict[str, Any]:
         "context_length": BACKEND.context_length,
         "context_length_source": BACKEND.context_length_source,
         "context_usage_source": "backend_stream_usage_only",
+        "backend_model": BACKEND._resolved_model or BACKEND._configured_model or "",
         "tool_lifecycle": TOOL_LIFECYCLE_OBSERVER.snapshot(),
         **activity,
     }
@@ -12772,6 +12786,7 @@ CLI_DEFAULTS: Dict[str, Any] = {
     "reasoning_budget_tokens": 100000,
     "output_budget_tokens": 100000,
     "backend_context_length": 0,
+    "context_monitor_enabled": True,
     "max_concurrent_requests": 1,
     "seed": "",
     "qwen_control_shape": "template_kwargs",
@@ -12846,9 +12861,7 @@ def _load_cli_config() -> Dict[str, Any]:
             for key in cfg:
                 if key in loaded:
                     cfg[key] = loaded[key]
-            # Existing saved Exhaustive selection keeps native-thinking behavior.
-            if str(cfg.get("agentic_profile", "")).strip().lower() == "exhaustive":
-                cfg["agentic_profile"] = "thorough"
+            # Preserve saved Exhaustive selection: it now has its own review stage.
             cfg["backend_profile"] = _normalize_backend_profile(str(cfg.get("backend_profile", "lmstudio")))
             legacy_reasoning = str(cfg.get("reasoning_level", "x-high")).strip().lower()
             migrated_reasoning = _REASONING_LEVEL_ALIASES.get(legacy_reasoning, legacy_reasoning)
@@ -13197,6 +13210,7 @@ def _print_header(
     print(_status_value("Backend auth", _backend_auth_label(cfg)))
     ctx = int(cfg.get("backend_context_length", 0) or 0)
     print(_status_value("Context length", ctx if ctx > 0 else "UNKNOWN"))
+    print(_status_value("Context monitor", "ON (separate Windows window)" if cfg.get("context_monitor_enabled", True) else "OFF"))
     print(_status_value("Agent base URL", _effective_agent_base_url(cfg)))
     print(_status_value("Orchestration API", _orchestration_url_from_cli_config(cfg)))
     print(_status_value("Orchestration protocol", "v2  [run-bound IDs + sequence + replay]"))
@@ -13269,14 +13283,16 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
         print("Agentic profile (two-stage lifecycle in all profiles)")
         print("  1) Flash      - Stage 1 OFF, Stage 2 OFF, no extensions")
         print("  2) Balanced   - Stage 1 ON,  Stage 2 OFF, no extensions (Default)")
-        print("  3) Thorough   - Stage 1 ON + review ON, Stage 2 ON")
+        print("  3) Thorough   - Stage 1 ON,  Stage 2 ON, no extensions")
+        print("  4) Exhaustive - Stage 1 ON + review ON, Stage 2 ON")
         print()
         # Choosing Agentic afresh defaults to Balanced, irrespective of a
         # previously saved optional profile. Escape rolls back this editor.
-        agentic_choice = _cli_input("Select Agentic profile [1-3] [2]: ").strip().lower() or "2"
+        agentic_choice = _cli_input("Select Agentic profile [1-4] [2]: ").strip().lower() or "2"
         selected_profile = {"1": "flash", "flash": "flash",
                             "2": "balanced", "balanced": "balanced",
-                            "3": "thorough", "thorough": "thorough"}.get(agentic_choice)
+                            "3": "thorough", "thorough": "thorough",
+                            "4": "exhaustive", "exhaustive": "exhaustive"}.get(agentic_choice)
         if selected_profile is None:
             print("Invalid Agentic profile; keeping current reasoning level.")
             return
@@ -13676,12 +13692,13 @@ def _config_to_env(cfg: Dict[str, Any]) -> Dict[str, str]:
         "JACK_BACKEND_EXTRA_HEADERS": json.dumps(cfg.get("backend_extra_headers") or {}, ensure_ascii=False),
         "JACK_VIRTUAL_MODEL": cfg["virtual_model"],
         "JACK_REASONING_LEVEL": cfg["reasoning_level"],
-        "JACK_AGENTIC_PROFILE": ("thorough" if str(cfg.get("agentic_profile", "balanced")).strip().lower() == "exhaustive" else cfg.get("agentic_profile", "balanced")),
+        "JACK_AGENTIC_PROFILE": cfg.get("agentic_profile", "balanced"),
         "JACK_PRESERVE_THINKING": "1" if cfg.get("preserve_thinking", True) else "0",
         "JACK_BACKEND_TIMEOUT_SECONDS": cfg["backend_timeout_seconds"],
         "JACK_REASONING_BUDGET_TOKENS": cfg.get("reasoning_budget_tokens", 100000),
         "JACK_OUTPUT_BUDGET_TOKENS": cfg.get("output_budget_tokens", 100000),
         "JACK_BACKEND_CONTEXT_LENGTH": cfg.get("backend_context_length", 0),
+        "JACK_CONTEXT_MONITOR": "1" if cfg.get("context_monitor_enabled", True) else "0",
         "JACK_MAX_CONCURRENT": cfg["max_concurrent_requests"],
         "JACK_SEED": cfg["seed"],
         "JACK_QWEN_CONTROL_SHAPE": cfg["qwen_control_shape"],
@@ -13734,6 +13751,7 @@ def _start_server_from_cli(cfg: Dict[str, Any]) -> None:
     print(f"Build agent bridge : {_build_agent_bridge_display()}")
     print(f"Listen address     : {cfg['host']}:{cfg['port']}")
     print(f"Virtual model  : {cfg['virtual_model']}")
+    print(f"Context monitor: {'ON (separate Windows window)' if cfg.get('context_monitor_enabled', True) else 'OFF'}")
     level_key = _REASONING_LEVEL_ALIASES.get(str(cfg.get("reasoning_level", "x-high")).lower(), str(cfg.get("reasoning_level", "x-high")).lower())
     print(f"Reasoning level  : {REASONING_PROFILES.get(level_key, REASONING_PROFILES['x-high'])['label']}")
     if REASONING_PROFILES.get(level_key, {}).get("mode") == "agentic":
@@ -13764,6 +13782,7 @@ def _print_main_menu_options() -> None:
     print(_ansi_rgb("  F", _JACK_STEEL, bold=True) + "  Forensic archive")
     print(_ansi_rgb("  L", _JACK_STEEL, bold=True) + "  Loop Detector")
     print(_ansi_rgb("  B", _JACK_STEEL, bold=True) + "  Generation budgets")
+    print(_ansi_rgb("  C", _JACK_STEEL, bold=True) + "  Context monitor (separate window)")
     print(_ansi_rgb("  S", _JACK_STEEL, bold=True) + "  Save settings")
     print(_ansi_rgb("  M", _JACK_STEEL, bold=True) + "  Main screen / refresh")
     print(_ansi_rgb("  Q", _JACK_STEEL, bold=True) + "  Quit")
@@ -13775,7 +13794,7 @@ def _print_compact_main_commands() -> None:
     print()
     print(_ansi_rgb("Main:", _JACK_MUTED) +
           " 1 Start  2 Models  3 Reasoning  4 Sampling  5 Endpoint  6 Advanced")
-    print("      7 Test  8 Reset  P Thinking  F Forensic  L Loop  B Budgets  S Save  M Main screen  Q Quit")
+    print("      7 Test  8 Reset  P Thinking  F Forensic  L Loop  B Budgets  C Context  S Save  M Main screen  Q Quit")
     print(_ansi_rgb("Use M only when you want the full status screen redrawn.", _JACK_MUTED))
     print()
 
@@ -13832,6 +13851,9 @@ def run_cli() -> None:
                 _run_transactional_editor(_edit_loop_detector, cfg)
             elif choice == "b":
                 _run_transactional_editor(_edit_generation_budgets, cfg)
+            elif choice == "c":
+                cfg["context_monitor_enabled"] = not bool(cfg.get("context_monitor_enabled", True))
+                print("Context monitor: " + ("ON (next kernel start)" if cfg["context_monitor_enabled"] else "OFF (next kernel start)"))
             elif choice == "s":
                 _save_cli_config(cfg)
                 print("Settings saved.")
@@ -13850,6 +13872,55 @@ def run_cli() -> None:
         except _ReturnToMainMenu:
             # Esc/:back is an explicit request to return to the full main screen.
             _render_full_main_screen(cfg)
+
+
+def _launch_context_monitor_failsoft(actual_port: int) -> bool:
+    """Best-effort detached Windows GUI, no inference or tool authority.
+
+    Launch only after listener binding so automatic port fallback is correct.
+    In a headless or missing-Tk installation the monitor exits independently;
+    Jack remains unaffected. The child inherits no backend credentials.
+    """
+    if os.name != "nt" or not CFG.context_monitor_enabled:
+        return False
+    monitor_path = Path(__file__).resolve().with_name("jack_context_monitor.py")
+    if not monitor_path.is_file():
+        LOG.warning("Optional context monitor missing; Jack continues without GUI")
+        return False
+    try:
+        interpreter = Path(sys.executable)
+        if interpreter.name.lower() == "python.exe":
+            pythonw = interpreter.with_name("pythonw.exe")
+            if pythonw.is_file():
+                interpreter = pythonw
+        # Use a deliberately narrow subprocess environment instead of leaking
+        # LM Studio credentials and other caller process configuration.
+        child_env = {
+            key: os.environ[key]
+            for key in ("SYSTEMROOT", "WINDIR", "PATH", "TEMP", "TMP", "APPDATA",
+                        "LOCALAPPDATA", "USERPROFILE", "HOMEDRIVE", "HOMEPATH")
+            if key in os.environ
+        }
+        child_env.update({
+            "JACK_CONTEXT_MONITOR_PORT": str(actual_port),
+            "JACK_CONTEXT_MONITOR_RUNTIME_ID": RUNTIME_ID,
+            "JACK_CONTEXT_MONITOR_TOKEN": CFG.api_key,
+        })
+        subprocess.Popen(
+            [str(interpreter), str(monitor_path)],
+            env=child_env,
+            cwd=str(monitor_path.parent),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            close_fds=True,
+        )
+        LOG.info("Optional Jack Context Monitor window launched (runtime=%s)", RUNTIME_ID)
+        return True
+    except Exception:
+        LOG.warning("Optional context monitor failed to launch; Jack continues", exc_info=True)
+        return False
 
 
 def run_server() -> None:
@@ -13901,6 +13972,9 @@ def run_server() -> None:
         log_level=CFG.log_level.lower(),
     )
     server = uvicorn.Server(config)
+    # Spawn a separate, fully optional process after the actual port is bound.
+    # It cannot block the server startup or influence cognition/execution.
+    _launch_context_monitor_failsoft(actual_port)
     try:
         server.run(sockets=[listener])
     finally:

@@ -152,6 +152,7 @@ def test_invalid_experimental_profile_fails_closed(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("profile,initial_thinking,reflection_thinking", [
     ("thorough", True, True),
+    ("exhaustive", True, True),
     ("balanced", True, False),
     ("flash", False, False),
 ])
@@ -182,7 +183,7 @@ def test_four_agentic_profiles_share_sampler_without_mutating_stage_temperatures
         assert len(assistant) == 1
         assert "reasoning_content" not in assistant[0]
         assert p2["reasoning_effort"] == "none"
-    elif profile in {"balanced", "thorough"}:
+    elif profile in {"balanced", "thorough", "exhaustive"}:
         assert p2["messages"][-2]["reasoning_content"].startswith("R1:")
 
 
@@ -190,6 +191,7 @@ def test_four_agentic_profiles_share_sampler_without_mutating_stage_temperatures
     ("1", "flash"),
     ("2", "balanced"),
     ("3", "thorough"),
+    ("4", "exhaustive"),
     ("", "balanced"),
 ])
 def test_agentic_submenu_selects_and_persists_profile(monkeypatch, tmp_path, choice, profile):
@@ -211,7 +213,9 @@ def test_agentic_submenu_selects_and_persists_profile(monkeypatch, tmp_path, cho
         monkeypatch.setattr(k, "_cli_input", lambda *_a, **_kw: next(answers_again))
         k._run_transactional_editor(k._edit_reasoning, dict(k.CLI_DEFAULTS))
     menu = output.getvalue()
+    assert "Stage 1 ON,  Stage 2 ON, no extensions" in menu
     assert "Stage 1 ON + review ON, Stage 2 ON" in menu
+    assert "4) Exhaustive" in menu
     assert "Stage 2 extension" not in menu
     assert "Stage 2 ON + review ON" not in menu
     assert "Stage 2 OFF, no extensions (Default)" in menu

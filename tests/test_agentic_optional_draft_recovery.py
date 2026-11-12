@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def load(monkeypatch, tmp_path):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
-    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "thorough")
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "exhaustive")
     monkeypatch.setenv("JACK_BACKEND_MODEL", "test-model")
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
     monkeypatch.setenv("JACK_LOOP_DETECTOR", "0")
