@@ -119,7 +119,7 @@ def test_balanced_preserves_stage1_reasoning_in_stage2_request(monkeypatch, tmp_
 
 
 @pytest.mark.parametrize("stream", [False, True])
-def test_thorough_retains_existing_backend_contract(monkeypatch, tmp_path, stream):
+def test_thorough_uses_thinking_on_memory_and_preserves_stage1_reasoning(monkeypatch, tmp_path, stream):
     k = load(monkeypatch, tmp_path, profile="thorough")
     assert k.STAGES["extended_initial"].thinking is True
     assert k.STAGES["extended_reflection"].thinking is True
@@ -155,7 +155,7 @@ def test_invalid_experimental_profile_fails_closed(monkeypatch, tmp_path):
     ("balanced", True, False),
     ("flash", False, False),
 ])
-def test_three_agentic_profiles_share_sampler_without_mutating_stage_temperatures(
+def test_four_agentic_profiles_share_sampler_without_mutating_stage_temperatures(
     monkeypatch, tmp_path, profile, initial_thinking, reflection_thinking
 ):
     # Deliberately different OFF sampler: Agentic must not switch samplers.
@@ -182,7 +182,7 @@ def test_three_agentic_profiles_share_sampler_without_mutating_stage_temperature
         assert len(assistant) == 1
         assert "reasoning_content" not in assistant[0]
         assert p2["reasoning_effort"] == "none"
-    elif profile == "balanced":
+    elif profile in {"balanced", "thorough"}:
         assert p2["messages"][-2]["reasoning_content"].startswith("R1:")
 
 
@@ -202,6 +202,20 @@ def test_agentic_submenu_selects_and_persists_profile(monkeypatch, tmp_path, cho
     assert cfg["reasoning_level"] == "Local Agentic (Preserve Thinking)"
     assert cfg["agentic_profile"] == profile
     assert k._config_to_env(cfg)["JACK_AGENTIC_PROFILE"] == profile
+    # The menu must accurately describe the runtime's profile-owned extensions.
+    from io import StringIO
+    from contextlib import redirect_stdout
+    output = StringIO()
+    with redirect_stdout(output):
+        answers_again = iter(["6", choice])
+        monkeypatch.setattr(k, "_cli_input", lambda *_a, **_kw: next(answers_again))
+        k._run_transactional_editor(k._edit_reasoning, dict(k.CLI_DEFAULTS))
+    menu = output.getvalue()
+    assert "Stage 1 ON + review ON, Stage 2 ON" in menu
+    assert "Stage 2 extension" not in menu
+    assert "Stage 2 ON + review ON" not in menu
+    assert "Stage 2 OFF, no extensions (Default)" in menu
+    assert not hasattr(k.KernelConfig(agentic_profile=cfg["agentic_profile"]), "agentic_stage2_final_review")
 
 
 def test_agentic_submenu_escape_rolls_back(monkeypatch, tmp_path):

@@ -60,11 +60,14 @@ const jackCtx = {model:{provider:"jack-kernel"},cwd:"D:\\Projects"};
 const otherCtx = {model:{provider:"other"},cwd:"D:\\Projects"};
 const editRequest = {toolName:"edit",toolCallId:"edit-1",input:{path:"file.py",oldText:"a",newText:"b"}};
 
-await start({},jackCtx);
-assert.equal(active.includes("edit"),false,"builtin edit must be removed from active tools");
+const nativeStartEvent = {systemPromptOptions:{promptGuidelines:["Original guideline"]}};
+await start(nativeStartEvent,jackCtx);
+assert.equal(active.includes("edit"),false,"native edit must be removed from active tools");
+assert.equal(nativeStartEvent.systemPromptOptions.promptGuidelines.length,2,"native edit alternative must be in model prompt");
+assert.match(nativeStartEvent.systemPromptOptions.promptGuidelines[1],/write tool/);
 let result=await call(editRequest,jackCtx);
 assert.equal(result?.block,true);
-assert.match(result.reason,/different authorized method/);
+assert.match(result.reason,/built-in edit tool is disabled/);
 assert.equal(admission.length,0,"rejected builtin must not reach executor admission");
 
 await start({},otherCtx);
@@ -72,8 +75,10 @@ assert.equal(active.includes("edit"),true,"non-Jack provider's original tool sel
 
 toolSource="extension";
 toolPath="~/.pi/agent/extensions/alternative-editor.ts";
-await start({},jackCtx);
+const extensionStartEvent = {systemPromptOptions:{promptGuidelines:["Original guideline"]}};
+await start(extensionStartEvent,jackCtx);
 assert.equal(active.includes("edit"),true,"extension override must stay exposed");
+assert.deepEqual(extensionStartEvent.systemPromptOptions.promptGuidelines,["Original guideline"],"extension must not be given native edit restriction");
 result=await call(editRequest,jackCtx);
 assert.equal(result,undefined,"extension override goes through normal admission");
 assert.equal(admission.length,1);
@@ -82,14 +87,30 @@ assert.equal(admission[0].tool_name,"edit");
 toolSource="sdk";
 toolPath="sdk:edit";
 await start({},jackCtx);
-assert.equal(active.includes("edit"),false,"SDK source is not automatically trusted as extension");
+assert.equal(active.includes("edit"),true,"SDK-registered edit must remain available");
 result=await call(editRequest,jackCtx);
-assert.equal(result?.block,true);
-assert.equal(admission.length,1);
+assert.equal(result,undefined,"SDK editor must not be blocked by native-only policy");
+assert.equal(admission.length,2);
+
+toolSource="unknown";
+toolPath="";
+await start({},jackCtx);
+assert.equal(active.includes("edit"),true,"unknown-origin edit must remain available");
+result=await call(editRequest,jackCtx);
+assert.equal(result,undefined,"ambiguous origin cannot justify banning an editor");
+assert.equal(admission.length,3);
+
+toolSource="builtin";
+toolPath="<builtin:other>";
+await start({},jackCtx);
+assert.equal(active.includes("edit"),true,"nonmatching builtin path must not be treated as native edit");
+result=await call(editRequest,jackCtx);
+assert.equal(result,undefined,"only exact builtin:edit can be blocked");
+assert.equal(admission.length,4);
 
 toolSource="extension";
 toolPath="~/.pi/agent/extensions/alternative-editor.ts";
 await start({},jackCtx);
-assert.equal(active.includes("edit"),true,"verified override restores a tool hidden by Jack");
+assert.equal(active.includes("edit"),true,"third-party replacement remains available");
 await new Promise(resolve=>server.close(resolve));
 console.log("Pi edit source policy harness: PASS");

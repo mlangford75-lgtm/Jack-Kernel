@@ -206,7 +206,7 @@ def test_real_stream_disconnect_retries_same_tool_result_without_reexecuting_too
         # not re-execute its completed tool or restart at a fresh user turn.
         frames = [frame async for frame in k.KERNEL.stream(body)]
         rendered = b"".join(frames).decode("utf-8")
-        assert backend.calls == 3  # interrupted R1, resumed R1, fresh R2
+        assert backend.calls == 3  # interrupted R1, resumed R1, single Balanced R2
         assert "Frozen useful answer" in rendered
         assert call_id not in k.KERNEL._pending_tool_resumes
         assert state.accepted_tool_results[0]["content"] == "verified file contents"
