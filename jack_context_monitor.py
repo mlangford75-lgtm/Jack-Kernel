@@ -84,8 +84,17 @@ def interpret_status(
     origin = "unknown"
     if current is not None:
         kind, tokens = current
-        measured_at = now
-        origin = "this request"
+        if isinstance(active, dict) and (
+            _nonnegative(active.get("backend_total_tokens")) is not None
+            or _nonnegative(active.get("backend_prompt_tokens")) is not None
+        ):
+            measured_at = now
+            origin = "this request"
+        else:
+            # A resumed backend call may retain the prior generation's final
+            # usage inside last_backend_*. That is historical, not live.
+            measured_at = previous.get("measured_at") if isinstance(previous, dict) else None
+            origin = "previous backend request"
     elif last is not None:
         kind, tokens = last
         measured_at = last_request.get("ended_at_unix")
