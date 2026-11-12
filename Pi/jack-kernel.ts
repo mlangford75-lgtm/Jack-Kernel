@@ -263,26 +263,48 @@ export default async function (pi) {
 
   await syncProvider();
 
-  // Pi extensions may replace the built-in "edit" tool under the same name.
-  // Determine the active executor's origin from Pi-owned registration metadata,
-  // not from model-supplied names, arguments, or tool-result prose.
+  // Pi extensions may override built-in "edit" under the same name.
+  // Never block by tool name alone: only a POSITIVE, exact Pi-origin match
+  // to the native implementation authorizes hiding or denying it.
+  const NATIVE_EDIT_ALTERNATIVE =
+    "Pi's built-in edit tool is disabled by Jack. Read the existing file, use " +
+    "the available write tool to save the complete updated contents or another " +
+    "authorized patch/script tool, then read the file back to verify. Do not " +
+    "retry Pi's built-in edit. Third-party replacement edit tools are allowed.";
   let editHiddenByJack = false;
   function editToolOrigin() {
     if (typeof pi.getAllTools !== "function") return "unknown";
     try {
       const registered = pi.getAllTools();
       if (!Array.isArray(registered)) return "unknown";
-      const tool = registered.find((entry) => entry?.name === "edit");
-      if (!tool) return "absent";
-      const source = tool.sourceInfo?.source;
-      const sourcePath = tool.sourceInfo?.path;
-      if (source === "builtin") return "builtin";
-      if (typeof source === "string" && source && source !== "builtin" && source !== "sdk" &&
-          typeof sourcePath === "string" && sourcePath) return "custom";
+      const matches = registered.filter((entry) => entry?.name === "edit");
+      if (matches.length === 0) return "absent";
+      // Ambiguous registrations or unknown sources must NOT cause false
+      // blocking of a custom/SDK edit override.
+      if (matches.length !== 1) return "unknown";
+      const source = matches[0]?.sourceInfo?.source;
+      const rawPath = matches[0]?.sourceInfo?.path;
+      const sourcePath = String(rawPath || "").replace(/^<|>$/g, "");
+      return source === "builtin" && sourcePath === "builtin:edit"
+        ? "builtin"
+        : "other";
     } catch {
-      // Unknown origin is not evidence that an override is installed.
+      // Failed introspection must never be used to ban third-party tools.
     }
     return "unknown";
+  }
+
+  function syncNativeEditGuidance(event, ctx) {
+    // Pi's structured prompt can provide the alternative BEFORE tool use;
+    // only when Pi positively identifies the editor as native.
+    const guidelines = event?.systemPromptOptions?.promptGuidelines;
+    if (!Array.isArray(guidelines)) return;
+    const shouldGuide =
+      String(ctx?.model?.provider || "") === PROVIDER_NAME &&
+      editToolOrigin() === "builtin";
+    const next = guidelines.filter((line) => line !== NATIVE_EDIT_ALTERNATIVE);
+    if (shouldGuide) next.push(NATIVE_EDIT_ALTERNATIVE);
+    guidelines.splice(0, guidelines.length, ...next);
   }
 
   function reconcileEditToolAvailability(ctx) {
@@ -293,11 +315,15 @@ export default async function (pi) {
     if (!Array.isArray(active)) return;
     const origin = editToolOrigin();
     if (provider === PROVIDER_NAME) {
-      if (origin !== "custom" && active.includes("edit")) {
+      if (origin === "builtin" && active.includes("edit")) {
         pi.setActiveTools(active.filter((name) => name !== "edit"));
         editHiddenByJack = true;
-      } else if (origin === "custom" && editHiddenByJack) {
-        if (!active.includes("edit")) pi.setActiveTools([...active, "edit"]);
+      } else if (origin !== "builtin" && editHiddenByJack) {
+        // Restore only the availability Jack previously suppressed.
+        // SDK, extension and unknown-origin editors must not be blocked.
+        if (origin !== "absent" && !active.includes("edit")) {
+          pi.setActiveTools([...active, "edit"]);
+        }
         editHiddenByJack = false;
       }
     } else if (editHiddenByJack) {
@@ -554,16 +580,10 @@ export default async function (pi) {
     }
 
     const toolName = String(event?.toolName || "");
-    if (toolName === "edit" && editToolOrigin() !== "custom") {
-      // A stale model tool declaration can still generate a call after edit was
-      // removed from the active loadout. Block only the built-in/unknown editor;
-      // Pi-registered extension overrides retain the normal path admission.
-      return {
-        block: true,
-        reason: "Pi's built-in edit tool is disabled by Jack. Use a different " +
-          "authorized method (read plus write, a patch tool, or a script), then " +
-          "read back and verify the change. Do not retry this edit tool.",
-      };
+    if (toolName === "edit" && editToolOrigin() === "builtin") {
+      // Guard stale native calls even if a model still has an old declaration.
+      // Never deny SDK, third-party or unidentifiable editors by name alone.
+      return { block: true, reason: NATIVE_EDIT_ALTERNATIVE };
     }
     const commandDialect = COMMAND_DIALECT_BY_TOOL.get(toolName) || null;
     if (!STRUCTURED_PATH_TOOLS.has(toolName) && !commandDialect) {
@@ -633,8 +653,9 @@ export default async function (pi) {
   });
 
   let refreshedThisTurn = false;
-  pi.on("before_agent_start", async (_event, ctx) => {
+  pi.on("before_agent_start", async (event, ctx) => {
     reconcileEditToolAvailability(ctx);
+    syncNativeEditGuidance(event, ctx);
     refreshedThisTurn = false;
     await syncProvider();
   });
