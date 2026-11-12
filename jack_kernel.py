@@ -936,8 +936,6 @@ Preserving the verifiable working knowledge of the user's task is the prime dire
 
 Do not simply repeat what has been stated. Capture the meaningful information that will help an agentic system extract the important information related to this user request.
 
-Verify your reasoning and verify anything else needed to fulfill the user request.
-
 Begin with a brief description of the current task and how it relates to the user request.
 </Prime_Directive>
 
@@ -1159,22 +1157,6 @@ AGENTIC_TRANSACTION_LINKS_ENABLED = (
     os.environ.get("JACK_AGENTIC_TRANSACTION_LINKS", "0").strip().lower()
     in {"1", "true", "yes", "on"}
 ) and not AGENTIC_TASK_ANCHOR_ENABLED
-
-
-# Opt-in only; defaults to the validated Phase-3G behavior. In the live A/B,
-# this changed only the appended Stage-2 instruction, not the immutable prompt
-# prefix, transaction linkage, streaming, tool authority, or pruning.
-AGENTIC_DIFFERENTIAL_MEMORY_EXPERIMENT = (
-    os.environ.get("JACK_AGENTIC_DIFFERENTIAL_MEMORY", "0").strip().lower()
-    in {"1", "true", "yes", "on"}
-)
-
-# Experimental causal-paper Stage 2: default OFF pending live downstream recall
-# and cache/prefill comparison. Does not modify the immutable core stage prompt.
-AGENTIC_STAGE2_FINAL_PAPER_EXPERIMENT = (
-    os.environ.get("JACK_AGENTIC_STAGE2_FINAL_PAPER", "0").strip().lower()
-    in {"1", "true", "yes", "on"}
-)
 
 
 def _agentic_visible_turn_label(turn_id: Any) -> Optional[str]:
@@ -4602,11 +4584,6 @@ def _split_prior_jack_output(content: Any) -> tuple[Optional[str], Optional[str]
 # establish final filesystem identity, or upgrade caller-replayed text to trusted evidence.
 _AGENTIC_TOOL_NOTE_OPEN = "\n\n[Jack Tool History - Host-Recorded Receipt]\n"
 _AGENTIC_TOOL_NOTE_CLOSE = "\n[/Jack Tool History - Host-Recorded Receipt]"
-# Only completed *historical* receipts are subject to the separate model-context
-# budget. Current-turn Stage-2 evidence and the committed host audit have NO
-# operation-count or combined-size caps.
-_AGENTIC_TOOL_CONTEXT_BUDGET_CHARS = 4800
-
 
 def _agentic_tool_history_note(history: List[Dict[str, Any]]) -> str:
     """Project only the current turn's completed Stage-1 tool transactions.
@@ -4813,34 +4790,6 @@ def _agentic_stage2_host_tool_evidence_note(history: List[Dict[str, Any]]) -> st
     )
 
 
-def _agentic_limit_tool_history_context(messages: List[Dict[str, Any]]) -> None:
-    """Bound host tool receipts over ALL completed turns without changing A1.
-
-    Only the exact host receipt markers are removed, working from old turns to
-    new turns. The caller's original conversation objects are copy-on-write.
-    This does not reduce the size of user requests, A1 answers, or Stage-2 memory.
-    """
-    consumed = 0
-    for message in reversed(messages):
-        if not isinstance(message, dict) or message.get("role") != "assistant":
-            continue
-        content = message.get("content")
-        if not isinstance(content, str):
-            continue
-        begin = content.find(_AGENTIC_TOOL_NOTE_OPEN)
-        if begin < 0:
-            continue
-        end = content.find(_AGENTIC_TOOL_NOTE_CLOSE, begin + len(_AGENTIC_TOOL_NOTE_OPEN))
-        if end < 0:
-            continue
-        end += len(_AGENTIC_TOOL_NOTE_CLOSE)
-        size = end - begin
-        if consumed + size <= _AGENTIC_TOOL_CONTEXT_BUDGET_CHARS:
-            consumed += size
-        else:
-            message["content"] = content[:begin] + content[end:]
-
-
 def _stage2_reasoning_trace(reasoning: Optional[str]) -> Optional[str]:
     """Format final substantive-stage reasoning for response observability."""
     text = str(reasoning or "").strip()
@@ -4849,36 +4798,18 @@ def _stage2_reasoning_trace(reasoning: Optional[str]) -> Optional[str]:
     label = "AGENTIC NATIVE PASS 2" if AGENTIC_MODE else "DEEP RESEARCH RE-EVALUATION PASS 2"
     return f"===== JACK {label} =====\n[NATIVE REASONING]\n" + text
 
-def _agentic_remove_host_receipts_from_model_content(content: str) -> str:
-    """Drop only complete host receipt envelopes from an assistant model view.
-
-    A caller's full committed artifact remains unchanged for authentication;
-    untrusted/incomplete markers are left untouched, never treated as evidence.
-    """
-    result = content
-    while True:
-        start = result.find(_AGENTIC_TOOL_NOTE_OPEN)
-        if start < 0:
-            return result
-        end = result.find(_AGENTIC_TOOL_NOTE_CLOSE, start + len(_AGENTIC_TOOL_NOTE_OPEN))
-        if end < 0:
-            return result
-        result = result[:start] + result[end + len(_AGENTIC_TOOL_NOTE_CLOSE):]
-
-
 def _agentic_model_memory_view(memory: str, receipt: str) -> str:
-    """Project authenticated memory without host tool receipts.
+    """Retain authenticated memory plus complete host receipt for next Stage 1.
 
-    Receipts remain byte-exact in the outward committed capsule and durable
-    forensic journal, where they prove tool provenance. They are not cognitive
-    memory and must not prime later Stage 1 to imitate tool-result formatting.
-    The caller's original artifact and frozen A1 are not modified.
+    Raw historical tool protocol remains available independently. Receipts
+    supplement that evidence; they never replace complete tool calls/results.
     """
+    carried = memory + receipt
     if AGENTIC_MODE and AGENTIC_TRANSACTION_LINKS_ENABLED:
-        return memory
+        return carried
     return (
         "[Agentic Memory associated with the preceding user request and following frozen response]\n"
-        + memory
+        + carried
     )
 
 
@@ -5196,18 +5127,11 @@ def _agentic_context_report_request(
 def _compact_agentic_completed_capsules(
     messages: List[Dict[str, Any]],
 ) -> Optional[List[Dict[str, Any]]]:
-    """Retain authenticated U/M/A without historical Stage-2 R2.
+    """Retain U/M/A plus baseline tool history; prune historical R1/R2.
 
-    A durable Agentic turn is represented in ordinary conversation order as:
-        exact host-captured user message
-        + committed assistant artifact (Agentic Memory + exact frozen Stage-1 answer).
-
-    Historical native reasoning (including R2), consumed tool-call/result protocol, Jack runtime prompts,
-    and other transient stage machinery are removed. The newest user turn remains active
-    and is not duplicated into the completed history. This keeps user authority byte-faithful
-    while letting each Agentic Memory checkpoint remain turn-local rather than acting as a lossy
-    rewrite of the entire conversation. User requests survive directly in user-role messages,
-    not through a model-authored field in Agentic Memory.
+    Full caller-replayed tool calls/results survive in original order without
+    a count, character, or token cap. Copy-on-write strips only native reasoning
+    and host-private metadata from prior turns.
     """
     compact = strip_secondary_system_messages(messages)
     latest_user_index: Optional[int] = None
@@ -5224,15 +5148,14 @@ def _compact_agentic_completed_capsules(
     projected_pairs = 0
     projection_fallbacks = 0
     opaque_unattributable_messages = 0
-    pruned_tool_messages = 0
+    retained_tool_messages = 0
     pruned_reasoning_chars = 0
 
-    # Memory-only downstream projection: keep authenticated U/M/A, never carry
-    # any previous Stage-2 native reasoning into a new Stage-1 request.
-    # Legacy replayed reasoning is stripped below without mutating the caller.
+    # Downstream projection retains U/M/A and historical tool evidence,
+    # but prunes native R1/R2 without modifying caller-supplied history.
 
-    # Completed history: retain associated U/M/A while retiring old R1,
-    # historical R2, and consumed raw tool protocol.
+    # Completed history: retain U/M/A and original tool protocol, prune
+    # only historical native reasoning (R1/R2).
     for history_index, raw in enumerate(compact[:latest_user_index]):
         if not isinstance(raw, dict):
             continue
@@ -5246,7 +5169,18 @@ def _compact_agentic_completed_capsules(
             retained_user_turns += 1
             continue
         if role == "tool" or raw.get("tool_calls"):
-            pruned_tool_messages += 1
+            # Preserve baseline agent execution history without lossy reduction.
+            # Only historical native reasoning and host-private metadata may go.
+            item = dict(raw)
+            for key in ("reasoning_content", "reasoning", "thinking", "_jack_prior_stage2_reasoning"):
+                value = item.pop(key, None)
+                if isinstance(value, str):
+                    pruned_reasoning_chars += len(value)
+            for key in tuple(item.keys()):
+                if isinstance(key, str) and key.startswith("_jack_"):
+                    item.pop(key, None)
+            retained.append(item)
+            retained_tool_messages += 1
             continue
         if role != "assistant":
             continue
@@ -5316,11 +5250,11 @@ def _compact_agentic_completed_capsules(
         active_hash = _sha256_text(active_target["content"])
 
     LOG.info(
-        "Agentic completed-turn GC: retained user_turns=%d agentic_commits=%d active_user_sha256=%s; pruned tool_messages=%d native_reasoning_chars=%d",
+        "Agentic completed-turn GC: retained user_turns=%d agentic_commits=%d active_user_sha256=%s; retained tool_messages=%d pruned native_reasoning_chars=%d",
         retained_user_turns,
         retained_agentic_commits,
         active_hash,
-        pruned_tool_messages,
+        retained_tool_messages,
         pruned_reasoning_chars,
     )
     if AGENTIC_CONTEXT_ACCOUNTING_ENABLED:
@@ -5329,7 +5263,6 @@ def _compact_agentic_completed_capsules(
             projected_pairs, projection_fallbacks, opaque_unattributable_messages,
             retained_user_turns, retained_agentic_commits,
         )
-    _agentic_limit_tool_history_context(retained)
     return retained + tail
 
 
@@ -6104,20 +6037,11 @@ class OpenAICompatibleBackend:
                 and message.get("role") == "assistant"
                 and any(key in message for key in ("reasoning_content", "reasoning", "thinking"))
             )
-            strip_host_receipt = bool(
-                AGENTIC_MODE
-                and profile.name == "Agentic native pass 1"
-                and message.get("role") == "assistant"
-                and isinstance(message.get("content"), str)
-                and _AGENTIC_TOOL_NOTE_OPEN in message["content"]
-            )
-            if not has_private and not must_strip_reasoning and not strip_host_receipt:
+            if not has_private and not must_strip_reasoning:
                 prepared.append(message)
                 continue
 
             item = dict(message)
-            if strip_host_receipt:
-                item["content"] = _agentic_remove_host_receipts_from_model_content(item["content"])
             # Unique turn ownership remains host-side; no Request/Response/Memory
             # labels or turn IDs are injected into the inference prompt.
             if (
@@ -13345,7 +13269,7 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
         print("Agentic profile (two-stage lifecycle in all profiles)")
         print("  1) Flash      - Stage 1 OFF, Stage 2 OFF, no extensions")
         print("  2) Balanced   - Stage 1 ON,  Stage 2 OFF, no extensions (Default)")
-        print("  3) Thorough   - Stage 1 ON + review ON, Stage 2 ON, no Stage 2 extension")
+        print("  3) Thorough   - Stage 1 ON + review ON, Stage 2 ON")
         print()
         # Choosing Agentic afresh defaults to Balanced, irrespective of a
         # previously saved optional profile. Escape rolls back this editor.
