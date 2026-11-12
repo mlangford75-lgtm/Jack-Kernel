@@ -318,8 +318,8 @@ class KernelConfig:
 
     @property
     def agentic_final_review(self) -> bool:
-        # One Stage-1 verification continuation in Thorough only.
-        return self.agentic_profile == "thorough"
+        # One Stage-1 verification continuation in Exhaustive only.
+        return self.agentic_profile == "exhaustive"
 
     # Human-configurable Qwen preserve-thinking policy. Calling agents cannot
     # override this value; it is owned by the Jack Kernel runtime.
@@ -858,11 +858,12 @@ if REASONING_PROFILES[_reasoning_level].get("disabled"):
     raise RuntimeError("JACK_REASONING_LEVEL=low is disabled in Jack Kernel v0.1.1. Choose off, medium, x-high, deep-research, Local Agentic (Preserve Thinking), code-debugging, or code-debugging-deep.")
 ACTIVE_REASONING_PROFILE = REASONING_PROFILES[_reasoning_level]
 AGENTIC_MODE = ACTIVE_REASONING_PROFILE["mode"] == "agentic"
-if AGENTIC_MODE and CFG.agentic_profile not in {"flash", "balanced", "thorough"}:
-    raise RuntimeError("JACK_AGENTIC_PROFILE must be flash, balanced, or thorough")
+if AGENTIC_MODE and CFG.agentic_profile not in {"flash", "balanced", "thorough", "exhaustive"}:
+    raise RuntimeError("JACK_AGENTIC_PROFILE must be flash, balanced, thorough, or exhaustive")
 AGENTIC_BALANCED_MODE = AGENTIC_MODE and CFG.agentic_profile == "balanced"
 AGENTIC_FLASH_MODE = AGENTIC_MODE and CFG.agentic_profile == "flash"
 AGENTIC_THOROUGH_MODE = AGENTIC_MODE and CFG.agentic_profile == "thorough"
+AGENTIC_EXHAUSTIVE_MODE = AGENTIC_MODE and CFG.agentic_profile == "exhaustive"
 # Balanced generates Stage-2 memory without new native thinking, but still reads
 # Stage-1's preserved reasoning as source material. Thorough Stage 2 thinks.
 AGENTIC_THINKING_OFF_MEMORY_MODE = AGENTIC_BALANCED_MODE
@@ -2361,7 +2362,7 @@ STAGES: Dict[str, StageProfile] = {
     "extended_reflection": StageProfile(
         "Agentic native pass 2" if AGENTIC_MODE else "Deep Research Antithesis pass 2",
         AGENTIC_36_STAGE2_PROMPT if AGENTIC_MODE else ULTRA_STAGE2_ANTITHESIS_PROMPT,
-        not AGENTIC_MODE or AGENTIC_THOROUGH_MODE,
+        not AGENTIC_MODE or AGENTIC_THOROUGH_MODE or AGENTIC_EXHAUSTIVE_MODE,
         ACTIVE_REASONING_PROFILE.get("pass2", "xhigh"),
         False,
         0.50 if AGENTIC_MODE else 0.70,
@@ -8649,11 +8650,17 @@ class JackQwenKernel:
         # Tool IDs in history are not sufficient evidence of resume authority.
         if not messages or not isinstance(messages[-1], dict) or messages[-1].get("role") != "tool":
             return None
+        # The caller replays historical tool results, sometimes from still-live
+        # recovery checkpoints. Only the final contiguous tool-result batch is
+        # the continuation being submitted now. Earlier results remain
+        # historical evidence, never a request to resume their old checkpoint.
+        # Genuine mixed live transactions *within this trailing batch* are
+        # still rejected below; this does not weaken checkpoint authentication.
         tool_messages: List[Dict[str, Any]] = []
         ids_in_request: List[str] = []
-        for raw in messages:
+        for raw in reversed(messages):
             if not isinstance(raw, dict) or raw.get("role") != "tool":
-                continue
+                break
             call_id = raw.get("tool_call_id")
             if not isinstance(call_id, str) or not call_id.strip():
                 continue
@@ -8676,19 +8683,21 @@ class JackQwenKernel:
                 item["_jack_failure_carry_hops"] = 1
             tool_messages.append(item)
 
+        # Reversal made the contiguous frontier easy to identify; preserve the
+        # exact caller order for evidence classification and later processing.
+        tool_messages.reverse()
+        ids_in_request.reverse()
         if not ids_in_request:
             return None
 
         async with self._pending_tool_resume_lock:
             await self._expire_pending_tool_resumes_locked()
 
-            # Calling agents commonly replay full conversation history on a tool
-            # result turn. Retired historical tool results carry no authority over
-            # the currently pending Jack transaction and must not poison it merely
-            # because their IDs remain in caller history. Only IDs that still map
-            # to a live pending Jack checkpoint participate in transaction
-            # selection/validation. Historical nonpending results are ignored and
-            # are never appended to the resumed stage history.
+            # The trailing frontier alone supplies continuation candidates.
+            # Older caller-replayed tool results, including those whose
+            # checkpoints remain pending for transport retry, have no authority
+            # to select or reject the current transaction. They are not appended
+            # to the resumed stage; independent historical evidence remains intact.
             live_states = {
                 id(pending_state): pending_state
                 for pending_state in self._pending_tool_resumes.values()
@@ -12846,9 +12855,7 @@ def _load_cli_config() -> Dict[str, Any]:
             for key in cfg:
                 if key in loaded:
                     cfg[key] = loaded[key]
-            # Existing saved Exhaustive selection keeps native-thinking behavior.
-            if str(cfg.get("agentic_profile", "")).strip().lower() == "exhaustive":
-                cfg["agentic_profile"] = "thorough"
+            # Preserve saved Exhaustive selection: it now has its own review stage.
             cfg["backend_profile"] = _normalize_backend_profile(str(cfg.get("backend_profile", "lmstudio")))
             legacy_reasoning = str(cfg.get("reasoning_level", "x-high")).strip().lower()
             migrated_reasoning = _REASONING_LEVEL_ALIASES.get(legacy_reasoning, legacy_reasoning)
@@ -13269,14 +13276,16 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
         print("Agentic profile (two-stage lifecycle in all profiles)")
         print("  1) Flash      - Stage 1 OFF, Stage 2 OFF, no extensions")
         print("  2) Balanced   - Stage 1 ON,  Stage 2 OFF, no extensions (Default)")
-        print("  3) Thorough   - Stage 1 ON + review ON, Stage 2 ON")
+        print("  3) Thorough   - Stage 1 ON,  Stage 2 ON, no extensions")
+        print("  4) Exhaustive - Stage 1 ON + review ON, Stage 2 ON")
         print()
         # Choosing Agentic afresh defaults to Balanced, irrespective of a
         # previously saved optional profile. Escape rolls back this editor.
-        agentic_choice = _cli_input("Select Agentic profile [1-3] [2]: ").strip().lower() or "2"
+        agentic_choice = _cli_input("Select Agentic profile [1-4] [2]: ").strip().lower() or "2"
         selected_profile = {"1": "flash", "flash": "flash",
                             "2": "balanced", "balanced": "balanced",
-                            "3": "thorough", "thorough": "thorough"}.get(agentic_choice)
+                            "3": "thorough", "thorough": "thorough",
+                            "4": "exhaustive", "exhaustive": "exhaustive"}.get(agentic_choice)
         if selected_profile is None:
             print("Invalid Agentic profile; keeping current reasoning level.")
             return
@@ -13676,7 +13685,7 @@ def _config_to_env(cfg: Dict[str, Any]) -> Dict[str, str]:
         "JACK_BACKEND_EXTRA_HEADERS": json.dumps(cfg.get("backend_extra_headers") or {}, ensure_ascii=False),
         "JACK_VIRTUAL_MODEL": cfg["virtual_model"],
         "JACK_REASONING_LEVEL": cfg["reasoning_level"],
-        "JACK_AGENTIC_PROFILE": ("thorough" if str(cfg.get("agentic_profile", "balanced")).strip().lower() == "exhaustive" else cfg.get("agentic_profile", "balanced")),
+        "JACK_AGENTIC_PROFILE": cfg.get("agentic_profile", "balanced"),
         "JACK_PRESERVE_THINKING": "1" if cfg.get("preserve_thinking", True) else "0",
         "JACK_BACKEND_TIMEOUT_SECONDS": cfg["backend_timeout_seconds"],
         "JACK_REASONING_BUDGET_TOKENS": cfg.get("reasoning_budget_tokens", 100000),
