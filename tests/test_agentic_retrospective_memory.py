@@ -254,4 +254,3 @@ def test_stage2_extensions_are_removed_without_disabling_core_memory():
     assert not hasattr(k, "AGENTIC_DIFFERENTIAL_MEMORY_EXPERIMENT")
     assert "Verify your reasoning and verify anything else needed to fulfill the user request." not in k.AGENTIC_36_STAGE2_PROMPT
     assert "no Stage 2 extension" not in source
-
