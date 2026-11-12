@@ -171,9 +171,9 @@ def test_startup_config_switch_preserves_default_and_env(monkeypatch, tmp_path):
     assert k._config_to_env(cfg)["JACK_CONTEXT_MONITOR"] == "1"
     cfg["context_monitor_enabled"] = False
     assert k._config_to_env(cfg)["JACK_CONTEXT_MONITOR"] == "0"
-    assert k._launch_context_monitor_failsoft(8001) is False  # Non-Windows CI: no GUI
     k2 = kernel(monkeypatch, tmp_path, enabled=False)
     assert k2.CFG.context_monitor_enabled is False
+    assert k2._launch_context_monitor_failsoft(8001) is False  # Never spawn GUI in CI
 
 
 def test_windows_monitor_is_detached_and_does_not_inherit_backend_credentials(monkeypatch, tmp_path):
