@@ -211,7 +211,8 @@ def test_agentic_submenu_selects_and_persists_profile(monkeypatch, tmp_path, cho
         monkeypatch.setattr(k, "_cli_input", lambda *_a, **_kw: next(answers_again))
         k._run_transactional_editor(k._edit_reasoning, dict(k.CLI_DEFAULTS))
     menu = output.getvalue()
-    assert "Stage 1 ON + review ON, Stage 2 ON" in menu\n    assert "Stage 2 extension" not in menu
+    assert "Stage 1 ON + review ON, Stage 2 ON" in menu
+    assert "Stage 2 extension" not in menu
     assert "Stage 2 ON + review ON" not in menu
     assert "Stage 2 OFF, no extensions (Default)" in menu
     assert not hasattr(k.KernelConfig(agentic_profile=cfg["agentic_profile"]), "agentic_stage2_final_review")
