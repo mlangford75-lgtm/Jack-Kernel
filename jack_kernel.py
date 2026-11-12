@@ -1030,10 +1030,9 @@ def _agentic_stage2_test_history(
 ) -> List[Dict[str, Any]]:
     """The sole Agentic Stage-2 request view; never mutate canonical history.
 
-    Stage 2 sees the authentic current request, native Stage-1 reasoning
-    across tool continuations, and exact frozen Stage-1 answer only. Raw tool
-    calls, tool results, and intermediate assistant prose remain in canonical
-    host history for forensic commit and receipts, not for model distillation.
+    Every Agentic retrospective sees only the current-turn native reasoning.
+    Exact user request, frozen response, and tool evidence remain in canonical
+    history for forensic commit and continuity, not model-side distillation.
     """
     if not AGENTIC_MODE or profile.name != "Agentic native pass 2":
         return messages
@@ -5984,8 +5983,8 @@ class OpenAICompatibleBackend:
         stages keep their native reasoning because those profiles run thinking-ON with
         Preserve Thinking under their stage contracts.
         """
-        # Balanced/Thorough disable NEW Stage-2 thinking, not Stage-1 R1 as input.
-        thinking_off_r1_reader = AGENTIC_THINKING_OFF_MEMORY_MODE and profile.name == "Agentic native pass 2"
+        # Any Agentic retrospective may consume recorded reasoning without generating new thinking.
+        thinking_off_r1_reader = AGENTIC_MODE and profile.name == "Agentic native pass 2"
         strip_reasoning = not profile.thinking and not thinking_off_r1_reader
         source_messages = (
             self._ultra_thesis_history_projection(messages)
@@ -6155,7 +6154,7 @@ class OpenAICompatibleBackend:
         debugging_fresh_boundary = profile.name.startswith("Code Debugging Pass ") or profile.name == "Code Debugging Summary"
         # Preserve Thinking controls whether supplied R1 remains visible in the
         # Stage-2 chat template; it is independent of Stage-2 generation.
-        thinking_off_r1_reader = AGENTIC_THINKING_OFF_MEMORY_MODE and profile.name == "Agentic native pass 2"
+        thinking_off_r1_reader = AGENTIC_MODE and profile.name == "Agentic native pass 2"
         effective_preserve = bool(
             (profile.thinking or thinking_off_r1_reader)
             and (
