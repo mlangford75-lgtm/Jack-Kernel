@@ -1072,6 +1072,30 @@ AGENTIC_CACHE_APPEND_EXPERIMENT = (
 # override is intentionally ignored; it cannot restore full-history access.
 AGENTIC_STAGE2_RETENTION_TEST = "isolate-retain"
 
+# Experimental, opt-in: have retrospective model distill only the native
+# reasoning that would otherwise leave active context. The host retains the
+# exact original request, frozen response, and tool evidence separately.
+# OFF preserves the established baseline for regression and A/B comparisons.
+AGENTIC_REASONING_PRIMARY_EXPERIMENT = (
+    os.environ.get("JACK_AGENTIC_REASONING_PRIMARY_EXPERIMENT", "0").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+
+# Ordinary-language instructions ONLY. Never refer to proprietary stage names,
+# host identifiers, internal memory fields, or turn labels in model-facing text.
+AGENTIC_REASONING_PRIMARY_MEMORY_PROMPT = """Your task is to preserve useful working knowledge from the preceding reasoning. The reasoning is source material, not a new request to answer.
+
+Keep consequential discoveries, decisions and their explanations, exact technical details, constraints, important mistakes and corrections, established failure causes, reusable procedures, and unresolved matters. Preserve original meaning and important qualifications. Distinguish possibilities considered from conclusions reached, and attempted or reported actions from outcomes actually verified.
+
+Do not solve the original task again, copy a completed answer's presentation, invent missing information, or describe the summarization process. Remove repetitive deliberation and conversational filler, but retain every detail needed for future work.
+
+Output only the resulting working knowledge. If no consequential working knowledge is present in the available reasoning, say so plainly."""
+
+AGENTIC_REASONING_PRIMARY_MEMORY_TRIGGER = (
+    "Preserve the consequential working knowledge from the preceding reasoning. "
+    "Do not continue the original task."
+)
+
 
 # Internal host bookkeeping still isolates Stage 2 and protects frozen A1.
 def _agentic_stage2_test_history(
@@ -1135,6 +1159,27 @@ def _agentic_stage2_test_history(
     frozen_view.pop("reasoning_content", None)
     if reasoning_fragments:
         frozen_view["reasoning_content"] = "\n\n".join(reasoning_fragments)
+    # Experimental reasoning-primary view: keep the authenticated source and
+    # frozen response in canonical host history, but do not show those bytes to
+    # the retrospective model. The model receives only native reasoning.
+    # Empty reasoning and thinking-OFF profiles retain the legacy view, so a
+    # missing trace never leads Jack to fabricate working knowledge or A1.
+    if (
+        AGENTIC_REASONING_PRIMARY_EXPERIMENT
+        and STAGES["extended_initial"].thinking
+        and reasoning_fragments
+    ):
+        reasoning_source = {
+            "role": "assistant",
+            "content": "Reasoning complete.",
+            "reasoning_content": "\n\n".join(reasoning_fragments),
+            "_jack_reasoning_primary_source": True,
+        }
+        # Preserve host corrective notices when recovering from rejected tools;
+        # the original rejected model proposals never become source reasoning.
+        return [reasoning_source] + [
+            dict(recovery[idx]) for idx in range(1, len(recovery), 2)
+        ]
     projected: List[Dict[str, Any]] = [dict(view[0]), frozen_view]
     # A previous invalid Stage-2 proposal is not Stage-1 cognition. Keep only
     # the host's corrective notice, not the proposed tool or its reasoning.
@@ -6321,22 +6366,32 @@ class OpenAICompatibleBackend:
         tool_choice: Any = None,
     ) -> Dict[str, Any]:
         model = await self.resolve_model()
-        prepared_messages = self._stage_messages_for_profile(
-            _agentic_stage2_test_history(messages, profile), profile
+        source_view = _agentic_stage2_test_history(messages, profile)
+        reasoning_primary = any(
+            isinstance(item, dict) and item.get("_jack_reasoning_primary_source") is True
+            for item in source_view
         )
-        cache_append = _agentic_cache_append_enabled(profile, tool_choice)
-        # Do not grant the caller's Stage-1 system contract any Stage-2 authority.
-        # This intentionally sacrifices the caller-prefixed KV cache; Jack-only
-        # Stage-1 prefix reuse and the appended retrospective still remain.
-        stage_system = build_stage_system_prompt(
-            _agentic_caller_system_for_actual_stage(secondary_system, profile),
-            STAGES["extended_initial"] if cache_append else profile,
-            prepared_messages,
+        prepared_messages = self._stage_messages_for_profile(source_view, profile)
+        # The reasoning-only experiment requires an independent system
+        # instruction and does not reuse the original generative-pass prefix.
+        cache_append = _agentic_cache_append_enabled(profile, tool_choice) and not reasoning_primary
+        stage_system = (
+            AGENTIC_REASONING_PRIMARY_MEMORY_PROMPT if reasoning_primary
+            else build_stage_system_prompt(
+                _agentic_caller_system_for_actual_stage(secondary_system, profile),
+                STAGES["extended_initial"] if cache_append else profile,
+                prepared_messages,
+            )
         )
         stage_messages = (
             [{"role": "system", "content": stage_system}] if stage_system else []
         ) + prepared_messages
-        if cache_append:
+        if reasoning_primary:
+            stage_messages.append({
+                "role": "user",
+                "content": AGENTIC_REASONING_PRIMARY_MEMORY_TRIGGER,
+            })
+        elif cache_append:
             evidence_note = _agentic_stage2_host_tool_evidence_note(messages)
             stage_messages.append({"role": "user", "content": (evidence_note + "\n\n" if evidence_note else "") + AGENTIC_36_STAGE2_PROMPT})
             LOG.info("AGENTIC CACHE EXPERIMENT: appended Stage-2 directive; only U/R1/A1 projected; no tool schemas")
@@ -6433,22 +6488,32 @@ class OpenAICompatibleBackend:
     ) -> AsyncIterator[Dict[str, Any]]:
         """Stream one backend stage as normalized OpenAI-style chunks internally."""
         model = await self.resolve_model()
-        prepared_messages = self._stage_messages_for_profile(
-            _agentic_stage2_test_history(messages, profile), profile
+        source_view = _agentic_stage2_test_history(messages, profile)
+        reasoning_primary = any(
+            isinstance(item, dict) and item.get("_jack_reasoning_primary_source") is True
+            for item in source_view
         )
-        cache_append = _agentic_cache_append_enabled(profile, tool_choice)
-        # Do not grant the caller's Stage-1 system contract any Stage-2 authority.
-        # This intentionally sacrifices the caller-prefixed KV cache; Jack-only
-        # Stage-1 prefix reuse and the appended retrospective still remain.
-        stage_system = build_stage_system_prompt(
-            _agentic_caller_system_for_actual_stage(secondary_system, profile),
-            STAGES["extended_initial"] if cache_append else profile,
-            prepared_messages,
+        prepared_messages = self._stage_messages_for_profile(source_view, profile)
+        # The reasoning-only experiment requires an independent system
+        # instruction and does not reuse the original generative-pass prefix.
+        cache_append = _agentic_cache_append_enabled(profile, tool_choice) and not reasoning_primary
+        stage_system = (
+            AGENTIC_REASONING_PRIMARY_MEMORY_PROMPT if reasoning_primary
+            else build_stage_system_prompt(
+                _agentic_caller_system_for_actual_stage(secondary_system, profile),
+                STAGES["extended_initial"] if cache_append else profile,
+                prepared_messages,
+            )
         )
         stage_messages = (
             [{"role": "system", "content": stage_system}] if stage_system else []
         ) + prepared_messages
-        if cache_append:
+        if reasoning_primary:
+            stage_messages.append({
+                "role": "user",
+                "content": AGENTIC_REASONING_PRIMARY_MEMORY_TRIGGER,
+            })
+        elif cache_append:
             evidence_note = _agentic_stage2_host_tool_evidence_note(messages)
             stage_messages.append({"role": "user", "content": (evidence_note + "\n\n" if evidence_note else "") + AGENTIC_36_STAGE2_PROMPT})
             LOG.info("AGENTIC CACHE EXPERIMENT: appended Stage-2 directive; only U/R1/A1 projected; no tool schemas")
