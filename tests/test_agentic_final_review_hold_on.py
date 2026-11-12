@@ -1,4 +1,4 @@
-"""Thorough one-shot Stage-1 final-review continuation before A1 freeze.
+"""Exhaustive one-shot Stage-1 final-review continuation before A1 freeze.
 
 The test isolates Jack's transaction behavior from stochastic model competence.
 """
@@ -16,7 +16,7 @@ PROMPT = "Wait, re-verify your reasoning. Test for errors, mistakes, or poor qua
 
 def load(monkeypatch, tmp_path, enabled):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
-    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "thorough" if enabled else "balanced")
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "exhaustive" if enabled else "balanced")
     monkeypatch.setenv("JACK_BACKEND_MODEL", "unit-test-model")
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
     monkeypatch.setenv("JACK_LOOP_DETECTOR", "0")
