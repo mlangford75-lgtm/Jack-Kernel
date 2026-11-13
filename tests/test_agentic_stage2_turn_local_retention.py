@@ -189,8 +189,8 @@ def test_abc_current_turn_projection_and_original_history_unchanged(monkeypatch,
         assert results[variant][0].AGENTIC_STAGE2_RETENTION_TEST == "isolate-retain"
     # Filtered failed-call evidence is a separate host-owned system datum,
     # never part of the authenticated U/R1/A1 projection.
-    assert payloads[0]["messages"][1]["content"] == results["baseline"][0].AGENTIC_STAGE2_MEMORY_TRIGGER
-    note = payloads[0]["messages"][2]
+    assert payloads[0]["messages"][2]["content"] == results["baseline"][0].AGENTIC_STAGE2_MEMORY_TRIGGER
+    note = payloads[0]["messages"][1]
     assert note["role"] == "system"
     projected = payloads[0]["messages"][3:-1]
     assert len(projected) == 2
@@ -364,7 +364,7 @@ def test_retired_tool_receipts_keep_outcomes_without_raw_tool_protocol(monkeypat
     assert payload["messages"][3]["content"] == raw[4]["content"]
     assert payload["messages"][4]["content"] == raw[-1]["content"]
     assert payload["messages"][-1] == {"role": "user", "content": k.AGENTIC_INTERNAL_GENERATION_PULSE}
-    note = payload["messages"][2]["content"]
+    note = payload["messages"][1]["content"]
     assert 'call_id="call-1"' in note and 'call_id="call-2"' not in note
     assert "outcome=REPORTED_ERROR" in note
     assert "outcome=RESULT_RETURNED_NO_STRUCTURED_ERROR" not in note
@@ -420,8 +420,8 @@ def test_stage2_noncache_fallback_labels_host_record(monkeypatch, tmp_path, stre
     payload = asyncio.run(payload_for(k, "extended_reflection", stream, history()))
     assert payload["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
     assert payload["messages"][-1]["role"] == "user"
-    assert "Host-recorded tool outcome evidence" in payload["messages"][2]["content"]
-    assert "outcome=REPORTED_ERROR" in payload["messages"][2]["content"]
+    assert "Host-recorded tool outcome evidence" in payload["messages"][1]["content"]
+    assert "outcome=REPORTED_ERROR" in payload["messages"][1]["content"]
     assert payload["messages"][-1] == {"role": "user", "content": k.AGENTIC_INTERNAL_GENERATION_PULSE}
     assert "tools" not in payload
 
@@ -477,7 +477,7 @@ def test_incomplete_host_tool_record_never_claims_no_calls(monkeypatch, tmp_path
     })
     k.append_extended_candidate_response(h, {"content": "I wrote index.html."})
     payload = asyncio.run(payload_for(k, "extended_reflection", stream, h))
-    note = payload["messages"][2]["content"]
+    note = payload["messages"][1]["content"]
     assert "Record coverage: INCOMPLETE_OR_UNCONFIRMED" in note
     assert "RECORD_INCOMPLETE: 1 host-recorded tool call" in note
     assert "NO_TOOL_CALLS_RECORDED:" not in note
@@ -490,7 +490,7 @@ def test_success_and_failure_notes_do_not_claim_no_tools(monkeypatch, tmp_path, 
     h = history()
     h[-1]["_jack_agentic_stage1_tool_observation_complete"] = True
     payload = asyncio.run(payload_for(k, "extended_reflection", stream, h))
-    note = payload["messages"][2]["content"]
+    note = payload["messages"][1]["content"]
     assert "Record coverage: COMPLETE_CURRENT_TURN" in note
     assert "outcome=REPORTED_ERROR" in note
     assert "outcome=RESULT_RETURNED_NO_STRUCTURED_ERROR" not in note
