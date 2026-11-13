@@ -234,3 +234,40 @@ def test_every_agentic_profile_uses_authenticated_user_as_final_request(monkeypa
     assert wire[-1] == {"role": "user", "content": "Make a clock."}
     assert [m["content"] for m in wire if m["role"] == "user"] == ["Make a clock."]
     assert "." not in [m["content"] for m in wire if m["role"] == "user"]
+@pytest.mark.parametrize("request", [
+    r'explore "C:\Users\default.DESKTOP-M8143Q1\Desktop\clock"',
+    "list everything in the folder",
+])
+@pytest.mark.parametrize("multimodal", [False, True])
+def test_stage2_real_user_not_placeholder_regression(monkeypatch, tmp_path, request, multimodal):
+    """Live Gemma regression: '.' must never appear as the user task."""
+    k = load(monkeypatch, tmp_path, cache_enabled=False)
+    original_content = (
+        [{"type": "text", "text": request}]
+        if multimodal else request
+    )
+    source = [
+        {"role": "user", "content": original_content},
+        {"role": "assistant", "content": "Explored requested folder.",
+         "reasoning_content": "Verified workspace listing.",
+         "_jack_extended_candidate_response": True},
+    ]
+    original = json.dumps(source, sort_keys=True)
+    profile = k.STAGES["extended_reflection"]
+    isolated = k._agentic_stage2_test_history(source, profile)
+    projected = k.OpenAICompatibleBackend(k.CFG)._stage_messages_for_profile(
+        isolated, profile
+    )
+    wire = [{"role": "system", "content": k.AGENTIC_36_STAGE2_PROMPT}] + projected
+    k._agentic_attach_system_stage_control(wire, source, profile)
+    k._agentic_stage2_put_authenticated_user_last(wire, isolated, projected)
+    assert wire[0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
+    assert wire[1] == {"role": "system", "content": k.AGENTIC_STAGE2_MEMORY_TRIGGER}
+    assert len(wire) == 4
+    assert wire[-2]["role"] == "assistant"
+    assert wire[-2]["content"] == "Explored requested folder."
+    assert wire[-2]["reasoning_content"] == "Verified workspace listing."
+    assert wire[-1] == {"role": "user", "content": original_content}
+    assert [m["content"] for m in wire if m["role"] == "user"] == [original_content]
+    assert "." not in [m["content"] for m in wire if m["role"] == "user"]
+    assert json.dumps(source, sort_keys=True) == original
