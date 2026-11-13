@@ -376,3 +376,36 @@ def test_stage2_receives_current_failed_tool_evidence_without_successful_tool_pr
     assert "old-call" not in evidence
     assert messages[-1] == {"role": "user", "content": "Proceed."}
     assert "tools" not in payloads[0]
+
+
+@pytest.mark.parametrize("retired", (False, True))
+def test_stage2_failure_excerpt_preserves_head_tail_and_truncation(monkeypatch, tmp_path, retired):
+    monkeypatch.setenv("JACK_TOOL_EVIDENCE_EXCERPT_CHARS", "256")
+    k = kernel(monkeypatch, tmp_path, profile="thorough")
+    error = "EDIT FAILED: exact source text absent " + ("x" * 1000) + " USE READ MODIFY WRITE INSTEAD"
+    user = {"role": "user", "content": "Fix clock.py."}
+    call = {
+        "role": "assistant", "content": "", "_jack_internal_tool_exchange": True,
+        "_jack_stage_key": "extended_initial",
+        "tool_calls": [{"id": "edit-7", "type": "function",
+                        "function": {"name": "edit", "arguments": '{"path":"clock.py"}'}}],
+    }
+    result = {"role": "tool", "name": "edit", "tool_call_id": "edit-7",
+              "content": error, "_jack_internal_tool_exchange": True,
+              "_jack_internal_tool_failed": True}
+    frozen = {"role": "assistant", "content": "Edit failed and correction remains pending.",
+              "_jack_extended_candidate_response": True,
+              "_jack_agentic_stage1_tool_observation_complete": True}
+    h = [user] + (k._tool_evidence_receipts_from_group([call, result]) if retired
+                  else [call, result]) + [frozen]
+    before = copy.deepcopy(h)
+    note = k._agentic_stage2_host_tool_evidence_note(h, failures_only=True)
+    assert h == before
+    assert 'call_id="edit-7"' in note
+    assert "outcome=REPORTED_ERROR" in note
+    assert "untrusted_reported_error_excerpt=" in note
+    assert "EDIT FAILED: exact source text absent" in note
+    assert "USE READ MODIFY WRITE INSTEAD" in note
+    assert "error_excerpt_truncated=YES" in note
+    assert "x" * 1000 not in note
+    assert "reported diagnostic text, not independently verified root causes" in note
