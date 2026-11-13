@@ -4890,10 +4890,10 @@ def _stage2_reasoning_trace(reasoning: Optional[str]) -> Optional[str]:
 # Model-produced Jack identity lines are not authoritative and should not become
 # a repeated answer-format demonstration in later Stage-1 generations.
 _AGENTIC_HISTORICAL_ID_LINE_RE = re.compile(
-    r"(?im)^[ \\t]*(?:[-*][ \\t]*)?"
-    r"(?:Work[ \\t]+ID[ \\t]*:[ \\t]*jack-turn-|"
-    r"Memory[ \\t]+Attempt[ \\t]+ID[ \\t]*:[ \\t]*jack-attempt-)"
-    r"[0-9a-f]{32}[ \\t]*(?:\\r?\\n|$)"
+    r"(?im)^[ \t]*(?:[-*][ \t]*)?"
+    r"(?:Work[ \t]+ID[ \t]*:[ \t]*jack-turn-|"
+    r"Memory[ \t]+Attempt[ \t]+ID[ \t]*:[ \t]*jack-attempt-)"
+    r"[0-9a-f]{32}[ \t]*(?:\r?\n|$)"
 )
 
 
