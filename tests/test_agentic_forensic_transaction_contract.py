@@ -65,8 +65,13 @@ def test_transaction_commit_and_restart_recovery(monkeypatch, tmp_path):
         history, k.STAGES["extended_reflection"]
     )
     isolated = k._agentic_stage2_test_history(history, k.STAGES["extended_reflection"])
-    assert len(isolated) == 2
-    assert isolated[0]["content"] == original["content"]
+    # The authenticated Work ID and memory attempt are now explicit source
+    # metadata, preceding the unchanged request and frozen response.
+    assert len(isolated) == 3
+    assert isolated[0]["role"] == "system"
+    assert turn in isolated[0]["content"]
+    assert record.stage2_attempt_id in isolated[0]["content"]
+    assert isolated[1]["content"] == original["content"]
     assert isolated[-1]["content"] == answer
     assert isolated[-1]["reasoning_content"] == "current R1"
 
