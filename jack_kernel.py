@@ -6227,7 +6227,7 @@ class OpenAICompatibleBackend:
                 )
                 and _AGENTIC_HISTORICAL_ID_LINE_RE.search(message["content"])
             )
-            if not has_private and not must_strip_reasoning and not obsolete_id_lines:
+            if not has_private and not must_strip_reasoning and not obsolete_id_lines and historical_kind != "A1":
                 prepared.append(message)
                 continue
 
