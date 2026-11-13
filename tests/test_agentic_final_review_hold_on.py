@@ -59,7 +59,9 @@ def test_exact_prompt_and_single_same_turn_review_nonstream(monkeypatch, tmp_pat
     result = asyncio.run(kernel._run_stage(history, "", "extended_initial", usage, append=False))
     assert len(backend.calls) == 2
     assert backend.calls[0] == [{"role": "user", "content": "What is 7*8?", "_jack_agentic_turn_id": history[0]["_jack_agentic_turn_id"]}]
-    assert backend.calls[1][-1]["content"] == PROMPT
+    assert backend.calls[1][-1]["content"] == k.AGENTIC_FINAL_REVIEW_TRIGGER
+    assert "not a new user request" in k.AGENTIC_FINAL_REVIEW_TRIGGER
+    assert k.AGENTIC_FINAL_REVIEW_PROMPT in k.AGENTIC_FINAL_REVIEW_TRIGGER
     assert backend.calls[1][-1]["content"] == k.AGENTIC_FINAL_REVIEW_TRIGGER
     assert backend.calls[1][-1]["_jack_internal_agentic_final_review_trigger"] is True
     assert backend.calls[1][-2]["content"] == "Unverified draft"
