@@ -82,5 +82,5 @@ def test_final_paper_flag_cannot_change_current_turn_memory(monkeypatch, tmp_pat
     assert "Old memory" not in json.dumps(a)
     assert a["messages"][0]["content"] == control.AGENTIC_36_STAGE2_PROMPT
     assert a["messages"][0]["content"].startswith("You must always follow the Prime Directive.")
-    assert a["messages"][3] == {"role": "user", "content": "Proceed."}
+    assert a["messages"][3] == {"role": "user", "content": control.AGENTIC_STAGE2_MEMORY_TRIGGER}
     assert "tools" not in a
