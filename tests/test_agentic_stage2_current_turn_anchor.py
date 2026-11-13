@@ -85,7 +85,7 @@ def test_stage2_sees_current_r1_but_never_old_r2(cache):
     # flag must not switch the authoritative system prompt back to Stage 1.
     assert p["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
     assert p["messages"][1] == {"role": "system", "content": k.AGENTIC_STAGE2_MEMORY_TRIGGER}
-    assert p["messages"][-1] == {"role": "user", "content": k.AGENTIC_INTERNAL_GENERATION_PULSE}
+    assert p["messages"][-1] == {"role": "user", "content": "Turn 2: generate cuckoo clock SVG"}
     assert "tool_choice" not in p
     assert "tools" not in p
 
