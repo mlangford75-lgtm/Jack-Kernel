@@ -369,9 +369,9 @@ def test_stage2_receives_current_failed_tool_evidence_without_successful_tool_pr
     assert len(payloads) == 1
     messages = payloads[0]["messages"]
     assert messages[0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
-    assert messages[1] == {"role": "system", "content": k.AGENTIC_STAGE2_MEMORY_TRIGGER}
-    assert messages[2]["role"] == "system"
-    evidence = messages[2]["content"]
+    assert messages[1]["role"] == "system"
+    assert messages[2] == {"role": "system", "content": k.AGENTIC_STAGE2_MEMORY_TRIGGER}
+    evidence = messages[1]["content"]
     assert 'call_id="failed-call"' in evidence
     assert "REPORTED_ERROR" in evidence
     assert "successful-call" not in evidence
