@@ -1087,7 +1087,10 @@ def _agentic_stage2_test_history(
     frozen_view.pop("reasoning", None)
     frozen_view.pop("thinking", None)
     frozen_view.pop("reasoning_content", None)
-    if reasoning_fragments:
+    # Flash has no Stage-1 native-reasoning contract. Ignore incidental or
+    # replayed reasoning fields rather than showing them to its memory pass.
+    # The authenticated request and frozen answer remain available in Flash.
+    if reasoning_fragments and not AGENTIC_FLASH_MODE:
         frozen_view["reasoning_content"] = "\n\n".join(reasoning_fragments)
     # Preserve the original request and exact A1 in the model's source.
     # Jack, not the model, determines ownership and association. A1 matters
