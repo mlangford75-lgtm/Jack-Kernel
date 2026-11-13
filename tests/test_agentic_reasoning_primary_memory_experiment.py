@@ -73,10 +73,14 @@ def test_all_agentic_profiles_get_same_reasoning_only_source(monkeypatch, tmp_pa
     assert [m["role"] for m in projected] == ["user", "assistant"]
     assert projected[0]["content"] == "CURRENT REQUEST: create three customers; end with STATE CARD"
     assert projected[1]["content"] == "FINAL USER-FACING ANSWER: three customers\nSTATE CARD"
-    assert projected[1]["reasoning_content"] == (
-        "Considered A; rejected for duplication.\n\n"
-        "Chose B. Exact reusable insight: preserve unique relationships."
-    )
+    if profile == "flash":
+        # Flash disables native reasoning; synthetic source R1 must not leak.
+        assert "reasoning_content" not in projected[1]
+    else:
+        assert projected[1]["reasoning_content"] == (
+            "Considered A; rejected for duplication.\n\n"
+            "Chose B. Exact reusable insight: preserve unique relationships."
+        )
     assert "PAST USER" not in json.dumps(projected)
     assert "PAST ANSWER" not in json.dumps(projected)
     assert not hasattr(k, "AGENTIC_REASONING_PRIMARY_EXPERIMENT")
@@ -142,7 +146,10 @@ def test_backend_payload_is_restricted_and_model_neutral(monkeypatch, tmp_path, 
     ]
     assert payload["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
     assert payload["messages"][1]["content"] == "CURRENT REQUEST: create three customers; end with STATE CARD"
-    assert "Chose B." in payload["messages"][2]["reasoning_content"]
+    if profile == "flash":
+        assert "reasoning_content" not in payload["messages"][2]
+    else:
+        assert "Chose B." in payload["messages"][2]["reasoning_content"]
     assert payload["messages"][2]["content"].endswith("STATE CARD")
     assert "PAST USER" not in json.dumps(payload["messages"])
     assert "CALLER SYSTEM MUST BE ISOLATED" not in json.dumps(payload["messages"])
