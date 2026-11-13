@@ -888,7 +888,9 @@ _STAGE_CONTINUATIONS = {
 
 # One plain-language memory directive. Jack owns evidence isolation and stage authority.
 # Stage-1 cognition and retrospective prompts are explicitly reviewed independently.
-_AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION = """Preserve the useful working knowledge from the preceding reasoning before that reasoning is removed from active context.
+_AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION = """Begin with a brief description of the current task and how it relates to the user request.
+
+After the brief description, preserve the consequential working knowledge from the preceding reasoning and completed response before that reasoning is removed from active context.
 
 Retain consequential discoveries, established decisions and their explanations, exact technical details, constraints, failure causes and successful corrections when known, reusable methods, significant caveats, and unresolved matters. Preserve important names, numbers, paths, identifiers, and qualifications exactly.
 
@@ -1030,9 +1032,9 @@ def _agentic_stage2_test_history(
 ) -> List[Dict[str, Any]]:
     """The sole Agentic Stage-2 request view; never mutate canonical history.
 
-    Every Agentic retrospective sees only the current-turn native reasoning.
-    Exact user request, frozen response, and tool evidence remain in canonical
-    history for forensic commit and continuity, not model-side distillation.
+    Every Agentic retrospective sees only the authenticated current user request,
+    current-turn native reasoning and exact frozen response. Raw tool protocol
+    remains in canonical history for deterministic execution continuity.
     """
     if not AGENTIC_MODE or profile.name != "Agentic native pass 2":
         return messages
@@ -1085,24 +1087,21 @@ def _agentic_stage2_test_history(
     frozen_view.pop("reasoning_content", None)
     if reasoning_fragments:
         frozen_view["reasoning_content"] = "\n\n".join(reasoning_fragments)
-    # The experimental branch applies this source policy to EVERY Agentic
-    # profile. There is no runtime toggle or legacy summarization fallback.
-    # Keep authenticated U, exact A1 and complete tool evidence in canonical
-    # history. The model sees only current-turn native reasoning when available.
-    # Flash / missing native reasoning receives an explicit empty-source note;
-    # do not manufacture reasoning or promote the user-facing A1 into memory.
-    reasoning_source: Dict[str, Any] = {
-        "role": "assistant",
-        "content": (
-            "Reasoning is available for distillation."
-            if reasoning_fragments else
-            "No reasoning was supplied for distillation."
-        ),
-        "_jack_reasoning_primary_source": True,
-    }
-    if reasoning_fragments:
-        reasoning_source["reasoning_content"] = "\n\n".join(reasoning_fragments)
-    return [reasoning_source] + [
+    # Preserve the original request and exact A1 in the model's source.
+    # Jack, not the model, determines ownership and association. A1 matters
+    # when conclusions only appear in the response or Flash supplies no R1.
+    source_user = dict(view[0])
+    record = _agentic_forensic_turn(messages)
+    if record is not None:
+        if source_user.get("_jack_agentic_turn_id") != record.turn_id:
+            raise ForensicConflict("Stage-2 work identity does not match the authenticated request")
+        if record.frozen_a1_sha256 != _sha256_text(_content_to_text(frozen.get("content"))):
+            raise ForensicConflict("Stage-2 response differs from the owned frozen A1")
+        if not record.stage2_attempt_id:
+            raise ForensicConflict("Stage-2 attempt identity missing")
+        # Model-facing source only; no change to canonical user request or A1.
+        source_user["_jack_agentic_stage2_attempt_id"] = record.stage2_attempt_id
+    return [source_user, frozen_view] + [
         dict(recovery[idx]) for idx in range(1, len(recovery), 2)
     ]
 
@@ -6288,9 +6287,9 @@ class OpenAICompatibleBackend:
         source_view = _agentic_stage2_test_history(messages, profile)
         reasoning_primary = AGENTIC_MODE and profile.name == "Agentic native pass 2"
         prepared_messages = self._stage_messages_for_profile(source_view, profile)
-        # Every Agentic profile uses the dedicated plain-language retrospective
-        # system and reasoning-only source. This experimental branch does not
-        # offer a legacy summary mode or cache-append prompt substitution.
+        # Every Agentic profile uses one isolated directive and only the
+        # authenticated request, native R1 and exact frozen A1 as source.
+        # No legacy summary mode or cache-append prompt substitution.
         cache_append = False if reasoning_primary else _agentic_cache_append_enabled(profile, tool_choice)
         stage_system = (
             AGENTIC_36_STAGE2_PROMPT if reasoning_primary
@@ -6408,9 +6407,9 @@ class OpenAICompatibleBackend:
         source_view = _agentic_stage2_test_history(messages, profile)
         reasoning_primary = AGENTIC_MODE and profile.name == "Agentic native pass 2"
         prepared_messages = self._stage_messages_for_profile(source_view, profile)
-        # Every Agentic profile uses the dedicated plain-language retrospective
-        # system and reasoning-only source. This experimental branch does not
-        # offer a legacy summary mode or cache-append prompt substitution.
+        # Every Agentic profile uses one isolated directive and only the
+        # authenticated request, native R1 and exact frozen A1 as source.
+        # No legacy summary mode or cache-append prompt substitution.
         cache_append = False if reasoning_primary else _agentic_cache_append_enabled(profile, tool_choice)
         stage_system = (
             AGENTIC_36_STAGE2_PROMPT if reasoning_primary
