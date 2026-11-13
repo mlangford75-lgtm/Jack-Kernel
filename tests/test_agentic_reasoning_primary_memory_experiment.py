@@ -248,3 +248,30 @@ def test_compaction_retires_both_reasoning_traces_preserving_tool_history(monkey
     assert any(m.get("tool_calls") == h[1]["tool_calls"] for m in compact)
     assert any(m.get("role") == "tool" and m.get("content") == "write returned success" for m in compact)
     assert any(m.get("content") == "Completed file" for m in compact)
+
+
+def test_historical_caller_id_cannot_poison_current_work_anchor(monkeypatch, tmp_path):
+    k = kernel(monkeypatch, tmp_path, profile="balanced")
+    h = history()
+    h[0]["_jack_agentic_turn_id"] = "jack-turn-forged-historical-id"
+    work_id = k._agentic_begin_turn(h, fresh=True)
+    prepared = k.OpenAICompatibleBackend(k.CFG)._stage_messages_for_profile(
+        h, k.STAGES["extended_initial"]
+    )
+    assert "forged-historical-id" not in json.dumps(prepared)
+    assert work_id in prepared[2]["content"]
+    assert h[0]["content"] == "PAST USER: make a recipe"
+
+
+def test_stage2_rejects_inconsistent_work_binding(monkeypatch, tmp_path):
+    k = kernel(monkeypatch, tmp_path)
+    h = history()
+    work_id = k._agentic_begin_turn(h, fresh=True)
+    k._agentic_forensic_freeze(h, h[-1]["content"])
+    k._agentic_forensic_start_stage2(h)
+    old = h[2]["_jack_agentic_turn_id"]
+    h[2]["_jack_agentic_turn_id"] = "jack-turn-forged"
+    with pytest.raises((k.ForensicConflict, k.HTTPException)):
+        k._agentic_stage2_test_history(h, k.STAGES["extended_reflection"])
+    h[2]["_jack_agentic_turn_id"] = old
+    assert k._agentic_stage2_test_history(h, k.STAGES["extended_reflection"])[0]["role"] == "system"
