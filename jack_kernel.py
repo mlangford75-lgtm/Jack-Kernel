@@ -6030,9 +6030,8 @@ class OpenAICompatibleBackend:
 
             item = dict(message)
             # The current authenticated Work ID is visible to Stage-1 cognition
-            # and remains identical across its tool continuations and review.
-            # Only the model-facing copy changes; the canonical user request
-            # and host-owned identity remain byte-exact.
+            # and remains identical across tool continuations and review.
+            # The caller's exact user request is never rewritten.
             if (
                 AGENTIC_MODE
                 and profile.name == "Agentic native pass 1"
@@ -6041,18 +6040,13 @@ class OpenAICompatibleBackend:
                 and stage1_work_id is not None
                 and item.get("_jack_agentic_turn_id") == stage1_work_id
             ):
-                work_label = "\nWork ID: " + item["_jack_agentic_turn_id"]
-                if isinstance(item.get("content"), str):
-                    item["content"] += work_label
-                elif isinstance(item.get("content"), list):
-                    item["content"] = list(item["content"]) + [
-                        {"type": "text", "text": work_label}
-                    ]
-                else:
-                    prepared.append({
-                        "role": "system",
-                        "content": "Authenticated current work ID: " + item["_jack_agentic_turn_id"],
-                    })
+                # Separate metadata precedes the exact user message. Do not
+                # rewrite caller text or multimodal blocks, and do not add a
+                # synthetic user instruction.
+                prepared.append({
+                    "role": "system",
+                    "content": "Authenticated current work ID: " + stage1_work_id,
+                })
             if (
                 AGENTIC_MODE and AGENTIC_TASK_ANCHOR_ENABLED
                 and item.get("role") == "user"
