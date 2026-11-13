@@ -209,6 +209,6 @@ def test_stage1_work_id_is_visible_without_changing_original_request(monkeypatch
     projected = k.OpenAICompatibleBackend(k.CFG)._stage_messages_for_profile(
         original, initial_profile
     )
-    assert projected[2]["content"] == request + "\\nWork ID: " + work_id
+    assert projected[2]["content"] == request + "\nWork ID: " + work_id
     assert original[2]["content"] == request
     assert "_jack_agentic_turn_id" not in projected[2]
