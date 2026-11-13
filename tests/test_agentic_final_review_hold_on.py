@@ -144,6 +144,6 @@ def test_review_transport_trigger_does_not_retarget_user_request(monkeypatch, tm
     assert k.active_response_target(history)["content"] == "The original task is to verify the clock workspace."
     assert k._agentic_forensic_turn(history).turn_id == original_id
     assert k._agentic_final_review_is_pending(history)
-    assert history[-1]["content"] == k.AGENTIC_FINAL_REVIEW_PROMPT
+    assert history[-1]["content"] == k.AGENTIC_FINAL_REVIEW_TRIGGER
     assert history[-1]["_jack_internal_agentic_final_review_trigger"] is True
     assert history[-1]["content"].count(k.AGENTIC_FINAL_REVIEW_PROMPT) == 1
