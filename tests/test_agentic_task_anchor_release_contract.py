@@ -143,4 +143,6 @@ def test_anchor_opt_out_preserves_original_model_facing_bytes(monkeypatch, tmp_p
     turn = k._agentic_begin_turn(h, fresh=True)
     rendered = k.BACKEND._stage_messages_for_profile(h, k.STAGES["extended_initial"])
     assert turn in k._AGENTIC_TURN_LIFECYCLES
-    assert rendered[0]["content"] == "Exact original request"
+    assert rendered[0] == {"role": "system", "content": "Authenticated current work ID: " + turn}
+    assert rendered[1]["content"] == "Exact original request"
+    assert h[0]["content"] == "Exact original request"
