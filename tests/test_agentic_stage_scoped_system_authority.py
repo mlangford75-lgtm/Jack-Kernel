@@ -157,3 +157,82 @@ def test_stage2_source_does_not_leak_into_other_modes(monkeypatch, tmp_path):
     # profile, and must not mutate the original custom caller string.
     assert k._agentic_caller_system_for_actual_stage(CALLER, k.STAGES["extended_initial"]) == CALLER
     assert k._agentic_caller_system_for_actual_stage(CALLER, k.STAGES["extended_reflection"]) == ""
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_same_turn_review_control_is_system_owned(monkeypatch, tmp_path, stream):
+    """A review control is never the latest *semantic* user request."""
+    k = load(monkeypatch, tmp_path, cache_enabled=False)
+    h = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "Hello!", "reasoning_content": "Greeting",
+         "_jack_internal_agentic_final_review_draft": True,
+         "_jack_stage_key": "extended_initial"},
+        {"role": "user", "content": k.AGENTIC_FINAL_REVIEW_TRIGGER,
+         "_jack_internal_agentic_final_review_trigger": True,
+         "_jack_stage_key": "extended_initial"},
+    ]
+    prior = json.dumps(h, sort_keys=True)
+    received = []
+
+    def respond(request):
+        received.append(json.loads(request.content))
+        if stream:
+            return httpx.Response(
+                200,
+                text='data: {"choices":[{"index":0,"delta":{"content":"Hello!"},"finish_reason":null}]}\\n\\n'
+                     'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\\n\\n'
+                     'data: [DONE]\\n\\n',
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(
+            200, json={"choices": [{"message": {"role": "assistant", "content": "Hello!"},
+                                     "finish_reason": "stop"}], "usage": {}},
+        )
+
+    async def exercise():
+        backend = k.OpenAICompatibleBackend(k.CFG)
+        await backend._client.aclose()
+        backend._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        async def model():
+            return "mock-model"
+        backend.resolve_model = model
+        try:
+            params = dict(messages=h, secondary_system=CALLER,
+                          profile=k.STAGES["extended_initial"],
+                          tools=None, tool_choice="auto")
+            if stream:
+                async for _ in backend.chat_stream(**params):
+                    pass
+            else:
+                await backend.chat(**params)
+        finally:
+            await backend._client.aclose()
+
+    asyncio.run(exercise())
+    assert json.dumps(h, sort_keys=True) == prior
+    assert len(received) == 1
+    wire = received[0]["messages"]
+    assert wire[1] == {"role": "system", "content": k.AGENTIC_FINAL_REVIEW_TRIGGER}
+    assert wire[2] == {"role": "user", "content": "hi"}
+    assert wire[-2]["role"] == "assistant" and wire[-2]["content"] == "Hello!"
+    assert wire[-1] == {"role": "user", "content": k.AGENTIC_INTERNAL_GENERATION_PULSE}
+    assert sum(m["role"] == "user" for m in wire) == 2
+    assert k.AGENTIC_FINAL_REVIEW_TRIGGER not in [
+        m.get("content") for m in wire if m["role"] == "user"
+    ]
+    assert k.active_response_target(h)["content"] == "hi"
+
+
+@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "exhaustive"))
+def test_every_agentic_profile_uses_neutral_memory_transport(monkeypatch, tmp_path, profile):
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", profile)
+    k = load(monkeypatch, tmp_path, cache_enabled=False)
+    wire = capture(k, stage="extended_reflection", stream=True)["messages"]
+    assert wire[0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
+    assert wire[1] == {"role": "system", "content": k.AGENTIC_STAGE2_MEMORY_TRIGGER}
+    assert wire[-1] == {"role": "user", "content": k.AGENTIC_INTERNAL_GENERATION_PULSE}
+    assert [m["content"] for m in wire if m["role"] == "user"] == [
+        "Make a clock.", k.AGENTIC_INTERNAL_GENERATION_PULSE
+    ]
+
