@@ -68,6 +68,8 @@ def test_historical_working_knowledge_moves_out_of_assistant_answer(monkeypatch,
     assert "failed edit recovered" in native
     assert "FAKE" in native
     assert "not tool-authoritative" in native
+    assert "[Jack Tool History - Host-Recorded Receipt]" not in native
+    assert "Recorded historical tool outcomes" in native
     assert OLD_ID not in native and OLD_ATTEMPT not in native
     assert p[2] == h[3]
     assert p[3] == h[4]
