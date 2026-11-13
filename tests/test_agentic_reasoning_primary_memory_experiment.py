@@ -156,7 +156,7 @@ def test_backend_payload_is_restricted_and_model_neutral(monkeypatch, tmp_path, 
     assert payload["messages"][2]["content"].endswith("STATE CARD")
     assert "PAST USER" not in json.dumps(payload["messages"])
     assert "CALLER SYSTEM MUST BE ISOLATED" not in json.dumps(payload["messages"])
-    assert payload["messages"][3]["content"] == "Proceed."
+    assert payload["messages"][3]["content"] == k.AGENTIC_STAGE2_MEMORY_TRIGGER
     assert "tools" not in payload and "tool_choice" not in payload
 
 
@@ -374,7 +374,7 @@ def test_stage2_receives_current_failed_tool_evidence_without_successful_tool_pr
     assert "REPORTED_ERROR" in evidence
     assert "successful-call" not in evidence
     assert "old-call" not in evidence
-    assert messages[-1] == {"role": "user", "content": "Proceed."}
+    assert messages[-1] == {"role": "user", "content": k.AGENTIC_STAGE2_MEMORY_TRIGGER}
     assert "tools" not in payloads[0]
 
 
