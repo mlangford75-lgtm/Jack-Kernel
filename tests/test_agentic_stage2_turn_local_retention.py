@@ -220,7 +220,7 @@ def test_abc_current_turn_projection_and_original_history_unchanged(monkeypatch,
     assert "outcome=REPORTED_ERROR" in evidence
     assert "outcome=RESULT_RETURNED_NO_STRUCTURED_ERROR" not in evidence
     assert "Earlier Stage 2 reasoning" not in evidence
-    assert "Error: wrong path" not in evidence
+    assert 'untrusted_reported_error_excerpt="Error: wrong path"' in evidence
     assert "Reported success. Browser not available." not in evidence
 
 
@@ -367,7 +367,7 @@ def test_retired_tool_receipts_keep_outcomes_without_raw_tool_protocol(monkeypat
     assert "outcome=REPORTED_ERROR" in note
     assert "outcome=RESULT_RETURNED_NO_STRUCTURED_ERROR" not in note
     assert "Earlier Stage 2 reasoning" not in note
-    assert "Error: wrong path" not in note
+    assert 'untrusted_reported_error_excerpt="Error: wrong path"' in note
     assert "<jack_tool_evidence_receipt>" not in json.dumps(payload)
 
 
