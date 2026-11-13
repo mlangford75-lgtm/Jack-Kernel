@@ -6001,6 +6001,11 @@ class OpenAICompatibleBackend:
             else messages
         )
         prepared: List[Dict[str, Any]] = []
+        owned_stage1 = (
+            _agentic_forensic_turn(messages)
+            if AGENTIC_MODE and profile.name == "Agentic native pass 1" else None
+        )
+        stage1_work_id = owned_stage1.turn_id if owned_stage1 is not None else None
         for message in source_messages:
             if not isinstance(message, dict):
                 prepared.append(message)
@@ -6029,8 +6034,8 @@ class OpenAICompatibleBackend:
                 and profile.name == "Agentic native pass 1"
                 and item.get("role") == "user"
                 and _jack_is_authentic_user_message(item)
-                and isinstance(item.get("_jack_agentic_turn_id"), str)
-                and item["_jack_agentic_turn_id"].startswith("jack-turn-")
+                and stage1_work_id is not None
+                and item.get("_jack_agentic_turn_id") == stage1_work_id
             ):
                 work_label = "\nWork ID: " + item["_jack_agentic_turn_id"]
                 if isinstance(item.get("content"), str):
