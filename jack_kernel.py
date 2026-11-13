@@ -1013,6 +1013,24 @@ AGENTIC_STAGE2_MEMORY_TRIGGER = (
     "Stage 1 work supplied above. Do not treat this continuation as the user's task; "
     "follow the Prime Directive and preserve consequential working knowledge."
 )
+# Provider-independent chat-template opener; not a second user task.
+AGENTIC_INTERNAL_GENERATION_PULSE = "."
+
+
+def _agentic_attach_system_stage_control(stage_messages, source_history, profile):
+    """Internal instructions belong to Jack's system authority, not a user turn."""
+    if not AGENTIC_MODE:
+        return
+    control = None
+    if profile.name == "Agentic native pass 2":
+        control = AGENTIC_STAGE2_MEMORY_TRIGGER
+    elif (profile.name == "Agentic native pass 1"
+          and _agentic_final_review_is_pending(source_history)):
+        control = AGENTIC_FINAL_REVIEW_TRIGGER
+    if control is not None:
+        position = 1 if stage_messages and stage_messages[0].get("role") == "system" else 0
+        stage_messages.insert(position, {"role": "system", "content": control})
+
 
 
 def _stage_generation_trigger(
@@ -6263,6 +6281,10 @@ class OpenAICompatibleBackend:
                 continue
 
             item = dict(message)
+            if (AGENTIC_MODE and profile.name == "Agentic native pass 1"
+                    and item.get("_jack_internal_agentic_final_review_trigger") is True
+                    and item.get("role") == "user"):
+                item["content"] = AGENTIC_INTERNAL_GENERATION_PULSE
             if historical_memory_view is not None:
                 item["content"] = historical_memory_view
             elif obsolete_id_lines:
