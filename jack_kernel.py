@@ -1092,6 +1092,10 @@ def _agentic_stage2_test_history(
     # when conclusions only appear in the response or Flash supplies no R1.
     source_user = dict(view[0])
     record = _agentic_forensic_turn(messages)
+    # A supplied host-looking work ID must never silently fall back to an
+    # unauthenticated memory view. Legacy bare helper fixtures have no ID.
+    if record is None and source_user.get("_jack_agentic_turn_id"):
+        raise ForensicConflict("Stage-2 Work ID has no authenticated Jack lifecycle")
     if record is not None:
         if source_user.get("_jack_agentic_turn_id") != record.turn_id:
             raise ForensicConflict("Stage-2 work identity does not match the authenticated request")
