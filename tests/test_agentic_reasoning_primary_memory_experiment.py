@@ -300,3 +300,76 @@ def test_stage2_rejects_changed_user_request_even_with_valid_work_id(monkeypatch
         k._agentic_stage2_test_history(h, k.STAGES["extended_reflection"])
     h[2]["content"] = original
     assert k._agentic_stage2_test_history(h, k.STAGES["extended_reflection"])[1]["content"] == original
+
+
+@pytest.mark.parametrize("stream", (False, True))
+def test_stage2_receives_current_failed_tool_evidence_without_successful_tool_prefill(monkeypatch, tmp_path, stream):
+    k = kernel(monkeypatch, tmp_path, profile="thorough")
+    h = history()
+    h[0]["content"] = "PAST USER: unrelated old-call"
+    h[-1]["_jack_agentic_stage1_tool_observation_complete"] = True
+    h[-1:-1] = [
+        {"role": "assistant", "content": "", "_jack_internal_tool_exchange": True,
+         "_jack_stage_key": "extended_initial",
+         "tool_calls": [
+             {"id": "failed-call", "type": "function",
+              "function": {"name": "edit", "arguments": '{"path":"clock.txt"}'}},
+             {"id": "successful-call", "type": "function",
+              "function": {"name": "read", "arguments": '{"path":"clock.txt"}'}},
+         ]},
+        {"role": "tool", "tool_call_id": "failed-call", "name": "edit",
+         "content": "Exact match not found", "_jack_internal_tool_exchange": True,
+         "_jack_stage_key": "extended_initial", "_jack_internal_tool_failed": True},
+        {"role": "tool", "tool_call_id": "successful-call", "name": "read",
+         "content": "File returned", "_jack_internal_tool_exchange": True,
+         "_jack_stage_key": "extended_initial"},
+    ]
+    original = copy.deepcopy(h)
+    payloads = []
+
+    def responder(req):
+        payloads.append(json.loads(req.content))
+        if stream:
+            return httpx.Response(
+                200,
+                text='data: {"choices":[{"index":0,"delta":{"content":"M"},"finish_reason":null}]}\n\n'
+                     'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+                     "data: [DONE]\n\n",
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(200, json={
+            "choices": [{"message": {"role": "assistant", "content": "M"},
+                         "finish_reason": "stop"}],
+            "usage": {},
+        })
+
+    async def exercise():
+        backend = k.OpenAICompatibleBackend(k.CFG)
+        await backend._client.aclose()
+        backend._client = httpx.AsyncClient(transport=httpx.MockTransport(responder))
+        async def resolve(): return "mock-model"
+        backend.resolve_model = resolve
+        try:
+            args = dict(messages=h, secondary_system="", profile=k.STAGES["extended_reflection"],
+                        tools=None, tool_choice="auto")
+            if stream:
+                async for _ in backend.chat_stream(**args):
+                    pass
+            else:
+                await backend.chat(**args)
+        finally:
+            await backend._client.aclose()
+
+    asyncio.run(exercise())
+    assert h == original
+    assert len(payloads) == 1
+    messages = payloads[0]["messages"]
+    assert messages[0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
+    assert messages[1]["role"] == "system"
+    evidence = messages[1]["content"]
+    assert 'call_id="failed-call"' in evidence
+    assert "REPORTED_ERROR" in evidence
+    assert "successful-call" not in evidence
+    assert "old-call" not in evidence
+    assert messages[-1] == {"role": "user", "content": "Proceed."}
+    assert "tools" not in payloads[0]
