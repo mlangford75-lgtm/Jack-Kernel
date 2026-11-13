@@ -81,10 +81,11 @@ def test_differential_flag_cannot_change_isolated_stage2(monkeypatch, tmp_path, 
     alternate = load(monkeypatch, tmp_path, differential=True)
     b = asyncio.run(capture(alternate, stream))
     assert a == b
-    assert len(a["messages"]) == 4
-    assert a["messages"][1]["content"] == "Make the clock gold."
-    assert a["messages"][2]["content"] == "Edited clock.html; rendering unverified."
-    assert a["messages"][2]["reasoning_content"] == "Used gold CSS; visual check unavailable."
+    assert len(a["messages"]) == 5
+    assert a["messages"][1]["content"] == control.AGENTIC_STAGE2_MEMORY_TRIGGER
+    assert a["messages"][2]["content"] == "Make the clock gold."
+    assert a["messages"][3]["content"] == "Edited clock.html; rendering unverified."
+    assert a["messages"][3]["reasoning_content"] == "Used gold CSS; visual check unavailable."
     assert "Prior memory" not in json.dumps(a)
     assert "tools" not in a
     assert alternate._stage_continuation(alternate.STAGES["extended_reflection"]) == alternate._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
