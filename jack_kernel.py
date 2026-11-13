@@ -4885,6 +4885,29 @@ def _stage2_reasoning_trace(reasoning: Optional[str]) -> Optional[str]:
     label = "AGENTIC NATIVE PASS 2" if AGENTIC_MODE else "DEEP RESEARCH RE-EVALUATION PASS 2"
     return f"===== JACK {label} =====\n[NATIVE REASONING]\n" + text
 
+# Model-facing historical projection only. Retain all original memory, answers,
+# receipts, IDs, and hashes in the canonical caller history and forensic journal.
+# Model-produced Jack identity lines are not authoritative and should not become
+# a repeated answer-format demonstration in later Stage-1 generations.
+_AGENTIC_HISTORICAL_ID_LINE_RE = re.compile(
+    r"(?im)^[ \\t]*(?:[-*][ \\t]*)?"
+    r"(?:Work[ \\t]+ID[ \\t]*:[ \\t]*jack-turn-|"
+    r"Memory[ \\t]+Attempt[ \\t]+ID[ \\t]*:[ \\t]*jack-attempt-)"
+    r"[0-9a-f]{32}[ \\t]*(?:\\r?\\n|$)"
+)
+
+
+def _agentic_historical_stage1_text(content: str) -> str:
+    """Hide only obsolete Jack identity lines from prior assistant context.
+
+    Never rewrite user requests, active-turn material, tool results, persisted
+    assistant answers, or any memory/hash used for forensic validation.
+    """
+    if "jack-turn-" not in content and "jack-attempt-" not in content:
+        return content
+    return _AGENTIC_HISTORICAL_ID_LINE_RE.sub("", content)
+
+
 def _agentic_model_memory_view(memory: str, receipt: str) -> str:
     """Retain authenticated memory plus complete host receipt for next Stage 1.
 
@@ -6115,7 +6138,14 @@ class OpenAICompatibleBackend:
             if AGENTIC_MODE and profile.name == "Agentic native pass 1" else None
         )
         stage1_work_id = owned_stage1.turn_id if owned_stage1 is not None else None
-        for message in source_messages:
+        # Only previous assistant content may be projected without Jack's old
+        # model-generated IDs. The active user turn retains its exact payload.
+        active_user_index = next(
+            (i for i in range(len(source_messages) - 1, -1, -1)
+             if _jack_is_authentic_user_message(source_messages[i])),
+            -1,
+        )
+        for message_index, message in enumerate(source_messages):
             if not isinstance(message, dict):
                 prepared.append(message)
                 continue
@@ -6129,11 +6159,25 @@ class OpenAICompatibleBackend:
                 and message.get("role") == "assistant"
                 and any(key in message for key in ("reasoning_content", "reasoning", "thinking"))
             )
-            if not has_private and not must_strip_reasoning:
+            obsolete_id_lines = bool(
+                AGENTIC_MODE
+                and profile.name == "Agentic native pass 1"
+                and 0 <= message_index < active_user_index
+                and message.get("role") == "assistant"
+                and isinstance(message.get("content"), str)
+                and (
+                    "jack-turn-" in message["content"]
+                    or "jack-attempt-" in message["content"]
+                )
+                and _AGENTIC_HISTORICAL_ID_LINE_RE.search(message["content"])
+            )
+            if not has_private and not must_strip_reasoning and not obsolete_id_lines:
                 prepared.append(message)
                 continue
 
             item = dict(message)
+            if obsolete_id_lines:
+                item["content"] = _agentic_historical_stage1_text(item["content"])
             # The current authenticated Work ID is visible to Stage-1 cognition
             # and remains identical across tool continuations and review.
             # The caller's exact user request is never rewritten.
