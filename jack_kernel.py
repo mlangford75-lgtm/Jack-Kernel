@@ -4658,8 +4658,10 @@ def _agentic_tool_history_note(history: List[Dict[str, Any]]) -> str:
     return _AGENTIC_TOOL_NOTE_OPEN + "\n".join(rows) + "\n" + footnote + _AGENTIC_TOOL_NOTE_CLOSE
 
 
-def _agentic_stage2_host_tool_evidence_note(history: List[Dict[str, Any]]) -> str:
-    """Complete Jack-authored tool-return observations for the current Agentic turn.
+def _agentic_stage2_host_tool_evidence_note(
+    history: List[Dict[str, Any]], *, failures_only: bool = False
+) -> str:
+    """Jack-authored tool-return observations for the current Agentic turn.
 
     This reads only host-owned raw exchanges and the host's retired evidence
     receipts, not replayed user/model prose. No raw arguments or tool output are
@@ -4724,6 +4726,10 @@ def _agentic_stage2_host_tool_evidence_note(history: List[Dict[str, Any]]) -> st
         else:
             continue
         seen_ids.add(call_id)
+        if failures_only and not failure:
+            # Ordinary returned results remain in the deterministic tool
+            # ledger; Stage 2 needs only reported failures and missing results.
+            continue
         if requested_target == "UNKNOWN":
             path_scope = "UNKNOWN"
         elif re.match(r"^(?:[A-Za-z]:[\\/]|/|\\\\)", requested_target):
@@ -4741,6 +4747,8 @@ def _agentic_stage2_host_tool_evidence_note(history: List[Dict[str, Any]]) -> st
     # returned transaction in observed order; any missing result is identified by
     # its actual call ID, not reduced to a count.
     unmatched_ids = sorted(issued_ids - seen_ids)
+    if failures_only and not observations and not unmatched_ids:
+        return ""
     if not observations and not observation_complete and not unmatched_ids:
         return ""
     rows = list(observations)
@@ -6346,6 +6354,11 @@ class OpenAICompatibleBackend:
             [{"role": "system", "content": stage_system}] if stage_system else []
         ) + prepared_messages
         if reasoning_primary:
+            # Current-turn failed/unmatched call IDs only; no raw transcript
+            # or repeated successful-call metadata in Stage 2 prefill.
+            evidence_note = _agentic_stage2_host_tool_evidence_note(messages, failures_only=True)
+            if evidence_note:
+                stage_messages.insert(1, {"role": "system", "content": evidence_note})
             stage_messages.append({
                 "role": "user",
                 "content": "Proceed.",
@@ -6466,6 +6479,11 @@ class OpenAICompatibleBackend:
             [{"role": "system", "content": stage_system}] if stage_system else []
         ) + prepared_messages
         if reasoning_primary:
+            # Current-turn failed/unmatched call IDs only; no raw transcript
+            # or repeated successful-call metadata in Stage 2 prefill.
+            evidence_note = _agentic_stage2_host_tool_evidence_note(messages, failures_only=True)
+            if evidence_note:
+                stage_messages.insert(1, {"role": "system", "content": evidence_note})
             stage_messages.append({
                 "role": "user",
                 "content": "Proceed.",
