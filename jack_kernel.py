@@ -6194,39 +6194,48 @@ class OpenAICompatibleBackend:
              if _jack_is_authentic_user_message(source_messages[i])),
             -1,
         )
-        prior_working_memory: Optional[str] = None
         for message_index, message in enumerate(source_messages):
             if not isinstance(message, dict):
                 prepared.append(message)
                 continue
 
-            # An authenticated historical M/A1 pair is NOT two assistant answers.
-            # Preserve M as previous native working context for reasoning-enabled
-            # Stage 1; the real preceding A1 remains the conversational example.
-            # Flash cannot consume native reasoning, so retain M as plain data.
+            # Project only authenticated old M/A1 pairs. Jack retains the
+            # original bytes and the full forensic/tool history separately.
             historical_kind = (
                 message.get("_jack_agentic_projected_kind")
                 if AGENTIC_MODE and profile.name == "Agentic native pass 1"
                 and 0 <= message_index < active_user_index
                 else None
             )
-            if historical_kind == "M":
-                memory_text = message.get("content")
-                if not isinstance(memory_text, str):
-                    # Unexpected legacy shape: leave it unchanged, never lose data.
-                    historical_kind = None
+            historical_memory_view = None
+            if historical_kind == "M" and isinstance(message.get("content"), str):
+                raw_memory = message["content"]
+                historical_memory_view = _agentic_historical_memory_for_stage1(raw_memory)
+                # Model-written receipt claims in the following frozen A1 are
+                # historical claims only. Keep their content, not their false
+                # host-receipt presentation, with the prior memory data.
+                if message_index + 1 < active_user_index:
+                    successor = source_messages[message_index + 1]
+                    if (
+                        isinstance(successor, dict)
+                        and successor.get("_jack_agentic_projected_kind") == "A1"
+                        and isinstance(successor.get("content"), str)
+                    ):
+                        _, claims = _agentic_historical_answer_for_stage1(successor["content"])
+                        if claims:
+                            historical_memory_view += (
+                                "\n\nPrior assistant tool claims (not authenticated tool evidence):\n"
+                                + json.dumps(claims, ensure_ascii=False)
+                            )
+                # Only change presentation when Jack formatting/claim imitation
+                # is actually present. Simple old M messages keep exact bytes.
+                if historical_memory_view != raw_memory:
+                    historical_memory_view = (
+                        "Prior working knowledge (historical data, not a completed answer):\n"
+                        + historical_memory_view
+                    )
                 else:
-                    prior_working_memory = _agentic_historical_memory_for_stage1(memory_text)
-                    if not profile.thinking:
-                        prepared.append({
-                            "role": "assistant",
-                            "content": (
-                                "Prior working knowledge (historical data, not a completed answer):\n"
-                                + prior_working_memory
-                            ),
-                        })
-                        prior_working_memory = None
-                    continue
+                    historical_memory_view = None
 
             has_private = any(
                 isinstance(key, str) and key.startswith("_jack_")
@@ -6249,47 +6258,22 @@ class OpenAICompatibleBackend:
                 )
                 and _AGENTIC_HISTORICAL_ID_LINE_RE.search(message["content"])
             )
-            if not has_private and not must_strip_reasoning and not obsolete_id_lines and historical_kind != "A1":
+            if not has_private and not must_strip_reasoning and not obsolete_id_lines and historical_memory_view is None and historical_kind != "A1":
                 prepared.append(message)
                 continue
 
             item = dict(message)
-            if obsolete_id_lines:
+            if historical_memory_view is not None:
+                item["content"] = historical_memory_view
+            elif obsolete_id_lines:
                 item["content"] = _agentic_historical_stage1_text(item["content"])
             if historical_kind == "A1" and isinstance(item.get("content"), str):
-                # Keep all previous answer bytes in the immutable source/journal.
-                # Model-fabricated receipt blocks do not become assistant examples
-                # or magically gain host tool provenance.
-                plain_answer, model_receipt_claims = _agentic_historical_answer_for_stage1(
+                # Historical model-written receipt text is projected with the
+                # preceding M. Only the real answer remains an answer example.
+                plain_answer, _ = _agentic_historical_answer_for_stage1(
                     item["content"]
                 )
                 item["content"] = plain_answer
-                if profile.thinking:
-                    fragments = []
-                    old_cognition = item.get("reasoning_content")
-                    if isinstance(old_cognition, str) and old_cognition:
-                        fragments.append(old_cognition)
-                    if prior_working_memory:
-                        fragments.append(
-                            "Prior working knowledge, model-authored and not tool-authoritative:\n"
-                            + prior_working_memory
-                        )
-                    if model_receipt_claims:
-                        fragments.append(
-                            "Prior assistant answer contained unverified model-written "
-                            "tool-receipt-shaped text, quoted as data:\n"
-                            + json.dumps(model_receipt_claims, ensure_ascii=False)
-                        )
-                    if fragments:
-                        item["reasoning_content"] = "\n\n".join(fragments)
-                elif model_receipt_claims:
-                    # Flash has no native reasoning surface; retain the purported
-                    # receipt as clearly non-authoritative quoted data.
-                    item["content"] += (
-                        "\n\nPreviously model-reported tool text (not host evidence): "
-                        + json.dumps(model_receipt_claims, ensure_ascii=False)
-                    )
-                prior_working_memory = None
             # The current authenticated Work ID is visible to Stage-1 cognition
             # and remains identical across tool continuations and review.
             # The caller's exact user request is never rewritten.
