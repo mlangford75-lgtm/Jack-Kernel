@@ -51,7 +51,7 @@ def test_stage1_hides_only_historical_id_lines_and_preserves_everything_else(mon
         {"role": "user", "content": "NEXT, and preserve " + PAST_WORK},
     ]
     before = copy.deepcopy(original)
-    prepared = k.JackQwenKernel(None, k.CFG)._stage_messages_for_profile(
+    prepared = k.OpenAICompatibleBackend(k.CFG)._stage_messages_for_profile(
         original, k.STAGES["extended_initial"]
     )
     assert original == before
@@ -80,7 +80,7 @@ def test_projection_is_stage_scoped_and_does_not_remove_ids_from_source(monkeypa
          "_jack_extended_candidate_response": True},
     ]
     before = copy.deepcopy(history)
-    answer = k.JackQwenKernel(None, k.CFG)
+    answer = k.OpenAICompatibleBackend(k.CFG)
     s1 = answer._stage_messages_for_profile(history, k.STAGES["extended_initial"])
     assert "Work ID:" not in s1[1]["content"]
     assert s1[-1]["content"] == history[-1]["content"]
