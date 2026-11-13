@@ -235,4 +235,3 @@ def test_every_agentic_profile_uses_neutral_memory_transport(monkeypatch, tmp_pa
     assert [m["content"] for m in wire if m["role"] == "user"] == [
         "Make a clock.", k.AGENTIC_INTERNAL_GENERATION_PULSE
     ]
-
