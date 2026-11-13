@@ -180,9 +180,9 @@ def test_same_turn_review_control_is_system_owned(monkeypatch, tmp_path, stream)
         if stream:
             return httpx.Response(
                 200,
-                text='data: {"choices":[{"index":0,"delta":{"content":"Hello!"},"finish_reason":null}]}\\n\\n'
-                     'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\\n\\n'
-                     'data: [DONE]\\n\\n',
+                text='data: {"choices":[{"index":0,"delta":{"content":"Hello!"},"finish_reason":null}]}\n\n'
+                     'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+                     'data: [DONE]\n\n',
                 headers={"content-type": "text/event-stream"},
             )
         return httpx.Response(
