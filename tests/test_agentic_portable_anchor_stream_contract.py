@@ -23,15 +23,19 @@ def test_pi_style_structured_user_gets_matching_task_anchor_without_mutation(mon
     turn = k._agentic_begin_turn(history, fresh=True)
     marker = f"[JACK LINK turn={turn} | artifact=U]"
     p1 = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_initial"])
-    assert isinstance(p1[0]["content"], list)
-    assert p1[0]["content"][:-1] == content
-    assert p1[0]["content"][-1] == {"type": "text", "text": "\n" + marker}
+    assert p1[0] == {"role": "system", "content": "Authenticated current work ID: " + turn}
+    assert isinstance(p1[1]["content"], list)
+    assert p1[1]["content"][:-1] == content
+    assert p1[1]["content"][-1] == {"type": "text", "text": "\n" + marker}
     assert history[0]["content"] == content
     assert original["content"] == content
     answer = k.append_extended_candidate_response(history, {"content": "Frozen result", "reasoning_content": "current R1"})
     k._agentic_forensic_start_stage2(history)
     p2 = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_reflection"])
-    assert p2[:len(p1)] == p1
+    # Stage 2 has its own isolated source. The original user content is
+    # unchanged, even when the opt-in historical link marker is enabled.
+    assert p2[0]["role"] == "user"
+    assert p2[0]["content"][:-1] == content
     assert p2[-1]["content"] == answer
     assert p2[-1]["reasoning_content"] == "current R1"
     suffix = k._stage_continuation(k.STAGES["extended_reflection"], history)
@@ -46,7 +50,8 @@ def test_unprojectable_user_does_not_produce_dangling_model_reference(monkeypatc
     history = [{"role": "user", "content": copy.deepcopy(content)}]
     k._agentic_begin_turn(history, fresh=True)
     p = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_initial"])
-    assert p[0]["content"] == content
+    assert p[0]["role"] == "system"
+    assert p[1]["content"] == content
     k.append_extended_candidate_response(history, {"content": "Frozen answer"})
     k._agentic_forensic_start_stage2(history)
     suffix = k._stage_continuation(k.STAGES["extended_reflection"], history)
@@ -59,8 +64,11 @@ def test_structured_user_anchor_can_be_disabled_without_touching_content(monkeyp
     k = load(monkeypatch, tmp_path, anchor="0")
     content = [{"type": "text", "text": "Create the SVG"}]
     h = [{"role": "user", "content": copy.deepcopy(content)}]
-    k._agentic_begin_turn(h, fresh=True)
-    assert k.BACKEND._stage_messages_for_profile(h, k.STAGES["extended_initial"])[0]["content"] == content
+    work_id = k._agentic_begin_turn(h, fresh=True)
+    prepared = k.BACKEND._stage_messages_for_profile(h, k.STAGES["extended_initial"])
+    assert prepared[0] == {"role": "system", "content": "Authenticated current work ID: " + work_id}
+    assert prepared[1]["content"] == content
+    assert h[0]["content"] == content
 
 
 def test_stage_completion_requires_explicit_backend_stop(monkeypatch, tmp_path):
