@@ -145,19 +145,19 @@ def test_backend_payload_is_restricted_and_model_neutral(monkeypatch, tmp_path, 
     assert len(snapshots) == 1
     payload = snapshots[0]
     assert [m["role"] for m in payload["messages"]] == [
-        "system", "system", "user", "assistant", "user"
+        "system", "system", "assistant", "user"
     ]
     assert payload["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
     assert payload["messages"][1]["content"] == k.AGENTIC_STAGE2_MEMORY_TRIGGER
-    assert payload["messages"][2]["content"] == "CURRENT REQUEST: create three customers; end with STATE CARD"
+    assert payload["messages"][-1] == {"role": "user", "content": "CURRENT REQUEST: create three customers; end with STATE CARD"}
     if profile == "flash":
-        assert "reasoning_content" not in payload["messages"][3]
+        assert "reasoning_content" not in payload["messages"][2]
     else:
-        assert "Chose B." in payload["messages"][3]["reasoning_content"]
-    assert payload["messages"][3]["content"].endswith("STATE CARD")
+        assert "Chose B." in payload["messages"][2]["reasoning_content"]
+    assert payload["messages"][2]["content"].endswith("STATE CARD")
     assert "PAST USER" not in json.dumps(payload["messages"])
     assert "CALLER SYSTEM MUST BE ISOLATED" not in json.dumps(payload["messages"])
-    assert payload["messages"][4] == {"role": "user", "content": k.AGENTIC_INTERNAL_GENERATION_PULSE}
+    assert len(payload["messages"]) == 4 and payload["messages"][-1]["role"] == "user"
     assert "tools" not in payload and "tool_choice" not in payload
 
 
@@ -376,7 +376,7 @@ def test_stage2_receives_current_failed_tool_evidence_without_successful_tool_pr
     assert "REPORTED_ERROR" in evidence
     assert "successful-call" not in evidence
     assert "old-call" not in evidence
-    assert messages[-1] == {"role": "user", "content": k.AGENTIC_INTERNAL_GENERATION_PULSE}
+    assert messages[-1] == {"role": "user", "content": "CURRENT REQUEST: create three customers; end with STATE CARD"}
     assert "tools" not in payloads[0]
 
 
