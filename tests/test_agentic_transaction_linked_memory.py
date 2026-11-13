@@ -59,7 +59,9 @@ def test_exact_user_and_frozen_answer_with_host_owned_id(monkeypatch, tmp_path, 
     continuation = k._stage_continuation(k.STAGES["extended_reflection"], history)
     assert "brief description of the current task" in continuation
     assert "authenticated user request for the current turn" in continuation
-    assert "preceding reasoning and completed response" in continuation
+    assert "current-turn native reasoning" in continuation
+    assert "exact frozen completed response" in continuation
+    assert "Prime Directive" in continuation
     assert "not as a new user request" in continuation
     assert "turn=" not in continuation
     assert label not in continuation
