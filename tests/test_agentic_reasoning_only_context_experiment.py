@@ -35,7 +35,7 @@ def load_kernel(profile: str):
     return module
 
 
-@pytest.mark.parametrize("profile", ["flash", "balanced", "thorough"])
+@pytest.mark.parametrize("profile", ["flash", "balanced", "thorough", "exhaustive"])
 def test_stage2_receives_same_turn_reasoning_and_exact_outcome(profile):
     k = load_kernel(profile)
     history = [
@@ -55,10 +55,12 @@ def test_stage2_receives_same_turn_reasoning_and_exact_outcome(profile):
     assert "old R1" not in str(projected)
     assert not k.STAGES["extended_reflection"].allow_tools
     assert k.CFG.agentic_profile == profile
+    assert k.CFG.agentic_final_review is (profile == "exhaustive")
+    assert k.STAGES["extended_reflection"].thinking is (profile in {"thorough", "exhaustive"})
     assert not hasattr(k, "AGENTIC_REASONING_ONLY_RETIREMENT_TOGGLE")
 
 
-@pytest.mark.parametrize("profile", ["flash", "balanced", "thorough"])
+@pytest.mark.parametrize("profile", ["flash", "balanced", "thorough", "exhaustive"])
 def test_prunes_only_historical_reasoning_not_tool_evidence(profile):
     k = load_kernel(profile)
     calls = [{
@@ -84,7 +86,7 @@ def test_prunes_only_historical_reasoning_not_tool_evidence(profile):
     assert original[3]["reasoning_content"] == "old R2"
 
 
-@pytest.mark.parametrize("profile", ["flash", "balanced", "thorough"])
+@pytest.mark.parametrize("profile", ["flash", "balanced", "thorough", "exhaustive"])
 def test_degraded_memory_archives_before_retiring_reasoning(profile, monkeypatch):
     k = load_kernel(profile)
     events = []
@@ -112,7 +114,7 @@ def test_degraded_memory_archives_before_retiring_reasoning(profile, monkeypatch
     assert events[3] == ("retire",)
 
 
-@pytest.mark.parametrize("profile", ["flash", "balanced", "thorough"])
+@pytest.mark.parametrize("profile", ["flash", "balanced", "thorough", "exhaustive"])
 def test_optional_failed_distillation_archive_marks_memory_absent(profile, monkeypatch, tmp_path):
     k = load_kernel(profile)
     monkeypatch.setattr(k, "CFG", replace(k.CFG, forensic_archive_mode="stage",
@@ -146,3 +148,74 @@ def test_surgical_directive_retains_prime_directive():
     assert "verified" in prompt
     assert "Do not simply repeat" in prompt
     assert "Begin with one valid, single-line JSON object" in prompt
+
+
+def test_exhaustive_extension_same_authenticated_turn_and_exact_instruction():
+    k = load_kernel("exhaustive")
+    original = k.AGENTIC_STAGE1_VERIFICATION_PROMPT
+    assert original == ("Wait, re-verify your reasoning. Test for errors, mistakes, or poor quality. "
+                        "Make changes, if necessary, to ensure alignment with the instructions and user request before responding")
+    source = [{"role": "user", "content": "build a clock"}]
+    active = k.active_response_target(source)
+    draft = {"choices": [{"message": {"content": "draft answer",
+                                     "reasoning_content": "verified too early"},
+                           "finish_reason": "stop"}]}
+    k._agentic_begin_final_review(source, draft)
+    assert len(source) == 3
+    assert k.active_response_target(source)["id"] == active["id"]
+    assert source[1]["reasoning_content"] == "verified too early"
+    instruction = source[2]
+    assert instruction["_jack_internal_agentic_final_review_trigger"] is True
+    assert instruction["content"].endswith(original)
+    assert "same original user request" in instruction["content"]
+    assert "not a new user request" in instruction["content"]
+    assert k._agentic_final_review_is_pending(source)
+
+
+def test_stage2_exhaustive_reasoning_includes_initial_review_and_tools():
+    k = load_kernel("exhaustive")
+    calls_before = [{"id": "call-before", "type": "function", "function": {
+        "name": "write", "arguments": '{"path":"a.txt","content":"exact first"}'}}]
+    calls_review = [{"id": "call-review", "type": "function", "function": {
+        "name": "read", "arguments": '{"path":"a.txt"}'}}]
+    history = [
+        {"role": "user", "content": "current request"},
+        {"role": "assistant", "reasoning_content": "original native reasoning",
+         "tool_calls": calls_before, "_jack_internal_tool_exchange": True,
+         "_jack_stage_key": "extended_initial"},
+        {"role": "tool", "tool_call_id": "call-before", "name": "write",
+         "content": "write was reported successful", "_jack_internal_tool_exchange": True},
+        {"role": "assistant", "reasoning_content": "initial review draft reasoning",
+         "content": "draft", "_jack_internal_agentic_final_review_draft": True},
+        k._agentic_stage1_extension_transport(k.AGENTIC_STAGE1_VERIFICATION_PROMPT),
+        {"role": "assistant", "reasoning_content": "review found wrong path",
+         "tool_calls": calls_review, "_jack_internal_tool_exchange": True,
+         "_jack_stage_key": "extended_initial"},
+        {"role": "tool", "tool_call_id": "call-review", "name": "read",
+         "content": "read confirmed the file", "_jack_internal_tool_exchange": True},
+        {"role": "assistant", "content": "corrected final answer",
+         "reasoning_content": "review final reasoning",
+         "_jack_extended_candidate_response": True},
+    ]
+    stage2 = k._agentic_stage2_test_history(history, k.STAGES["extended_reflection"])
+    assert stage2[1]["content"] == "corrected final answer"
+    for piece in ("original native reasoning", "initial review draft reasoning",
+                  "review found wrong path", "review final reasoning"):
+        assert piece in stage2[1]["reasoning_content"]
+    raw = k._agentic_stage2_exact_tool_source_note(history)
+    assert "exact first" in raw
+    assert "write was reported successful" in raw
+    assert "read confirmed the file" in raw
+    assert raw.index("call-before") < raw.index("call-review")
+    assert "UNTRUSTED" in raw
+    assert len(stage2) == 2
+
+
+def test_four_profile_config_ui_and_reasoning_policies():
+    k = load_kernel("exhaustive")
+    source = SRC.read_text(encoding="utf-8")
+    assert "Select Agentic profile [1-4] [2]:" in source
+    assert '"4": "exhaustive"' in source
+    assert "Stage 1 ON + review ON, Stage 2 ON" in source
+    assert k.STAGES["extended_initial"].allow_tools is True
+    assert k.STAGES["extended_reflection"].allow_tools is False
