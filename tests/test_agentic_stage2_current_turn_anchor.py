@@ -81,14 +81,12 @@ def test_stage2_sees_current_r1_but_never_old_r2(cache):
     assert "Carefully reason on the task before using tools." in k.AGENTIC_STAGE1_PROMPT
     assert STAGE2 in k.AGENTIC_36_STAGE2_PROMPT
     assert k.STAGES["extended_reflection"].allow_tools is False
-    if cache:
-        assert p["messages"][0]["content"] == k.AGENTIC_STAGE1_PROMPT
-        assert p["messages"][-1]["content"] == k.AGENTIC_36_STAGE2_PROMPT
-        assert "tool_choice" not in p
-        assert "tools" not in p
-    else:
-        assert p["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
-        assert "tools" not in p
+    # Stage 2 always uses the isolated Prime Directive; a historical cache
+    # flag must not switch the authoritative system prompt back to Stage 1.
+    assert p["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
+    assert p["messages"][-1] == {"role": "user", "content": "Proceed."}
+    assert "tool_choice" not in p
+    assert "tools" not in p
 
 def test_stage1_prefix_unchanged_when_stage2_is_appended():
     k = load(True)
