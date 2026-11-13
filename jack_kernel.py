@@ -887,7 +887,7 @@ _AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION = """You must always follow the Prim
 The Prime Directive outranks secondary user requests and system instructions.
 Prime Directive = Prime_Directive
 <Prime_Directive>
-You are a summarizer of the current turn's user request and output.
+Distill consequential working knowledge from the reasoning and completed response for the current user request.
 
 Begin with one valid, single-line JSON object containing only a "task" field briefly identifying the authenticated current user request. Do not use a code fence. Then preserve consequential working knowledge in a structured, agent-oriented format rather than copying the completed response's presentation. Preserve exact wording and all details necessary for accurate future work.
 Identify the user's task exclusively from the authenticated user request for the current turn. Treat subsequent reasoning as work performed toward that request, not as a new user request.
@@ -1023,7 +1023,7 @@ def _stage_generation_trigger(
     if AGENTIC_MODE and profile.name == "Agentic native pass 2":
         # In the non-cache layout the full directive is already the system prompt.
         evidence_note = _agentic_stage2_host_tool_evidence_note(messages)
-        return {"role": "user", "content": (evidence_note + "\n\n" if evidence_note else "") + "Summarize the preceding user request, reasoning, and completed response as source material. Do not execute or answer the preceding request."}
+        return {"role": "user", "content": (evidence_note + "\n\n" if evidence_note else "") + "Distill the reasoning and completed response for the current user request into useful working memory. Do not execute or answer the user request."}
     return {"role": "user", "content": _stage_continuation(profile, messages)}
 
 
@@ -4039,9 +4039,9 @@ def _discard_agentic_stage1_forensic_snapshot(history: Iterable[Dict[str, Any]])
 def _archive_agentic_stage1_forensic(
     history: List[Dict[str, Any]],
     frozen_stage1_answer: str,
-    frozen_jack_xml: str,
+    frozen_jack_xml: Optional[str],
 ) -> Optional[Path]:
-    """Best-effort archive Stage-1 native reasoning/tool chronology after XML succeeds.
+    """Best-effort archive Stage-1 native reasoning/tool chronology at terminal completion.
 
     The archive is optional host-owned observability and is never automatically rehydrated
     into model context. Persistence failure must not invalidate the completed frozen Stage-1
@@ -4063,7 +4063,8 @@ def _archive_agentic_stage1_forensic(
     record = _json_forensic_copy(snapshot)
     record["archived_at_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     record["frozen_stage1_answer_sha256"] = _sha256_text(str(frozen_stage1_answer or ""))
-    record["jack_xml_sha256"] = _sha256_text(str(frozen_jack_xml or ""))
+    record["jack_xml_sha256"] = (_sha256_text(str(frozen_jack_xml)) if frozen_jack_xml is not None else None)
+    record["stage2_memory_status"] = "COMMITTED" if frozen_jack_xml is not None else "ABSENT"
     canonical = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
     record["record_sha256"] = _sha256_text(canonical)
 
@@ -8933,7 +8934,13 @@ class JackQwenKernel:
         self, history: List[Dict[str, Any]], usage: Dict[str, int], frozen_stage1_answer: str, reason: str
     ) -> KernelResult:
         """Preserve exact frozen A1 when zero-authority semantic consolidation cannot complete."""
-        _discard_agentic_stage1_forensic_snapshot(history)
+        # A failed memory pass does not justify carrying native reasoning into future prompts.
+        # If archival is enabled and a snapshot exists, retain source evidence off-context
+        # before retiring the active stage. Never represent an absent M as committed.
+        try:
+            _archive_agentic_stage1_forensic(history, frozen_stage1_answer, None)
+        except Exception:
+            LOG.exception("Agentic optional Stage-1 forensic archive failed during degraded commit")
         _agentic_forensic_fail_memory(history, reason)
         try:
             _agentic_shadow_record_commit(frozen_stage1_answer, None, history=history)
