@@ -212,3 +212,39 @@ def test_stage1_work_id_is_visible_without_changing_original_request(monkeypatch
     assert projected[2]["content"] == request + "\nWork ID: " + work_id
     assert original[2]["content"] == request
     assert "_jack_agentic_turn_id" not in projected[2]
+
+
+def test_work_id_survives_tool_resume_and_exhaustive_same_turn(monkeypatch, tmp_path):
+    k = kernel(monkeypatch, tmp_path, profile="exhaustive")
+    h = history()
+    work_id = k._agentic_begin_turn(h, fresh=True)
+    k._agentic_turn_status(h, "awaiting_tool")
+    assert k._agentic_begin_turn(h, fresh=False) == work_id
+    h.insert(-1, {"role": "tool", "tool_call_id": "call-1", "content": "write succeeded"})
+    stage1 = k.OpenAICompatibleBackend(k.CFG)._stage_messages_for_profile(
+        h, k.STAGES["extended_initial"]
+    )
+    assert work_id in stage1[2]["content"]
+    assert h[2]["content"] == "CURRENT REQUEST: create three customers; end with STATE CARD"
+
+
+def test_compaction_retires_both_reasoning_traces_preserving_tool_history(monkeypatch, tmp_path):
+    k = kernel(monkeypatch, tmp_path)
+    h = [
+        {"role": "user", "content": "write file"},
+        {"role": "assistant", "content": "", "reasoning_content": "R1 secret",
+         "tool_calls": [{"id": "x", "type": "function",
+                         "function": {"name": "write", "arguments": "{\\"path\\":\\"file\\"}"}}]},
+        {"role": "tool", "tool_call_id": "x", "content": "write returned success"},
+        {"role": "assistant", "content": "Completed file", "reasoning_content": "R2 secret"},
+        {"role": "user", "content": "inspect file"},
+    ]
+    before = copy.deepcopy(h)
+    compact = k._compact_agentic_completed_capsules(h)
+    assert h == before
+    assert compact is not None
+    assert "R1 secret" not in json.dumps(compact)
+    assert "R2 secret" not in json.dumps(compact)
+    assert any(m.get("tool_calls") == h[1]["tool_calls"] for m in compact)
+    assert any(m.get("role") == "tool" and m.get("content") == "write returned success" for m in compact)
+    assert any(m.get("content") == "Completed file" for m in compact)
