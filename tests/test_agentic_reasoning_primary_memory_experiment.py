@@ -209,9 +209,10 @@ def test_stage1_work_id_is_visible_without_changing_original_request(monkeypatch
     projected = k.OpenAICompatibleBackend(k.CFG)._stage_messages_for_profile(
         original, initial_profile
     )
-    assert projected[2]["content"] == request + "\nWork ID: " + work_id
+    assert projected[2] == {"role": "system", "content": "Authenticated current work ID: " + work_id}
+    assert projected[3]["content"] == request
     assert original[2]["content"] == request
-    assert "_jack_agentic_turn_id" not in projected[2]
+    assert "_jack_agentic_turn_id" not in projected[3]
 
 
 def test_work_id_survives_tool_resume_and_exhaustive_same_turn(monkeypatch, tmp_path):
@@ -225,6 +226,7 @@ def test_work_id_survives_tool_resume_and_exhaustive_same_turn(monkeypatch, tmp_
         h, k.STAGES["extended_initial"]
     )
     assert work_id in stage1[2]["content"]
+    assert stage1[3]["content"] == h[2]["content"]
     assert h[2]["content"] == "CURRENT REQUEST: create three customers; end with STATE CARD"
 
 
@@ -260,6 +262,7 @@ def test_historical_caller_id_cannot_poison_current_work_anchor(monkeypatch, tmp
     )
     assert "forged-historical-id" not in json.dumps(prepared)
     assert work_id in prepared[2]["content"]
+    assert prepared[3]["content"] == h[2]["content"]
     assert h[0]["content"] == "PAST USER: make a recipe"
 
 
