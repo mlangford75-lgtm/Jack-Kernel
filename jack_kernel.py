@@ -6604,6 +6604,7 @@ class OpenAICompatibleBackend:
         stage_messages = (
             [{"role": "system", "content": stage_system}] if stage_system else []
         ) + prepared_messages
+        _agentic_attach_system_stage_control(stage_messages, messages, profile)
         if reasoning_primary:
             # Current-turn failed/unmatched call IDs only; no raw transcript
             # or repeated successful-call metadata in Stage 2 prefill.
@@ -6612,7 +6613,7 @@ class OpenAICompatibleBackend:
                 stage_messages.insert(1, {"role": "system", "content": evidence_note})
             stage_messages.append({
                 "role": "user",
-                "content": AGENTIC_STAGE2_MEMORY_TRIGGER,
+                "content": AGENTIC_INTERNAL_GENERATION_PULSE,
             })
         elif cache_append:
             evidence_note = _agentic_stage2_host_tool_evidence_note(messages)
@@ -6729,6 +6730,7 @@ class OpenAICompatibleBackend:
         stage_messages = (
             [{"role": "system", "content": stage_system}] if stage_system else []
         ) + prepared_messages
+        _agentic_attach_system_stage_control(stage_messages, messages, profile)
         if reasoning_primary:
             # Current-turn failed/unmatched call IDs only; no raw transcript
             # or repeated successful-call metadata in Stage 2 prefill.
@@ -6737,7 +6739,7 @@ class OpenAICompatibleBackend:
                 stage_messages.insert(1, {"role": "system", "content": evidence_note})
             stage_messages.append({
                 "role": "user",
-                "content": AGENTIC_STAGE2_MEMORY_TRIGGER,
+                "content": AGENTIC_INTERNAL_GENERATION_PULSE,
             })
         elif cache_append:
             evidence_note = _agentic_stage2_host_tool_evidence_note(messages)
