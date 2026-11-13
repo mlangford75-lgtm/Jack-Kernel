@@ -4798,12 +4798,23 @@ def _agentic_stage2_host_tool_evidence_note(
         # Quoted text is evidence of a reported tool error only. A short,
         # bounded diagnostic helps Stage 2 preserve established correction
         # causes without inviting the model to repeat the complete tool output.
-        diagnostic = " ".join(error_text.split())[:240] if (failures_only and failure) else ""
+        diagnostic = ""
+        diagnostic_truncated = False
+        if failures_only and failure and error_text.strip():
+            # Reuse Jack's configured head+tail retention policy so a useful
+            # diagnostic suffix is not silently discarded by another hard cap.
+            diagnostic, diagnostic_truncated = _bounded_evidence_excerpt(
+                " ".join(error_text.split())
+            )
         observations.append(
             f"- call_id={safe(call_id)}; tool={safe(name)}; "
             f"requested_target={safe(requested_target)}; "
             f"outcome={status}; path_scope={path_scope}"
-            + (f"; untrusted_reported_error_excerpt={safe(diagnostic)}" if diagnostic else "")
+            + (
+                f"; untrusted_reported_error_excerpt={safe(diagnostic)}; "
+                f"error_excerpt_truncated={'YES' if diagnostic_truncated else 'NO'}"
+                if diagnostic else ""
+            )
         )
 
     # Do not prioritize away earlier operations. Stage 2 sees every current-turn
