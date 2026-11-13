@@ -234,17 +234,17 @@ def test_every_agentic_profile_uses_authenticated_user_as_final_request(monkeypa
     assert wire[-1] == {"role": "user", "content": "Make a clock."}
     assert [m["content"] for m in wire if m["role"] == "user"] == ["Make a clock."]
     assert "." not in [m["content"] for m in wire if m["role"] == "user"]
-@pytest.mark.parametrize("request", [
+@pytest.mark.parametrize("user_text", [
     r'explore "C:\Users\default.DESKTOP-M8143Q1\Desktop\clock"',
     "list everything in the folder",
 ])
 @pytest.mark.parametrize("multimodal", [False, True])
-def test_stage2_real_user_not_placeholder_regression(monkeypatch, tmp_path, request, multimodal):
+def test_stage2_real_user_not_placeholder_regression(monkeypatch, tmp_path, user_text, multimodal):
     """Live Gemma regression: '.' must never appear as the user task."""
     k = load(monkeypatch, tmp_path, cache_enabled=False)
     original_content = (
-        [{"type": "text", "text": request}]
-        if multimodal else request
+        [{"type": "text", "text": user_text}]
+        if multimodal else user_text
     )
     source = [
         {"role": "user", "content": original_content},
