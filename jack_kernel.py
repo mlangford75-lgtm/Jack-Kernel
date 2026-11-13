@@ -1033,6 +1033,74 @@ def _agentic_attach_system_stage_control(stage_messages, source_history, profile
 
 
 
+
+def _agentic_stage2_put_authenticated_user_last(
+    stage_messages: List[Dict[str, Any]],
+    source_view: List[Dict[str, Any]],
+    prepared_messages: List[Dict[str, Any]],
+) -> None:
+    """Open Stage 2 on the actual U, never on synthetic user-role instructions.
+
+    Chat templates require a user-ended generation request in some backends.
+    Move the *already present* authenticated U to the end of the model-only
+    projection; do not duplicate its content, mutate canonical history, or
+    change the frozen A1 and R1. Internal validation notices, if any, are
+    host evidence rather than competing user requests. All providers share
+    this construction in streamed and nonstreamed calls.
+    """
+    if len(source_view) != len(prepared_messages):
+        raise ForensicConflict("Stage-2 source projection changed the source message count")
+    authentic = [
+        i for i, item in enumerate(source_view)
+        if _jack_is_authentic_user_message(item)
+    ]
+    if len(authentic) != 1:
+        raise ForensicConflict("Stage-2 model input requires exactly one authenticated user request")
+    user_index = authentic[0]
+    user_wire = prepared_messages[user_index]
+    if not isinstance(user_wire, dict) or user_wire.get("role") != "user":
+        raise ForensicConflict("Stage-2 authenticated request lost its user role")
+
+    # The Stage-2 source may include authenticated, host-owned tool-validation
+    # notices. Project those as system-owned evidence rather than user turns.
+    for index, source in enumerate(source_view):
+        if index == user_index or not isinstance(source, dict) or source.get("role") != "user":
+            continue
+        if source.get("_jack_internal_tool_validation_rejection") is not True:
+            raise ForensicConflict("Stage-2 source contains an unowned secondary user message")
+        notice_wire = prepared_messages[index]
+        location = next(
+            (i for i, item in enumerate(stage_messages) if item is notice_wire), None
+        )
+        if location is None:
+            raise ForensicConflict("Stage-2 validation notice missing from model projection")
+        stage_messages.pop(location)
+        system_end = 0
+        while (system_end < len(stage_messages)
+               and stage_messages[system_end].get("role") == "system"):
+            system_end += 1
+        stage_messages.insert(system_end, {
+            "role": "system",
+            "content": (
+                "Jack-owned current-turn tool validation note (not a user request):\n"
+                + _content_to_text(notice_wire.get("content"))
+            ),
+        })
+    location = next(
+        (i for i, item in enumerate(stage_messages) if item is user_wire), None
+    )
+    if location is None:
+        raise ForensicConflict("Stage-2 authenticated user message missing from model projection")
+    stage_messages.append(stage_messages.pop(location))
+    # Model-facing U is the only user-role message. Both its bytes and the
+    # exact A1/R1 source are still present in this request.
+    if stage_messages[-1] is not user_wire or sum(
+        item.get("role") == "user" for item in stage_messages
+    ) != 1:
+        raise ForensicConflict("Stage-2 user authority projection is ambiguous")
+
+
+
 def _stage_generation_trigger(
     profile: "StageProfile", messages: List[Dict[str, Any]]
 ) -> Dict[str, Any]:
@@ -6611,10 +6679,9 @@ class OpenAICompatibleBackend:
             evidence_note = _agentic_stage2_host_tool_evidence_note(messages, failures_only=True)
             if evidence_note:
                 stage_messages.insert(1, {"role": "system", "content": evidence_note})
-            stage_messages.append({
-                "role": "user",
-                "content": AGENTIC_INTERNAL_GENERATION_PULSE,
-            })
+            _agentic_stage2_put_authenticated_user_last(
+                stage_messages, source_view, prepared_messages
+            )
         elif cache_append:
             evidence_note = _agentic_stage2_host_tool_evidence_note(messages)
             stage_messages.append({"role": "user", "content": (evidence_note + "\n\n" if evidence_note else "") + AGENTIC_36_STAGE2_PROMPT})
@@ -6737,10 +6804,9 @@ class OpenAICompatibleBackend:
             evidence_note = _agentic_stage2_host_tool_evidence_note(messages, failures_only=True)
             if evidence_note:
                 stage_messages.insert(1, {"role": "system", "content": evidence_note})
-            stage_messages.append({
-                "role": "user",
-                "content": AGENTIC_INTERNAL_GENERATION_PULSE,
-            })
+            _agentic_stage2_put_authenticated_user_last(
+                stage_messages, source_view, prepared_messages
+            )
         elif cache_append:
             evidence_note = _agentic_stage2_host_tool_evidence_note(messages)
             stage_messages.append({"role": "user", "content": (evidence_note + "\n\n" if evidence_note else "") + AGENTIC_36_STAGE2_PROMPT})
