@@ -110,14 +110,11 @@ def test_custom_system_never_governs_agentic_stage2(monkeypatch, tmp_path, strea
     assert all(m["role"] != "developer" for m in stage2["messages"])
     assert stage2["messages"][-2]["reasoning_content"] == "Current R1 obeyed the caller where applicable."
     assert stage2["messages"][-2]["content"] == "Made the clock."
-    if cache_enabled:
-        assert stage2["messages"][0]["content"] == k.AGENTIC_STAGE1_PROMPT
-        assert stage2["messages"][-1]["content"].startswith(k.AGENTIC_36_STAGE2_PROMPT)
-        assert stage2["chat_template_kwargs"]["preserve_thinking"] is True
-        assert "tools" not in stage2
-    else:
-        assert stage2["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
-        assert "tools" not in stage2
+    assert stage2["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
+    assert stage2["messages"][0]["content"].startswith("You must always follow the Prime Directive.")
+    assert stage2["messages"][-1] == {"role": "user", "content": "Proceed."}
+    assert stage2["chat_template_kwargs"]["preserve_thinking"] is True
+    assert "tools" not in stage2
 
 
 @pytest.mark.parametrize("stream", [True, False])
@@ -145,9 +142,9 @@ def test_final_causal_paper_is_still_caller_isolated(monkeypatch, tmp_path, stre
     k = load(monkeypatch, tmp_path)
     payload = capture(k, stage="extended_reflection", stream=stream)
     assert CALLER not in payload["messages"][0]["content"]
-    assert payload["messages"][0]["content"] == k.AGENTIC_STAGE1_PROMPT
-    assert payload["messages"][-1]["content"] == k.AGENTIC_36_STAGE2_PROMPT
-    assert payload["messages"][-1]["content"].startswith(k.AGENTIC_36_STAGE2_PROMPT)
+    assert payload["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
+    assert payload["messages"][0]["content"].startswith("You must always follow the Prime Directive.")
+    assert payload["messages"][-1] == {"role": "user", "content": "Proceed."}
     assert k.STAGES["extended_reflection"].allow_tools is False
 
 
