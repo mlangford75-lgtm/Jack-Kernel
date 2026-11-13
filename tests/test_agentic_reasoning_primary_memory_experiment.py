@@ -70,16 +70,15 @@ def test_all_agentic_profiles_get_same_reasoning_only_source(monkeypatch, tmp_pa
     before = copy.deepcopy(initial)
     projected = k._agentic_stage2_test_history(initial, k.STAGES["extended_reflection"])
     assert initial == before
-    assert len(projected) == 1
-    assert projected[0]["role"] == "assistant"
-    assert projected[0]["content"] == "Reasoning is available for distillation."
-    assert projected[0]["reasoning_content"] == (
+    assert [m["role"] for m in projected] == ["user", "assistant"]
+    assert projected[0]["content"] == "CURRENT REQUEST: create three customers; end with STATE CARD"
+    assert projected[1]["content"] == "FINAL USER-FACING ANSWER: three customers\nSTATE CARD"
+    assert projected[1]["reasoning_content"] == (
         "Considered A; rejected for duplication.\n\n"
         "Chose B. Exact reusable insight: preserve unique relationships."
     )
-    assert "STATE CARD" not in json.dumps(projected)
-    assert "CURRENT REQUEST" not in json.dumps(projected)
-    assert "FINAL USER-FACING ANSWER" not in json.dumps(projected)
+    assert "PAST USER" not in json.dumps(projected)
+    assert "PAST ANSWER" not in json.dumps(projected)
     assert not hasattr(k, "AGENTIC_REASONING_PRIMARY_EXPERIMENT")
     directive = k.AGENTIC_36_STAGE2_PROMPT
     for forbidden in ("Stage 1", "Stage 2", "Jack", "R1", "A1", "JSON"):
@@ -93,11 +92,10 @@ def test_no_reasoning_is_explicit_not_a_legacy_fallback(monkeypatch, tmp_path, p
     k = kernel(monkeypatch, tmp_path, profile=profile)
     original = history(reasoning=False)
     projected = k._agentic_stage2_test_history(original, k.STAGES["extended_reflection"])
-    assert len(projected) == 1
-    assert projected[0]["role"] == "assistant"
-    assert projected[0]["content"] == "No reasoning was supplied for distillation."
-    assert "reasoning_content" not in projected[0]
-    assert "STATE CARD" not in json.dumps(projected)
+    assert [m["role"] for m in projected] == ["user", "assistant"]
+    assert projected[1]["content"].endswith("STATE CARD")
+    assert "reasoning_content" not in projected[1]
+    assert "PAST USER" not in json.dumps(projected)
 
 
 @pytest.mark.parametrize("profile", PROFILES)
@@ -140,14 +138,15 @@ def test_backend_payload_is_restricted_and_model_neutral(monkeypatch, tmp_path, 
     assert len(snapshots) == 1
     payload = snapshots[0]
     assert [m["role"] for m in payload["messages"]] == [
-        "system", "assistant", "user"
+        "system", "user", "assistant", "user"
     ]
     assert payload["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
-    assert payload["messages"][1]["content"] == "Reasoning is available for distillation."
-    assert "Chose B." in payload["messages"][1]["reasoning_content"]
-    assert "STATE CARD" not in json.dumps(payload["messages"])
+    assert payload["messages"][1]["content"] == "CURRENT REQUEST: create three customers; end with STATE CARD"
+    assert "Chose B." in payload["messages"][2]["reasoning_content"]
+    assert payload["messages"][2]["content"].endswith("STATE CARD")
+    assert "PAST USER" not in json.dumps(payload["messages"])
     assert "CALLER SYSTEM MUST BE ISOLATED" not in json.dumps(payload["messages"])
-    assert payload["messages"][2]["content"].startswith("Preserve the useful working knowledge")
+    assert payload["messages"][3]["content"] == "Proceed."
     assert "tools" not in payload and "tool_choice" not in payload
 
 
@@ -168,3 +167,48 @@ def test_other_stage_does_not_see_modified_history(monkeypatch, tmp_path):
     assert k._agentic_stage2_test_history(
         original, k.STAGES["extended_initial"]
     ) is original
+
+
+def test_owned_stage2_sees_authentic_work_and_memory_attempt_ids(monkeypatch, tmp_path):
+    k = kernel(monkeypatch, tmp_path)
+    initial = history()
+    source_text = initial[2]["content"]
+    answer_text = initial[-1]["content"]
+    work_id = k._agentic_begin_turn(initial, fresh=True)
+    assert work_id.startswith("jack-turn-")
+    k._agentic_forensic_freeze(initial, answer_text)
+    k._agentic_forensic_start_stage2(initial)
+    record = k._agentic_forensic_turn(initial)
+    assert record.turn_id == work_id
+    assert record.stage2_attempt_id
+    before = copy.deepcopy(initial)
+    stage2_source = k._agentic_stage2_test_history(initial, k.STAGES["extended_reflection"])
+    assert initial == before
+    assert [m["role"] for m in stage2_source] == ["system", "user", "assistant"]
+    binding = stage2_source[0]["content"]
+    assert work_id in binding
+    assert record.stage2_attempt_id in binding
+    assert stage2_source[1]["content"] == source_text
+    assert stage2_source[2]["content"] == answer_text
+    assert "Chose B." in stage2_source[2]["reasoning_content"]
+    projected = k.OpenAICompatibleBackend(k.CFG)._stage_messages_for_profile(
+        stage2_source, k.STAGES["extended_reflection"]
+    )
+    assert work_id in projected[0]["content"]
+    assert record.stage2_attempt_id in projected[0]["content"]
+    assert all(not any(key.startswith("_jack_") for key in m) for m in projected)
+    assert initial[2]["content"] == source_text
+
+
+def test_stage1_work_id_is_visible_without_changing_original_request(monkeypatch, tmp_path):
+    k = kernel(monkeypatch, tmp_path, profile="exhaustive")
+    original = history()
+    request = original[2]["content"]
+    work_id = k._agentic_begin_turn(original, fresh=True)
+    initial_profile = k.STAGES["extended_initial"]
+    projected = k.OpenAICompatibleBackend(k.CFG)._stage_messages_for_profile(
+        original, initial_profile
+    )
+    assert projected[2]["content"] == request + "\\nWork ID: " + work_id
+    assert original[2]["content"] == request
+    assert "_jack_agentic_turn_id" not in projected[2]
