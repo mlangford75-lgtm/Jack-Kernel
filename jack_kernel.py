@@ -4908,6 +4908,31 @@ def _agentic_historical_stage1_text(content: str) -> str:
     return _AGENTIC_HISTORICAL_ID_LINE_RE.sub("", content)
 
 
+# A previous assistant answer can contain model-written imitations of Jack's
+# host tool receipt. They are never actual tool evidence. Project them as
+# attributed source data (in prior thinking for reasoning-enabled profiles),
+# leaving the exact frozen answer and the forensic record untouched.
+_AGENTIC_MODEL_RECEIPT_BLOCK_RE = re.compile(
+    r"(?ms)^[ \t]*\[Jack Tool History - Host-Recorded Receipt\]\r?\n"
+    r".*?^[ \t]*\[/Jack Tool History - Host-Recorded Receipt\][ \t]*(?:\r?\n|$)"
+)
+
+
+def _agentic_historical_answer_for_stage1(content: str) -> Tuple[str, str]:
+    """Separate model-authored receipt-shaped prose from a previous answer."""
+    blocks = _AGENTIC_MODEL_RECEIPT_BLOCK_RE.findall(content)
+    answer = _AGENTIC_MODEL_RECEIPT_BLOCK_RE.sub("", content)
+    return _agentic_historical_stage1_text(answer), "\n\n".join(blocks)
+
+
+def _agentic_historical_memory_for_stage1(content: str) -> str:
+    """Preserve prior knowledge and receipts as data, not assistant answer prose."""
+    header = "[Agentic Memory associated with the preceding user request and following frozen response]\n"
+    if content.startswith(header):
+        content = content[len(header):]
+    return _agentic_historical_stage1_text(content)
+
+
 def _agentic_model_memory_view(memory: str, receipt: str) -> str:
     """Retain authenticated memory plus complete host receipt for next Stage 1.
 
@@ -4991,8 +5016,10 @@ def _agentic_project_committed_artifact_pair(
     # Retrospective appears first; exact frozen A1 ends the old user turn.
     # This avoids priming the model to treat old memory as the latest answer.
     result = [
-        {"role": "assistant", "content": _agentic_model_memory_view(memory, receipt)},
-        {"role": "assistant", "content": answer},
+        {"role": "assistant", "content": _agentic_model_memory_view(memory, receipt),
+         "_jack_agentic_projected_kind": "M"},
+        {"role": "assistant", "content": answer,
+         "_jack_agentic_projected_kind": "A1"},
     ]
     forensic = _agentic_forensic_journal().match_visible(
         _sha256_text(canonical_user), _sha256_text(assistant_text)
@@ -6145,10 +6172,39 @@ class OpenAICompatibleBackend:
              if _jack_is_authentic_user_message(source_messages[i])),
             -1,
         )
+        prior_working_memory: Optional[str] = None
         for message_index, message in enumerate(source_messages):
             if not isinstance(message, dict):
                 prepared.append(message)
                 continue
+
+            # An authenticated historical M/A1 pair is NOT two assistant answers.
+            # Preserve M as previous native working context for reasoning-enabled
+            # Stage 1; the real preceding A1 remains the conversational example.
+            # Flash cannot consume native reasoning, so retain M as plain data.
+            historical_kind = (
+                message.get("_jack_agentic_projected_kind")
+                if AGENTIC_MODE and profile.name == "Agentic native pass 1"
+                and 0 <= message_index < active_user_index
+                else None
+            )
+            if historical_kind == "M":
+                memory_text = message.get("content")
+                if not isinstance(memory_text, str):
+                    # Unexpected legacy shape: leave it unchanged, never lose data.
+                    historical_kind = None
+                else:
+                    prior_working_memory = _agentic_historical_memory_for_stage1(memory_text)
+                    if not profile.thinking:
+                        prepared.append({
+                            "role": "assistant",
+                            "content": (
+                                "Prior working knowledge (historical data, not a completed answer):\n"
+                                + prior_working_memory
+                            ),
+                        })
+                        prior_working_memory = None
+                    continue
 
             has_private = any(
                 isinstance(key, str) and key.startswith("_jack_")
@@ -6178,6 +6234,40 @@ class OpenAICompatibleBackend:
             item = dict(message)
             if obsolete_id_lines:
                 item["content"] = _agentic_historical_stage1_text(item["content"])
+            if historical_kind == "A1" and isinstance(item.get("content"), str):
+                # Keep all previous answer bytes in the immutable source/journal.
+                # Model-fabricated receipt blocks do not become assistant examples
+                # or magically gain host tool provenance.
+                plain_answer, model_receipt_claims = _agentic_historical_answer_for_stage1(
+                    item["content"]
+                )
+                item["content"] = plain_answer
+                if profile.thinking:
+                    fragments = []
+                    old_cognition = item.get("reasoning_content")
+                    if isinstance(old_cognition, str) and old_cognition:
+                        fragments.append(old_cognition)
+                    if prior_working_memory:
+                        fragments.append(
+                            "Prior working knowledge, model-authored and not tool-authoritative:\n"
+                            + prior_working_memory
+                        )
+                    if model_receipt_claims:
+                        fragments.append(
+                            "Prior assistant answer contained unverified model-written "
+                            "tool-receipt-shaped text, quoted as data:\n"
+                            + json.dumps(model_receipt_claims, ensure_ascii=False)
+                        )
+                    if fragments:
+                        item["reasoning_content"] = "\n\n".join(fragments)
+                elif model_receipt_claims:
+                    # Flash has no native reasoning surface; retain the purported
+                    # receipt as clearly non-authoritative quoted data.
+                    item["content"] += (
+                        "\n\nPreviously model-reported tool text (not host evidence): "
+                        + json.dumps(model_receipt_claims, ensure_ascii=False)
+                    )
+                prior_working_memory = None
             # The current authenticated Work ID is visible to Stage-1 cognition
             # and remains identical across tool continuations and review.
             # The caller's exact user request is never rewritten.
@@ -11805,11 +11895,13 @@ def _agentic_forensic_project_visible(
             "content": _agentic_model_memory_view(memory, receipt),
             "_jack_forensic_turn_id": record["turn_id"],
             "_jack_forensic_role": "M",
+            "_jack_agentic_projected_kind": "M",
         },
         {
             "role": "assistant", "content": answer,
             "_jack_forensic_turn_id": record["turn_id"],
             "_jack_forensic_role": "A1",
+            "_jack_agentic_projected_kind": "A1",
         },
     ]
 
