@@ -898,7 +898,7 @@ Distinguish hypotheses and abandoned approaches from conclusions; distinguish at
 
 This is an internal working-memory task, not a request to repeat the original work. Do not continue the original task, reproduce an answer, imitate presentation or conversational style, or add formatting rituals. Remove redundant deliberation and filler.
 
-Output only the resulting working knowledge. If no reasoning was supplied, state only that no reasoning was available to distill."""
+Output only the resulting working knowledge. If no reasoning was supplied, preserve only consequential knowledge supported by the authenticated request and completed response; do not invent missing reasoning."""
 
 
 def _stage_continuation(
@@ -1070,7 +1070,7 @@ def _agentic_stage2_test_history(
         ):
             raise HTTPException(status_code=409, detail="Isolated Stage 2 has an invalid recovery suffix")
 
-    # Model-facing Stage 2 = one authentic U and one frozen A1 carrying all
+    # Model-facing Stage 2 = the authenticated U and the frozen A1 carrying all
     # native Stage-1 R1 in chronological order. Flatten the reasoning fragments
     # across tool continuations without including tool calls, results, or
     # intermediate prose. Original source messages and A1 remain byte-faithful.
@@ -1099,8 +1099,18 @@ def _agentic_stage2_test_history(
             raise ForensicConflict("Stage-2 response differs from the owned frozen A1")
         if not record.stage2_attempt_id:
             raise ForensicConflict("Stage-2 attempt identity missing")
-        # Model-facing source only; no change to canonical user request or A1.
-        source_user["_jack_agentic_stage2_attempt_id"] = record.stage2_attempt_id
+        # A distinct system-source datum makes identifiers visible to native
+        # Stage-2 reasoning without rewriting the user's exact request or A1.
+        binding = {
+            "role": "system",
+            "content": (
+                "Authenticated current work ID: " + record.turn_id
+                + "\nMemory attempt ID: " + record.stage2_attempt_id
+            ),
+        }
+        return [binding, source_user, frozen_view] + [
+            dict(recovery[idx]) for idx in range(1, len(recovery), 2)
+        ]
     return [source_user, frozen_view] + [
         dict(recovery[idx]) for idx in range(1, len(recovery), 2)
     ]
@@ -6010,8 +6020,30 @@ class OpenAICompatibleBackend:
                 continue
 
             item = dict(message)
-            # Unique turn ownership remains host-side; no Request/Response/Memory
-            # labels or turn IDs are injected into the inference prompt.
+            # The current authenticated Work ID is visible to Stage-1 cognition
+            # and remains identical across its tool continuations and review.
+            # Only the model-facing copy changes; the canonical user request
+            # and host-owned identity remain byte-exact.
+            if (
+                AGENTIC_MODE
+                and profile.name == "Agentic native pass 1"
+                and item.get("role") == "user"
+                and _jack_is_authentic_user_message(item)
+                and isinstance(item.get("_jack_agentic_turn_id"), str)
+                and item["_jack_agentic_turn_id"].startswith("jack-turn-")
+            ):
+                work_label = "\nWork ID: " + item["_jack_agentic_turn_id"]
+                if isinstance(item.get("content"), str):
+                    item["content"] += work_label
+                elif isinstance(item.get("content"), list):
+                    item["content"] = list(item["content"]) + [
+                        {"type": "text", "text": work_label}
+                    ]
+                else:
+                    prepared.append({
+                        "role": "system",
+                        "content": "Authenticated current work ID: " + item["_jack_agentic_turn_id"],
+                    })
             if (
                 AGENTIC_MODE and AGENTIC_TASK_ANCHOR_ENABLED
                 and item.get("role") == "user"
@@ -6305,7 +6337,7 @@ class OpenAICompatibleBackend:
         if reasoning_primary:
             stage_messages.append({
                 "role": "user",
-                "content": "Preserve the useful working knowledge from the preceding reasoning. Do not continue the original task.",
+                "content": "Proceed.",
             })
         elif cache_append:
             evidence_note = _agentic_stage2_host_tool_evidence_note(messages)
@@ -6425,7 +6457,7 @@ class OpenAICompatibleBackend:
         if reasoning_primary:
             stage_messages.append({
                 "role": "user",
-                "content": "Preserve the useful working knowledge from the preceding reasoning. Do not continue the original task.",
+                "content": "Proceed.",
             })
         elif cache_append:
             evidence_note = _agentic_stage2_host_tool_evidence_note(messages)
