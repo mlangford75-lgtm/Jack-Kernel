@@ -68,7 +68,7 @@ def test_cache_route_exact_prompt_and_schema(stream):
     # prompt or reintroduce a competing user-role memory directive.
     assert p["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
     assert p["messages"][0]["content"].startswith("You must always follow the Prime Directive.")
-    assert p["messages"][-1] == {"role": "user", "content": "Proceed."}
+    assert p["messages"][-1] == {"role": "user", "content": k.AGENTIC_STAGE2_MEMORY_TRIGGER}
     assert "Preserve what was established" in p["messages"][0]["content"]
     assert p["messages"][-2]["content"]=="A1 exact"
     assert p["messages"][-2]["reasoning_content"]=="Stage 1 native R1"
