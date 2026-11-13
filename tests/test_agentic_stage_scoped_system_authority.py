@@ -113,7 +113,7 @@ def test_custom_system_never_governs_agentic_stage2(monkeypatch, tmp_path, strea
     assert stage2["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
     assert stage2["messages"][0]["content"].startswith("You must always follow the Prime Directive.")
     assert stage2["messages"][1] == {"role": "system", "content": k.AGENTIC_STAGE2_MEMORY_TRIGGER}
-    assert stage2["messages"][-1] == {"role": "user", "content": k.AGENTIC_INTERNAL_GENERATION_PULSE}
+    assert stage2["messages"][-1] == {"role": "user", "content": "Make a clock."}
     assert stage2["chat_template_kwargs"]["preserve_thinking"] is True
     assert "tools" not in stage2
 
@@ -146,7 +146,7 @@ def test_final_causal_paper_is_still_caller_isolated(monkeypatch, tmp_path, stre
     assert payload["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
     assert payload["messages"][0]["content"].startswith("You must always follow the Prime Directive.")
     assert payload["messages"][1] == {"role": "system", "content": k.AGENTIC_STAGE2_MEMORY_TRIGGER}
-    assert payload["messages"][-1] == {"role": "user", "content": k.AGENTIC_INTERNAL_GENERATION_PULSE}
+    assert payload["messages"][-1] == {"role": "user", "content": "Make a clock."}
     assert k.STAGES["extended_reflection"].allow_tools is False
 
 
@@ -225,13 +225,12 @@ def test_same_turn_review_control_is_system_owned(monkeypatch, tmp_path, stream)
 
 
 @pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "exhaustive"))
-def test_every_agentic_profile_uses_neutral_memory_transport(monkeypatch, tmp_path, profile):
+def test_every_agentic_profile_uses_authenticated_user_as_final_request(monkeypatch, tmp_path, profile):
     monkeypatch.setenv("JACK_AGENTIC_PROFILE", profile)
     k = load(monkeypatch, tmp_path, cache_enabled=False)
     wire = capture(k, stage="extended_reflection", stream=True)["messages"]
     assert wire[0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
     assert wire[1] == {"role": "system", "content": k.AGENTIC_STAGE2_MEMORY_TRIGGER}
-    assert wire[-1] == {"role": "user", "content": k.AGENTIC_INTERNAL_GENERATION_PULSE}
-    assert [m["content"] for m in wire if m["role"] == "user"] == [
-        "Make a clock.", k.AGENTIC_INTERNAL_GENERATION_PULSE
-    ]
+    assert wire[-1] == {"role": "user", "content": "Make a clock."}
+    assert [m["content"] for m in wire if m["role"] == "user"] == ["Make a clock."]
+    assert "." not in [m["content"] for m in wire if m["role"] == "user"]
