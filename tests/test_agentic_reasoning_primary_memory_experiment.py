@@ -234,7 +234,7 @@ def test_compaction_retires_both_reasoning_traces_preserving_tool_history(monkey
         {"role": "user", "content": "write file"},
         {"role": "assistant", "content": "", "reasoning_content": "R1 secret",
          "tool_calls": [{"id": "x", "type": "function",
-                         "function": {"name": "write", "arguments": "{\\"path\\":\\"file\\"}"}}]},
+                         "function": {"name": "write", "arguments": "{}"}}]},
         {"role": "tool", "tool_call_id": "x", "content": "write returned success"},
         {"role": "assistant", "content": "Completed file", "reasoning_content": "R2 secret"},
         {"role": "user", "content": "inspect file"},
