@@ -63,13 +63,16 @@ def test_large_user_request_stays_in_cached_prefix(monkeypatch, tmp_path):
     turn = k._agentic_begin_turn(history, fresh=True)
     stage1_view = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_initial"])
     marker = f"[JACK LINK turn={turn} | artifact=U]"
-    assert stage1_view[0]["content"] == huge + "\n" + marker
+    assert stage1_view[0] == {"role": "system", "content": "Authenticated current work ID: " + turn}
+    assert stage1_view[1]["content"] == huge + "\n" + marker
     assert history[0]["content"] == huge
     answer = k.append_extended_candidate_response(history, {"content": "Implemented change", "reasoning_content": "R1 local"})
     k._agentic_forensic_start_stage2(history)
     stage2_view = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_reflection"])
     stage2_projected = k._agentic_stage2_test_history(history, k.STAGES["extended_reflection"])
-    assert stage2_projected[0]["role"] == "user"
+    assert stage2_projected[0]["role"] == "system"
+    assert turn in stage2_projected[0]["content"]
+    assert stage2_projected[1]["content"] == huge
     assert stage2_projected[-1]["content"] == answer
     assert stage2_projected[-1]["reasoning_content"] == "R1 local"
     suffix = k._stage_continuation(k.STAGES["extended_reflection"], history)
