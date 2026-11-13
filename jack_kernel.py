@@ -318,8 +318,8 @@ class KernelConfig:
 
     @property
     def agentic_final_review(self) -> bool:
-        # One Stage-1 verification continuation in Thorough only.
-        return self.agentic_profile == "thorough"
+        # One Stage-1 verification continuation in Exhaustive only.
+        return self.agentic_profile == "exhaustive"
 
     # Human-configurable Qwen preserve-thinking policy. Calling agents cannot
     # override this value; it is owned by the Jack Kernel runtime.
@@ -858,11 +858,12 @@ if REASONING_PROFILES[_reasoning_level].get("disabled"):
     raise RuntimeError("JACK_REASONING_LEVEL=low is disabled in Jack Kernel v0.1.1. Choose off, medium, x-high, deep-research, Local Agentic (Preserve Thinking), code-debugging, or code-debugging-deep.")
 ACTIVE_REASONING_PROFILE = REASONING_PROFILES[_reasoning_level]
 AGENTIC_MODE = ACTIVE_REASONING_PROFILE["mode"] == "agentic"
-if AGENTIC_MODE and CFG.agentic_profile not in {"flash", "balanced", "thorough"}:
-    raise RuntimeError("JACK_AGENTIC_PROFILE must be flash, balanced, or thorough")
+if AGENTIC_MODE and CFG.agentic_profile not in {"flash", "balanced", "thorough", "exhaustive"}:
+    raise RuntimeError("JACK_AGENTIC_PROFILE must be flash, balanced, thorough, or exhaustive")
 AGENTIC_BALANCED_MODE = AGENTIC_MODE and CFG.agentic_profile == "balanced"
 AGENTIC_FLASH_MODE = AGENTIC_MODE and CFG.agentic_profile == "flash"
 AGENTIC_THOROUGH_MODE = AGENTIC_MODE and CFG.agentic_profile == "thorough"
+AGENTIC_EXHAUSTIVE_MODE = AGENTIC_MODE and CFG.agentic_profile == "exhaustive"
 # Balanced generates Stage-2 memory without new native thinking, but still reads
 # Stage-1's preserved reasoning as source material. Thorough Stage 2 thinks.
 AGENTIC_THINKING_OFF_MEMORY_MODE = AGENTIC_BALANCED_MODE
@@ -2361,7 +2362,7 @@ STAGES: Dict[str, StageProfile] = {
     "extended_reflection": StageProfile(
         "Agentic native pass 2" if AGENTIC_MODE else "Deep Research Antithesis pass 2",
         AGENTIC_36_STAGE2_PROMPT if AGENTIC_MODE else ULTRA_STAGE2_ANTITHESIS_PROMPT,
-        not AGENTIC_MODE or AGENTIC_THOROUGH_MODE,
+        not AGENTIC_MODE or AGENTIC_THOROUGH_MODE or AGENTIC_EXHAUSTIVE_MODE,
         ACTIVE_REASONING_PROFILE.get("pass2", "xhigh"),
         False,
         0.50 if AGENTIC_MODE else 0.70,
@@ -4196,7 +4197,7 @@ def self_adversarial_stage_reasoning_trace(
     return "\n\n".join(parts).strip()
 
 
-# One Stage-1 continuation, in Thorough only. Exact user wording.
+# One Stage-1 continuation, in Exhaustive only. Preserve the user's exact wording.
 AGENTIC_STAGE1_VERIFICATION_PROMPT = "Wait, re-verify your reasoning. Test for errors, mistakes, or poor quality. Make changes, if necessary, to ensure alignment with the instructions and user request before responding"
 AGENTIC_FINAL_REVIEW_PROMPT = AGENTIC_STAGE1_VERIFICATION_PROMPT
 AGENTIC_FINAL_REVIEW_TRIGGER = AGENTIC_FINAL_REVIEW_PROMPT
@@ -4211,6 +4212,27 @@ def _agentic_final_review_is_pending(history: List[Dict[str, Any]]) -> bool:
         isinstance(item, dict) and item.get("_jack_internal_agentic_final_review_trigger") is True
         for item in history[int(target["history_index"]) + 1:]
     )
+
+
+def _agentic_stage1_extension_transport(instruction: str) -> Dict[str, Any]:
+    """Portable same-task review instruction; no backend-specific reasoning prefill.
+
+    A new chat-completion generation needs a model-facing instruction. The wire role
+    is a transport detail, not a second authenticated user request; the host flag
+    is stripped before inference and never changes active_response_target().
+    The supplied extension is included byte-for-byte and can request tool work.
+    """
+    return {
+        "role": "user",
+        "content": (
+            "Continue the same original user request from your unfinished draft. "
+            "This is a continuation of the same task, not a new user request. "
+            "Apply the following instruction before producing the final answer:\n\n"
+            + instruction
+        ),
+        "_jack_internal_agentic_final_review_trigger": True,
+        "_jack_stage_key": "extended_initial",
+    }
 
 
 def _agentic_begin_final_review(history: List[Dict[str, Any]], data: Dict[str, Any]) -> None:
@@ -4241,12 +4263,7 @@ def _agentic_begin_final_review(history: List[Dict[str, Any]], data: Dict[str, A
         entry["reasoning_content"] = reasoning
         entry["reasoning"] = reasoning
     history.append(entry)
-    history.append({
-        "role": "user",
-        "content": AGENTIC_FINAL_REVIEW_TRIGGER,
-        "_jack_internal_agentic_final_review_trigger": True,
-        "_jack_stage_key": "extended_initial",
-    })
+    history.append(_agentic_stage1_extension_transport(AGENTIC_FINAL_REVIEW_TRIGGER))
 
 
 def append_extended_candidate_response(
@@ -12853,9 +12870,7 @@ def _load_cli_config() -> Dict[str, Any]:
             for key in cfg:
                 if key in loaded:
                     cfg[key] = loaded[key]
-            # Existing saved Exhaustive selection keeps native-thinking behavior.
-            if str(cfg.get("agentic_profile", "")).strip().lower() == "exhaustive":
-                cfg["agentic_profile"] = "thorough"
+            # Exhaustive is a supported fourth Agentic profile; preserve saved selection.
             cfg["backend_profile"] = _normalize_backend_profile(str(cfg.get("backend_profile", "lmstudio")))
             legacy_reasoning = str(cfg.get("reasoning_level", "x-high")).strip().lower()
             migrated_reasoning = _REASONING_LEVEL_ALIASES.get(legacy_reasoning, legacy_reasoning)
@@ -13276,14 +13291,16 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
         print("Agentic profile (two-stage lifecycle in all profiles)")
         print("  1) Flash      - Stage 1 OFF, Stage 2 OFF, no extensions")
         print("  2) Balanced   - Stage 1 ON,  Stage 2 OFF, no extensions (Default)")
-        print("  3) Thorough   - Stage 1 ON + review ON, Stage 2 ON")
+        print("  3) Thorough   - Stage 1 ON,  Stage 2 ON, no extensions")
+        print("  4) Exhaustive - Stage 1 ON + review ON, Stage 2 ON")
         print()
         # Choosing Agentic afresh defaults to Balanced, irrespective of a
         # previously saved optional profile. Escape rolls back this editor.
-        agentic_choice = _cli_input("Select Agentic profile [1-3] [2]: ").strip().lower() or "2"
+        agentic_choice = _cli_input("Select Agentic profile [1-4] [2]: ").strip().lower() or "2"
         selected_profile = {"1": "flash", "flash": "flash",
                             "2": "balanced", "balanced": "balanced",
-                            "3": "thorough", "thorough": "thorough"}.get(agentic_choice)
+                            "3": "thorough", "thorough": "thorough",
+                            "4": "exhaustive", "exhaustive": "exhaustive"}.get(agentic_choice)
         if selected_profile is None:
             print("Invalid Agentic profile; keeping current reasoning level.")
             return
@@ -13683,7 +13700,7 @@ def _config_to_env(cfg: Dict[str, Any]) -> Dict[str, str]:
         "JACK_BACKEND_EXTRA_HEADERS": json.dumps(cfg.get("backend_extra_headers") or {}, ensure_ascii=False),
         "JACK_VIRTUAL_MODEL": cfg["virtual_model"],
         "JACK_REASONING_LEVEL": cfg["reasoning_level"],
-        "JACK_AGENTIC_PROFILE": ("thorough" if str(cfg.get("agentic_profile", "balanced")).strip().lower() == "exhaustive" else cfg.get("agentic_profile", "balanced")),
+        "JACK_AGENTIC_PROFILE": cfg.get("agentic_profile", "balanced"),
         "JACK_PRESERVE_THINKING": "1" if cfg.get("preserve_thinking", True) else "0",
         "JACK_BACKEND_TIMEOUT_SECONDS": cfg["backend_timeout_seconds"],
         "JACK_REASONING_BUDGET_TOKENS": cfg.get("reasoning_budget_tokens", 100000),
