@@ -113,8 +113,13 @@ def test_muse_uses_its_template_max_without_generic_effort(monkeypatch, tmp_path
     else:
         assert "reasoning_effort" not in p
         assert p["chat_template_kwargs"]["enable_thinking"] is True
-    assert p["messages"][0]["content"] == k.AGENTIC_STAGE1_PROMPT
-    assert p["messages"][1]["content"] == "Build a clock"
+    assert p["messages"][0]["content"] == (
+        k.AGENTIC_STAGE1_PROMPT if stage == "extended_initial"
+        else k.AGENTIC_36_STAGE2_PROMPT
+    )
+    assert p["messages"][1 if stage == "extended_initial" else -1]["content"] == "Build a clock"
+    if stage == "extended_reflection":
+        assert p["messages"][1] == {"role": "system", "content": k.AGENTIC_STAGE2_MEMORY_TRIGGER}
     if stage == "extended_initial":
         assert p["tools"][0]["function"]["name"] == "read"
     else:

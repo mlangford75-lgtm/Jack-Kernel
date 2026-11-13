@@ -40,7 +40,8 @@ def test_exact_user_and_frozen_answer_with_host_owned_id(monkeypatch, tmp_path, 
     assert len(label) == 22
     assert re.fullmatch(r"[A-Za-z0-9_-]{22}", label)
     request_view = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_initial"])
-    assert request_view[0]["content"] == raw
+    assert request_view[0] == {"role": "system", "content": "Authenticated current work ID: " + turn}
+    assert request_view[1]["content"] == raw
     assert label not in str(request_view)
     assert history[0]["content"] == raw
 
@@ -50,14 +51,18 @@ def test_exact_user_and_frozen_answer_with_host_owned_id(monkeypatch, tmp_path, 
     })
     k._agentic_forensic_start_stage2(history)
     memory_view = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_reflection"])
-    assert memory_view[:len(request_view)] == request_view
+    assert memory_view[0]["role"] == "user"
+    assert memory_view[0]["content"] == raw
     assert memory_view[-1]["content"] == frozen
     assert memory_view[-1]["reasoning_content"] == "Clock face and bird were required."
     assert history[-1]["content"] == frozen
     continuation = k._stage_continuation(k.STAGES["extended_reflection"], history)
-    assert "current user request" in continuation
-    assert "reasoning and final response" in continuation
-    assert "not a new user request or a report about the process" in continuation
+    assert "brief description of the current task" in continuation
+    assert "authenticated user request for the current turn" in continuation
+    assert "current-turn native reasoning" in continuation
+    assert "exact frozen completed response" in continuation
+    assert "Prime Directive" in continuation
+    assert "not as a new user request" in continuation
     assert "turn=" not in continuation
     assert label not in continuation
     assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
@@ -81,8 +86,10 @@ def test_independent_repeated_requests_have_unique_host_identifiers_but_no_model
     assert a != b
     rendered = k.BACKEND._stage_messages_for_profile(older + new, k.STAGES["extended_initial"])
     assert [x["content"] for x in rendered] == [
-        "Change bird to blue", "Changed bird only", "Bird turned blue", "Change bird to blue"
+        "Change bird to blue", "Changed bird only", "Bird turned blue",
+        "Authenticated current work ID: " + b, "Change bird to blue"
     ]
+    assert rendered[-1]["role"] == "user"
     assert k._agentic_visible_turn_label(a) not in str(rendered)
     assert k._agentic_visible_turn_label(b) not in str(rendered)
 
@@ -92,7 +99,8 @@ def test_feature_flag_restores_phase3g_text_and_prefix(monkeypatch, tmp_path):
     history = [{"role": "user", "content": "Build clock"}]
     k._agentic_begin_turn(history, fresh=True)
     view = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_initial"])
-    assert view[0]["content"] == "Build clock"
+    assert view[0]["role"] == "system"
+    assert view[1]["content"] == "Build clock"
     k.append_extended_candidate_response(history, {"content": "Done"})
     k._agentic_forensic_start_stage2(history)
     later = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_reflection"])

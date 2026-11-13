@@ -59,7 +59,9 @@ def test_exact_prompt_and_single_same_turn_review_nonstream(monkeypatch, tmp_pat
     result = asyncio.run(kernel._run_stage(history, "", "extended_initial", usage, append=False))
     assert len(backend.calls) == 2
     assert backend.calls[0] == [{"role": "user", "content": "What is 7*8?", "_jack_agentic_turn_id": history[0]["_jack_agentic_turn_id"]}]
-    assert backend.calls[1][-1]["content"] == PROMPT
+    assert backend.calls[1][-1]["content"] == k.AGENTIC_FINAL_REVIEW_TRIGGER
+    assert "not a new user request" in k.AGENTIC_FINAL_REVIEW_TRIGGER
+    assert k.AGENTIC_FINAL_REVIEW_PROMPT in k.AGENTIC_FINAL_REVIEW_TRIGGER
     assert backend.calls[1][-1]["content"] == k.AGENTIC_FINAL_REVIEW_TRIGGER
     assert backend.calls[1][-1]["_jack_internal_agentic_final_review_trigger"] is True
     assert backend.calls[1][-2]["content"] == "Unverified draft"
@@ -142,6 +144,6 @@ def test_review_transport_trigger_does_not_retarget_user_request(monkeypatch, tm
     assert k.active_response_target(history)["content"] == "The original task is to verify the clock workspace."
     assert k._agentic_forensic_turn(history).turn_id == original_id
     assert k._agentic_final_review_is_pending(history)
-    assert history[-1]["content"] == k.AGENTIC_FINAL_REVIEW_PROMPT
+    assert history[-1]["content"] == k.AGENTIC_FINAL_REVIEW_TRIGGER
     assert history[-1]["_jack_internal_agentic_final_review_trigger"] is True
     assert history[-1]["content"].count(k.AGENTIC_FINAL_REVIEW_PROMPT) == 1

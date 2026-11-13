@@ -40,13 +40,21 @@ def test_phase3g_retrospective_restored_and_cached_prefix_preserved(monkeypatch,
     history = [{"role": "user", "content": request}]
     turn = k._agentic_begin_turn(history, fresh=True)
     first = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_initial"])
-    assert first[0]["content"] == request
+    assert first[0] == {"role": "system", "content": "Authenticated current work ID: " + turn}
+    assert first[1]["role"] == "user"
+    assert first[1]["content"] == request
     a1 = k.append_extended_candidate_response(
         history, {"content": "Created a cuckoo clock", "reasoning_content": "Decided on clock face, bird, and pendulum"}
     )
     k._agentic_forensic_start_stage2(history)
     second = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_reflection"])
-    assert second[:len(first)] == first
+    # Stage 2 has its own isolated projection; it need not share the Stage-1
+    # prefix, but must keep the exact same authenticated request and A1.
+    stage2_source = k._agentic_stage2_test_history(history, k.STAGES["extended_reflection"])
+    assert stage2_source[0]["role"] == "system"
+    assert turn in stage2_source[0]["content"]
+    assert stage2_source[1]["content"] == request
+    assert second[0]["content"] == request
     assert second[-1]["content"] == a1
     assert second[-1]["reasoning_content"] == "Decided on clock face, bird, and pendulum"
     assert k._stage_continuation(k.STAGES["extended_reflection"], history) == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
@@ -68,7 +76,10 @@ def test_opt_in_forensic_projection_keeps_regression_comparison_available(monkey
     continuation = k._stage_continuation(k.STAGES["extended_reflection"], history)
     assert "JACK TASK SCOPE" not in continuation
     assert continuation == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
-    assert k._agentic_stage2_test_history(history, k.STAGES["extended_reflection"])[0]["role"] == "user"
+    projected = k._agentic_stage2_test_history(history, k.STAGES["extended_reflection"])
+    assert projected[0]["role"] == "system"
+    assert turn in projected[0]["content"]
+    assert projected[1]["role"] == "user"
 
 
 def test_frozen_prompts_and_delayed_techniques_not_changed(monkeypatch, tmp_path):

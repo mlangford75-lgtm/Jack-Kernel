@@ -135,11 +135,12 @@ def test_previous_r2_is_never_projected_into_stage2_on_both_cache_profiles(cache
             assert "current R1" in json.dumps(model_messages)
             assert "previous memory" not in json.dumps(model_messages)
             assert "previous A" not in json.dumps(model_messages)
-            if cache_enabled:
-                assert model_messages[-1]["content"].endswith(
-                    k.AGENTIC_36_STAGE2_PROMPT
-                )
-                assert model_messages[-1]["content"].count("Begin with a brief description of the current task and how it relates to the user request.") == 2
+            # The cache toggle is retired for Stage 2: the same isolated
+            # Prime Directive and neutral generation trigger apply in both paths.
+            assert model_messages[0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
+            assert model_messages[1] == {"role": "system", "content": k.AGENTIC_STAGE2_MEMORY_TRIGGER}
+            assert model_messages[-1] == {"role": "user", "content": "current"}
+            assert model_messages[0]["content"].count("Begin with a brief description of the current task and how it relates to the user request.") == 2
             assert "Carefully reason on the task before using tools." in k.AGENTIC_STAGE1_PROMPT
             assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
         finally:

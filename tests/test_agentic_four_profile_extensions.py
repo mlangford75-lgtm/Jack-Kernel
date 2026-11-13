@@ -103,7 +103,7 @@ def test_profile_matrix_and_exact_continuations(
     assert k.STAGES['extended_initial'].thinking is stage1_thinking
     assert k.STAGES['extended_reflection'].thinking is stage2_thinking
     assert not k.STAGES['extended_reflection'].allow_tools
-    assert k.AGENTIC_FINAL_REVIEW_TRIGGER == STAGE1_EXTENSION
+    assert k.AGENTIC_FINAL_REVIEW_PROMPT == STAGE1_EXTENSION
     assert k.AGENTIC_36_STAGE2_PROMPT.count('Remove unnecessary conversational language') == 1
 
     first, h1, usage1, out1 = asyncio.run(run_stage(k, 'extended_initial', streaming))
@@ -113,7 +113,8 @@ def test_profile_matrix_and_exact_continuations(
     for payload in first:
         assert payload['chat_template_kwargs']['enable_thinking'] is stage1_thinking
     if stage1_extra:
-        assert first[1]['messages'][-1]['content'] == STAGE1_EXTENSION
+        assert first[1]['messages'][1] == {'role': 'system', 'content': k.AGENTIC_FINAL_REVIEW_TRIGGER}
+        assert first[1]['messages'][-1]['content'] == k.AGENTIC_INTERNAL_GENERATION_PULSE
         assert first[1]['messages'][-2]['content'] == 'Output 1'
 
     second, h2, usage2, out2 = asyncio.run(run_stage(k, 'extended_reflection', streaming))
