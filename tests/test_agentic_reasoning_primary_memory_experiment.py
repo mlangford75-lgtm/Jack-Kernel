@@ -85,9 +85,12 @@ def test_all_agentic_profiles_get_same_reasoning_only_source(monkeypatch, tmp_pa
     assert "PAST ANSWER" not in json.dumps(projected)
     assert not hasattr(k, "AGENTIC_REASONING_PRIMARY_EXPERIMENT")
     directive = k.AGENTIC_36_STAGE2_PROMPT
-    for forbidden in ("Stage 1", "Stage 2", "Jack", "R1", "A1", "JSON"):
+    for forbidden in ("Stage 1", "Stage 2", "R1", "A1", "JSON"):
         assert forbidden not in directive
-    assert "preceding reasoning" in directive
+    assert directive.startswith("You must always follow the Prime Directive.")
+    assert "<Prime_Directive>" in directive and "</Prime_Directive>" in directive
+    assert "Jack\'s authenticated Work ID" in directive
+    assert "current-turn native reasoning" in directive
     assert "decisions" in directive and "corrections" in directive
 
 
