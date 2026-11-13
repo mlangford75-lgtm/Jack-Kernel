@@ -84,7 +84,7 @@ def test_stage2_sees_current_r1_but_never_old_r2(cache):
     # Stage 2 always uses the isolated Prime Directive; a historical cache
     # flag must not switch the authoritative system prompt back to Stage 1.
     assert p["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
-    assert p["messages"][-1] == {"role": "user", "content": "Proceed."}
+    assert p["messages"][-1] == {"role": "user", "content": k.AGENTIC_STAGE2_MEMORY_TRIGGER}
     assert "tool_choice" not in p
     assert "tools" not in p
 
