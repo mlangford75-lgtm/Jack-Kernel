@@ -278,3 +278,18 @@ def test_stage2_rejects_inconsistent_work_binding(monkeypatch, tmp_path):
         k._agentic_stage2_test_history(h, k.STAGES["extended_reflection"])
     h[2]["_jack_agentic_turn_id"] = old
     assert k._agentic_stage2_test_history(h, k.STAGES["extended_reflection"])[0]["role"] == "system"
+
+
+def test_stage2_rejects_changed_user_request_even_with_valid_work_id(monkeypatch, tmp_path):
+    k = kernel(monkeypatch, tmp_path)
+    h = history()
+    work_id = k._agentic_begin_turn(h, fresh=True)
+    k._agentic_forensic_freeze(h, h[-1]["content"])
+    k._agentic_forensic_start_stage2(h)
+    original = h[2]["content"]
+    h[2]["content"] = "A different request after the same ID was minted"
+    assert h[2]["_jack_agentic_turn_id"] == work_id
+    with pytest.raises(k.ForensicConflict, match="request differs"):
+        k._agentic_stage2_test_history(h, k.STAGES["extended_reflection"])
+    h[2]["content"] = original
+    assert k._agentic_stage2_test_history(h, k.STAGES["extended_reflection"])[1]["content"] == original
