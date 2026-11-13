@@ -4922,7 +4922,14 @@ def _agentic_historical_answer_for_stage1(content: str) -> Tuple[str, str]:
     """Separate model-authored receipt-shaped prose from a previous answer."""
     blocks = _AGENTIC_MODEL_RECEIPT_BLOCK_RE.findall(content)
     answer = _AGENTIC_MODEL_RECEIPT_BLOCK_RE.sub("", content)
-    return _agentic_historical_stage1_text(answer), "\n\n".join(blocks)
+    claims = [
+        block.replace(
+            "[Jack Tool History - Host-Recorded Receipt]",
+            "Model-written tool receipt claim (not host evidence):",
+        ).replace("[/Jack Tool History - Host-Recorded Receipt]", "")
+        for block in blocks
+    ]
+    return _agentic_historical_stage1_text(answer), "\n\n".join(claims)
 
 
 def _agentic_historical_memory_for_stage1(content: str) -> str:
