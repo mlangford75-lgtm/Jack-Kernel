@@ -4246,6 +4246,7 @@ AGENTIC_FINAL_REVIEW_TRIGGER = (
     "Review the draft answer for the authenticated user request above, "
     "not this continuation instruction.\n\n"
     + AGENTIC_FINAL_REVIEW_PROMPT
+    + "\n\nReturn the complete final answer to the original user request, not a report about verification. If no changes are needed, reproduce the draft answer."
 )
 
 
