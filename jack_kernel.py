@@ -1101,6 +1101,9 @@ def _agentic_stage2_test_history(
     if record is not None:
         if source_user.get("_jack_agentic_turn_id") != record.turn_id:
             raise ForensicConflict("Stage-2 work identity does not match the authenticated request")
+        request_artifact = _agentic_shadow_capture_user_request(messages)
+        if request_artifact is None or request_artifact.sha256 != record.user_request.sha256:
+            raise ForensicConflict("Stage-2 request differs from the authenticated Work ID source")
         if record.frozen_a1_sha256 != _sha256_text(_content_to_text(frozen.get("content"))):
             raise ForensicConflict("Stage-2 response differs from the owned frozen A1")
         if not record.stage2_attempt_id:
