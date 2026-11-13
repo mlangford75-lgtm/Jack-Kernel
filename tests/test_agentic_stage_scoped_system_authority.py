@@ -112,7 +112,8 @@ def test_custom_system_never_governs_agentic_stage2(monkeypatch, tmp_path, strea
     assert stage2["messages"][-2]["content"] == "Made the clock."
     assert stage2["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
     assert stage2["messages"][0]["content"].startswith("You must always follow the Prime Directive.")
-    assert stage2["messages"][-1] == {"role": "user", "content": k.AGENTIC_STAGE2_MEMORY_TRIGGER}
+    assert stage2["messages"][1] == {"role": "system", "content": k.AGENTIC_STAGE2_MEMORY_TRIGGER}
+    assert stage2["messages"][-1] == {"role": "user", "content": k.AGENTIC_INTERNAL_GENERATION_PULSE}
     assert stage2["chat_template_kwargs"]["preserve_thinking"] is True
     assert "tools" not in stage2
 
@@ -144,7 +145,8 @@ def test_final_causal_paper_is_still_caller_isolated(monkeypatch, tmp_path, stre
     assert CALLER not in payload["messages"][0]["content"]
     assert payload["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
     assert payload["messages"][0]["content"].startswith("You must always follow the Prime Directive.")
-    assert payload["messages"][-1] == {"role": "user", "content": k.AGENTIC_STAGE2_MEMORY_TRIGGER}
+    assert payload["messages"][1] == {"role": "system", "content": k.AGENTIC_STAGE2_MEMORY_TRIGGER}
+    assert payload["messages"][-1] == {"role": "user", "content": k.AGENTIC_INTERNAL_GENERATION_PULSE}
     assert k.STAGES["extended_reflection"].allow_tools is False
 
 
