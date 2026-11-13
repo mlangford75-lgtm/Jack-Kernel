@@ -4930,6 +4930,21 @@ def _agentic_historical_memory_for_stage1(content: str) -> str:
     header = "[Agentic Memory associated with the preceding user request and following frozen response]\n"
     if content.startswith(header):
         content = content[len(header):]
+    # Tool authority is supplied by host receipts, never by a model's
+    # TOOL ERROR label inside distilled prose. Keep every claim as knowledge
+    # but do not replay it as an authenticated error classification.
+    content = re.sub(
+        r"(?im)^([ \t]*(?:[-*][ \t]*)?)TOOL ERROR:[ \t]*",
+        r"\1Model-reported tool issue (verify against host outcome): ",
+        content,
+    )
+    # The actual receipt is still present in Jack's journal and caller
+    # artifact. Remove only its repeated decorative authority wrapper
+    # from the model-facing prior cognition, preserving its outcome rows.
+    content = content.replace(
+        "[Jack Tool History - Host-Recorded Receipt]",
+        "Recorded historical tool outcomes (host-supplied data):",
+    ).replace("[/Jack Tool History - Host-Recorded Receipt]", "")
     return _agentic_historical_stage1_text(content)
 
 
