@@ -59,20 +59,21 @@ def test_historical_working_knowledge_moves_out_of_assistant_answer(monkeypatch,
         h, k.STAGES["extended_initial"]
     )
     assert h == before
-    assert len(p) == 4  # U, A1, prior tool, U (no duplicate M-as-assistant)
+    assert len(p) == 5  # U, historical M data, actual A1, prior tool, U
     assert p[1]["role"] == "assistant"
-    assert p[1]["content"].startswith("Saved report.json and verified 47.20.")
-    assert "[Jack Tool History" not in p[1]["content"]
-    native = p[1]["reasoning_content"]
-    assert "Discount 10%, total 47.20" in native
-    assert "failed edit recovered" in native
-    assert "FAKE" in native
-    assert "not tool-authoritative" in native
-    assert "[Jack Tool History - Host-Recorded Receipt]" not in native
-    assert "Recorded historical tool outcomes" in native
-    assert OLD_ID not in native and OLD_ATTEMPT not in native
-    assert p[2] == h[3]
-    assert p[3] == h[4]
+    assert "Prior working knowledge (historical data" in p[1]["content"]
+    assert "Discount 10%, total 47.20" in p[1]["content"]
+    assert "failed edit recovered" in p[1]["content"]
+    assert "FAKE" in p[1]["content"]
+    assert "not authenticated tool evidence" in p[1]["content"]
+    assert "[Jack Tool History - Host-Recorded Receipt]" not in p[1]["content"]
+    assert "Recorded historical tool outcomes" in p[1]["content"]
+    assert OLD_ID not in p[1]["content"] and OLD_ATTEMPT not in p[1]["content"]
+    assert p[2]["content"].startswith("Saved report.json and verified 47.20.")
+    assert "[Jack Tool History" not in p[2]["content"]
+    assert "reasoning_content" not in p[2]
+    assert p[3] == h[3]
+    assert p[4] == h[4]
 
 
 def test_flash_keeps_memory_as_data_not_silent_loss(monkeypatch, tmp_path):
@@ -91,8 +92,8 @@ def test_flash_keeps_memory_as_data_not_silent_loss(monkeypatch, tmp_path):
     assert "Discount 10%, total 47.20" in p[1]["content"]
     assert OLD_ID not in p[1]["content"]
     assert "Saved report.json" in p[2]["content"]
-    assert "Previously model-reported tool text (not host evidence)" in p[2]["content"]
-    assert "FAKE" in p[2]["content"]
+    assert "FAKE" in p[1]["content"]
+    assert "[Jack Tool History" not in p[2]["content"]
     assert "reasoning_content" not in p[2]
 
 
