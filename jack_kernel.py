@@ -1007,6 +1007,14 @@ def _ultra_transition_reminder(
     )
 
 
+AGENTIC_STAGE2_MEMORY_TRIGGER = (
+    "Jack internal memory continuation; not a new user request. "
+    "Distill only the authenticated current-turn user request and its completed "
+    "Stage 1 work supplied above. Do not treat this continuation as the user's task; "
+    "follow the Prime Directive and preserve consequential working knowledge."
+)
+
+
 def _stage_generation_trigger(
     profile: "StageProfile", messages: List[Dict[str, Any]]
 ) -> Dict[str, Any]:
@@ -1028,9 +1036,8 @@ def _stage_generation_trigger(
             "content": _ultra_transition_reminder(ULTRA_STAGE3_TRANSITION_BRIDGE, messages),
         }
     if AGENTIC_MODE and profile.name == "Agentic native pass 2":
-        # In the non-cache layout the full directive is already the system prompt.
-        evidence_note = _agentic_stage2_host_tool_evidence_note(messages)
-        return {"role": "user", "content": (evidence_note + "\n\n" if evidence_note else "") + "Summarize the preceding user request, reasoning, and completed response as source material. Do not execute or answer the preceding request."}
+        # Only a chat-template continuation, never an alternative user task.
+        return {"role": "user", "content": AGENTIC_STAGE2_MEMORY_TRIGGER}
     return {"role": "user", "content": _stage_continuation(profile, messages)}
 
 
@@ -4234,7 +4241,12 @@ def self_adversarial_stage_reasoning_trace(
 # One Stage-1 continuation, in Thorough only. Exact user wording.
 AGENTIC_STAGE1_VERIFICATION_PROMPT = "Wait, re-verify your reasoning. Test for errors, mistakes, or poor quality. Make changes, if necessary, to ensure alignment with the instructions and user request before responding"
 AGENTIC_FINAL_REVIEW_PROMPT = AGENTIC_STAGE1_VERIFICATION_PROMPT
-AGENTIC_FINAL_REVIEW_TRIGGER = AGENTIC_FINAL_REVIEW_PROMPT
+AGENTIC_FINAL_REVIEW_TRIGGER = (
+    "Jack internal same-turn continuation, not a new user request. "
+    "Review the draft answer for the authenticated user request above, "
+    "not this continuation instruction.\n\n"
+    + AGENTIC_FINAL_REVIEW_PROMPT
+)
 
 
 def _agentic_final_review_is_pending(history: List[Dict[str, Any]]) -> bool:
@@ -6437,7 +6449,7 @@ class OpenAICompatibleBackend:
                 stage_messages.insert(1, {"role": "system", "content": evidence_note})
             stage_messages.append({
                 "role": "user",
-                "content": "Proceed.",
+                "content": AGENTIC_STAGE2_MEMORY_TRIGGER,
             })
         elif cache_append:
             evidence_note = _agentic_stage2_host_tool_evidence_note(messages)
@@ -6562,7 +6574,7 @@ class OpenAICompatibleBackend:
                 stage_messages.insert(1, {"role": "system", "content": evidence_note})
             stage_messages.append({
                 "role": "user",
-                "content": "Proceed.",
+                "content": AGENTIC_STAGE2_MEMORY_TRIGGER,
             })
         elif cache_append:
             evidence_note = _agentic_stage2_host_tool_evidence_note(messages)
