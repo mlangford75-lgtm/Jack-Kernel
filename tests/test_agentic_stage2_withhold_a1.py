@@ -22,6 +22,7 @@ R1 = "Decision: rejected temp overwrite because crashes can truncate data; use a
 def load(monkeypatch, tmp_path, profile):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
     monkeypatch.setenv("JACK_AGENTIC_PROFILE", profile)
+    monkeypatch.setenv("JACK_AGENTIC_STAGE2_WITHHOLD_A1", "1")
     monkeypatch.setenv("JACK_FORENSIC_ARCHIVE_MODE", "off")
     monkeypatch.setenv("JACK_AGENTIC_FORENSIC_DB", str(tmp_path / (uuid.uuid4().hex + ".sqlite")))
     name = "jack_stage2_withheld_" + uuid.uuid4().hex
@@ -139,3 +140,19 @@ def test_source_does_not_use_recovery_notice_as_new_user_request(monkeypatch, tm
     assert SECRET_A1 not in str(view)
     assert "host validation" in str(view)
     assert view[0]["role"] == "user"
+
+
+def test_default_contract_retains_exact_a1(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path, "balanced")
+    monkeypatch.setenv("JACK_AGENTIC_STAGE2_WITHHOLD_A1", "0")
+    # Reload, because the setting is read at import time.
+    name = "jack_stage2_default_" + uuid.uuid4().hex
+    spec = importlib.util.spec_from_file_location(name, ROOT / "jack_kernel.py")
+    default = importlib.util.module_from_spec(spec)
+    sys.modules[name] = default
+    spec.loader.exec_module(default)
+    assert not default.AGENTIC_STAGE2_WITHHOLD_A1
+    assert default.AGENTIC_36_STAGE2_PROMPT == default._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
+    assert default.AGENTIC_STAGE2_MEMORY_TRIGGER == default._AGENTIC_STAGE2_MEMORY_TRIGGER_BASE
+    view = default._agentic_stage2_test_history(history(), default.STAGES["extended_reflection"])
+    assert view[-1]["content"] == SECRET_A1
