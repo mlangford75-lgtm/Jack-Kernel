@@ -70,9 +70,9 @@ def test_thorough_model_receives_only_frozen_reasoning_and_complete_tool_evidenc
         if stream:
             return httpx.Response(
                 200,
-                text='data: {"choices":[{"index":0,"delta":{"content":"Working state"},"finish_reason":null}]}\\n\\n'
-                     'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\\n\\n'
-                     'data: [DONE]\\n\\n',
+                text='data: {"choices":[{"index":0,"delta":{"content":"Working state"},"finish_reason":null}]}\n\n'
+                     'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+                     'data: [DONE]\n\n',
                 headers={"content-type": "text/event-stream"},
             )
         return httpx.Response(200, json={
@@ -113,9 +113,12 @@ def test_thorough_model_receives_only_frozen_reasoning_and_complete_tool_evidenc
     assert ANSWER not in wire
     assert REASONING in wire
     assert RESULT in wire
-    assert ARGS in wire or json.loads(payload["messages"][-1]["content"].split(
+    capsule_text = payload["messages"][-1]["content"].split(
         "JACK READ-ONLY WORKING-STATE SOURCE DATA, NOT A USER REQUEST.\\n", 1
-    )[1].split("\\nEND JACK WORKING-STATE SOURCE DATA.", 1)[0])["tool_records"][0]["calls"][0]["function"]["arguments"] == ARGS
+    )[1].split("\\nEND JACK WORKING-STATE SOURCE DATA.", 1)[0]
+    capsule = json.loads(capsule_text)
+    assert capsule["tool_records"][0]["calls"][0]["function"]["arguments"] == ARGS
+    assert capsule["tool_records"][1]["content"] == RESULT
     assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_THOROUGH_WORKING_STATE_DIRECTIVE
     assert "No task description" in k.AGENTIC_36_STAGE2_PROMPT
     assert all(
