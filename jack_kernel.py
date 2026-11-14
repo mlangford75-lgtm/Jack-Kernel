@@ -1540,11 +1540,11 @@ def _agentic_stage2_test_history(
         # Label only the Stage-2 source projection; no extra copies of R1,
         # no semantic summarization, and no change to canonical stage history.
         reasoning_fragments = [
-            "STAGE 1 INITIAL NATIVE REASONING (original work; historical evidence):\\n"
-            + ("\\n\\n".join(initial_reasoning) if initial_reasoning else "[unavailable]"),
+            "STAGE 1 INITIAL NATIVE REASONING (original work; historical evidence):\n"
+            + ("\n\n".join(initial_reasoning) if initial_reasoning else "[unavailable]"),
             "STAGE 1 VERIFICATION CONTINUATION NATIVE REASONING "
-            "(later review; corrections and claims require evidence):\\n"
-            + ("\\n\\n".join(review_reasoning) if review_reasoning else "[unavailable]"),
+            "(later review; corrections and claims require evidence):\n"
+            + ("\n\n".join(review_reasoning) if review_reasoning else "[unavailable]"),
         ]
     frozen_view = dict(frozen)
     frozen_view.pop("reasoning", None)
