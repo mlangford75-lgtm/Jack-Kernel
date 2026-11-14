@@ -1090,7 +1090,7 @@ def _stage_continuation(
     if AGENTIC_MODE and profile.name == "Agentic native pass 2":
         return (
             _AGENTIC_STAGE2_WITHHELD_A1_CONTINUATION
-            if AGENTIC_STAGE2_WITHHOLD_A1
+            if AGENTIC_STAGE2_WITHHOLD_A1 and not AGENTIC_STAGE2_FROZEN_CONVERSATION
             else _AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
         )
     return _STAGE_CONTINUATIONS.get(
@@ -1161,7 +1161,7 @@ _AGENTIC_STAGE2_WITHHELD_A1_MEMORY_TRIGGER = (
 )
 AGENTIC_STAGE2_MEMORY_TRIGGER = (
     _AGENTIC_STAGE2_WITHHELD_A1_MEMORY_TRIGGER
-    if AGENTIC_STAGE2_WITHHOLD_A1
+    if AGENTIC_STAGE2_WITHHOLD_A1 and not AGENTIC_STAGE2_FROZEN_CONVERSATION
     else _AGENTIC_STAGE2_MEMORY_TRIGGER_BASE
 )
 def _agentic_attach_system_stage_control(stage_messages, source_history, profile):
@@ -1254,11 +1254,10 @@ def _agentic_stage2_project_historical_evidence(
 ) -> None:
     """Experimental Stage-2 wire: source data, never a user-task or R1 continuation.
 
-    Keep U and R1 exactly once in a single Jack-owned extraction request.
-    The original current U is quoted as evidence; native R1 is plain source
-    text, never assistant reasoning_content. Jack's system directive, Work ID,
-    authenticated tool evidence and recovery notices retain their own roles.
-    Canonical U/R1/A1 and the authenticated forensic record are not modified.
+    Keep U and R1 exactly once in the historical source; in frozen-conversation
+    mode also include exactly one authenticated completed A1. No model-facing
+    assistant role or native reasoning field is preserved. Canonical artifacts,
+    Work ID, tool evidence, and forensic record remain unchanged.
     """
     _agentic_stage2_put_authenticated_user_last(
         stage_messages, source_view, prepared_messages
@@ -1270,7 +1269,17 @@ def _agentic_stage2_project_historical_evidence(
     if len(assistant_positions) != 1:
         raise ForensicConflict("Stage-2 evidence projection requires one frozen source")
     frozen_wire = stage_messages.pop(assistant_positions[0])
-    if frozen_wire.get("content") != "[Jack: completed response withheld from memory pass]":
+    source_frozen = [
+        item for item in source_view
+        if isinstance(item, dict) and item.get("_jack_extended_candidate_response")
+    ]
+    if len(source_frozen) != 1:
+        raise ForensicConflict("Stage-2 evidence projection requires one authenticated final answer")
+    exact_answer = _content_to_text(source_frozen[0].get("content"))
+    if AGENTIC_STAGE2_FROZEN_CONVERSATION:
+        if not exact_answer.strip() or frozen_wire.get("content") != exact_answer:
+            raise ForensicConflict("Frozen conversation output differs from authenticated A1")
+    elif frozen_wire.get("content") != "[Jack: completed response withheld from memory pass]":
         raise ForensicConflict("Stage-2 evidence projection found unmasked completed response")
     native_reasoning = frozen_wire.get("reasoning_content")
     if native_reasoning is not None and not isinstance(native_reasoning, str):
@@ -1296,12 +1305,6 @@ def _agentic_stage2_project_historical_evidence(
         # A frozen *representation* of the completed reasoning conversation.
         # These are labels inside one quoted source document, never real
         # user/assistant model roles or another conversation to participate in.
-        source_frozen = [
-            item for item in source_view
-            if isinstance(item, dict) and item.get("_jack_extended_candidate_response")
-        ]
-        if len(source_frozen) != 1:
-            raise ForensicConflict("Frozen conversation source is missing its owned final record")
         dialogue = source_frozen[0].get("_jack_agentic_frozen_dialogue")
         if not isinstance(dialogue, list) or any(
             not isinstance(part, dict)
@@ -1327,6 +1330,11 @@ def _agentic_stage2_project_historical_evidence(
                     + json.dumps(piece["text"], ensure_ascii=False)
                 )
         transcript_lines.append("END FROZEN REASONING CONVERSATION")
+        transcript_lines.append(
+            "FROZEN COMPLETED RESPONSE (historical output; already delivered):\n"
+            + json.dumps(exact_answer, ensure_ascii=False)
+        )
+        transcript_lines.append("END FROZEN COMPLETED RESPONSE")
         reasoning_record = "\n".join(transcript_lines)
     else:
         reasoning_record = (
@@ -1336,9 +1344,18 @@ def _agentic_stage2_project_historical_evidence(
         )
     extraction_task = (
         "\n\nJACK MEMORY EXTRACTION TASK: Following the system Prime Directive, "
-        "extract only consequential working knowledge established in the "
-        "authenticated source. Do not answer the quoted user request, continue "
-        "the quoted reasoning, or reconstruct the separately frozen response."
+        + (
+            "distill consequential working knowledge that complements the "
+            "already completed response. Use the completed output to distinguish "
+            "what the user already received from useful decisions, evidence, "
+            "corrections, and unresolved matters not adequately captured there. "
+            "Do not answer the quoted user request, continue the quoted reasoning, "
+            "or reproduce or summarize the completed response."
+            if AGENTIC_STAGE2_FROZEN_CONVERSATION else
+            "extract only consequential working knowledge established in the "
+            "authenticated source. Do not answer the quoted user request, continue "
+            "the quoted reasoning, or reconstruct the separately frozen response."
+        )
     )
     if isinstance(original_content, list):
         # Keep each text/media block in source order. Media remains a real
@@ -1588,7 +1605,7 @@ def _agentic_stage2_test_history(
     frozen_view.pop("reasoning_content", None)
     # Model-only mask: keep frozen canonical A1 and its SHA checks untouched.
     # Preserve the assistant reasoning_content transport in all backends.
-    if AGENTIC_STAGE2_WITHHOLD_A1:
+    if AGENTIC_STAGE2_WITHHOLD_A1 and not AGENTIC_STAGE2_FROZEN_CONVERSATION:
         frozen_view["content"] = "[Jack: completed response withheld from memory pass]"
     # Flash has no Stage-1 native-reasoning contract. Ignore incidental or
     # replayed reasoning fields rather than showing them to its memory pass.
@@ -1736,7 +1753,7 @@ Output only the plan."""
 
 AGENTIC_36_STAGE2_PROMPT = (
     _AGENTIC_STAGE2_WITHHELD_A1_CONTINUATION
-    if AGENTIC_STAGE2_WITHHOLD_A1
+    if AGENTIC_STAGE2_WITHHOLD_A1 and not AGENTIC_STAGE2_FROZEN_CONVERSATION
     else _AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
 )
 
