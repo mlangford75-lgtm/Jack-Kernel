@@ -1340,19 +1340,14 @@ def _agentic_stage1_review_put_authenticated_user_last(
     source_view: List[Dict[str, Any]],
     prepared_messages: List[Dict[str, Any]],
 ) -> None:
-    """Resume a same-turn final review on its REAL request, never a placeholder.
+    """Keep the authenticated request before its uncommitted draft.
 
-    An authenticated current U and the uncommitted assistant draft are already
-    present. The internal review trigger remains in host history only, with
-    its instruction separately projected as a Jack-owned system message.
-    Reorder the already-present U in the backend-only request rather than
-    duplicating it or fabricating another user message. Preserve all source
-    bytes, tool evidence, and work/attempt identity.
+    Exhaustive verification is a same-turn continuation, not a second user
+    question. The full review directive is already injected under Jack system
+    authority. Replace only the model-facing internal trigger with a short
+    generation cue; never move or duplicate the real user request or reorder
+    later tool calls/results. Canonical history and its review marker stay intact.
     """
-    # Stage-1 presentation may insert a Jack-owned Work-ID *system* message
-    # immediately before U. Positional indexes into source_view therefore do
-    # NOT match indexes into prepared_messages. Only the ordered user-role
-    # messages have a one-to-one mapping; no new user turns are ever injected.
     source_users = [
         (i, item) for i, item in enumerate(source_view)
         if isinstance(item, dict) and item.get("role") == "user"
@@ -1385,21 +1380,36 @@ def _agentic_stage1_review_put_authenticated_user_last(
         raise ForensicConflict("Stage-1 review user-message linkage is ambiguous")
     current_user_wire = prepared_users[current_user_ordinals[0]]
     trigger_wire = prepared_users[trigger_ordinals[0]]
+    user_location = next(
+        (i for i, item in enumerate(stage_messages) if item is current_user_wire),
+        None,
+    )
+    trigger_location = next(
+        (i for i, item in enumerate(stage_messages) if item is trigger_wire),
+        None,
+    )
+    if user_location is None or trigger_location is None or user_location >= trigger_location:
+        raise ForensicConflict("Stage-1 review request/continuation ordering is invalid")
+    if sum(item is current_user_wire for item in stage_messages) != 1:
+        raise ForensicConflict("Stage-1 review duplicated the authenticated request")
+    if not any(
+        isinstance(item, dict) and item.get("_jack_internal_agentic_final_review_draft") is True
+        for item in source_view[user_index + 1:reviews[0]]
+    ):
+        raise ForensicConflict("Stage-1 review is missing its uncommitted draft")
 
-    def _remove_exact(item: Dict[str, Any]) -> None:
-        index = next(
-            (i for i, value in enumerate(stage_messages) if value is item), None
-        )
-        if index is None:
-            raise ForensicConflict("Stage-1 review message missing from backend view")
-        stage_messages.pop(index)
+    # The system message already carries AGENTIC_FINAL_REVIEW_TRIGGER exactly
+    # once. Keep the chat-template-friendly user-ended review request without
+    # copying that directive or replaying the original user question.
+    stage_messages[trigger_location] = {
+        "role": "user",
+        "content": AGENTIC_FINAL_REVIEW_WIRE_TRIGGER,
+    }
+    if any(item is trigger_wire for item in stage_messages):
+        raise ForensicConflict("Stage-1 review leaked its historical trigger")
+    # The review may already have issued tools. Preserve the protocol suffix
+    # after the internal continuation rather than appending another user turn.
 
-    _remove_exact(trigger_wire)
-    _remove_exact(current_user_wire)
-    stage_messages.append(current_user_wire)
-    if (stage_messages[-1] is not current_user_wire
-            or any(item is trigger_wire for item in stage_messages)):
-        raise ForensicConflict("Stage-1 review user-authority projection is ambiguous")
 
 
 def _stage_generation_trigger(
@@ -4659,6 +4669,11 @@ def self_adversarial_stage_reasoning_trace(
 # One Stage-1 continuation, in Thorough only. Exact user wording.
 AGENTIC_STAGE1_VERIFICATION_PROMPT = "Wait, re-verify your reasoning. Test for errors, mistakes, or poor quality. Make changes, if necessary, to ensure alignment with the instructions and user request before responding"
 AGENTIC_FINAL_REVIEW_PROMPT = AGENTIC_STAGE1_VERIFICATION_PROMPT
+AGENTIC_FINAL_REVIEW_WIRE_TRIGGER = (
+    "Jack internal same-turn verification continuation, not a new user request. "
+    "The earlier assistant draft is uncommitted work on the original authenticated "
+    "user request, not a previous turn's answer. Follow Jack's system verification directive."
+)
 AGENTIC_FINAL_REVIEW_TRIGGER = (
     "Jack internal same-turn continuation, not a new user request. "
     "Review the draft answer for the authenticated user request above, "
