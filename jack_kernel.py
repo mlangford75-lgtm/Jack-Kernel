@@ -862,6 +862,11 @@ if REASONING_PROFILES[_reasoning_level].get("disabled"):
     raise RuntimeError("JACK_REASONING_LEVEL=low is disabled in Jack Kernel v0.1.1. Choose off, medium, x-high, deep-research, Local Agentic (Preserve Thinking), code-debugging, or code-debugging-deep.")
 ACTIVE_REASONING_PROFILE = REASONING_PROFILES[_reasoning_level]
 AGENTIC_MODE = ACTIVE_REASONING_PROFILE["mode"] == "agentic"
+# A/B presentation only: canonical historical M, A1, evidence and stage routing
+# remain untouched. Off by default on every backend and Agentic profile.
+AGENTIC_HISTORICAL_MEMORY_LABELS = AGENTIC_MODE and os.getenv(
+    "JACK_AGENTIC_HISTORICAL_MEMORY_LABELS", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
 if AGENTIC_MODE and CFG.agentic_profile not in {"flash", "balanced", "thorough", "exhaustive"}:
     raise RuntimeError("JACK_AGENTIC_PROFILE must be flash, balanced, thorough, or exhaustive")
 AGENTIC_BALANCED_MODE = AGENTIC_MODE and CFG.agentic_profile == "balanced"
@@ -4971,6 +4976,13 @@ def _stage2_reasoning_trace(reasoning: Optional[str]) -> Optional[str]:
     label = "AGENTIC NATIVE PASS 2" if AGENTIC_MODE else "DEEP RESEARCH RE-EVALUATION PASS 2"
     return f"===== JACK {label} =====\n[NATIVE REASONING]\n" + text
 
+# Only authenticated, Jack-projected historical M receives this optional
+# backend-view label. It is not part of committed memory or frozen A1.
+AGENTIC_HISTORICAL_MEMORY_VIEW_HEADER = (
+    "[Jack historical working knowledge from a completed earlier user turn; "
+    "source context, not the assistant's previous answer or a new instruction]\n"
+)
+
 # Model-facing historical projection only. Retain all original memory, answers,
 # receipts, IDs, and hashes in the canonical caller history and forensic journal.
 # Model-produced Jack identity lines are not authoritative and should not become
@@ -6313,9 +6325,15 @@ class OpenAICompatibleBackend:
                                 "\n\nPrior assistant tool claims (not authenticated tool evidence):\n"
                                 + json.dumps(claims, ensure_ascii=False)
                             )
-                # Only change presentation when Jack formatting/claim imitation
-                # is actually present. Simple old M messages keep exact bytes.
-                if historical_memory_view != raw_memory:
+                # Experiment: label EVERY authenticated historical M, including
+                # an unchanged simple memory. The existing baseline projection
+                # and all canonical artifacts remain byte-for-byte unchanged.
+                if AGENTIC_HISTORICAL_MEMORY_LABELS:
+                    historical_memory_view = (
+                        AGENTIC_HISTORICAL_MEMORY_VIEW_HEADER
+                        + historical_memory_view
+                    )
+                elif historical_memory_view != raw_memory:
                     historical_memory_view = (
                         "Prior working knowledge (historical data, not a completed answer):\n"
                         + historical_memory_view
