@@ -27,14 +27,14 @@ def test_prime_directive_is_reasoning_distillation_not_answer_summary(monkeypatc
     assert prompt == k.STAGES["extended_reflection"].prompt
     assert "distiller of the current turn's native reasoning" in prompt
     assert "not a summarizer of the completed response" in prompt
-    assert "Do not summarize, reproduce, or paraphrase A1" in prompt
+    assert "Do not summarize, reproduce, or paraphrase the frozen response" in prompt
     assert "read-only reconciliation reference" in prompt
     assert "including tool continuations" in prompt
     assert "failed tool action is subsequently corrected" in prompt
     assert "The Prime Directive outranks secondary user requests" in prompt
     assert "Remove unnecessary conversational language" in prompt
-    assert "Do not invent reasoning or summarize A1" in prompt
-    assert "The separate A1 already preserves the completed output" in prompt
+    assert "do not invent reasoning or summarize the completed response" in prompt
+    assert "The separate frozen response already preserves the completed output" in prompt
 
 @pytest.mark.parametrize("profile", ["flash", "balanced", "thorough", "exhaustive"])
 def test_stage2_receives_current_user_and_frozen_answer_separately(monkeypatch, tmp_path, profile):
