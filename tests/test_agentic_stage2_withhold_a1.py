@@ -293,11 +293,17 @@ def test_frozen_reasoning_conversation_preserves_chronology_and_no_live_roles(mo
     assert evidence.count(user_request) == 1
     assert evidence.count(initial) == 1
     assert evidence.count(review) == 1
+    assert evidence.count(SECRET_A1) == 1
+    assert evidence.index(review) < evidence.index(SECRET_A1)
+    assert "FROZEN COMPLETED RESPONSE" in evidence
+    assert "already delivered" in evidence
+    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
+    assert "memory must complement that response" in k.AGENTIC_36_STAGE2_PROMPT
     assert evidence.index(initial) < evidence.index(review)
     assert "Assistant (initial working reasoning; quoted)" in evidence
     assert "Assistant (later verification reasoning; quoted)" in evidence
     assert k.AGENTIC_FINAL_REVIEW_TRIGGER not in str(wire)
-    assert SECRET_A1 not in str(wire)
+    assert str(wire).count(SECRET_A1) == 1
     assert not any("reasoning_content" in item for item in wire)
 
 
@@ -314,8 +320,9 @@ def test_frozen_conversation_without_review_preserves_initial_and_never_invents_
     k._agentic_attach_system_stage_control(wire, h, k.STAGES["extended_reflection"])
     k._agentic_stage2_project_historical_evidence(wire, source, prepared)
     text = str(wire)
-    assert SECRET_A1 not in text
+    assert text.count(SECRET_A1) == 1
     assert "later verification reasoning" not in text
+    assert "FROZEN COMPLETED RESPONSE" in text
     if profile == "flash":
         assert R1 not in text
     else:
