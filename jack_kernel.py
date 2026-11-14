@@ -4710,7 +4710,7 @@ def self_adversarial_stage_reasoning_trace(
 
 
 # One Stage-1 continuation, in Thorough only. Exact user wording.
-AGENTIC_STAGE1_VERIFICATION_PROMPT = "Wait, re-verify your reasoning. Test for errors, mistakes, or poor quality. Make changes, if necessary, to ensure alignment with the instructions and user request before responding"
+AGENTIC_STAGE1_VERIFICATION_PROMPT = "Wait, re-verify the latest reasoning and chain-of-thought. Test for errors, mistakes, or poor quality. Make changes, if necessary, to ensure alignment with the instructions and user request before responding"
 AGENTIC_FINAL_REVIEW_PROMPT = AGENTIC_STAGE1_VERIFICATION_PROMPT
 AGENTIC_FINAL_REVIEW_TRIGGER = (
     "Jack internal same-turn continuation, not a new user request. "
