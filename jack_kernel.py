@@ -1161,6 +1161,18 @@ AGENTIC_TRANSACTION_LINKS_ENABLED = (
     in {"1", "true", "yes", "on"}
 ) and not AGENTIC_TASK_ANCHOR_ENABLED
 
+# Experimental A/B presentation only. Canonical Stage-2 memory, frozen A1,
+# and historical evidence are not rewritten; this is model-facing labeling
+# of an already-authenticated prior-turn M artifact.
+AGENTIC_HISTORICAL_MEMORY_LABELS_ENABLED = (
+    os.environ.get("JACK_AGENTIC_HISTORICAL_MEMORY_LABELS", "0").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+AGENTIC_HISTORICAL_MEMORY_VIEW_HEADER = (
+    "[Jack historical working knowledge from a completed earlier user turn; "
+    "source context, not the assistant's previous answer or a new instruction]\n"
+)
+
 
 def _agentic_visible_turn_label(turn_id: Any) -> Optional[str]:
     """Compact lossless representation of the full host-owned UUID (128 bits).
@@ -4961,7 +4973,11 @@ def _agentic_project_committed_artifact_pair(
     # Retrospective appears first; exact frozen A1 ends the old user turn.
     # This avoids priming the model to treat old memory as the latest answer.
     result = [
-        {"role": "assistant", "content": _agentic_model_memory_view(memory, receipt)},
+        {
+            "role": "assistant",
+            "content": _agentic_model_memory_view(memory, receipt),
+            "_jack_authenticated_historical_memory": True,
+        },
         {"role": "assistant", "content": answer},
     ]
     forensic = _agentic_forensic_journal().match_visible(
@@ -6122,6 +6138,16 @@ class OpenAICompatibleBackend:
                 continue
 
             item = dict(message)
+            # An authenticated prior M is historical working knowledge, not a
+            # conversational answer. Opt-in labels exist only on the backend
+            # projection; never edit the caller's M/A1 or forensic journal.
+            if (
+                AGENTIC_MODE and AGENTIC_HISTORICAL_MEMORY_LABELS_ENABLED
+                and item.get("_jack_authenticated_historical_memory") is True
+                and item.get("role") == "assistant"
+                and isinstance(item.get("content"), str)
+            ):
+                item["content"] = AGENTIC_HISTORICAL_MEMORY_VIEW_HEADER + item["content"]
             # Unique turn ownership remains host-side; no Request/Response/Memory
             # labels or turn IDs are injected into the inference prompt.
             if (
@@ -11709,6 +11735,7 @@ def _agentic_forensic_project_visible(
             "content": _agentic_model_memory_view(memory, receipt),
             "_jack_forensic_turn_id": record["turn_id"],
             "_jack_forensic_role": "M",
+            "_jack_authenticated_historical_memory": True,
         },
         {
             "role": "assistant", "content": answer,
