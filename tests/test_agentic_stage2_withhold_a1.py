@@ -216,6 +216,48 @@ def test_historical_multimodal_request_preserves_image_once(monkeypatch, tmp_pat
     assert not any(m.get("role") == "assistant" for m in wire)
 
 
+def test_exhaustive_review_extension_reasoning_reaches_stage2_once(monkeypatch, tmp_path):
+    """Both initial R1 and Exhaustive's verification R1 survive as evidence."""
+    k = load(monkeypatch, tmp_path, "exhaustive")
+    assert k.CFG.agentic_final_review is True
+    assert k.STAGES["extended_initial"].thinking is True
+    assert k.STAGES["extended_reflection"].thinking is True
+    initial_reasoning = "INITIAL_EXHAUSTIVE_REASONING: rejected unsafe direct write."
+    review_reasoning = "REVIEW_EXTENSION_REASONING: verified atomic replacement."
+    request = "Fix JSON persistence."
+    history = [
+        {"role": "user", "content": request},
+        {"role": "assistant", "content": "Initial draft.",
+         "reasoning_content": initial_reasoning,
+         "_jack_internal_agentic_final_review_draft": True,
+         "_jack_stage_key": "extended_initial"},
+        {"role": "user", "content": k.AGENTIC_FINAL_REVIEW_TRIGGER,
+         "_jack_internal_agentic_final_review_trigger": True,
+         "_jack_stage_key": "extended_initial"},
+        {"role": "assistant", "content": "Final answer not visible to Stage 2.",
+         "reasoning_content": review_reasoning,
+         "_jack_extended_candidate_response": True},
+    ]
+    original = copy.deepcopy(history)
+    source = k._agentic_stage2_test_history(history, k.STAGES["extended_reflection"])
+    prepared = k.OpenAICompatibleBackend(k.CFG)._stage_messages_for_profile(
+        source, k.STAGES["extended_reflection"]
+    )
+    wire = [{"role": "system", "content": k.AGENTIC_36_STAGE2_PROMPT}] + prepared
+    k._agentic_attach_system_stage_control(wire, history, k.STAGES["extended_reflection"])
+    k._agentic_stage2_project_historical_evidence(wire, source, prepared)
+    assert history == original
+    assert len([msg for msg in wire if msg.get("role") == "user"]) == 1
+    assert not any(msg.get("role") == "assistant" for msg in wire)
+    evidence = wire[-1]["content"]
+    assert evidence.count(request) == 1
+    assert evidence.count(initial_reasoning) == 1
+    assert evidence.count(review_reasoning) == 1
+    assert "Final answer not visible to Stage 2." not in str(wire)
+    assert k.AGENTIC_FINAL_REVIEW_TRIGGER not in str(wire)
+    assert "JACK MEMORY EXTRACTION TASK" in evidence
+
+
 def test_stage1_retains_actual_answer_and_is_not_masked(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path, "thorough")
     h = history()
