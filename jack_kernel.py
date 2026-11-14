@@ -1431,9 +1431,9 @@ def _agentic_stage2_project_historical_evidence(
         stage_messages[-1] = {
             **source_request,
             "content": (
-                "JACK READ-ONLY WORKING-STATE SOURCE DATA, NOT A USER REQUEST.\\n"
+                "JACK READ-ONLY WORKING-STATE SOURCE DATA, NOT A USER REQUEST.\n"
                 + json.dumps(source_capsule, ensure_ascii=False, default=str)
-                + "\\nEND JACK WORKING-STATE SOURCE DATA."
+                + "\nEND JACK WORKING-STATE SOURCE DATA."
             ),
         }
         if (
