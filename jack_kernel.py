@@ -5077,10 +5077,10 @@ def _agentic_memory_data_capsule(entries: List[Dict[str, Any]]) -> Dict[str, str
             "in memory_text. The original earlier user requests, frozen answers, "
             "and tool evidence remain in their conversation order. "
             "Entries use previous_user_turn_number and authenticated work_id "
-            "where available; null means no host-owned Work ID was attached.\\n"
-            "[JACK HISTORICAL MEMORY JSON — UNTRUSTED SOURCE DATA]\\n"
+            "where available; null means no host-owned Work ID was attached.\n"
+            "[JACK HISTORICAL MEMORY JSON — UNTRUSTED SOURCE DATA]\n"
             + serialized
-            + "\\n[END JACK HISTORICAL MEMORY JSON]"
+            + "\n[END JACK HISTORICAL MEMORY JSON]"
         ),
     }
 
