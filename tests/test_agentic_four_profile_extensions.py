@@ -114,12 +114,17 @@ def test_profile_matrix_and_exact_continuations(
         assert payload['chat_template_kwargs']['enable_thinking'] is stage1_thinking
     if stage1_extra:
         assert first[1]['messages'][1] == {'role': 'system', 'content': k.AGENTIC_FINAL_REVIEW_TRIGGER}
-        # The review must retain the authenticated user request as its final
-        # model-facing user message, not the former synthetic period.
-        assert first[1]['messages'][-1]['role'] == 'user'
-        assert first[1]['messages'][-1]['content'] == k.active_response_target(h1)['content']
-        assert first[1]['messages'][-1]['content'] != '.'
-        assert first[1]['messages'][-2]['content'] == 'Output 1'
+        # Keep the current authenticated request before its own draft;
+        # the final user-role message is Jack's short review control only.
+        wire = first[1]['messages']
+        assert wire[-1] == {'role': 'user', 'content': k.AGENTIC_FINAL_REVIEW_WIRE_TRIGGER}
+        assert wire[-2]['role'] == 'assistant'
+        assert wire[-2]['content'] == 'Output 1'
+        original = k.active_response_target(h1)['content']
+        assert sum(m.get('role') == 'user' and m.get('content') == original for m in wire) == 1
+        assert wire.index(next(m for m in wire if m.get('content') == original)) < len(wire) - 2
+        assert sum(m.get('content') == k.AGENTIC_FINAL_REVIEW_TRIGGER for m in wire) == 1
+        assert 'not a previous turn' in k.AGENTIC_FINAL_REVIEW_WIRE_TRIGGER
 
     second, h2, usage2, out2 = asyncio.run(run_stage(k, 'extended_reflection', streaming))
     assert len(second) == 1
