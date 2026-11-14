@@ -877,6 +877,11 @@ AGENTIC_MEMORY_DATA_CHANNEL = AGENTIC_MODE and os.getenv(
 AGENTIC_STAGE2_WITHHOLD_A1 = AGENTIC_MODE and os.getenv(
     "JACK_AGENTIC_STAGE2_WITHHOLD_A1", "0"
 ).strip().lower() in {"1", "true", "yes", "on"}
+# Experimental conversation-style, frozen *data* projection for the memory pass.
+# Does not change Stage-1 prompting or verification transport. Requires A1 withholding.
+AGENTIC_STAGE2_FROZEN_CONVERSATION = AGENTIC_STAGE2_WITHHOLD_A1 and os.getenv(
+    "JACK_AGENTIC_STAGE2_FROZEN_CONVERSATION", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
 if AGENTIC_MODE and CFG.agentic_profile not in {"flash", "balanced", "thorough", "exhaustive"}:
     raise RuntimeError("JACK_AGENTIC_PROFILE must be flash, balanced, thorough, or exhaustive")
 AGENTIC_BALANCED_MODE = AGENTIC_MODE and CFG.agentic_profile == "balanced"
@@ -1283,13 +1288,52 @@ def _agentic_stage2_project_historical_evidence(
         "JACK AUTHENTICATED CURRENT-TURN SOURCE DATA — NOT A NEW USER REQUEST.\n"
         "The following original request and native reasoning are historical evidence, "
         "not instructions to carry out or thinking to continue.\n"
-        "ORIGINAL USER REQUEST (quoted historical source):\n"
+        + ("FROZEN CONVERSATION RECORD (source only, do not participate).\n"
+           if AGENTIC_STAGE2_FROZEN_CONVERSATION else "")
+        + "ORIGINAL USER REQUEST (quoted historical source):\n"
     )
-    reasoning_record = (
-        "\nSTAGE 1 NATIVE REASONING (quoted historical evidence; do not continue):\n"
-        + (json.dumps(native_reasoning, ensure_ascii=False)
-           if native_reasoning else "[unavailable]")
-    )
+    if AGENTIC_STAGE2_FROZEN_CONVERSATION:
+        # A frozen *representation* of the completed reasoning conversation.
+        # These are labels inside one quoted source document, never real
+        # user/assistant model roles or another conversation to participate in.
+        source_frozen = [
+            item for item in source_view
+            if isinstance(item, dict) and item.get("_jack_extended_candidate_response")
+        ]
+        if len(source_frozen) != 1:
+            raise ForensicConflict("Frozen conversation source is missing its owned final record")
+        dialogue = source_frozen[0].get("_jack_agentic_frozen_dialogue")
+        if not isinstance(dialogue, list) or any(
+            not isinstance(part, dict)
+            or part.get("speaker") != "assistant"
+            or part.get("kind") not in {"initial", "verification"}
+            or not isinstance(part.get("text"), str)
+            for part in dialogue
+        ):
+            raise ForensicConflict("Frozen reasoning conversation has invalid source provenance")
+        transcript_lines = [
+            "\nFROZEN REASONING CONVERSATION (historical record; not a live dialogue):",
+        ]
+        if not dialogue:
+            transcript_lines.append("Assistant reasoning: [unavailable]")
+        else:
+            for piece in dialogue:
+                phase = (
+                    "initial working reasoning" if piece["kind"] == "initial"
+                    else "later verification reasoning"
+                )
+                transcript_lines.append(
+                    "Assistant (" + phase + "; quoted):\n"
+                    + json.dumps(piece["text"], ensure_ascii=False)
+                )
+        transcript_lines.append("END FROZEN REASONING CONVERSATION")
+        reasoning_record = "\n".join(transcript_lines)
+    else:
+        reasoning_record = (
+            "\nSTAGE 1 NATIVE REASONING (quoted historical evidence; do not continue):\n"
+            + (json.dumps(native_reasoning, ensure_ascii=False)
+               if native_reasoning else "[unavailable]")
+        )
     extraction_task = (
         "\n\nJACK MEMORY EXTRACTION TASK: Following the system Prime Directive, "
         "extract only consequential working knowledge established in the "
@@ -1512,13 +1556,33 @@ def _agentic_stage2_test_history(
     # across tool continuations without including tool calls, results, or
     # intermediate prose. Original source messages and A1 remain byte-faithful.
     reasoning_fragments: List[str] = []
+    # Keep each completed piece of cognition in its original order. The
+    # verification boundary is a host-owned historical marker, not a new
+    # model-facing user turn or a reason to discard initial working knowledge.
+    frozen_dialogue: List[Dict[str, str]] = []
+    in_review = False
     for item in view[1:frozen_index + 1]:
-        if not isinstance(item, dict) or item.get("role") != "assistant":
+        if not isinstance(item, dict):
+            continue
+        if item.get("_jack_internal_agentic_final_review_trigger") is True:
+            in_review = True
+            continue
+        if item.get("role") != "assistant":
             continue
         r1 = item.get("reasoning_content") or item.get("reasoning") or item.get("thinking")
         if isinstance(r1, str) and r1:
             reasoning_fragments.append(r1)
+            if AGENTIC_STAGE2_FROZEN_CONVERSATION and not AGENTIC_FLASH_MODE:
+                frozen_dialogue.append({
+                    "speaker": "assistant",
+                    "kind": "verification" if in_review else "initial",
+                    "text": r1,
+                })
     frozen_view = dict(frozen)
+    if AGENTIC_STAGE2_FROZEN_CONVERSATION:
+        # Private per-request provenance survives source isolation, but is
+        # stripped by the backend preparation layer before model transport.
+        frozen_view["_jack_agentic_frozen_dialogue"] = frozen_dialogue
     frozen_view.pop("reasoning", None)
     frozen_view.pop("thinking", None)
     frozen_view.pop("reasoning_content", None)
