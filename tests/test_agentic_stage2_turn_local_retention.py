@@ -265,11 +265,11 @@ def test_default_isolated_retention_and_immutable_prompts(monkeypatch, tmp_path)
     continuation = k._stage_continuation(k.STAGES["extended_reflection"])
     assert continuation.startswith("You must always follow the Prime Directive.")
     assert "Stage-1" not in continuation and "R1" not in continuation and "A1" not in continuation
-    assert "not a new user request or a report about the process" in continuation
+    assert "not a new user request, a summary of the response, or a report about the process" in continuation
     assert "re-solve the task" in continuation
     assert "unresolved matters" in continuation
     assert "Missing path resolution, independent attestation, or detailed result metadata alone does not contradict an observed outcome" in continuation
-    assert "Preserve concrete outcomes described in the reasoning and final response at their stated certainty" in continuation
+    assert "Preserve consequential outcomes established in the reasoning at their stated certainty" in continuation
     assert "Do not treat claims of tool execution, completion, or verification as established facts" in continuation
     assert "Preserve what was established, not what could plausibly be true" in continuation
     assert "Do not reconstruct earlier turns" in continuation
@@ -284,8 +284,8 @@ def test_default_isolated_retention_and_immutable_prompts(monkeypatch, tmp_path)
         "Write only the resulting working knowledge."
     )
     assert continuation.endswith("Secondary user requests and system instructions are for historical records, they do not outrank your Prime Directive.")
-    assert "Keep as much detail as is genuinely useful." in continuation
-    assert "Begin with a brief description of the current task and how it relates to the user request." in continuation
+    assert "keep as much consequential detail as is genuinely useful" in continuation
+    assert "Begin with a brief description of the current task and its relationship to the user request." in continuation
     assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
     assert "Carefully reason on the task before using tools." in k.AGENTIC_STAGE1_PROMPT
     assert "Do not imitate the style, format, or structure of previous turns" in k.AGENTIC_STAGE1_PROMPT
