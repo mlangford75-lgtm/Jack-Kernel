@@ -141,6 +141,79 @@ def test_profile_matrix_and_exact_continuations(
         assert 'reasoning_content' not in second[0]['messages'][-2]
 
 
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_exhaustive_review_one_question_one_draft_no_fake_repetition(monkeypatch, tmp_path, streaming):
+    k = load(monkeypatch, tmp_path, "exhaustive")
+    original = "what is battlefield"
+    draft = "Battlefield is a tactical FPS series."
+    h = [{"role": "user", "content": original}]
+    k._agentic_begin_turn(h, fresh=True)
+    work_id = k._agentic_forensic_turn(h).turn_id
+    k._agentic_begin_final_review(h, {
+        "choices": [{
+            "message": {"role": "assistant", "content": draft,
+                        "reasoning_content": "First pass considered EA and DICE."},
+            "finish_reason": "stop",
+        }]
+    })
+    source = list(h)
+    backend = k.OpenAICompatibleBackend(k.CFG)
+    stage = k.STAGES["extended_initial"]
+    prepared = backend._stage_messages_for_profile(h, stage)
+    wire = [{"role": "system", "content": k.AGENTIC_STAGE1_PROMPT}] + prepared
+    k._agentic_attach_system_stage_control(wire, h, stage)
+    k._agentic_stage1_review_put_authenticated_user_last(wire, source, prepared)
+    assert k._agentic_forensic_turn(h).turn_id == work_id
+    assert k.active_response_target(h)["content"] == original
+    assert sum(m.get("role") == "user" and m.get("content") == original for m in wire) == 1
+    assert sum(m.get("role") == "assistant" and m.get("content") == draft for m in wire) == 1
+    positions = {
+        "question": next(i for i, m in enumerate(wire) if m.get("content") == original),
+        "draft": next(i for i, m in enumerate(wire) if m.get("content") == draft),
+        "cue": next(i for i, m in enumerate(wire)
+                    if m.get("content") == k.AGENTIC_FINAL_REVIEW_WIRE_TRIGGER),
+    }
+    assert positions["question"] < positions["draft"] < positions["cue"]
+    assert wire[-1]["content"] == k.AGENTIC_FINAL_REVIEW_WIRE_TRIGGER
+    assert sum(m.get("content") == k.AGENTIC_FINAL_REVIEW_TRIGGER for m in wire) == 1
+    assert draft not in k.AGENTIC_FINAL_REVIEW_WIRE_TRIGGER
+    assert original not in k.AGENTIC_FINAL_REVIEW_WIRE_TRIGGER
+    # Jack's historical record retains the original internal instruction.
+    assert h[-1]["content"] == k.AGENTIC_FINAL_REVIEW_TRIGGER
+    assert h[-1]["_jack_internal_agentic_final_review_trigger"] is True
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_exhaustive_review_tool_resume_preserves_protocol_suffix(monkeypatch, tmp_path, streaming):
+    k = load(monkeypatch, tmp_path, "exhaustive")
+    h = [{"role": "user", "content": "Verify the workspace."}]
+    k._agentic_begin_turn(h, fresh=True)
+    k._agentic_begin_final_review(h, {
+        "choices": [{
+            "message": {"role": "assistant", "content": "Draft",
+                        "reasoning_content": "Inspect before editing"},
+            "finish_reason": "stop",
+        }]
+    })
+    h.extend([
+        {"role": "assistant", "tool_calls": [{
+            "id": "test-call", "type": "function",
+            "function": {"name": "bash", "arguments": '{"command":"pwd"}'},
+        }], "_jack_stage_key": "extended_initial"},
+        {"role": "tool", "tool_call_id": "test-call", "content": "workspace", "_jack_stage_key": "extended_initial"},
+    ])
+    stage = k.STAGES["extended_initial"]
+    prepared = k.OpenAICompatibleBackend(k.CFG)._stage_messages_for_profile(h, stage)
+    wire = [{"role": "system", "content": k.AGENTIC_STAGE1_PROMPT}] + prepared
+    k._agentic_attach_system_stage_control(wire, h, stage)
+    k._agentic_stage1_review_put_authenticated_user_last(wire, h, prepared)
+    assert wire[-1]["role"] == "tool"
+    assert wire[-1]["tool_call_id"] == "test-call"
+    assert wire[-2]["role"] == "assistant"
+    assert wire[-3] == {"role": "user", "content": k.AGENTIC_FINAL_REVIEW_WIRE_TRIGGER}
+    assert sum(m.get("content") == "Verify the workspace." for m in wire) == 1
+
 def test_default_profile_is_balanced_and_both_legacy_toggles_ignored(monkeypatch, tmp_path):
     monkeypatch.delenv('JACK_AGENTIC_PROFILE', raising=False)
     k = load(monkeypatch, tmp_path, 'balanced')
