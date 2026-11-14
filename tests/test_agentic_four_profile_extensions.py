@@ -123,9 +123,9 @@ def test_profile_matrix_and_exact_continuations(
         original = k.active_response_target(h1)['content']
         assert sum(m.get('role') == 'user' and m.get('content') == original for m in wire) == 1
         assert wire.index(next(m for m in wire if m.get('content') == original)) < len(wire) - 2
-        assert k.AGENTIC_FINAL_REVIEW_WIRE_TRIGGER == STAGE1_EXTENSION
-        assert 'Jack' not in k.AGENTIC_FINAL_REVIEW_WIRE_TRIGGER
-        assert sum(m.get('content') == k.AGENTIC_FINAL_REVIEW_WIRE_TRIGGER for m in wire) == 1
+        assert k.AGENTIC_FINAL_REVIEW_WIRE_TRIGGER == ''
+        assert sum(m.get('role') == 'system' and m.get('content') == STAGE1_EXTENSION for m in wire) == 1
+        assert sum(m.get('role') == 'user' and m.get('content') == '' for m in wire) == 1
 
     second, h2, usage2, out2 = asyncio.run(run_stage(k, 'extended_reflection', streaming))
     assert len(second) == 1
@@ -178,6 +178,7 @@ def test_exhaustive_review_one_question_one_draft_no_fake_repetition(monkeypatch
     assert positions["question"] < positions["draft"] < positions["cue"]
     assert wire[-1]["content"] == k.AGENTIC_FINAL_REVIEW_WIRE_TRIGGER
     assert not any(m.get("content") == k.AGENTIC_FINAL_REVIEW_TRIGGER for m in wire)
+    assert sum(m.get('role') == 'system' and m.get('content') == k.AGENTIC_FINAL_REVIEW_PROMPT for m in wire) == 1
     assert draft not in k.AGENTIC_FINAL_REVIEW_WIRE_TRIGGER
     assert original not in k.AGENTIC_FINAL_REVIEW_WIRE_TRIGGER
     # Jack's historical record retains the original internal instruction.
