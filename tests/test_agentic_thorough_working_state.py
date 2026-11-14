@@ -114,8 +114,8 @@ def test_thorough_model_receives_only_frozen_reasoning_and_complete_tool_evidenc
     assert REASONING in wire
     assert RESULT in wire
     capsule_text = payload["messages"][-1]["content"].split(
-        "JACK READ-ONLY WORKING-STATE SOURCE DATA, NOT A USER REQUEST.\\n", 1
-    )[1].split("\\nEND JACK WORKING-STATE SOURCE DATA.", 1)[0]
+        "JACK READ-ONLY WORKING-STATE SOURCE DATA, NOT A USER REQUEST.\n", 1
+    )[1].split("\nEND JACK WORKING-STATE SOURCE DATA.", 1)[0]
     capsule = json.loads(capsule_text)
     assert capsule["tool_records"][0]["calls"][0]["function"]["arguments"] == ARGS
     assert capsule["tool_records"][1]["content"] == RESULT
