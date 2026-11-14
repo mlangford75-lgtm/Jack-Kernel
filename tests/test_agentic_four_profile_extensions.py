@@ -13,7 +13,7 @@ import httpx
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-STAGE1_EXTENSION = "Wait, re-verify your reasoning. Test for errors, mistakes, or poor quality. Make changes, if necessary, to ensure alignment with the instructions and user request before responding"
+STAGE1_EXTENSION = "Wait, re-verify the latest reasoning and chain-of-thought. Test for errors, mistakes, or poor quality. Make changes, if necessary, to ensure alignment with the instructions and user request before responding"
 
 MATRIX = [
     ("flash", False, False, False),
