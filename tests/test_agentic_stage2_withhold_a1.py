@@ -258,6 +258,71 @@ def test_exhaustive_review_extension_reasoning_reaches_stage2_once(monkeypatch, 
     assert "JACK MEMORY EXTRACTION TASK" in evidence
 
 
+@pytest.mark.parametrize("stream", (False, True))
+def test_frozen_reasoning_conversation_preserves_chronology_and_no_live_roles(monkeypatch, tmp_path, stream):
+    """Initial reasoning and review reasoning are frozen separately, never playable roles."""
+    monkeypatch.setenv("JACK_AGENTIC_STAGE2_FROZEN_CONVERSATION", "1")
+    k = load(monkeypatch, tmp_path, "exhaustive")
+    user_request = "what is battlefield"
+    initial = "INITIAL_THOUGHT: This is a military FPS. Provide its distinguishing features."
+    review = "REVIEW_THOUGHT: The response should also address vehicles and squads."
+    h = [
+        {"role": "user", "content": user_request},
+        {"role": "assistant", "content": "Interim draft", "reasoning_content": initial,
+         "_jack_internal_agentic_final_review_draft": True,
+         "_jack_stage_key": "extended_initial"},
+        {"role": "user", "content": k.AGENTIC_FINAL_REVIEW_TRIGGER,
+         "_jack_internal_agentic_final_review_trigger": True,
+         "_jack_stage_key": "extended_initial"},
+        {"role": "assistant", "content": SECRET_A1, "reasoning_content": review,
+         "_jack_extended_candidate_response": True},
+    ]
+    original = copy.deepcopy(h)
+    source = k._agentic_stage2_test_history(h, k.STAGES["extended_reflection"])
+    prepared = k.OpenAICompatibleBackend(k.CFG)._stage_messages_for_profile(
+        source, k.STAGES["extended_reflection"]
+    )
+    wire = [{"role": "system", "content": k.AGENTIC_36_STAGE2_PROMPT}] + prepared
+    k._agentic_attach_system_stage_control(wire, h, k.STAGES["extended_reflection"])
+    k._agentic_stage2_project_historical_evidence(wire, source, prepared)
+    assert h == original
+    assert len([item for item in wire if item.get("role") == "user"]) == 1
+    assert not any(item.get("role") == "assistant" for item in wire)
+    evidence = wire[-1]["content"]
+    assert user_request in evidence
+    assert evidence.count(user_request) == 1
+    assert evidence.count(initial) == 1
+    assert evidence.count(review) == 1
+    assert evidence.index(initial) < evidence.index(review)
+    assert "Assistant (initial working reasoning; quoted)" in evidence
+    assert "Assistant (later verification reasoning; quoted)" in evidence
+    assert k.AGENTIC_FINAL_REVIEW_TRIGGER not in str(wire)
+    assert SECRET_A1 not in str(wire)
+    assert not any("reasoning_content" in item for item in wire)
+
+
+@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough"))
+def test_frozen_conversation_without_review_preserves_initial_and_never_invents_review(monkeypatch, tmp_path, profile):
+    monkeypatch.setenv("JACK_AGENTIC_STAGE2_FROZEN_CONVERSATION", "1")
+    k = load(monkeypatch, tmp_path, profile)
+    h = history()
+    source = k._agentic_stage2_test_history(h, k.STAGES["extended_reflection"])
+    prepared = k.OpenAICompatibleBackend(k.CFG)._stage_messages_for_profile(
+        source, k.STAGES["extended_reflection"]
+    )
+    wire = [{"role": "system", "content": k.AGENTIC_36_STAGE2_PROMPT}] + prepared
+    k._agentic_attach_system_stage_control(wire, h, k.STAGES["extended_reflection"])
+    k._agentic_stage2_project_historical_evidence(wire, source, prepared)
+    text = str(wire)
+    assert SECRET_A1 not in text
+    assert "later verification reasoning" not in text
+    if profile == "flash":
+        assert R1 not in text
+    else:
+        assert R1 in text
+    assert "JACK MEMORY EXTRACTION TASK" in text
+
+
 def test_stage1_retains_actual_answer_and_is_not_masked(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path, "thorough")
     h = history()
