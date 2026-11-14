@@ -1293,8 +1293,13 @@ def _agentic_stage2_project_historical_evidence(
     extraction_task = (
         "\n\nJACK MEMORY EXTRACTION TASK: Following the system Prime Directive, "
         "extract only consequential working knowledge established in the "
-        "authenticated source. Do not answer the quoted user request, continue "
-        "the quoted reasoning, or reconstruct the separately frozen response."
+        "authenticated source. Evaluate the initial Stage 1 reasoning and any "
+        "verification continuation together; neither may be discarded. "
+        "A later review claim is not automatically a verified correction or "
+        "a replacement for the original work. Resolve claims using the "
+        "authenticated request and available tool evidence; retain uncertainty "
+        "when a claim is unsupported. Do not answer the quoted user request, "
+        "continue the quoted reasoning, or reconstruct the separately frozen response."
     )
     if isinstance(original_content, list):
         # Keep each text/media block in source order. Media remains a real
@@ -1507,17 +1512,40 @@ def _agentic_stage2_test_history(
         ):
             raise HTTPException(status_code=409, detail="Isolated Stage 2 has an invalid recovery suffix")
 
-    # Model-facing Stage 2 = the authenticated U and the frozen A1 carrying all
-    # native Stage-1 R1 in chronological order. Flatten the reasoning fragments
-    # across tool continuations without including tool calls, results, or
-    # intermediate prose. Original source messages and A1 remain byte-faithful.
+    # Preserve every Stage-1 R1 fragment once, including tool continuations
+    # and Exhaustive's review. The experimental model-facing evidence must
+    # distinguish initial cognition from later verification: concatenating
+    # them without provenance allows an unsupported review assumption to
+    # masquerade as the established premise of the entire turn.
+    review_boundary = next(
+        (i for i, item in enumerate(view[:frozen_index])
+         if isinstance(item, dict)
+         and item.get("_jack_internal_agentic_final_review_trigger") is True),
+        None,
+    )
+    initial_reasoning: List[str] = []
+    review_reasoning: List[str] = []
     reasoning_fragments: List[str] = []
-    for item in view[1:frozen_index + 1]:
+    for index, item in enumerate(view[1:frozen_index + 1], start=1):
         if not isinstance(item, dict) or item.get("role") != "assistant":
             continue
         r1 = item.get("reasoning_content") or item.get("reasoning") or item.get("thinking")
         if isinstance(r1, str) and r1:
             reasoning_fragments.append(r1)
+            if review_boundary is not None and index > review_boundary:
+                review_reasoning.append(r1)
+            else:
+                initial_reasoning.append(r1)
+    if AGENTIC_STAGE2_WITHHOLD_A1 and review_boundary is not None and not AGENTIC_FLASH_MODE:
+        # Label only the Stage-2 source projection; no extra copies of R1,
+        # no semantic summarization, and no change to canonical stage history.
+        reasoning_fragments = [
+            "STAGE 1 INITIAL NATIVE REASONING (original work; historical evidence):\\n"
+            + ("\\n\\n".join(initial_reasoning) if initial_reasoning else "[unavailable]"),
+            "STAGE 1 VERIFICATION CONTINUATION NATIVE REASONING "
+            "(later review; corrections and claims require evidence):\\n"
+            + ("\\n\\n".join(review_reasoning) if review_reasoning else "[unavailable]"),
+        ]
     frozen_view = dict(frozen)
     frozen_view.pop("reasoning", None)
     frozen_view.pop("thinking", None)
