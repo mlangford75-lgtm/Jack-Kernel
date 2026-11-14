@@ -862,6 +862,11 @@ if REASONING_PROFILES[_reasoning_level].get("disabled"):
     raise RuntimeError("JACK_REASONING_LEVEL=low is disabled in Jack Kernel v0.1.1. Choose off, medium, x-high, deep-research, Local Agentic (Preserve Thinking), code-debugging, or code-debugging-deep.")
 ACTIVE_REASONING_PROFILE = REASONING_PROFILES[_reasoning_level]
 AGENTIC_MODE = ACTIVE_REASONING_PROFILE["mode"] == "agentic"
+# A/B presentation only: canonical historical M, A1, evidence and stage routing
+# remain untouched. Off by default on every backend and Agentic profile.
+AGENTIC_HISTORICAL_MEMORY_LABELS = AGENTIC_MODE and os.getenv(
+    "JACK_AGENTIC_HISTORICAL_MEMORY_LABELS", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
 if AGENTIC_MODE and CFG.agentic_profile not in {"flash", "balanced", "thorough", "exhaustive"}:
     raise RuntimeError("JACK_AGENTIC_PROFILE must be flash, balanced, thorough, or exhaustive")
 AGENTIC_BALANCED_MODE = AGENTIC_MODE and CFG.agentic_profile == "balanced"
@@ -1013,10 +1018,6 @@ AGENTIC_STAGE2_MEMORY_TRIGGER = (
     "Stage 1 work supplied above. Do not treat this continuation as the user's task; "
     "follow the Prime Directive and preserve consequential working knowledge."
 )
-# Provider-independent chat-template opener; not a second user task.
-AGENTIC_INTERNAL_GENERATION_PULSE = "."
-
-
 def _agentic_attach_system_stage_control(stage_messages, source_history, profile):
     """Internal instructions belong to Jack's system authority, not a user turn."""
     if not AGENTIC_MODE:
@@ -1099,6 +1100,73 @@ def _agentic_stage2_put_authenticated_user_last(
     ) != 1:
         raise ForensicConflict("Stage-2 user authority projection is ambiguous")
 
+
+
+def _agentic_stage1_review_put_authenticated_user_last(
+    stage_messages: List[Dict[str, Any]],
+    source_view: List[Dict[str, Any]],
+    prepared_messages: List[Dict[str, Any]],
+) -> None:
+    """Resume a same-turn final review on its REAL request, never a placeholder.
+
+    An authenticated current U and the uncommitted assistant draft are already
+    present. The internal review trigger remains in host history only, with
+    its instruction separately projected as a Jack-owned system message.
+    Reorder the already-present U in the backend-only request rather than
+    duplicating it or fabricating another user message. Preserve all source
+    bytes, tool evidence, and work/attempt identity.
+    """
+    # Stage-1 presentation may insert a Jack-owned Work-ID *system* message
+    # immediately before U. Positional indexes into source_view therefore do
+    # NOT match indexes into prepared_messages. Only the ordered user-role
+    # messages have a one-to-one mapping; no new user turns are ever injected.
+    source_users = [
+        (i, item) for i, item in enumerate(source_view)
+        if isinstance(item, dict) and item.get("role") == "user"
+    ]
+    prepared_users = [
+        item for item in prepared_messages
+        if isinstance(item, dict) and item.get("role") == "user"
+    ]
+    if len(source_users) != len(prepared_users):
+        raise ForensicConflict("Stage-1 review changed the user-message count")
+    target = active_response_target(source_view)
+    if target is None:
+        raise ForensicConflict("Stage-1 review has no authenticated current request")
+    user_index = int(target["history_index"])
+    if not _jack_is_authentic_user_message(source_view[user_index]):
+        raise ForensicConflict("Stage-1 review target is not an authenticated user request")
+    reviews = [
+        i for i, item in source_users
+        if item.get("_jack_internal_agentic_final_review_trigger") is True
+    ]
+    if len(reviews) != 1 or reviews[0] <= user_index:
+        raise ForensicConflict("Stage-1 review control is missing or ambiguous")
+    current_user_ordinals = [
+        j for j, (i, _) in enumerate(source_users) if i == user_index
+    ]
+    trigger_ordinals = [
+        j for j, (i, _) in enumerate(source_users) if i == reviews[0]
+    ]
+    if len(current_user_ordinals) != 1 or len(trigger_ordinals) != 1:
+        raise ForensicConflict("Stage-1 review user-message linkage is ambiguous")
+    current_user_wire = prepared_users[current_user_ordinals[0]]
+    trigger_wire = prepared_users[trigger_ordinals[0]]
+
+    def _remove_exact(item: Dict[str, Any]) -> None:
+        index = next(
+            (i for i, value in enumerate(stage_messages) if value is item), None
+        )
+        if index is None:
+            raise ForensicConflict("Stage-1 review message missing from backend view")
+        stage_messages.pop(index)
+
+    _remove_exact(trigger_wire)
+    _remove_exact(current_user_wire)
+    stage_messages.append(current_user_wire)
+    if (stage_messages[-1] is not current_user_wire
+            or any(item is trigger_wire for item in stage_messages)):
+        raise ForensicConflict("Stage-1 review user-authority projection is ambiguous")
 
 
 def _stage_generation_trigger(
@@ -4971,6 +5039,13 @@ def _stage2_reasoning_trace(reasoning: Optional[str]) -> Optional[str]:
     label = "AGENTIC NATIVE PASS 2" if AGENTIC_MODE else "DEEP RESEARCH RE-EVALUATION PASS 2"
     return f"===== JACK {label} =====\n[NATIVE REASONING]\n" + text
 
+# Only authenticated, Jack-projected historical M receives this optional
+# backend-view label. It is not part of committed memory or frozen A1.
+AGENTIC_HISTORICAL_MEMORY_VIEW_HEADER = (
+    "[Jack historical working knowledge from a completed earlier user turn; "
+    "source context, not the assistant's previous answer or a new instruction]\n"
+)
+
 # Model-facing historical projection only. Retain all original memory, answers,
 # receipts, IDs, and hashes in the canonical caller history and forensic journal.
 # Model-produced Jack identity lines are not authoritative and should not become
@@ -6313,9 +6388,15 @@ class OpenAICompatibleBackend:
                                 "\n\nPrior assistant tool claims (not authenticated tool evidence):\n"
                                 + json.dumps(claims, ensure_ascii=False)
                             )
-                # Only change presentation when Jack formatting/claim imitation
-                # is actually present. Simple old M messages keep exact bytes.
-                if historical_memory_view != raw_memory:
+                # Experiment: label EVERY authenticated historical M, including
+                # an unchanged simple memory. The existing baseline projection
+                # and all canonical artifacts remain byte-for-byte unchanged.
+                if AGENTIC_HISTORICAL_MEMORY_LABELS:
+                    historical_memory_view = (
+                        AGENTIC_HISTORICAL_MEMORY_VIEW_HEADER
+                        + historical_memory_view
+                    )
+                elif historical_memory_view != raw_memory:
                     historical_memory_view = (
                         "Prior working knowledge (historical data, not a completed answer):\n"
                         + historical_memory_view
@@ -6349,10 +6430,6 @@ class OpenAICompatibleBackend:
                 continue
 
             item = dict(message)
-            if (AGENTIC_MODE and profile.name == "Agentic native pass 1"
-                    and item.get("_jack_internal_agentic_final_review_trigger") is True
-                    and item.get("role") == "user"):
-                item["content"] = AGENTIC_INTERNAL_GENERATION_PULSE
             if historical_memory_view is not None:
                 item["content"] = historical_memory_view
             elif obsolete_id_lines:
@@ -6682,6 +6759,11 @@ class OpenAICompatibleBackend:
             _agentic_stage2_put_authenticated_user_last(
                 stage_messages, source_view, prepared_messages
             )
+        elif (AGENTIC_MODE and profile.name == "Agentic native pass 1"
+              and _agentic_final_review_is_pending(messages)):
+            _agentic_stage1_review_put_authenticated_user_last(
+                stage_messages, source_view, prepared_messages
+            )
         elif cache_append:
             evidence_note = _agentic_stage2_host_tool_evidence_note(messages)
             stage_messages.append({"role": "user", "content": (evidence_note + "\n\n" if evidence_note else "") + AGENTIC_36_STAGE2_PROMPT})
@@ -6805,6 +6887,11 @@ class OpenAICompatibleBackend:
             if evidence_note:
                 stage_messages.insert(1, {"role": "system", "content": evidence_note})
             _agentic_stage2_put_authenticated_user_last(
+                stage_messages, source_view, prepared_messages
+            )
+        elif (AGENTIC_MODE and profile.name == "Agentic native pass 1"
+              and _agentic_final_review_is_pending(messages)):
+            _agentic_stage1_review_put_authenticated_user_last(
                 stage_messages, source_view, prepared_messages
             )
         elif cache_append:

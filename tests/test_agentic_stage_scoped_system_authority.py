@@ -214,10 +214,12 @@ def test_same_turn_review_control_is_system_owned(monkeypatch, tmp_path, stream)
     assert len(received) == 1
     wire = received[0]["messages"]
     assert wire[1] == {"role": "system", "content": k.AGENTIC_FINAL_REVIEW_TRIGGER}
-    assert wire[2] == {"role": "user", "content": "hi"}
+    # The only current user message is moved to the end of the
+    # backend-only view; Jack's internal review trigger is not a user turn.
     assert wire[-2]["role"] == "assistant" and wire[-2]["content"] == "Hello!"
-    assert wire[-1] == {"role": "user", "content": k.AGENTIC_INTERNAL_GENERATION_PULSE}
-    assert sum(m["role"] == "user" for m in wire) == 2
+    assert wire[-1] == {"role": "user", "content": "hi"}
+    assert sum(m["role"] == "user" for m in wire) == 1
+    assert "." not in [m["content"] for m in wire if m["role"] == "user"]
     assert k.AGENTIC_FINAL_REVIEW_TRIGGER not in [
         m.get("content") for m in wire if m["role"] == "user"
     ]

@@ -114,7 +114,11 @@ def test_profile_matrix_and_exact_continuations(
         assert payload['chat_template_kwargs']['enable_thinking'] is stage1_thinking
     if stage1_extra:
         assert first[1]['messages'][1] == {'role': 'system', 'content': k.AGENTIC_FINAL_REVIEW_TRIGGER}
-        assert first[1]['messages'][-1]['content'] == k.AGENTIC_INTERNAL_GENERATION_PULSE
+        # The review must retain the authenticated user request as its final
+        # model-facing user message, not the former synthetic period.
+        assert first[1]['messages'][-1]['role'] == 'user'
+        assert first[1]['messages'][-1]['content'] == k.active_response_target(h1)['content']
+        assert first[1]['messages'][-1]['content'] != '.'
         assert first[1]['messages'][-2]['content'] == 'Output 1'
 
     second, h2, usage2, out2 = asyncio.run(run_stage(k, 'extended_reflection', streaming))
