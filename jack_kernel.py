@@ -1018,10 +1018,6 @@ AGENTIC_STAGE2_MEMORY_TRIGGER = (
     "Stage 1 work supplied above. Do not treat this continuation as the user's task; "
     "follow the Prime Directive and preserve consequential working knowledge."
 )
-# Provider-independent chat-template opener; not a second user task.
-AGENTIC_INTERNAL_GENERATION_PULSE = "."
-
-
 def _agentic_attach_system_stage_control(stage_messages, source_history, profile):
     """Internal instructions belong to Jack's system authority, not a user turn."""
     if not AGENTIC_MODE:
@@ -1104,6 +1100,59 @@ def _agentic_stage2_put_authenticated_user_last(
     ) != 1:
         raise ForensicConflict("Stage-2 user authority projection is ambiguous")
 
+
+
+def _agentic_stage1_review_put_authenticated_user_last(
+    stage_messages: List[Dict[str, Any]],
+    source_view: List[Dict[str, Any]],
+    prepared_messages: List[Dict[str, Any]],
+) -> None:
+    """Resume a same-turn final review on its REAL request, never a placeholder.
+
+    An authenticated current U and the uncommitted assistant draft are already
+    present. The internal review trigger remains in host history only, with
+    its instruction separately projected as a Jack-owned system message.
+    Reorder the already-present U in the backend-only request rather than
+    duplicating it or fabricating another user message. Preserve all source
+    bytes, tool evidence, and work/attempt identity.
+    """
+    if len(source_view) != len(prepared_messages):
+        raise ForensicConflict("Stage-1 review projection changed the source message count")
+    target = active_response_target(source_view)
+    if target is None:
+        raise ForensicConflict("Stage-1 review has no authenticated current request")
+    user_index = int(target["history_index"])
+    if not _jack_is_authentic_user_message(source_view[user_index]):
+        raise ForensicConflict("Stage-1 review target is not an authenticated user request")
+    reviews = [
+        i for i, item in enumerate(source_view)
+        if isinstance(item, dict)
+        and item.get("_jack_internal_agentic_final_review_trigger") is True
+    ]
+    if len(reviews) != 1 or reviews[0] <= user_index:
+        raise ForensicConflict("Stage-1 review control is missing or ambiguous")
+    trigger_wire = prepared_messages[reviews[0]]
+    current_user_wire = prepared_messages[user_index]
+    if (not isinstance(current_user_wire, dict)
+            or current_user_wire.get("role") != "user"
+            or not isinstance(trigger_wire, dict)
+            or trigger_wire.get("role") != "user"):
+        raise ForensicConflict("Stage-1 review lost its authenticated roles")
+
+    def _remove_exact(item: Dict[str, Any]) -> None:
+        index = next(
+            (i for i, value in enumerate(stage_messages) if value is item), None
+        )
+        if index is None:
+            raise ForensicConflict("Stage-1 review message missing from backend view")
+        stage_messages.pop(index)
+
+    _remove_exact(trigger_wire)
+    _remove_exact(current_user_wire)
+    stage_messages.append(current_user_wire)
+    if (stage_messages[-1] is not current_user_wire
+            or any(item is trigger_wire for item in stage_messages)):
+        raise ForensicConflict("Stage-1 review user-authority projection is ambiguous")
 
 
 def _stage_generation_trigger(
@@ -6367,10 +6416,6 @@ class OpenAICompatibleBackend:
                 continue
 
             item = dict(message)
-            if (AGENTIC_MODE and profile.name == "Agentic native pass 1"
-                    and item.get("_jack_internal_agentic_final_review_trigger") is True
-                    and item.get("role") == "user"):
-                item["content"] = AGENTIC_INTERNAL_GENERATION_PULSE
             if historical_memory_view is not None:
                 item["content"] = historical_memory_view
             elif obsolete_id_lines:
@@ -6700,6 +6745,11 @@ class OpenAICompatibleBackend:
             _agentic_stage2_put_authenticated_user_last(
                 stage_messages, source_view, prepared_messages
             )
+        elif (AGENTIC_MODE and profile.name == "Agentic native pass 1"
+              and _agentic_final_review_is_pending(messages)):
+            _agentic_stage1_review_put_authenticated_user_last(
+                stage_messages, source_view, prepared_messages
+            )
         elif cache_append:
             evidence_note = _agentic_stage2_host_tool_evidence_note(messages)
             stage_messages.append({"role": "user", "content": (evidence_note + "\n\n" if evidence_note else "") + AGENTIC_36_STAGE2_PROMPT})
@@ -6823,6 +6873,11 @@ class OpenAICompatibleBackend:
             if evidence_note:
                 stage_messages.insert(1, {"role": "system", "content": evidence_note})
             _agentic_stage2_put_authenticated_user_last(
+                stage_messages, source_view, prepared_messages
+            )
+        elif (AGENTIC_MODE and profile.name == "Agentic native pass 1"
+              and _agentic_final_review_is_pending(messages)):
+            _agentic_stage1_review_put_authenticated_user_last(
                 stage_messages, source_view, prepared_messages
             )
         elif cache_append:
