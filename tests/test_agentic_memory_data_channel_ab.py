@@ -222,8 +222,9 @@ def test_final_review_keeps_authenticated_request_last_with_memory_capsule(monke
     assert h == original
     wire = seen[0]["messages"]
     assert len(unpack(wire)[1]) == 2
-    assert wire[-1]["role"] == "user" and wire[-1]["content"] == "What remains to do?"
-    assert [m["content"] for m in wire if m["role"] == "user"][-1] == "What remains to do?"
+    assert wire[-1] == {"role": "user", "content": ""}
+    assert sum(m.get("role") == "user" and m.get("content") == "What remains to do?" for m in wire) == 1
+    assert sum(m.get("role") == "system" and m.get("content") == k.AGENTIC_FINAL_REVIEW_PROMPT for m in wire) == 1
     assert not any(m["role"] == "user" and m["content"] == "." for m in wire)
 
 
