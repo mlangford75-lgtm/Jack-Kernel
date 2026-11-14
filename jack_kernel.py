@@ -1116,8 +1116,20 @@ def _agentic_stage1_review_put_authenticated_user_last(
     duplicating it or fabricating another user message. Preserve all source
     bytes, tool evidence, and work/attempt identity.
     """
-    if len(source_view) != len(prepared_messages):
-        raise ForensicConflict("Stage-1 review projection changed the source message count")
+    # Stage-1 presentation may insert a Jack-owned Work-ID *system* message
+    # immediately before U. Positional indexes into source_view therefore do
+    # NOT match indexes into prepared_messages. Only the ordered user-role
+    # messages have a one-to-one mapping; no new user turns are ever injected.
+    source_users = [
+        (i, item) for i, item in enumerate(source_view)
+        if isinstance(item, dict) and item.get("role") == "user"
+    ]
+    prepared_users = [
+        item for item in prepared_messages
+        if isinstance(item, dict) and item.get("role") == "user"
+    ]
+    if len(source_users) != len(prepared_users):
+        raise ForensicConflict("Stage-1 review changed the user-message count")
     target = active_response_target(source_view)
     if target is None:
         raise ForensicConflict("Stage-1 review has no authenticated current request")
@@ -1125,19 +1137,21 @@ def _agentic_stage1_review_put_authenticated_user_last(
     if not _jack_is_authentic_user_message(source_view[user_index]):
         raise ForensicConflict("Stage-1 review target is not an authenticated user request")
     reviews = [
-        i for i, item in enumerate(source_view)
-        if isinstance(item, dict)
-        and item.get("_jack_internal_agentic_final_review_trigger") is True
+        i for i, item in source_users
+        if item.get("_jack_internal_agentic_final_review_trigger") is True
     ]
     if len(reviews) != 1 or reviews[0] <= user_index:
         raise ForensicConflict("Stage-1 review control is missing or ambiguous")
-    trigger_wire = prepared_messages[reviews[0]]
-    current_user_wire = prepared_messages[user_index]
-    if (not isinstance(current_user_wire, dict)
-            or current_user_wire.get("role") != "user"
-            or not isinstance(trigger_wire, dict)
-            or trigger_wire.get("role") != "user"):
-        raise ForensicConflict("Stage-1 review lost its authenticated roles")
+    current_user_ordinals = [
+        j for j, (i, _) in enumerate(source_users) if i == user_index
+    ]
+    trigger_ordinals = [
+        j for j, (i, _) in enumerate(source_users) if i == reviews[0]
+    ]
+    if len(current_user_ordinals) != 1 or len(trigger_ordinals) != 1:
+        raise ForensicConflict("Stage-1 review user-message linkage is ambiguous")
+    current_user_wire = prepared_users[current_user_ordinals[0]]
+    trigger_wire = prepared_users[trigger_ordinals[0]]
 
     def _remove_exact(item: Dict[str, Any]) -> None:
         index = next(
