@@ -121,6 +121,7 @@ def test_stage2_wire_does_not_contain_a1_and_seed_unchanged(monkeypatch, tmp_pat
         "Do not answer the quoted user request, continue the quoted reasoning, "
         "or reconstruct the separately frozen response."
     )
+    assert "A later review claim is not automatically a verified correction" in historical
     assert all(
         "reasoning_content" not in m and "reasoning" not in m and "thinking" not in m
         for m in messages
@@ -253,9 +254,50 @@ def test_exhaustive_review_extension_reasoning_reaches_stage2_once(monkeypatch, 
     assert evidence.count(request) == 1
     assert evidence.count(initial_reasoning) == 1
     assert evidence.count(review_reasoning) == 1
+    assert evidence.index("STAGE 1 INITIAL NATIVE REASONING") < evidence.index(initial_reasoning)
+    assert evidence.index(initial_reasoning) < evidence.index("STAGE 1 VERIFICATION CONTINUATION NATIVE REASONING")
+    assert evidence.index("STAGE 1 VERIFICATION CONTINUATION NATIVE REASONING") < evidence.index(review_reasoning)
+    assert "A later review claim is not automatically a verified correction" in evidence
     assert "Final answer not visible to Stage 2." not in str(wire)
     assert k.AGENTIC_FINAL_REVIEW_TRIGGER not in str(wire)
     assert "JACK MEMORY EXTRACTION TASK" in evidence
+
+
+def test_exhaustive_repeated_question_claim_remains_review_evidence(monkeypatch, tmp_path):
+    """Review's unsupported claim is explicitly separated from initial R1."""
+    k = load(monkeypatch, tmp_path, "exhaustive")
+    initial = "INITIAL: The user asks for Counter-Strike information once."
+    review = "REVIEW: The user repeated the Counter-Strike question."
+    history = [
+        {"role": "user", "content": "what is counter strike"},
+        {"role": "assistant", "content": "Draft answer",
+         "reasoning_content": initial,
+         "_jack_internal_agentic_final_review_draft": True,
+         "_jack_stage_key": "extended_initial"},
+        {"role": "user", "content": k.AGENTIC_FINAL_REVIEW_TRIGGER,
+         "_jack_internal_agentic_final_review_trigger": True,
+         "_jack_stage_key": "extended_initial"},
+        {"role": "assistant", "content": "Frozen answer",
+         "reasoning_content": review,
+         "_jack_extended_candidate_response": True},
+    ]
+    original = copy.deepcopy(history)
+    isolated = k._agentic_stage2_test_history(history, k.STAGES["extended_reflection"])
+    prepared = k.OpenAICompatibleBackend(k.CFG)._stage_messages_for_profile(
+        isolated, k.STAGES["extended_reflection"]
+    )
+    wire = [{"role": "system", "content": k.AGENTIC_36_STAGE2_PROMPT}] + prepared
+    k._agentic_attach_system_stage_control(wire, history, k.STAGES["extended_reflection"])
+    k._agentic_stage2_project_historical_evidence(wire, isolated, prepared)
+    assert history == original
+    evidence = wire[-1]["content"]
+    assert evidence.count("what is counter strike") == 1
+    assert evidence.count(initial) == 1
+    assert evidence.count(review) == 1
+    assert evidence.index(initial) < evidence.index(review)
+    assert "A later review claim is not automatically a verified correction" in evidence
+    assert "Frozen answer" not in str(wire)
+    assert not any(message.get("role") == "assistant" for message in wire)
 
 
 def test_stage1_retains_actual_answer_and_is_not_masked(monkeypatch, tmp_path):
