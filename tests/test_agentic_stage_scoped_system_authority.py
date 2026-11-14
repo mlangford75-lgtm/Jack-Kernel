@@ -213,12 +213,14 @@ def test_same_turn_review_control_is_system_owned(monkeypatch, tmp_path, stream)
     assert json.dumps(h, sort_keys=True) == prior
     assert len(received) == 1
     wire = received[0]["messages"]
-    assert wire[1] == {"role": "system", "content": k.AGENTIC_FINAL_REVIEW_TRIGGER}
-    # The only current user message is moved to the end of the
-    # backend-only view; Jack's internal review trigger is not a user turn.
+    assert wire[1] == {"role": "system", "content": k.AGENTIC_FINAL_REVIEW_PROMPT}
+    # The original request stays before the assistant's uncommitted draft.
+    # The final empty transport user message contains no active task.
+    assert wire[-3] == {"role": "user", "content": "hi"}
     assert wire[-2]["role"] == "assistant" and wire[-2]["content"] == "Hello!"
-    assert wire[-1] == {"role": "user", "content": "hi"}
-    assert sum(m["role"] == "user" for m in wire) == 1
+    assert wire[-1] == {"role": "user", "content": ""}
+    assert sum(m["role"] == "user" and m["content"] == "hi" for m in wire) == 1
+    assert sum(m["role"] == "user" and m["content"] == "" for m in wire) == 1
     assert "." not in [m["content"] for m in wire if m["role"] == "user"]
     assert k.AGENTIC_FINAL_REVIEW_TRIGGER not in [
         m.get("content") for m in wire if m["role"] == "user"
