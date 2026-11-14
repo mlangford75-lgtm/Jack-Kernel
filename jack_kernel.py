@@ -1166,9 +1166,6 @@ def _agentic_attach_system_stage_control(stage_messages, source_history, profile
     control = None
     if profile.name == "Agentic native pass 2":
         control = AGENTIC_STAGE2_MEMORY_TRIGGER
-    elif (profile.name == "Agentic native pass 1"
-          and _agentic_final_review_is_pending(source_history)):
-        control = AGENTIC_FINAL_REVIEW_TRIGGER
     if control is not None:
         position = 1 if stage_messages and stage_messages[0].get("role") == "system" else 0
         stage_messages.insert(position, {"role": "system", "content": control})
@@ -1343,10 +1340,10 @@ def _agentic_stage1_review_put_authenticated_user_last(
     """Keep the authenticated request before its uncommitted draft.
 
     Exhaustive verification is a same-turn continuation, not a second user
-    question. The full review directive is already injected under Jack system
-    authority. Replace only the model-facing internal trigger with a short
-    generation cue; never move or duplicate the real user request or reorder
-    later tool calls/results. Canonical history and its review marker stay intact.
+    question. The original request remains before its draft. Replace only
+    the model-facing internal trigger with the exact verification instruction,
+    never implementation terminology or a duplicate of the original question.
+    Canonical history, private ownership markers and tool protocol are unchanged.
     """
     source_users = [
         (i, item) for i, item in enumerate(source_view)
@@ -1398,9 +1395,8 @@ def _agentic_stage1_review_put_authenticated_user_last(
     ):
         raise ForensicConflict("Stage-1 review is missing its uncommitted draft")
 
-    # The system message already carries AGENTIC_FINAL_REVIEW_TRIGGER exactly
-    # once. Keep the chat-template-friendly user-ended review request without
-    # copying that directive or replaying the original user question.
+    # One model-facing verification instruction, no duplicate in system role.
+    # The original request appears only once and remains before the draft.
     stage_messages[trigger_location] = {
         "role": "user",
         "content": AGENTIC_FINAL_REVIEW_WIRE_TRIGGER,
@@ -4669,11 +4665,10 @@ def self_adversarial_stage_reasoning_trace(
 # One Stage-1 continuation, in Thorough only. Exact user wording.
 AGENTIC_STAGE1_VERIFICATION_PROMPT = "Wait, re-verify your reasoning. Test for errors, mistakes, or poor quality. Make changes, if necessary, to ensure alignment with the instructions and user request before responding"
 AGENTIC_FINAL_REVIEW_PROMPT = AGENTIC_STAGE1_VERIFICATION_PROMPT
-AGENTIC_FINAL_REVIEW_WIRE_TRIGGER = (
-    "Jack internal same-turn verification continuation, not a new user request. "
-    "The earlier assistant draft is uncommitted work on the original authenticated "
-    "user request, not a previous turn's answer. Follow Jack's system verification directive."
-)
+# The model does not need to know Jack's implementation stages or IDs.
+# Keep the user's exact verification wording as the ONLY active review cue.
+# The Jack-owned canonical trigger below is retained for history ownership only.
+AGENTIC_FINAL_REVIEW_WIRE_TRIGGER = AGENTIC_FINAL_REVIEW_PROMPT
 AGENTIC_FINAL_REVIEW_TRIGGER = (
     "Jack internal same-turn continuation, not a new user request. "
     "Review the draft answer for the authenticated user request above, "
