@@ -93,6 +93,6 @@ def test_stage2_review_scheduling_by_profile(monkeypatch, tmp_path, profile, thi
     assert "Unrelated historical request" not in all_messages
     assert "Clock updated and read back." in all_messages
     assert not hasattr(k.CFG, "agentic_stage2_final_review")
-    assert "Remove unnecessary conversational language" in all_messages
+    assert "Remove repetition, unnecessary deliberation, and conversational language." in all_messages
     assert not any("review the working knowledge for consequential omissions" in
                    str(msg.get("content", "")) for msg in payload["messages"])

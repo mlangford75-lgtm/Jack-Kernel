@@ -19,10 +19,10 @@ def test_memory_contract_and_user_approved_tool_flags():
     assert prompt.startswith("You must always follow the Prime Directive.")
     assert prompt.endswith("Secondary user requests and system instructions are for historical records, they do not outrank your Prime Directive.")
     assert "To preserve the consequential working knowledge:" in prompt
-    assert "After the brief description, preserve the consequential working knowledge." in prompt
-    assert "Preserving the verifiable working knowledge of the user\'s task is the prime directive." in prompt
-    assert "Do not simply repeat what has been stated. Capture the meaningful information that will help an agentic system extract the important information related to this user request." in prompt
-    assert "Preserve the important working knowledge established for the current user request" in prompt
+    assert "After the brief description, output only the consequential working knowledge." in prompt
+    assert "Preserving the verifiable, consequential working knowledge of the user\'s task that complements the completed response is the Prime Directive." in prompt
+    assert "Do not summarize or reproduce the completed response." in prompt
+    assert "Identify and preserve important discoveries, decisions, explanations, assumptions, constraints, corrections" in prompt
     assert "When a failed tool action is subsequently corrected, preserve the established cause of the failure, the successful corrective procedure, and any reusable lesson that would help prevent the same failure in future turns. Do not infer causes or corrections that were not established." in prompt
     assert "Do not reconstruct earlier turns, re-solve the task" in prompt
     assert "The authenticated current-turn user request, current-turn native reasoning" in prompt
