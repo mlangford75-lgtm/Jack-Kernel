@@ -71,6 +71,7 @@ import base64
 import copy
 import errno
 import getpass
+import hashlib
 import html
 import re
 from contextlib import asynccontextmanager
