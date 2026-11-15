@@ -141,3 +141,74 @@ def test_thorough_default_unchanged_without_opt_in(monkeypatch, tmp_path):
     assert not k.AGENTIC_THOROUGH_WORKING_STATE
     assert not k.AGENTIC_STAGE2_WITHHOLD_A1
     assert not k.AGENTIC_STAGE2_FROZEN_CONVERSATION
+
+
+@pytest.mark.parametrize("stream", (False, True))
+def test_thorough_stage_seeds_are_base_and_base_plus_two(monkeypatch, tmp_path, stream):
+    monkeypatch.setenv("JACK_SEED", "314159")
+    k = load(monkeypatch, tmp_path)
+    requests = []
+    def respond(req):
+        requests.append(json.loads(req.content))
+        if stream:
+            return httpx.Response(
+                200,
+                text='data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}\\n\\n'
+                     'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\\n\\n'
+                     'data: [DONE]\\n\\n',
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(200, json={"choices": [
+            {"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
+        ], "usage": {}})
+
+    async def run_stage(stage):
+        backend = k.OpenAICompatibleBackend(k.CFG)
+        await backend._client.aclose()
+        backend._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        async def model(): return "test-model"
+        backend.resolve_model = model
+        try:
+            kwargs = dict(messages=history(), secondary_system="",
+                          profile=k.STAGES[stage], tools=None, tool_choice="auto")
+            if stream:
+                async for _ in backend.chat_stream(**kwargs):
+                    pass
+            else:
+                await backend.chat(**kwargs)
+        finally:
+            await backend._client.aclose()
+
+    asyncio.run(run_stage("extended_initial"))
+    asyncio.run(run_stage("extended_reflection"))
+    assert [r["seed"] for r in requests] == [314159, 314161]
+
+
+def test_thorough_random_work_id_seed_stable_across_tool_continuations(monkeypatch, tmp_path):
+    monkeypatch.setenv("JACK_SEED", "")
+    k = load(monkeypatch, tmp_path)
+    h = history()
+    h[0]["_jack_agentic_turn_id"] = "jack-turn-1234abcd0123456789abcdef01234567"
+    original_seed = k.OpenAICompatibleBackend(k.CFG)._seed_for_stage(
+        k.STAGES["extended_initial"], h
+    )
+    h.insert(-1, {"role": "tool", "content": "subsequent tool result",
+                   "tool_call_id": "call-new"})
+    resumed_seed = k.OpenAICompatibleBackend(k.CFG)._seed_for_stage(
+        k.STAGES["extended_initial"], h
+    )
+    stage2_seed = k.OpenAICompatibleBackend(k.CFG)._seed_for_stage(
+        k.STAGES["extended_reflection"], h
+    )
+    assert 0 <= original_seed < 2**31 - 2
+    assert resumed_seed == original_seed
+    assert stage2_seed == original_seed + 2
+
+
+@pytest.mark.parametrize("profile", ("flash", "balanced", "exhaustive"))
+def test_seed_separation_does_not_change_other_profiles(monkeypatch, tmp_path, profile):
+    monkeypatch.setenv("JACK_SEED", "123")
+    k = load(monkeypatch, tmp_path, profile=profile)
+    backend = k.OpenAICompatibleBackend(k.CFG)
+    assert backend._seed_for_stage(k.STAGES["extended_initial"], history()) == 123
+    assert backend._seed_for_stage(k.STAGES["extended_reflection"], history()) == 123
