@@ -1892,9 +1892,21 @@ def _default_windows_never_only(
     """Distinguish immutable default system roots from explicit user NEVERs."""
     if not canonical_target:
         return False
-    defaults = frozenset(_default_windows_never_roots(policy.path_environment()))
+    environment = policy.path_environment()
+    defaults = frozenset(_default_windows_never_roots(environment))
+    system_root = environment.get("systemroot") or environment.get("windir")
+    if not system_root:
+        return False
+    try:
+        canonical_system = normalize_represented_windows_path(
+            system_root, environment=environment
+        )
+    except RepresentedPathError:
+        return False
+    # The operation-aware soft denial applies ONLY to the ordinary Windows
+    # installation tree, not Boot, Recovery, or System Volume Information.
     return (
-        any(path_is_within_or_equal(canonical_target, root) for root in defaults)
+        path_is_within_or_equal(canonical_target, canonical_system)
         and not any(
             path_is_within_or_equal(canonical_target, root)
             for root in policy.never_roots if root not in defaults
