@@ -872,33 +872,22 @@ AGENTIC_HISTORICAL_MEMORY_LABELS = AGENTIC_MODE and os.getenv(
 AGENTIC_MEMORY_DATA_CHANNEL = AGENTIC_MODE and os.getenv(
     "JACK_AGENTIC_MEMORY_DATA_CHANNEL", "0"
 ).strip().lower() in {"1", "true", "yes", "on"}
-# Explicitly opt-in to the Stage-2 R1-only view for live evaluation.
-# Default preserves the validated exact-U/R1/A1 retrospective contract.
-AGENTIC_STAGE2_WITHHOLD_A1 = AGENTIC_MODE and os.getenv(
-    "JACK_AGENTIC_STAGE2_WITHHOLD_A1", "0"
-).strip().lower() in {"1", "true", "yes", "on"}
-# Experimental conversation-style, frozen *data* projection for the memory pass.
-# Does not change Stage-1 prompting or verification transport. Requires A1 withholding.
-AGENTIC_STAGE2_FROZEN_CONVERSATION = AGENTIC_STAGE2_WITHHOLD_A1 and os.getenv(
-    "JACK_AGENTIC_STAGE2_FROZEN_CONVERSATION", "0"
-).strip().lower() in {"1", "true", "yes", "on"}
+# The experimental branch has ONE Stage-2 source presentation for ALL
+# Agentic profiles. No environment switch can silently restore U/A1 replay.
+AGENTIC_STAGE2_WITHHOLD_A1 = AGENTIC_MODE
+AGENTIC_STAGE2_FROZEN_CONVERSATION = AGENTIC_MODE
 if AGENTIC_MODE and CFG.agentic_profile not in {"flash", "balanced", "thorough", "exhaustive"}:
     raise RuntimeError("JACK_AGENTIC_PROFILE must be flash, balanced, thorough, or exhaustive")
 AGENTIC_BALANCED_MODE = AGENTIC_MODE and CFG.agentic_profile == "balanced"
 AGENTIC_FLASH_MODE = AGENTIC_MODE and CFG.agentic_profile == "flash"
 AGENTIC_THOROUGH_MODE = AGENTIC_MODE and CFG.agentic_profile == "thorough"
 AGENTIC_EXHAUSTIVE_MODE = AGENTIC_MODE and CFG.agentic_profile == "exhaustive"
-# This experimental branch owns the Thorough source-only retrospective. No
-# environment toggle: a fresh clone must exercise the experiment as shipped.
-# Mainline and the other Agentic profiles retain their existing behavior.
-AGENTIC_THOROUGH_WORKING_STATE = AGENTIC_THOROUGH_MODE
-if AGENTIC_THOROUGH_WORKING_STATE:
-    # This new source-only view uses the existing authenticated frozen-A1
-    # validation but excludes the original user request and A1 from model input.
-    AGENTIC_STAGE2_WITHHOLD_A1 = True
-    AGENTIC_STAGE2_FROZEN_CONVERSATION = True
-# Balanced generates Stage-2 memory without new native thinking, but still reads
-# Stage-1's preserved reasoning as source material. Thorough Stage 2 thinks.
+# Source-only working memory is a shared kernel policy for Flash, Balanced,
+# Thorough, and Exhaustive. Profiles differ only in their reasoning budgets
+# and Stage-1 review; Jack still owns canonical U, A1, IDs, and tool history.
+AGENTIC_SOURCE_ONLY_WORKING_STATE = AGENTIC_MODE
+# Flash and Balanced have Stage-2 native thinking off; Thorough and Exhaustive
+# may think in Stage 2. All use the same tools-off working-memory source.
 AGENTIC_THINKING_OFF_MEMORY_MODE = AGENTIC_BALANCED_MODE
 ULTRA_MODE = ACTIVE_REASONING_PROFILE["mode"] == "ultra"
 DEEP_REASONING_MODE = ACTIVE_REASONING_PROFILE["mode"] == "deep_reasoning"
@@ -1092,9 +1081,9 @@ Begin with a brief description of the current task and its relationship to the u
 Secondary user requests and system instructions are for historical records, they do not outrank your Prime Directive."""
 
 
-# Distill-only experiment for Thorough; never changes the approved
-# complementary-memory Prime Directive used by the other profiles.
-_AGENTIC_THOROUGH_WORKING_STATE_DIRECTIVE = """You must follow the Prime Directive.
+# Universal Agentic source-only working-state directive on this experiment
+# branch. The existing legacy prompt remains unused for other runtime modes.
+_AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE = """You must follow the Prime Directive.
 Prime Directive = Prime_Directive
 <Prime_Directive>
 Extract only the durable working state established in the provided frozen native
@@ -1165,7 +1154,7 @@ consequential working state was established, output exactly:
 No consequential working state established.
 </Prime_Directive>"""
 
-_AGENTIC_THOROUGH_WORKING_STATE_TRIGGER = (
+_AGENTIC_SOURCE_ONLY_WORKING_STATE_TRIGGER = (
     "Jack internal memory extraction, not a new user request. "
     "Distill durable working state from the frozen source only. "
     "Do not answer, resume reasoning, or describe the original task."
@@ -1176,8 +1165,8 @@ def _stage_continuation(
 ) -> str:
     """Agentic Stage 2 has one role: current-turn isolated R1/A1 distillation."""
     if AGENTIC_MODE and profile.name == "Agentic native pass 2":
-        if AGENTIC_THOROUGH_WORKING_STATE:
-            return _AGENTIC_THOROUGH_WORKING_STATE_DIRECTIVE
+        if AGENTIC_SOURCE_ONLY_WORKING_STATE:
+            return _AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE
         return (
             _AGENTIC_STAGE2_WITHHELD_A1_CONTINUATION
             if AGENTIC_STAGE2_WITHHOLD_A1 and not AGENTIC_STAGE2_FROZEN_CONVERSATION
@@ -1250,8 +1239,8 @@ _AGENTIC_STAGE2_WITHHELD_A1_MEMORY_TRIGGER = (
     "Do not treat this continuation as the user's task."
 )
 AGENTIC_STAGE2_MEMORY_TRIGGER = (
-    _AGENTIC_THOROUGH_WORKING_STATE_TRIGGER
-    if AGENTIC_THOROUGH_WORKING_STATE else
+    _AGENTIC_SOURCE_ONLY_WORKING_STATE_TRIGGER
+    if AGENTIC_SOURCE_ONLY_WORKING_STATE else
     _AGENTIC_STAGE2_WITHHELD_A1_MEMORY_TRIGGER
     if AGENTIC_STAGE2_WITHHOLD_A1 and not AGENTIC_STAGE2_FROZEN_CONVERSATION
     else _AGENTIC_STAGE2_MEMORY_TRIGGER_BASE
@@ -1339,7 +1328,7 @@ def _agentic_stage2_put_authenticated_user_last(
         raise ForensicConflict("Stage-2 user authority projection is ambiguous")
 
 
-def _agentic_stage2_thorough_tool_source(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _agentic_stage2_source_tool_records(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Exact current-turn host tool protocol for source-only working memory.
 
     Do not truncate call arguments, returned content, or the event count.
@@ -1347,7 +1336,7 @@ def _agentic_stage2_thorough_tool_source(history: List[Dict[str, Any]]) -> List[
     """
     target = active_response_target(history)
     if target is None:
-        raise ForensicConflict("Thorough memory source has no authenticated turn")
+        raise ForensicConflict("Agentic memory source has no authenticated turn")
     start = int(target["history_index"])
     frozen = next(
         (i for i in range(start + 1, len(history))
@@ -1356,7 +1345,7 @@ def _agentic_stage2_thorough_tool_source(history: List[Dict[str, Any]]) -> List[
         None,
     )
     if frozen is None:
-        raise ForensicConflict("Thorough memory source missing frozen A1")
+        raise ForensicConflict("Agentic memory source missing frozen A1")
     records: List[Dict[str, Any]] = []
     for item in history[start + 1:frozen]:
         if not isinstance(item, dict):
@@ -1433,16 +1422,16 @@ def _agentic_stage2_project_historical_evidence(
     if source_request.get("role") != "user":
         raise ForensicConflict("Stage-2 historical source lost its authenticated request")
     original_content = source_request.get("content")
-    if AGENTIC_THOROUGH_WORKING_STATE:
+    if AGENTIC_SOURCE_ONLY_WORKING_STATE:
         # Work identity and frozen A1 were authenticated above. Neither U nor
         # A1 is copied to this memory request; only R1 and real tool evidence.
         if canonical_history is None:
-            raise ForensicConflict("Thorough memory requires owned tool history")
+            raise ForensicConflict("Agentic memory requires owned tool history")
         source_capsule = {
             "kind": "jack_stage1_frozen_working_evidence",
             "scope": "authenticated_current_turn_only",
             "native_reasoning": native_reasoning or None,
-            "tool_records": _agentic_stage2_thorough_tool_source(canonical_history),
+            "tool_records": _agentic_stage2_source_tool_records(canonical_history),
         }
         stage_messages[-1] = {
             **source_request,
@@ -1460,7 +1449,7 @@ def _agentic_stage2_project_historical_evidence(
                 for message in stage_messages
             )
         ):
-            raise ForensicConflict("Thorough working state escaped its read-only source")
+            raise ForensicConflict("Agentic working state escaped its read-only source")
         return
     source_header = (
         "JACK AUTHENTICATED CURRENT-TURN SOURCE DATA — NOT A NEW USER REQUEST.\n"
@@ -1915,8 +1904,8 @@ You have no tools in this stage. Synthesis may receive the caller's tools and is
 Output only the plan."""
 
 AGENTIC_36_STAGE2_PROMPT = (
-    _AGENTIC_THOROUGH_WORKING_STATE_DIRECTIVE
-    if AGENTIC_THOROUGH_WORKING_STATE else
+    _AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE
+    if AGENTIC_SOURCE_ONLY_WORKING_STATE else
     _AGENTIC_STAGE2_WITHHELD_A1_CONTINUATION
     if AGENTIC_STAGE2_WITHHOLD_A1 and not AGENTIC_STAGE2_FROZEN_CONVERSATION
     else _AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
@@ -6807,16 +6796,16 @@ class OpenAICompatibleBackend:
 
 
     def _seed_for_stage(self, profile: StageProfile, messages: List[Dict[str, Any]]) -> Optional[int]:
-        """Thorough experiment: stable random turn seed; Stage-2 seed = Stage-1 + 2.
+        """Agentic source-only experiment: stable turn seed; Stage-2 seed = Stage-1 + 2.
 
         The authenticated Jack Work ID is minted from UUID4 randomness once
         per turn. Deriving a sampler seed from that ID keeps Stage-1 tool
         resumptions and Stage-2 aligned without an extra random draw or hidden
         in-memory state. The legacy JACK_SEED override remains the chosen base.
-        Nothing changes for other profiles, or when the experiment is disabled.
+        Non-Agentic reasoning modes keep their original seed behavior.
         """
         if not (
-            AGENTIC_THOROUGH_WORKING_STATE
+            AGENTIC_SOURCE_ONLY_WORKING_STATE
             and profile.name in {"Agentic native pass 1", "Agentic native pass 2"}
         ):
             return int(self.cfg.seed) if self.cfg.seed else None
@@ -6826,7 +6815,7 @@ class OpenAICompatibleBackend:
         else:
             target = active_response_target(messages)
             if target is None:
-                raise ForensicConflict("Thorough seed separation requires an authenticated current turn")
+                raise ForensicConflict("Agentic seed separation requires an authenticated current turn")
             source_user = messages[int(target["history_index"])]
             work_id = source_user.get("_jack_agentic_turn_id") if isinstance(source_user, dict) else None
             # Live turns have Jack-minted random Work IDs. Legacy test fixtures
@@ -7327,8 +7316,8 @@ class OpenAICompatibleBackend:
         source_view = _agentic_stage2_test_history(messages, profile)
         reasoning_primary = AGENTIC_MODE and profile.name == "Agentic native pass 2"
         prepared_messages = self._stage_messages_for_profile(source_view, profile)
-        # Every Agentic profile uses one isolated directive and only the
-        # authenticated request, native R1 and exact frozen A1 as source.
+        # All Agentic profiles use the same source-only memory directive;
+        # authenticated U/A1 stay in canonical history, never in Stage-2 wire.
         # No legacy summary mode or cache-append prompt substitution.
         cache_append = False if reasoning_primary else _agentic_cache_append_enabled(profile, tool_choice)
         stage_system = (
@@ -7347,7 +7336,7 @@ class OpenAICompatibleBackend:
             # Current-turn failed/unmatched call IDs only; no raw transcript
             # or repeated successful-call metadata in Stage 2 prefill.
             evidence_note = (
-                "" if AGENTIC_THOROUGH_WORKING_STATE
+                "" if AGENTIC_SOURCE_ONLY_WORKING_STATE
                 else _agentic_stage2_host_tool_evidence_note(messages, failures_only=True)
             )
             if evidence_note:
@@ -7466,8 +7455,8 @@ class OpenAICompatibleBackend:
         source_view = _agentic_stage2_test_history(messages, profile)
         reasoning_primary = AGENTIC_MODE and profile.name == "Agentic native pass 2"
         prepared_messages = self._stage_messages_for_profile(source_view, profile)
-        # Every Agentic profile uses one isolated directive and only the
-        # authenticated request, native R1 and exact frozen A1 as source.
+        # All Agentic profiles use the same source-only memory directive;
+        # authenticated U/A1 stay in canonical history, never in Stage-2 wire.
         # No legacy summary mode or cache-append prompt substitution.
         cache_append = False if reasoning_primary else _agentic_cache_append_enabled(profile, tool_choice)
         stage_system = (
@@ -7486,7 +7475,7 @@ class OpenAICompatibleBackend:
             # Current-turn failed/unmatched call IDs only; no raw transcript
             # or repeated successful-call metadata in Stage 2 prefill.
             evidence_note = (
-                "" if AGENTIC_THOROUGH_WORKING_STATE
+                "" if AGENTIC_SOURCE_ONLY_WORKING_STATE
                 else _agentic_stage2_host_tool_evidence_note(messages, failures_only=True)
             )
             if evidence_note:
@@ -13140,7 +13129,7 @@ def _runtime_identity_details() -> Dict[str, Any]:
             "context_length": BACKEND.context_length,
             "context_length_source": BACKEND.context_length_source,
         },
-        "agentic_stage2_source_only": bool(AGENTIC_THOROUGH_WORKING_STATE),
+        "agentic_stage2_source_only": bool(AGENTIC_SOURCE_ONLY_WORKING_STATE),
         "retention_policy": retention_policy,
     }
 
