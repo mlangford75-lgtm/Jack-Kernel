@@ -1254,7 +1254,7 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
             return tuple(targets), nested_cwd, nested_ambiguous
         return tuple(targets), False, True
 
-    if command in {"pwd", "echo", "printf", "true", "false", "printenv", "uname", "whoami", "date", "where", "where.exe"}:
+    if command in {"pwd", "echo", "printf", "true", "false", "printenv", "uname", "whoami", "date", "where", "where.exe", "which"}:
         return tuple(targets), False, ambiguous
 
     # Recognize standard Windows launchers as EXECUTION, not as filesystem
