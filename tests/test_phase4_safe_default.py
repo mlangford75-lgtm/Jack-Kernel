@@ -75,7 +75,6 @@ def test_raw_path_policy_remains_hard_to_prevent_bypasses():
     'where.exe powershell',
     r'powershell.exe -Command "Get-Date"',
     r'cmd.exe /c echo hello',
-    r'cmd.exe /c type C:\\Windows\\System32\\drivers\\etc\\hosts',
 ])
 def test_windows_utilities_are_not_treated_as_filesystem_mutations(text):
     assert command(text).outcome is p.PathAuthorizationOutcome.ALLOW
@@ -84,6 +83,7 @@ def test_windows_utilities_are_not_treated_as_filesystem_mutations(text):
 @pytest.mark.parametrize("text",[
     'bash -c "cat /c/Windows/System32/drivers/etc/hosts"',
     'grep foo "/c/Windows/System32/drivers/etc/hosts"',
+    r'cmd.exe /c type C:\\Windows\\System32\\drivers\\etc\\hosts',
     r'powershell.exe -File C:\\Windows\\System32\\sample.ps1',
 ])
 def test_uncertain_windows_system_access_is_recoverable(text):
