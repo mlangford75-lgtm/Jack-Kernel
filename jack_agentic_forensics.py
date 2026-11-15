@@ -7,6 +7,7 @@ retrieval system or a replacement for the caller's conversation history.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import datetime, timezone
 import hashlib
 import os
 from pathlib import Path
@@ -72,6 +73,22 @@ class AgenticForensicJournal:
                 "CREATE INDEX IF NOT EXISTS turn_artifact_pair ON "
                 "turns(request_sha256,wire_sha256)"
             )
+            # Host-only conversation chronology. No model contents, tool bytes,
+            # or extension instructions are stored in this table.
+            db.execute(
+                """CREATE TABLE IF NOT EXISTS turn_ledger (
+                turn_id TEXT PRIMARY KEY REFERENCES turns(turn_id),
+                conversation_key TEXT NOT NULL,
+                turn_number INTEGER NOT NULL CHECK(turn_number > 0),
+                started_utc TEXT NOT NULL,
+                completed_utc TEXT,
+                status TEXT NOT NULL,
+                evidence_ref TEXT,
+                evidence_sha256 TEXT,
+                scope_origin TEXT NOT NULL,
+                UNIQUE(conversation_key, turn_number)
+                )"""
+            )
         if was_absent and os.name != "nt":
             try:
                 os.chmod(self.path, 0o600)
@@ -112,10 +129,23 @@ class AgenticForensicJournal:
         return db.execute("SELECT * FROM turns WHERE turn_id=?", (key,)).fetchone()
 
     @staticmethod
+    def _utc_now():
+        return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+    @staticmethod
     def _event(db, key, attempt, status, fingerprint=None):
         db.execute(
             "INSERT INTO events(turn_id,attempt,status,fingerprint,created) "
             "VALUES(?,?,?,?,?)", (key, attempt, status, fingerprint, time.time()),
+        )
+        # The ledger mirrors committed journal transitions in the SAME SQLite
+        # transaction, so a crash cannot report a status from another stage.
+        terminal = status in {"complete", "stage1_failed", "memory_failed"}
+        db.execute(
+            "UPDATE turn_ledger SET status=?,completed_utc="
+            "CASE WHEN ? THEN COALESCE(completed_utc,?) ELSE completed_utc END "
+            "WHERE turn_id=?",
+            (status, int(terminal), AgenticForensicJournal._utc_now(), key),
         )
 
     @staticmethod
@@ -123,7 +153,10 @@ class AgenticForensicJournal:
         if not condition:
             raise ForensicConflict(detail)
 
-    def begin(self, turn_id, request_hash, a1_attempt):
+    def begin(
+        self, turn_id, request_hash, a1_attempt, *,
+        conversation_key=None, initial_turn_number=1, scope_origin="standalone"
+    ):
         self._check(
             turn_id.startswith("jack-turn-") and len(request_hash) == 64
             and a1_attempt.startswith("jack-attempt-"),
@@ -150,6 +183,24 @@ class AgenticForensicJournal:
                 "INSERT INTO turns(turn_id,request_sha256,stage1_attempt,status,"
                 "created,updated) VALUES(?,?,?,?,?,?)",
                 (turn_id, request_hash, a1_attempt, "stage1_active", now, now),
+            )
+            # BEGIN IMMEDIATE serializes allocations even across processes.
+            # Caller hints may group ordinal labels, never authorize evidence,
+            # memory retrieval, or a change to this turn's minted Work ID.
+            scope = str(conversation_key or "turn:" + turn_id)
+            self._check(bool(scope) and len(scope) <= 256, "invalid ledger scope")
+            base = max(1, int(initial_turn_number))
+            previous_number = db.execute(
+                "SELECT COALESCE(MAX(turn_number),0) FROM turn_ledger "
+                "WHERE conversation_key=?", (scope,),
+            ).fetchone()[0]
+            ordinal = max(base, int(previous_number) + 1)
+            db.execute(
+                "INSERT INTO turn_ledger("
+                "turn_id,conversation_key,turn_number,started_utc,status,scope_origin"
+                ") VALUES(?,?,?,?,?,?)",
+                (turn_id, scope, ordinal, self._utc_now(),
+                 "stage1_active", str(scope_origin)),
             )
             self._event(db, turn_id, a1_attempt, "stage1_active", request_hash)
 
@@ -258,6 +309,44 @@ class AgenticForensicJournal:
                 (state, str(reason)[:256], time.time(), turn_id),
             )
             self._event(db, turn_id, attempt, state)
+
+    def ledger(self, turn_id):
+        """Host-only turn number, timestamps and evidence reference."""
+        with self._read() as db:
+            row = db.execute(
+                "SELECT * FROM turn_ledger WHERE turn_id=?", (turn_id,)
+            ).fetchone()
+            return dict(row) if row is not None else None
+
+    def attach_evidence(self, turn_id, archive_path, record_sha256):
+        """Attach only a real host-created archive reference after successful commit."""
+        self._check(
+            isinstance(archive_path, str) and bool(archive_path)
+            and isinstance(record_sha256, str) and len(record_sha256) == 64,
+            "invalid tool evidence reference",
+        )
+        with self._write() as db:
+            turn = self._get(db, turn_id)
+            self._check(
+                turn is not None and turn["status"] == "complete",
+                "only a committed turn may attach its archived evidence",
+            )
+            old = db.execute(
+                "SELECT evidence_ref,evidence_sha256 FROM turn_ledger "
+                "WHERE turn_id=?", (turn_id,),
+            ).fetchone()
+            self._check(old is not None, "missing owner ledger record")
+            self._check(
+                not old["evidence_ref"]
+                or (old["evidence_ref"] == archive_path
+                    and old["evidence_sha256"] == record_sha256),
+                "immutable evidence reference differs",
+            )
+            db.execute(
+                "UPDATE turn_ledger SET evidence_ref=?,evidence_sha256=? "
+                "WHERE turn_id=?",
+                (archive_path, record_sha256, turn_id),
+            )
 
     def get(self, turn_id):
         with self._read() as db:
