@@ -12983,9 +12983,51 @@ def _agentic_begin_turn(history: List[Dict[str, Any]], *, fresh: bool) -> Option
             initial_ordinal = max(history_ordinal, hint.turn_ordinal)
             scope_origin = "untrusted_transport_correlation_only"
         else:
-            conversation_key = "standalone:" + turn_id
-            initial_ordinal = max(1, history_ordinal)
-            scope_origin = "observed_history_snapshot"
+            # A previously committed Jack Work ID may establish continuity
+            # even when an older conversation prefix was compacted. Validate
+            # the *exact* original user message and committed response against
+            # the durable journal; visible IDs alone have no authority.
+            prior_ledger = None
+            cutoff = int(target["history_index"])
+            prior_user = None
+            for item in history[:cutoff]:
+                if _jack_is_authentic_user_message(item):
+                    prior_user = item
+                    continue
+                if prior_user is None or not isinstance(item, dict) or item.get("role") != "assistant":
+                    continue
+                completed = item.get("content")
+                if not isinstance(completed, str):
+                    continue
+                prior_id, prior_wire = _agentic_unwrap_visible_memory(completed)
+                if prior_id is None:
+                    continue
+                try:
+                    user_json = json.dumps(
+                        {key: value for key, value in prior_user.items()
+                         if not (isinstance(key, str) and key.startswith("_jack_"))},
+                        ensure_ascii=False, sort_keys=True,
+                        separators=(",", ":"), allow_nan=False,
+                    )
+                except (ValueError, TypeError):
+                    continue
+                verified = _agentic_forensic_journal().match_visible_turn(
+                    prior_id, _sha256_text(user_json), _sha256_text(prior_wire)
+                )
+                if verified is not None:
+                    prior_ledger = _agentic_forensic_journal().ledger(prior_id)
+            if prior_ledger is not None:
+                conversation_key = prior_ledger["conversation_key"]
+                initial_ordinal = max(
+                    history_ordinal, int(prior_ledger["turn_number"]) + 1
+                )
+                scope_origin = "verified_predecessor"
+            else:
+                # No authenticated session or predecessor: this is only a
+                # local numbering snapshot, not proof of earlier turn count.
+                conversation_key = "standalone:" + turn_id
+                initial_ordinal = max(1, history_ordinal)
+                scope_origin = "observed_history_snapshot"
         _agentic_forensic_journal().begin(
             turn_id, artifact.sha256, new_attempt,
             conversation_key=conversation_key,
