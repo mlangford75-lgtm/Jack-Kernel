@@ -1254,8 +1254,43 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
             return tuple(targets), nested_cwd, nested_ambiguous
         return tuple(targets), False, True
 
-    if command in {"pwd", "echo", "printf", "true", "false", "printenv", "uname", "whoami", "date"}:
+    if command in {"pwd", "echo", "printf", "true", "false", "printenv", "uname", "whoami", "date", "where", "where.exe"}:
         return tuple(targets), False, ambiguous
+
+    # Recognize standard Windows launchers as EXECUTION, not as filesystem
+    # writes to the executable under C:\\Windows. Classify their delegated
+    # command's represented paths; never blanket-whitelist a shell process.
+    if command in {"powershell", "powershell.exe", "pwsh", "pwsh.exe"}:
+        nested_targets, nested_cwd, nested_ambiguous = _powershell_segment_targets(
+            [_strip_token_quotes(filtered[0]), *args]
+        )
+        targets.extend(nested_targets)
+        return tuple(targets), nested_cwd, ambiguous or nested_ambiguous
+
+    if command in {"cmd", "cmd.exe"}:
+        remaining = list(args)
+        while remaining and remaining[0].casefold() in {"/d", "/q", "/s"}:
+            remaining.pop(0)
+        if len(remaining) < 2 or remaining[0].casefold() != "/c":
+            return tuple(targets), False, True
+        nested_tokens = _shell_tokens(" ".join(remaining[1:]), "bash")
+        if not nested_tokens or len(_split_command_segments(nested_tokens)) != 1:
+            return tuple(targets), False, True
+        nested_name = ntpath.basename(_strip_token_quotes(nested_tokens[0])).casefold()
+        aliases = {"del": "rm", "erase": "rm", "rd": "rmdir",
+                   "md": "mkdir", "copy": "cp", "move": "mv",
+                   "type": "cat", "dir": "ls"}
+        if nested_name in aliases:
+            nested_tokens[0] = aliases[nested_name]
+        elif nested_name not in {"where", "where.exe", "echo", "ver"}:
+            # Unknown Windows shell builtins and batch execution remain
+            # ambiguous; do not promise that their effects were inspected.
+            return tuple(targets), False, True
+        if nested_name == "ver":
+            return tuple(targets), False, ambiguous
+        nested_targets, nested_cwd, nested_ambiguous = _bash_segment_targets(nested_tokens)
+        targets.extend(nested_targets)
+        return tuple(targets), nested_cwd, ambiguous or nested_ambiguous
 
     if command in _BASH_PATH_COMMANDS:
         operands = [item for item in args if item and not item.startswith("-")]
@@ -1792,6 +1827,81 @@ def _safe_default_windows_read(
     )
 
 
+_CERTAIN_BASH_MUTATORS = frozenset({
+    "rm", "rmdir", "mkdir", "touch", "cp", "mv", "install",
+    "chmod", "chown", "truncate", "tee",
+})
+_CERTAIN_POWERSHELL_MUTATORS = frozenset({
+    "set-content", "sc", "add-content", "ac", "out-file",
+    "remove-item", "ri", "rm", "del", "copy-item", "copy", "cp",
+    "move-item", "move", "mv", "new-item", "ni", "clear-content",
+})
+
+
+def _command_has_positive_mutation(command: str, dialect: str, depth: int = 0) -> bool:
+    """Conservative evidence of a state-changing verb, not a shell emulator.
+
+    Unknown syntax never proves a mutation and therefore cannot authorize a
+    hard interruption solely on a default Windows path reference. The action
+    is still denied when a protected target is represented.
+    """
+    if depth > 3:
+        return False
+    tokens = _shell_tokens(command, dialect)
+    if not tokens:
+        return False
+    if any(token in {">", ">>"} for token in tokens):
+        return True
+    for segment in _split_command_segments(tokens):
+        name = _segment_command_name(segment, dialect)
+        if (name in _CERTAIN_BASH_MUTATORS if dialect == "bash"
+                else name in _CERTAIN_POWERSHELL_MUTATORS):
+            return True
+        args = [_strip_token_quotes(v) for v in segment[1:]]
+        if name in {"bash", "sh"} and len(args) > 1 and args[0] in {"-c", "-lc"}:
+            if _command_has_positive_mutation(args[1], "bash", depth + 1):
+                return True
+        if name in {"powershell", "powershell.exe", "pwsh", "pwsh.exe"}:
+            lower = [value.casefold() for value in args]
+            for opt in ("-command", "-c"):
+                if opt in lower and lower.index(opt) + 1 < len(args):
+                    if _command_has_positive_mutation(
+                        " ".join(args[lower.index(opt) + 1:]), "powershell", depth + 1
+                    ):
+                        return True
+        if name in {"cmd", "cmd.exe"}:
+            lower = [value.casefold() for value in args]
+            if "/c" in lower and lower.index("/c") + 1 < len(args):
+                nested = " ".join(args[lower.index("/c") + 1:])
+                nested_tokens = _shell_tokens(nested, "bash")
+                if nested_tokens:
+                    aliases = {"del": "rm", "erase": "rm", "rd": "rmdir",
+                               "md": "mkdir", "copy": "cp", "move": "mv"}
+                    first = _segment_command_name(nested_tokens, "bash")
+                    if first in aliases:
+                        nested_tokens[0] = aliases[first]
+                        nested = " ".join(nested_tokens)
+                if _command_has_positive_mutation(nested, "bash", depth + 1):
+                    return True
+    return False
+
+
+def _default_windows_never_only(
+    policy: RuntimePathPolicy, canonical_target: Optional[str]
+) -> bool:
+    """Distinguish immutable default system roots from explicit user NEVERs."""
+    if not canonical_target:
+        return False
+    defaults = frozenset(_default_windows_never_roots(policy.path_environment()))
+    return (
+        any(path_is_within_or_equal(canonical_target, root) for root in defaults)
+        and not any(
+            path_is_within_or_equal(canonical_target, root)
+            for root in policy.never_roots if root not in defaults
+        )
+    )
+
+
 def authorize_command_tool_call(
     policy: RuntimePathPolicy,
     call: Any,
@@ -1882,6 +1992,22 @@ def authorize_command_tool_call(
             prepared_target,
             executor_cwd=canonical_cwd,
         )
+        if (
+            decision.outcome is PathAuthorizationOutcome.HARD_INTERRUPT
+            and _default_windows_never_only(policy, decision.canonical_target)
+            and not _command_has_positive_mutation(
+                _command_text_from_arguments(
+                    (call.get("function") or {}).get("arguments")
+                )[0] or "",
+                extraction.dialect or "",
+            )
+        ):
+            return PathAuthorizationDecision(
+                PathAuthorizationOutcome.DENY_AND_CONTINUE,
+                "default Windows path referenced without a verified mutating operation; "
+                "use a recognized read-only or executable-launch contract",
+                decision.canonical_target,
+            )
         if decision.outcome is not PathAuthorizationOutcome.ALLOW:
             return decision
 
