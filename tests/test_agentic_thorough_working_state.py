@@ -181,9 +181,13 @@ def test_chronological_source_preserves_interleaved_reasoning_tools_and_review(
             "reasoning_segment", "issued_calls", "returned_result",
             "reasoning_segment"
         ]
-        assert [e["phase"] for e in events if e["type"] == "reasoning_segment"] == [
-            "initial", "initial", "verification"
-        ]
+        # Exhaustive treats extension-generated cognition as one Stage-1 trace;
+        # Thorough/Balanced retain their established source presentation.
+        expected_phases = (
+            ["stage1", "stage1", "stage1"] if profile == "exhaustive"
+            else ["initial", "initial", "verification"]
+        )
+        assert [e["phase"] for e in events if e["type"] == "reasoning_segment"] == expected_phases
         assert [e["content"] for e in events if e["type"] == "reasoning_segment"] == [
             "Before first action.",
             "Observed first result; changing approach.",
