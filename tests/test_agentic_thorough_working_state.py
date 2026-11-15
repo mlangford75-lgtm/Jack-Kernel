@@ -2,7 +2,7 @@
 
 Capture real outbound streamed and nonstreamed OpenAI-compatible payloads.
 The original user request and frozen answer remain in canonical history,
-but never appear as model-facing content in this opt-in memory pass.
+but never appear as model-facing content in the Thorough memory pass.
 """
 import asyncio
 import copy
@@ -23,10 +23,11 @@ ARGS = '{"path":"artifact.json","mode":"atomic_replace"}'
 RESULT = 'Verified tool report: artifact.json written; downstream validation still pending.'
 
 
-def load(monkeypatch, tmp_path, profile="thorough", enabled=True):
+def load(monkeypatch, tmp_path, profile="thorough"):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
     monkeypatch.setenv("JACK_AGENTIC_PROFILE", profile)
-    monkeypatch.setenv("JACK_AGENTIC_THOROUGH_WORKING_STATE", "1" if enabled else "0")
+    # A stale environment setting must NOT turn the branch's experiment off.
+    monkeypatch.setenv("JACK_AGENTIC_THOROUGH_WORKING_STATE", "0")
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_WITHHOLD_A1", "0")
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_FROZEN_CONVERSATION", "0")
     monkeypatch.setenv("JACK_FORENSIC_ARCHIVE_MODE", "off")
@@ -128,19 +129,21 @@ def test_thorough_model_receives_only_frozen_reasoning_and_complete_tool_evidenc
 
 
 @pytest.mark.parametrize("profile", ("flash", "balanced", "exhaustive"))
-def test_opt_in_never_changes_other_profiles(monkeypatch, tmp_path, profile):
-    k = load(monkeypatch, tmp_path, profile=profile, enabled=True)
+def test_source_only_thorough_never_changes_other_profiles(monkeypatch, tmp_path, profile):
+    k = load(monkeypatch, tmp_path, profile=profile)
     assert not k.AGENTIC_THOROUGH_WORKING_STATE
     assert not k.AGENTIC_STAGE2_WITHHOLD_A1
     assert not k.AGENTIC_STAGE2_FROZEN_CONVERSATION
     assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
 
 
-def test_thorough_default_unchanged_without_opt_in(monkeypatch, tmp_path):
-    k = load(monkeypatch, tmp_path, enabled=False)
-    assert not k.AGENTIC_THOROUGH_WORKING_STATE
-    assert not k.AGENTIC_STAGE2_WITHHOLD_A1
-    assert not k.AGENTIC_STAGE2_FROZEN_CONVERSATION
+def test_thorough_source_only_active_even_when_stale_env_requests_legacy(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path)
+    assert k.AGENTIC_THOROUGH_WORKING_STATE
+    assert k.AGENTIC_STAGE2_WITHHOLD_A1
+    assert k.AGENTIC_STAGE2_FROZEN_CONVERSATION
+    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_THOROUGH_WORKING_STATE_DIRECTIVE
+    assert k._runtime_identity_details()["agentic_stage2_source_only"] is True
 
 
 @pytest.mark.parametrize("stream", (False, True))
