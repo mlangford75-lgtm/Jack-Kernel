@@ -1351,12 +1351,15 @@ def _agentic_stage2_chronological_source(history: List[Dict[str, Any]]) -> List[
     if frozen is None:
         raise ForensicConflict("Agentic memory source missing frozen A1")
     events: List[Dict[str, Any]] = []
+    in_review = False
     for item in history[start + 1:frozen + 1]:
         if not isinstance(item, dict):
             continue
-        # Exclude the host's extension instruction and trigger. Native
-        # reasoning generated after that instruction remains in sequence.
+        # Exclude the host's extension instruction and trigger. For Exhaustive,
+        # both sides of this boundary share one Stage-1 reasoning authority.
+        # Preserve legacy source presentation for Thorough and Balanced.
         if item.get("_jack_internal_agentic_final_review_trigger") is True:
+            in_review = True
             continue
         if item.get("role") == "assistant":
             # Reasoning in a tool-call message precedes its proposed calls.
@@ -1370,7 +1373,8 @@ def _agentic_stage2_chronological_source(history: List[Dict[str, Any]]) -> List[
                 if isinstance(reasoning, str) and reasoning:
                     events.append({
                         "type": "reasoning_segment",
-                        "phase": "stage1" if AGENTIC_EXHAUSTIVE_MODE else "initial",
+                        "phase": ("stage1" if AGENTIC_EXHAUSTIVE_MODE else
+                                  "verification" if in_review else "initial"),
                         "content": reasoning,
                     })
             if item.get("_jack_internal_tool_exchange") is True and item.get("tool_calls"):
