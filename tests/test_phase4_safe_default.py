@@ -56,7 +56,6 @@ def test_simple_powershell_read_allowed():
     'rm "/c/Windows/System32/drivers/etc/hosts"',
     'cp README.md "/c/Windows/System32/drivers/etc/hosts"',
     'cat "/c/Windows/System32/drivers/etc/hosts" | tee copy.txt',
-    'bash -c "cat /c/Windows/System32/drivers/etc/hosts"',
 ])
 def test_unknown_mutating_or_composite_shell_commands_not_exempt(text):
     assert command(text).outcome is p.PathAuthorizationOutcome.HARD_INTERRUPT
@@ -69,3 +68,50 @@ def test_bash_system_read_under_workspace_lock_denied():
 
 def test_raw_path_policy_remains_hard_to_prevent_bypasses():
     assert p.authorize_represented_path(policy(),r"C:\Windows\System32\drivers\etc\hosts").outcome is p.PathAuthorizationOutcome.HARD_INTERRUPT
+
+
+@pytest.mark.parametrize("text",[
+    'where powershell',
+    'where.exe powershell',
+    r'powershell.exe -Command "Get-Date"',
+    r'cmd.exe /c echo hello',
+])
+def test_windows_utilities_are_not_treated_as_filesystem_mutations(text):
+    assert command(text).outcome is p.PathAuthorizationOutcome.ALLOW
+
+
+@pytest.mark.parametrize("text",[
+    'bash -c "cat /c/Windows/System32/drivers/etc/hosts"',
+    'grep foo "/c/Windows/System32/drivers/etc/hosts"',
+    r'cmd.exe /c type C:\\Windows\\System32\\drivers\\etc\\hosts',
+    r'powershell.exe -File C:\\Windows\\System32\\sample.ps1',
+])
+def test_uncertain_windows_system_access_is_recoverable(text):
+    assert command(text).outcome is p.PathAuthorizationOutcome.DENY_AND_CONTINUE
+
+
+@pytest.mark.parametrize("text",[
+    'cmd.exe /c del C:\\Windows\\System32\\drivers\\etc\\hosts',
+    'cmd.exe /c copy readme.txt C:\\Windows\\System32\\drivers\\etc\\hosts',
+    r'powershell.exe -Command "Remove-Item C:\\Windows\\System32\\drivers\\etc\\hosts"',
+    'bash -c "rm /c/Windows/System32/drivers/etc/hosts"',
+])
+def test_nested_windows_mutations_still_hard_interrupt(text):
+    assert command(text).outcome is p.PathAuthorizationOutcome.HARD_INTERRUPT
+
+
+@pytest.mark.parametrize("text",[
+    r'powershell.exe -File C:\\Windows\\System32\\sample.ps1',
+    'cmd.exe /c echo hello',
+])
+def test_workspace_lock_does_not_silently_allow_system_launches(text):
+    outcome = command(text,config=policy(workspace=r"D:\\Work")).outcome
+    if "sample.ps1" in text:
+        assert outcome is p.PathAuthorizationOutcome.DENY_AND_CONTINUE
+    else:
+        assert outcome is p.PathAuthorizationOutcome.ALLOW
+
+
+def test_explicit_never_still_hard_on_uncertain_system_reference():
+    assert command('grep foo "/c/Windows/System32/drivers/etc/hosts"',
+                   config=policy(never=[r"C:\\Windows\\System32\\drivers"])).outcome is p.PathAuthorizationOutcome.HARD_INTERRUPT
