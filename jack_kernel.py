@@ -888,11 +888,10 @@ AGENTIC_BALANCED_MODE = AGENTIC_MODE and CFG.agentic_profile == "balanced"
 AGENTIC_FLASH_MODE = AGENTIC_MODE and CFG.agentic_profile == "flash"
 AGENTIC_THOROUGH_MODE = AGENTIC_MODE and CFG.agentic_profile == "thorough"
 AGENTIC_EXHAUSTIVE_MODE = AGENTIC_MODE and CFG.agentic_profile == "exhaustive"
-# Thorough-only opt-in. Exhaustive and all other profiles keep their exact
-# previous Stage-2 behavior until separately evaluated.
-AGENTIC_THOROUGH_WORKING_STATE = AGENTIC_THOROUGH_MODE and os.getenv(
-    "JACK_AGENTIC_THOROUGH_WORKING_STATE", "0"
-).strip().lower() in {"1", "true", "yes", "on"}
+# This experimental branch owns the Thorough source-only retrospective. No
+# environment toggle: a fresh clone must exercise the experiment as shipped.
+# Mainline and the other Agentic profiles retain their existing behavior.
+AGENTIC_THOROUGH_WORKING_STATE = AGENTIC_THOROUGH_MODE
 if AGENTIC_THOROUGH_WORKING_STATE:
     # This new source-only view uses the existing authenticated frozen-A1
     # validation but excludes the original user request and A1 from model input.
@@ -13141,6 +13140,7 @@ def _runtime_identity_details() -> Dict[str, Any]:
             "context_length": BACKEND.context_length,
             "context_length_source": BACKEND.context_length_source,
         },
+        "agentic_stage2_source_only": bool(AGENTIC_THOROUGH_WORKING_STATE),
         "retention_policy": retention_policy,
     }
 
