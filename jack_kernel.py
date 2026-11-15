@@ -6813,6 +6813,40 @@ class OpenAICompatibleBackend:
         return base
 
 
+    def _seed_for_stage(self, profile: StageProfile, messages: List[Dict[str, Any]]) -> Optional[int]:
+        """Thorough experiment: stable random turn seed; Stage-2 seed = Stage-1 + 2.
+
+        The authenticated Jack Work ID is minted from UUID4 randomness once
+        per turn. Deriving a sampler seed from that ID keeps Stage-1 tool
+        resumptions and Stage-2 aligned without an extra random draw or hidden
+        in-memory state. The legacy JACK_SEED override remains the chosen base.
+        Nothing changes for other profiles, or when the experiment is disabled.
+        """
+        if not (
+            AGENTIC_THOROUGH_WORKING_STATE
+            and profile.name in {"Agentic native pass 1", "Agentic native pass 2"}
+        ):
+            return int(self.cfg.seed) if self.cfg.seed else None
+
+        if self.cfg.seed:
+            base_seed = int(self.cfg.seed)
+        else:
+            target = active_response_target(messages)
+            if target is None:
+                raise ForensicConflict("Thorough seed separation requires an authenticated current turn")
+            source_user = messages[int(target["history_index"])]
+            work_id = source_user.get("_jack_agentic_turn_id") if isinstance(source_user, dict) else None
+            # Live turns have Jack-minted random Work IDs. Legacy test fixtures
+            # without one use a deterministic request identity, not a new RNG
+            # draw that could diverge across tool continuations.
+            seed_source = work_id if isinstance(work_id, str) and work_id.startswith("jack-turn-") else str(target["id"])
+            base_seed = int.from_bytes(
+                hashlib.sha256(seed_source.encode("utf-8")).digest()[:8], "big"
+            ) % (2**31 - 2)
+
+        return base_seed + (2 if profile.name == "Agentic native pass 2" else 0)
+
+
     def _ultra_thesis_history_projection(
         self, messages: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
@@ -7360,8 +7394,9 @@ class OpenAICompatibleBackend:
         if profile.max_tokens is not None:
             payload["max_tokens"] = int(profile.max_tokens)
 
-        if self.cfg.seed:
-            payload["seed"] = int(self.cfg.seed)
+        stage_seed = self._seed_for_stage(profile, messages)
+        if stage_seed is not None:
+            payload["seed"] = stage_seed
 
         if profile.allow_tools and tools:
             self._apply_tool_policy(payload, tools, tool_choice)
@@ -7498,8 +7533,9 @@ class OpenAICompatibleBackend:
         self._apply_qwen_controls(payload, profile)
         if profile.max_tokens is not None:
             payload["max_tokens"] = int(profile.max_tokens)
-        if self.cfg.seed:
-            payload["seed"] = int(self.cfg.seed)
+        stage_seed = self._seed_for_stage(profile, messages)
+        if stage_seed is not None:
+            payload["seed"] = stage_seed
         if profile.allow_tools and tools:
             self._apply_tool_policy(payload, tools, tool_choice)
 
