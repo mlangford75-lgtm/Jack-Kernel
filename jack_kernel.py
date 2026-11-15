@@ -8038,6 +8038,16 @@ class JackQwenKernel:
             _agentic_begin_turn(history, fresh=not same_stage_resume)
         elif AGENTIC_MODE and stage_key == "extended_reflection":
             _agentic_forensic_start_stage2(history)
+            if AGENTIC_FLASH_MODE:
+                # Flash Stage 2 is a host-authored label, not a model request.
+                # Keep the identical completed-stage contract for normal commit.
+                await self._activity_update(
+                    stage_key=stage_key,
+                    stage_name=profile.name,
+                    stage_number=_runtime_activity_stage_number(stage_key),
+                    backend_request_active=False,
+                )
+                return _agentic_flash_stage2_result(history)
         await self._activity_update(
             stage_key=stage_key,
             stage_name=profile.name,
@@ -8275,6 +8285,19 @@ class JackQwenKernel:
             _agentic_begin_turn(history, fresh=not same_stage_resume)
         elif AGENTIC_MODE and stage_key == "extended_reflection":
             _agentic_forensic_start_stage2(history)
+            if AGENTIC_FLASH_MODE:
+                # The stream still has a completed Stage-2 boundary, but no
+                # second LLM call or semantic working-state summary.
+                await self._activity_update(
+                    stage_key=stage_key,
+                    stage_name=profile.name,
+                    stage_number=_runtime_activity_stage_number(stage_key),
+                    backend_request_active=False,
+                )
+                result = _agentic_flash_stage2_result(history)
+                yield {"kind": "content", "text": result["choices"][0]["message"]["content"]}
+                yield {"kind": "result", "data": result}
+                return
         # Agentic Stage 2 only distills already-frozen cognition: an observed
         # repetition must end this optional memory stage, never burn another
         # inference retry and never prevent the exact A1 from being delivered.
@@ -10027,7 +10050,9 @@ class JackQwenKernel:
         # Preserve the actual Stage-2 memory as its own shadow artifact.
         # Existing outward formatting still includes the host receipt until Phase 3.
         unadorned_memory = memory
-        tool_receipt = _agentic_tool_history_note(history)
+        # Flash's complete memory must be exactly "Turn N"; tool evidence
+        # remains available through the separately retained tool history.
+        tool_receipt = "" if AGENTIC_FLASH_MODE else _agentic_tool_history_note(history)
         memory += tool_receipt
         turn_record = _agentic_forensic_turn(history)
         visible_turn_id = turn_record.turn_id if turn_record is not None else None
@@ -11328,7 +11353,8 @@ class JackQwenKernel:
                         label = "DEEP RESEARCH STAGE 1 — THESIS" if ULTRA_MODE else "STAGE 1 PROPOSED RESPONSE"
                         yield event({"reasoning_content": f"\n[{label}]\n"})
                     elif stage_key in {"extended_reflection", "extended_synthesis"}:
-                        yield event({"reasoning_content": f"\n===== JACK {STAGES[stage_key].name.upper()} =====\n"})
+                        if not (AGENTIC_FLASH_MODE and stage_key == "extended_reflection"):
+                            yield event({"reasoning_content": f"\n===== JACK {STAGES[stage_key].name.upper()} =====\n"})
 
                     async with contextlib.aclosing(self._run_stage_streamed(
                         history,
@@ -11364,7 +11390,8 @@ class JackQwenKernel:
                                 elif AGENTIC_MODE:
                                     if not stage_content_started:
                                         stage_content_started = True
-                                        yield event({"reasoning_content": "\n[STAGE 2 REASONING DISTILLATION]\n"})
+                                        if not (AGENTIC_FLASH_MODE and stage_key == "extended_reflection"):
+                                            yield event({"reasoning_content": "\n[STAGE 2 REASONING DISTILLATION]\n"})
                                     yield event({"reasoning_content": packet["text"]})
                                 elif ULTRA_MODE and stage_key == "extended_reflection":
                                     # Antithesis is advisory and non-authoritative, but it should still be
@@ -11578,7 +11605,9 @@ class JackQwenKernel:
                         raise HTTPException(status_code=502, detail="Agentic Stage 2 produced no distilled memory.")
                     # Keep model memory and host receipts independently in the shadow record.
                     unadorned_memory = distilled_memory
-                    tool_receipt = _agentic_tool_history_note(history)
+                    # Flash Stage-2 memory is exactly "Turn N"; historical
+                    # tool records survive separately from memory.
+                    tool_receipt = "" if AGENTIC_FLASH_MODE else _agentic_tool_history_note(history)
                     distilled_memory += tool_receipt
                     turn_record = _agentic_forensic_turn(history)
                     visible_turn_id = turn_record.turn_id if turn_record is not None else None
@@ -11618,7 +11647,8 @@ class JackQwenKernel:
                     return
                 if pending_state is not None:
                     await self._retire_pending_tool_resume(pending_state)
-                yield event({"reasoning_content": "\n[END AGENTIC STAGE 2 — MEMORY COMPLETE; A1 COMMIT]\n"})
+                if not AGENTIC_FLASH_MODE:
+                    yield event({"reasoning_content": "\n[END AGENTIC STAGE 2 — MEMORY COMPLETE; A1 COMMIT]\n"})
                 yield event({"content": committed_output})
                 yield event({}, "stop")
                 yield usage_event(usage_delta(usage, response_usage_baseline))
@@ -12773,6 +12803,47 @@ def _agentic_forensic_freeze(history: List[Dict[str, Any]], answer: str) -> None
         record.turn_id, record.stage1_attempt_id, answer
     )
     record.frozen_a1_sha256 = fingerprint
+
+
+def _agentic_flash_stage2_result(history: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Produce Flash's exact deterministic Stage-2 memory without model inference.
+
+    A real user turn advances the ordinal once. Stage-1 tool continuations,
+    retries and synthetic Jack control messages never advance it. Deriving the
+    number from canonical authenticated user history is restart-safe when the
+    client returns its completed conversation, and creates no competing state
+    or identity next to Jack's existing Work ID.
+    """
+    if not AGENTIC_FLASH_MODE:
+        raise ForensicConflict("Flash deterministic memory requested outside Flash")
+    record = _agentic_forensic_turn(history)
+    target = active_response_target(history)
+    if (
+        record is None or target is None or record.status != "stage2_active"
+        or not record.stage2_attempt_id or not record.frozen_a1_sha256
+    ):
+        raise ForensicConflict("Flash memory requires an authenticated frozen Stage-1 turn")
+    index = int(target["history_index"])
+    active_user = history[index]
+    if (
+        not isinstance(active_user, dict)
+        or active_user.get("_jack_agentic_turn_id") != record.turn_id
+    ):
+        raise ForensicConflict("Flash turn label is not bound to the active Work ID")
+    ordinal = sum(
+        1 for message in history[:index + 1]
+        if _jack_is_authentic_user_message(message)
+    )
+    if ordinal < 1:
+        raise ForensicConflict("Flash memory has no authenticated user turn")
+    return {
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": f"Turn {ordinal}"},
+            "finish_reason": "stop",
+        }],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
 
 
 def _agentic_forensic_start_stage2(history: List[Dict[str, Any]]) -> None:
