@@ -277,3 +277,97 @@ def test_seed_separation_preserves_explicit_base_in_all_profiles(monkeypatch, tm
     backend = k.OpenAICompatibleBackend(k.CFG)
     assert backend._seed_for_stage(k.STAGES["extended_initial"], history()) == 123
     assert backend._seed_for_stage(k.STAGES["extended_reflection"], history()) == 125
+
+
+@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "exhaustive"))
+@pytest.mark.parametrize("stream", (False, True))
+def test_agentic_qwen_single_system_template_wire_contract(monkeypatch, tmp_path, profile, stream):
+    """A model template that rejects a second system role must accept Jack's wire.
+
+    Exercise the real outbound chat/completions paths, not an after-the-fact
+    helper-only assertion. Keep all model-facing system instructions in order,
+    preserve the user's exact content, and keep Stage-2 source-only isolation.
+    """
+    k = load(monkeypatch, tmp_path, profile=profile)
+    original = history()
+    saved = copy.deepcopy(original)
+    system_error = "Jinja Exception: System message must be at the beginning."
+    requests = []
+
+    def respond(request):
+        payload = json.loads(request.content)
+        requests.append(payload)
+        system_messages = [m for m in payload["messages"] if m["role"] == "system"]
+        if len(system_messages) > 1 or (system_messages and payload["messages"][0]["role"] != "system"):
+            return httpx.Response(500, json={"error": {"message": system_error}})
+        if stream:
+            return httpx.Response(
+                200,
+                text='data: {"choices":[{"index":0,"delta":{"content":"Working state"},"finish_reason":null}]}\\n\\n'
+                     'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\\n\\n'
+                     'data: [DONE]\\n\\n',
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(200, json={
+            "choices": [{"message": {"role": "assistant", "content": "Working state"},
+                         "finish_reason": "stop"}], "usage": {},
+        })
+
+    async def run():
+        backend = k.OpenAICompatibleBackend(k.CFG)
+        await backend._client.aclose()
+        backend._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        async def model():
+            return "test-model"
+        backend.resolve_model = model
+        try:
+            kwargs = dict(messages=original, secondary_system="",
+                          profile=k.STAGES["extended_reflection"],
+                          tools=None, tool_choice="auto")
+            if stream:
+                async for _ in backend.chat_stream(**kwargs):
+                    pass
+            else:
+                await backend.chat(**kwargs)
+        finally:
+            await backend._client.aclose()
+
+    asyncio.run(run())
+    assert len(requests) == 1, "Backend must not need a 500 retry"
+    assert original == saved
+    wire = requests[0]["messages"]
+    assert wire[0]["role"] == "system"
+    assert sum(m["role"] == "system" for m in wire) == 1
+    assert k.AGENTIC_36_STAGE2_PROMPT in wire[0]["content"]
+    assert k.AGENTIC_STAGE2_MEMORY_TRIGGER in wire[0]["content"]
+    assert wire[0]["content"].index(k.AGENTIC_36_STAGE2_PROMPT) < wire[0]["content"].index(k.AGENTIC_STAGE2_MEMORY_TRIGGER)
+    assert REQUEST not in json.dumps(wire)
+    assert ANSWER not in json.dumps(wire)
+
+
+def test_work_id_and_review_system_authority_are_folded_without_losing_identity(monkeypatch, tmp_path):
+    """Reproduce the Qwen three-message failure and a review continuation."""
+    k = load(monkeypatch, tmp_path)
+    original = [
+        {"role": "system", "content": "Pi caller system instructions"},
+        {"role": "system", "content": "Authenticated current work ID: jack-turn-abc"},
+        {"role": "user", "content": [{"type": "text", "text": REQUEST}]},
+    ]
+    preserved = copy.deepcopy(original)
+    folded = k.OpenAICompatibleBackend._fold_model_facing_system_messages(original)
+    assert original == preserved
+    assert len(folded) == 2
+    assert folded[0] == {
+        "role": "system",
+        "content": "Pi caller system instructions\\n\\nAuthenticated current work ID: jack-turn-abc",
+    }
+    assert folded[1] == original[2]
+
+    review = original + [
+        {"role": "assistant", "content": "Frozen answer"},
+        {"role": "system", "content": "Jack current-turn review instruction"},
+    ]
+    collapsed = k.OpenAICompatibleBackend._fold_model_facing_system_messages(review)
+    assert [m["role"] for m in collapsed] == ["system", "user", "assistant"]
+    assert collapsed[0]["content"].endswith("Jack current-turn review instruction")
+    assert collapsed[-1]["content"] == "Frozen answer"
