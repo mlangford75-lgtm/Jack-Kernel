@@ -73,6 +73,8 @@ def test_raw_path_policy_remains_hard_to_prevent_bypasses():
 @pytest.mark.parametrize("text",[
     'where powershell',
     'where.exe powershell',
+    'which powershell',
+    r'"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -Command "Get-Date"',
     r'powershell.exe -Command "Get-Date"',
     r'cmd.exe /c echo hello',
 ])
