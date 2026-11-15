@@ -82,7 +82,7 @@ def test_windows_utilities_are_not_treated_as_filesystem_mutations(text):
 
 @pytest.mark.parametrize("text",[
     'bash -c "cat /c/Windows/System32/drivers/etc/hosts"',
-    'grep foo "/c/Windows/System32/drivers/etc/hosts"',
+    'ls -R "/c/Windows/System32/drivers/etc/hosts"',
     r'cmd.exe /c type C:\\Windows\\System32\\drivers\\etc\\hosts',
     r'powershell.exe -File C:\\Windows\\System32\\sample.ps1',
 ])
@@ -113,5 +113,5 @@ def test_workspace_lock_does_not_silently_allow_system_launches(text):
 
 
 def test_explicit_never_still_hard_on_uncertain_system_reference():
-    assert command('grep foo "/c/Windows/System32/drivers/etc/hosts"',
+    assert command('ls -R "/c/Windows/System32/drivers/etc/hosts"',
                    config=policy(never=[r"C:\\Windows\\System32\\drivers"])).outcome is p.PathAuthorizationOutcome.HARD_INTERRUPT
