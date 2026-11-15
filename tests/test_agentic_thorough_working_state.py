@@ -111,10 +111,28 @@ def test_all_profiles_receive_only_frozen_reasoning_and_complete_tool_evidence(
     assert sum(m["role"] == "user" for m in payload["messages"]) == 1
     assert all(m["role"] != "assistant" for m in payload["messages"])
     wire = json.dumps(payload["messages"], ensure_ascii=False)
-    assert REQUEST not in wire
-    assert ANSWER not in wire
+    if profile == "balanced":
+        assert REQUEST in wire
+        assert ANSWER in wire
+    else:
+        assert REQUEST not in wire
+        assert ANSWER not in wire
     assert (REASONING in wire) is (profile != "flash")
     assert RESULT in wire
+    if profile == "balanced":
+        text_source = payload["messages"][-1]["content"]
+        assert "ORIGINAL AUTHENTICATED USER REQUEST" in text_source
+        assert REQUEST in text_source
+        assert ANSWER in text_source
+        assert "STAGE 1 NATIVE REASONING SEGMENT 1" in text_source
+        assert REASONING in text_source
+        assert "HOST TOOL EVENT" in text_source
+        assert RESULT in text_source
+        assert text_source.index(REASONING) < text_source.index(RESULT)
+        assert "No task description" not in payload["messages"][0]["content"]
+        assert k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION in payload["messages"][0]["content"]
+        assert payload["chat_template_kwargs"]["enable_thinking"] is False
+        return
     capsule_text = payload["messages"][-1]["content"].split(
         "JACK READ-ONLY WORKING-STATE SOURCE DATA, NOT A USER REQUEST.\n", 1
     )[1].split("\nEND JACK WORKING-STATE SOURCE DATA.", 1)[0]
@@ -207,7 +225,10 @@ def test_source_only_is_universal_even_when_stale_env_requests_legacy(monkeypatc
     assert k.AGENTIC_SOURCE_ONLY_WORKING_STATE
     assert k.AGENTIC_STAGE2_WITHHOLD_A1
     assert k.AGENTIC_STAGE2_FROZEN_CONVERSATION
-    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE
+    assert k.AGENTIC_36_STAGE2_PROMPT == (
+        k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
+        if profile == "balanced" else k._AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE
+    )
     assert k._runtime_identity_details()["agentic_stage2_source_only"] is True
 
 
@@ -346,8 +367,12 @@ def test_agentic_qwen_single_system_template_wire_contract(monkeypatch, tmp_path
     assert k.AGENTIC_36_STAGE2_PROMPT in wire[0]["content"]
     assert k.AGENTIC_STAGE2_MEMORY_TRIGGER in wire[0]["content"]
     assert wire[0]["content"].index(k.AGENTIC_36_STAGE2_PROMPT) < wire[0]["content"].index(k.AGENTIC_STAGE2_MEMORY_TRIGGER)
-    assert REQUEST not in json.dumps(wire)
-    assert ANSWER not in json.dumps(wire)
+    if profile == "balanced":
+        assert REQUEST in json.dumps(wire)
+        assert ANSWER in json.dumps(wire)
+    else:
+        assert REQUEST not in json.dumps(wire)
+        assert ANSWER not in json.dumps(wire)
 
 
 def test_work_id_and_review_system_authority_are_folded_without_losing_identity(monkeypatch, tmp_path):
