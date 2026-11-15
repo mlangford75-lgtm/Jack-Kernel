@@ -130,7 +130,8 @@ def test_all_profiles_receive_only_frozen_reasoning_and_complete_tool_evidence(
         assert RESULT in text_source
         assert text_source.index(REASONING) < text_source.index(RESULT)
         assert "No task description" not in payload["messages"][0]["content"]
-        assert k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION in payload["messages"][0]["content"]
+        assert k._AGENTIC_STAGE2_BALANCED_EXHAUSTIVE_DIRECTIVE in payload["messages"][0]["content"]
+        assert k._AGENTIC_STAGE2_EXHAUSTIVE_PRESERVATION in payload["messages"][0]["content"]
         assert payload["chat_template_kwargs"]["enable_thinking"] is False
         return
     capsule_text = payload["messages"][-1]["content"].split(
@@ -157,8 +158,14 @@ def test_all_profiles_receive_only_frozen_reasoning_and_complete_tool_evidence(
     assert issued["calls"][0]["function"]["arguments"] == ARGS
     assert returned["call_id"] == "call-a1"
     assert returned["content"] == RESULT
-    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE
+    assert k.AGENTIC_36_STAGE2_PROMPT == (
+        k._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
+        if profile == "thorough" else k._AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE
+    )
     assert "No task description" in k.AGENTIC_36_STAGE2_PROMPT
+    assert (
+        k._AGENTIC_STAGE2_EXHAUSTIVE_PRESERVATION in k.AGENTIC_36_STAGE2_PROMPT
+    ) is (profile == "thorough")
     assert all(
         "reasoning_content" not in m and "reasoning" not in m and "thinking" not in m
         for m in payload["messages"]
@@ -226,8 +233,10 @@ def test_source_only_is_universal_even_when_stale_env_requests_legacy(monkeypatc
     assert k.AGENTIC_STAGE2_WITHHOLD_A1
     assert k.AGENTIC_STAGE2_FROZEN_CONVERSATION
     assert k.AGENTIC_36_STAGE2_PROMPT == (
-        k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
-        if profile == "balanced" else k._AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE
+        k._AGENTIC_STAGE2_BALANCED_EXHAUSTIVE_DIRECTIVE
+        if profile == "balanced" else
+        k._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
+        if profile == "thorough" else k._AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE
     )
     assert k._runtime_identity_details()["agentic_stage2_source_only"] is True
 
@@ -401,3 +410,21 @@ def test_work_id_and_review_system_authority_are_folded_without_losing_identity(
     assert [m["role"] for m in collapsed] == ["system", "user", "assistant"]
     assert collapsed[0]["content"].endswith("Jack current-turn review instruction")
     assert collapsed[-1]["content"] == "Frozen answer"
+
+
+@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "exhaustive"))
+def test_exhaustive_retention_is_profile_scoped_and_not_future_usefulness_filtered(
+    monkeypatch, tmp_path, profile,
+):
+    k = load(monkeypatch, tmp_path, profile=profile)
+    prompt = k.AGENTIC_36_STAGE2_PROMPT
+    if profile in ("balanced", "thorough"):
+        assert k._AGENTIC_STAGE2_EXHAUSTIVE_PRESERVATION in prompt
+        assert "Do not discard established information." in prompt
+        assert "Remove only redundant deliberation, superseded speculation" in prompt
+        assert "Before retaining information, determine whether it would materially help" not in prompt
+        assert "materially help a future agent" not in prompt
+        assert k._stage_continuation(k.STAGES["extended_reflection"]) == prompt
+        assert k.STAGES["extended_reflection"].thinking is (profile == "thorough")
+    else:
+        assert k._AGENTIC_STAGE2_EXHAUSTIVE_PRESERVATION not in prompt
