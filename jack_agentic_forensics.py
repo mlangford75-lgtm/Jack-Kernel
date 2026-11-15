@@ -325,6 +325,7 @@ class AgenticForensicJournal:
             and isinstance(record_sha256, str) and len(record_sha256) == 64,
             "invalid tool evidence reference",
         )
+        self._check(Path(archive_path).is_file(), "tool evidence archive does not exist")
         with self._write() as db:
             turn = self._get(db, turn_id)
             self._check(
