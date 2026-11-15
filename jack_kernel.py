@@ -7116,6 +7116,47 @@ class OpenAICompatibleBackend:
             prepared.insert(0, _agentic_memory_data_capsule(historical_data_entries))
         return prepared
 
+    @staticmethod
+    def _fold_model_facing_system_messages(
+        stage_messages: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Make Agentic system authority compatible with single-system templates.
+
+        The source-only stages can introduce separate authenticated Work ID,
+        memory, and review system records. Some otherwise OpenAI-compatible
+        chat templates accept exactly one leading system role. Preserve every
+        instruction in its original order in the FIRST system message, without
+        modifying canonical history, the user's content, tools, or A1.
+        Operate only on the model-facing copy.
+        """
+        system_positions = [
+            i for i, item in enumerate(stage_messages)
+            if isinstance(item, dict) and item.get("role") == "system"
+        ]
+        if len(system_positions) <= 1:
+            return stage_messages
+        system_texts = []
+        for index in system_positions:
+            content = stage_messages[index].get("content")
+            if not isinstance(content, str):
+                raise ForensicConflict("Agentic system consolidation requires text-only system instructions")
+            system_texts.append(content)
+        first = system_positions[0]
+        folded = dict(stage_messages[first])
+        folded["content"] = "\n\n".join(system_texts)
+        systems = set(system_positions)
+        clean = [
+            folded if i == first else item
+            for i, item in enumerate(stage_messages)
+            if i == first or i not in systems
+        ]
+        # Chat templates requiring a leading system role must never see the
+        # combined host instruction after a user/assistant/tool message.
+        if first:
+            clean.pop(first)
+            clean.insert(0, folded)
+        return clean
+
     def _model_native_reasoning_template_control(
         self, model: str, profile: StageProfile
     ) -> Optional[Tuple[str, Any]]:
@@ -7385,6 +7426,8 @@ class OpenAICompatibleBackend:
         ):
             stage_messages.append(_stage_generation_trigger(profile, messages))
 
+        if AGENTIC_MODE:
+            stage_messages = self._fold_model_facing_system_messages(stage_messages)
         sampling = self._sampling_for_profile(profile)
         payload: Dict[str, Any] = {
             "model": model,
@@ -7524,6 +7567,8 @@ class OpenAICompatibleBackend:
         ):
             stage_messages.append(_stage_generation_trigger(profile, messages))
 
+        if AGENTIC_MODE:
+            stage_messages = self._fold_model_facing_system_messages(stage_messages)
         sampling = self._sampling_for_profile(profile)
         payload: Dict[str, Any] = {
             "model": model,
