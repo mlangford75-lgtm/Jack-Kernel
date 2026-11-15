@@ -1155,6 +1155,97 @@ consequential working state was established, output exactly:
 No consequential working state established.
 </Prime_Directive>"""
 
+
+# Only Balanced and Thorough receive the exhaustive retention update. Keep the
+# approved legacy/source-only directives byte-for-byte intact as baselines, and
+# leave Flash/Exhaustive unchanged. This changes the retention criterion, not
+# Stage-2 thinking controls, Stage-1 reasoning transport, or tool authority.
+_AGENTIC_STAGE2_EXHAUSTIVE_PRESERVATION = (
+    "Preserve exhaustively the consequential working knowledge established in the "
+    "current turn's native reasoning and tool evidence. Retain all relevant facts, "
+    "assumptions, discoveries, decisions, explanations, causal relationships, "
+    "constraints, corrections, failed approaches, successful recoveries, "
+    "uncertainties, and exact technical details. Do not discard established "
+    "information. Remove only redundant deliberation, superseded speculation, "
+    "and information that contributes nothing to understanding the completed work."
+)
+
+_AGENTIC_STAGE2_BALANCED_EXHAUSTIVE_DIRECTIVE = (
+    _AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
+    .replace(
+        "<Prime_Directive>\n\n",
+        "<Prime_Directive>\n\n" + _AGENTIC_STAGE2_EXHAUSTIVE_PRESERVATION + "\n\n",
+        1,
+    )
+    .replace(
+        "Preserve only the overlap with the completed response that is necessary "
+        "to establish context, explain consequential decisions, maintain causal "
+        "relationships, or clarify final outcomes.",
+        "Preserve the consequential reasons for the completed response even "
+        "where its established outcomes are retained separately. Do not merely "
+        "repeat or retell the completed response.",
+        1,
+    )
+    .replace(
+        "Determine which consequential information is already adequately preserved "
+        "in the completed response and which additional working knowledge should "
+        "be retained in memory.",
+        "Retain all consequential working knowledge that explains how and why "
+        "the completed response was produced, without turning memory into another answer.",
+        1,
+    )
+    .replace(
+        "If no consequential working knowledge needs to be preserved beyond the "
+        "completed response, keep the memory minimal rather than inventing or "
+        "repeating information.",
+        "If no consequential working knowledge was established in the available "
+        "source, keep the memory minimal rather than inventing information.",
+        1,
+    )
+)
+_AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE = (
+    _AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE
+    .replace(
+        "<Prime_Directive>\n",
+        "<Prime_Directive>\n" + _AGENTIC_STAGE2_EXHAUSTIVE_PRESERVATION + "\n\n",
+        1,
+    )
+    .replace(
+        "Preserve only consequential knowledge a later turn may need to continue, verify,\n"
+        "modify, debug, or reverse the work accurately without repeating completed\n"
+        "investigation. Capture the surviving working state after discarded assumptions,\n"
+        "tested alternatives, corrections, and verified observations have been reconciled.\n"
+        "Do not mistake the latest speculation for an established result.",
+        "Capture the established working state and the reasons behind it, including\n"
+        "tested alternatives, corrections, and verified observations. Distinguish\n"
+        "assumptions and speculation from established results.",
+        1,
+    )
+    .replace(
+        "Remove superseded guesses, redundant narration, hypothetical solutions,\n"
+        "metacognitive filler and material already retained elsewhere unless needed to\n"
+        "explain an established dependency. Keep concise structured working knowledge,\n"
+        "with no arbitrary size cap on genuinely consequential details. Preserve\n"
+        "uncertainty rather than making unsupported claims. Do not independently add\n"
+        "discoveries, recommendations, possibilities or task work.",
+        "Keep structured working knowledge without an arbitrary size cap on established\n"
+        "consequential details. Preserve uncertainty rather than making unsupported\n"
+        "claims. Do not independently add discoveries, recommendations, possibilities,\n"
+        "or task work.",
+        1,
+    )
+    .replace(
+        "Before retaining information, determine whether it would materially help a\n"
+        "subsequent turn continue, extend, verify, modify, debug, or reverse the work.\n"
+        "Preserve all such information without arbitrary length limits. If nothing\n"
+        "consequential remains, output only the minimal empty-state indication.",
+        "Do not filter established consequential working knowledge by a prediction of\n"
+        "its usefulness to future turns. If no consequential working knowledge was\n"
+        "established, output only the minimal empty-state indication.",
+        1,
+    )
+)
+
 _AGENTIC_SOURCE_ONLY_WORKING_STATE_TRIGGER = (
     "Jack internal memory extraction, not a new user request. "
     "Distill durable working state from the frozen source only. "
@@ -1169,8 +1260,11 @@ def _stage_continuation(
         if AGENTIC_SOURCE_ONLY_WORKING_STATE:
             # Balanced uses its established, task-anchored memory directive.
             # Thinking-OFF Stage 2 consumes historical R1 as ordinary source text.
-            return (_AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
-                    if AGENTIC_BALANCED_MODE else _AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE)
+            return (_AGENTIC_STAGE2_BALANCED_EXHAUSTIVE_DIRECTIVE
+                    if AGENTIC_BALANCED_MODE else
+                    _AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
+                    if AGENTIC_THOROUGH_MODE else
+                    _AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE)
         return (
             _AGENTIC_STAGE2_WITHHELD_A1_CONTINUATION
             if AGENTIC_STAGE2_WITHHOLD_A1 and not AGENTIC_STAGE2_FROZEN_CONVERSATION
@@ -1976,8 +2070,10 @@ You have no tools in this stage. Synthesis may receive the caller's tools and is
 Output only the plan."""
 
 AGENTIC_36_STAGE2_PROMPT = (
-    _AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
+    _AGENTIC_STAGE2_BALANCED_EXHAUSTIVE_DIRECTIVE
     if AGENTIC_BALANCED_MODE else
+    _AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
+    if AGENTIC_THOROUGH_MODE else
     _AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE
     if AGENTIC_SOURCE_ONLY_WORKING_STATE else
     _AGENTIC_STAGE2_WITHHELD_A1_CONTINUATION
