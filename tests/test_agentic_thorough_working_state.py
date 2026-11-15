@@ -1,8 +1,8 @@
-"""Thorough-only, source-only Stage-2 durable working-state contract.
+"""Universal Agentic source-only Stage-2 durable working-state contract.
 
 Capture real outbound streamed and nonstreamed OpenAI-compatible payloads.
 The original user request and frozen answer remain in canonical history,
-but never appear as model-facing content in the Thorough memory pass.
+but never appear as model-facing content in any Agentic memory pass.
 """
 import asyncio
 import copy
@@ -56,11 +56,12 @@ def history():
     ]
 
 
+@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "exhaustive"))
 @pytest.mark.parametrize("stream", (False, True))
-def test_thorough_model_receives_only_frozen_reasoning_and_complete_tool_evidence(
-    monkeypatch, tmp_path, stream,
+def test_all_profiles_receive_only_frozen_reasoning_and_complete_tool_evidence(
+    monkeypatch, tmp_path, profile, stream,
 ):
-    k = load(monkeypatch, tmp_path)
+    k = load(monkeypatch, tmp_path, profile=profile)
     original = history()
     saved = copy.deepcopy(original)
     seen = []
@@ -112,7 +113,7 @@ def test_thorough_model_receives_only_frozen_reasoning_and_complete_tool_evidenc
     wire = json.dumps(payload["messages"], ensure_ascii=False)
     assert REQUEST not in wire
     assert ANSWER not in wire
-    assert REASONING in wire
+    assert (REASONING in wire) is (profile != "flash")
     assert RESULT in wire
     capsule_text = payload["messages"][-1]["content"].split(
         "JACK READ-ONLY WORKING-STATE SOURCE DATA, NOT A USER REQUEST.\n", 1
@@ -120,7 +121,8 @@ def test_thorough_model_receives_only_frozen_reasoning_and_complete_tool_evidenc
     capsule = json.loads(capsule_text)
     assert capsule["tool_records"][0]["calls"][0]["function"]["arguments"] == ARGS
     assert capsule["tool_records"][1]["content"] == RESULT
-    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_THOROUGH_WORKING_STATE_DIRECTIVE
+    assert (capsule["native_reasoning"] is None) is (profile == "flash")
+    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE
     assert "No task description" in k.AGENTIC_36_STAGE2_PROMPT
     assert all(
         "reasoning_content" not in m and "reasoning" not in m and "thinking" not in m
@@ -128,28 +130,21 @@ def test_thorough_model_receives_only_frozen_reasoning_and_complete_tool_evidenc
     )
 
 
-@pytest.mark.parametrize("profile", ("flash", "balanced", "exhaustive"))
-def test_source_only_thorough_never_changes_other_profiles(monkeypatch, tmp_path, profile):
+@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "exhaustive"))
+def test_source_only_is_universal_even_when_stale_env_requests_legacy(monkeypatch, tmp_path, profile):
     k = load(monkeypatch, tmp_path, profile=profile)
-    assert not k.AGENTIC_THOROUGH_WORKING_STATE
-    assert not k.AGENTIC_STAGE2_WITHHOLD_A1
-    assert not k.AGENTIC_STAGE2_FROZEN_CONVERSATION
-    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
-
-
-def test_thorough_source_only_active_even_when_stale_env_requests_legacy(monkeypatch, tmp_path):
-    k = load(monkeypatch, tmp_path)
-    assert k.AGENTIC_THOROUGH_WORKING_STATE
+    assert k.AGENTIC_SOURCE_ONLY_WORKING_STATE
     assert k.AGENTIC_STAGE2_WITHHOLD_A1
     assert k.AGENTIC_STAGE2_FROZEN_CONVERSATION
-    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_THOROUGH_WORKING_STATE_DIRECTIVE
+    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE
     assert k._runtime_identity_details()["agentic_stage2_source_only"] is True
 
 
+@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "exhaustive"))
 @pytest.mark.parametrize("stream", (False, True))
-def test_thorough_stage_seeds_are_base_and_base_plus_two(monkeypatch, tmp_path, stream):
+def test_all_profile_stage_seeds_are_base_and_base_plus_two(monkeypatch, tmp_path, profile, stream):
     monkeypatch.setenv("JACK_SEED", "314159")
-    k = load(monkeypatch, tmp_path)
+    k = load(monkeypatch, tmp_path, profile=profile)
     requests = []
     def respond(req):
         requests.append(json.loads(req.content))
@@ -187,9 +182,10 @@ def test_thorough_stage_seeds_are_base_and_base_plus_two(monkeypatch, tmp_path, 
     assert [r["seed"] for r in requests] == [314159, 314161]
 
 
-def test_thorough_random_work_id_seed_stable_across_tool_continuations(monkeypatch, tmp_path):
+@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "exhaustive"))
+def test_random_work_id_seed_stable_across_tool_continuations(monkeypatch, tmp_path, profile):
     monkeypatch.setenv("JACK_SEED", "")
-    k = load(monkeypatch, tmp_path)
+    k = load(monkeypatch, tmp_path, profile=profile)
     h = history()
     h[0]["_jack_agentic_turn_id"] = "jack-turn-1234abcd0123456789abcdef01234567"
     original_seed = k.OpenAICompatibleBackend(k.CFG)._seed_for_stage(
@@ -208,10 +204,10 @@ def test_thorough_random_work_id_seed_stable_across_tool_continuations(monkeypat
     assert stage2_seed == original_seed + 2
 
 
-@pytest.mark.parametrize("profile", ("flash", "balanced", "exhaustive"))
-def test_seed_separation_does_not_change_other_profiles(monkeypatch, tmp_path, profile):
+@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "exhaustive"))
+def test_seed_separation_preserves_explicit_base_in_all_profiles(monkeypatch, tmp_path, profile):
     monkeypatch.setenv("JACK_SEED", "123")
     k = load(monkeypatch, tmp_path, profile=profile)
     backend = k.OpenAICompatibleBackend(k.CFG)
     assert backend._seed_for_stage(k.STAGES["extended_initial"], history()) == 123
-    assert backend._seed_for_stage(k.STAGES["extended_reflection"], history()) == 123
+    assert backend._seed_for_stage(k.STAGES["extended_reflection"], history()) == 125
