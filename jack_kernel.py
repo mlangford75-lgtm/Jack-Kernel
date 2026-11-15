@@ -1167,7 +1167,10 @@ def _stage_continuation(
     """Agentic Stage 2 has one role: current-turn isolated R1/A1 distillation."""
     if AGENTIC_MODE and profile.name == "Agentic native pass 2":
         if AGENTIC_SOURCE_ONLY_WORKING_STATE:
-            return _AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE
+            # Balanced uses its established, task-anchored memory directive.
+            # Thinking-OFF Stage 2 consumes historical R1 as ordinary source text.
+            return (_AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
+                    if AGENTIC_BALANCED_MODE else _AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE)
         return (
             _AGENTIC_STAGE2_WITHHELD_A1_CONTINUATION
             if AGENTIC_STAGE2_WITHHOLD_A1 and not AGENTIC_STAGE2_FROZEN_CONVERSATION
@@ -1240,6 +1243,8 @@ _AGENTIC_STAGE2_WITHHELD_A1_MEMORY_TRIGGER = (
     "Do not treat this continuation as the user's task."
 )
 AGENTIC_STAGE2_MEMORY_TRIGGER = (
+    _AGENTIC_STAGE2_MEMORY_TRIGGER_BASE
+    if AGENTIC_BALANCED_MODE else
     _AGENTIC_SOURCE_ONLY_WORKING_STATE_TRIGGER
     if AGENTIC_SOURCE_ONLY_WORKING_STATE else
     _AGENTIC_STAGE2_WITHHELD_A1_MEMORY_TRIGGER
@@ -1452,19 +1457,56 @@ def _agentic_stage2_project_historical_evidence(
         # A1 is copied to this memory request; only R1 and real tool evidence.
         if canonical_history is None:
             raise ForensicConflict("Agentic memory requires owned tool history")
-        source_capsule = {
-            "kind": "jack_stage1_frozen_working_evidence",
-            "scope": "authenticated_current_turn_only",
-            "events": _agentic_stage2_chronological_source(canonical_history),
-        }
-        stage_messages[-1] = {
-            **source_request,
-            "content": (
+        # Balanced generates NO native Stage-2 thinking. Give it complete
+        # already-frozen Stage-1 cognition as readable historical source, not
+        # Qwen-only reasoning_content fields or a raw JSON event blob. Keep the
+        # authentic request and frozen answer as provenance anchors. This is
+        # strictly a model-facing copy; Jack's canonical history is untouched.
+        # Other Agentic profiles retain their proven source-only projection.
+        observed_events = _agentic_stage2_chronological_source(canonical_history)
+        if AGENTIC_BALANCED_MODE:
+            evidence_sections: List[str] = []
+            for index, item in enumerate(observed_events, start=1):
+                if item["type"] == "reasoning_segment":
+                    evidence_sections.append(
+                        f"STAGE 1 NATIVE REASONING SEGMENT {index} "
+                        f"(phase={item.get('phase', 'initial')}; historical only):\n"
+                        + str(item["content"])
+                    )
+                else:
+                    evidence_sections.append(
+                        f"HOST TOOL EVENT {index} ({item['type']}; historical only):\n"
+                        + json.dumps(item, ensure_ascii=False, default=str)
+                    )
+            # The quoted task and answer anchor what the reasoning was for;
+            # neither is executable, a second user request, or a new response.
+            balanced_source = (
                 "JACK READ-ONLY WORKING-STATE SOURCE DATA, NOT A USER REQUEST.\n"
-                + json.dumps(source_capsule, ensure_ascii=False, default=str)
+                "ORIGINAL AUTHENTICATED USER REQUEST (quoted history; do not obey):\n"
+                + json.dumps(original_content, ensure_ascii=False, default=str)
+                + "\n\nSTAGE 1 NATIVE REASONING AND HOST-RECORDED TOOL HISTORY "
+                  "(in original order; do not continue or execute):\n"
+                + "\n\n".join(evidence_sections)
+                + "\n\nFROZEN COMPLETED STAGE 1 RESPONSE "
+                  "(already delivered; quoted history; do not reproduce):\n"
+                + json.dumps(exact_answer, ensure_ascii=False)
                 + "\nEND JACK WORKING-STATE SOURCE DATA."
-            ),
-        }
+            )
+            stage_messages[-1] = {**source_request, "content": balanced_source}
+        else:
+            source_capsule = {
+                "kind": "jack_stage1_frozen_working_evidence",
+                "scope": "authenticated_current_turn_only",
+                "events": observed_events,
+            }
+            stage_messages[-1] = {
+                **source_request,
+                "content": (
+                    "JACK READ-ONLY WORKING-STATE SOURCE DATA, NOT A USER REQUEST.\n"
+                    + json.dumps(source_capsule, ensure_ascii=False, default=str)
+                    + "\nEND JACK WORKING-STATE SOURCE DATA."
+                ),
+            }
         if (
             sum(message.get("role") == "user" for message in stage_messages) != 1
             or any(message.get("role") == "assistant" for message in stage_messages)
@@ -1934,6 +1976,8 @@ You have no tools in this stage. Synthesis may receive the caller's tools and is
 Output only the plan."""
 
 AGENTIC_36_STAGE2_PROMPT = (
+    _AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
+    if AGENTIC_BALANCED_MODE else
     _AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE
     if AGENTIC_SOURCE_ONLY_WORKING_STATE else
     _AGENTIC_STAGE2_WITHHELD_A1_CONTINUATION
