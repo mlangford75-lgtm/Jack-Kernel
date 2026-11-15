@@ -1273,7 +1273,9 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
             remaining.pop(0)
         if len(remaining) < 2 or remaining[0].casefold() != "/c":
             return tuple(targets), False, True
-        nested_tokens = _shell_tokens(" ".join(remaining[1:]), "bash")
+        # CMD is a Windows command grammar: Bash shlex strips backslashes
+        # from unquoted C:\\ paths and can conceal positive NEVER matches.
+        nested_tokens = _shell_tokens(" ".join(remaining[1:]), "powershell")
         if not nested_tokens or len(_split_command_segments(nested_tokens)) != 1:
             return tuple(targets), False, True
         nested_name = ntpath.basename(_strip_token_quotes(nested_tokens[0])).casefold()
@@ -1285,6 +1287,12 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
         elif nested_name not in {"where", "where.exe", "echo", "ver"}:
             # Unknown Windows shell builtins and batch execution remain
             # ambiguous; do not promise that their effects were inspected.
+            # An unsupported CMD subcommand is never assumed safe. Retain
+            # visibly represented path operands for host policy admission.
+            targets.extend(
+                token for token in nested_tokens[1:]
+                if _looks_path_like_cli_value(token)
+            )
             return tuple(targets), False, True
         if nested_name == "ver":
             return tuple(targets), False, ambiguous
