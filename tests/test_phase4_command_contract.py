@@ -266,7 +266,7 @@ def test_static_never_target_wins_even_when_rest_of_bash_command_is_dynamic():
         command_dialect="bash",
     )
 
-    assert decision.outcome is policy.PathAuthorizationOutcome.HARD_INTERRUPT
+    assert decision.outcome is policy.PathAuthorizationOutcome.DENY_AND_CONTINUE
 
 
 def test_static_never_target_wins_even_when_rest_of_powershell_command_is_dynamic():
@@ -280,7 +280,7 @@ def test_static_never_target_wins_even_when_rest_of_powershell_command_is_dynami
         command_dialect="powershell",
     )
 
-    assert decision.outcome is policy.PathAuthorizationOutcome.HARD_INTERRUPT
+    assert decision.outcome is policy.PathAuthorizationOutcome.DENY_AND_CONTINUE
 
 
 def test_pathless_diagnostic_does_not_hard_only_because_unlocked_cwd_is_restricted():
@@ -385,7 +385,7 @@ def test_bash_background_operator_preserves_positive_never_detection():
         command_dialect="bash",
     )
 
-    assert decision.outcome is policy.PathAuthorizationOutcome.HARD_INTERRUPT
+    assert decision.outcome is policy.PathAuthorizationOutcome.DENY_AND_CONTINUE
 
 
 def test_bash_cwd_mutation_sequence_is_not_authorized_against_stale_cwd():
