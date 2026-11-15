@@ -1615,7 +1615,16 @@ def extract_command_paths(
         or "\r" in command
     )
 
-    tokens = _shell_tokens(command, dialect)
+    # A Windows CMD process invoked from Git Bash is a Windows command
+    # language boundary. POSIX shlex drops the backslashes in unquoted
+    # C:\\Windows paths BEFORE the nested cmd contract can inspect them.
+    # Inspect the original bytes with Windows quoting before classifying.
+    tokenize_dialect = dialect
+    if dialect == "bash":
+        candidate = _shell_tokens(command, "powershell")
+        if candidate and _segment_command_name(candidate, "powershell") in {"cmd", "cmd.exe"}:
+            tokenize_dialect = "powershell"
+    tokens = _shell_tokens(command, tokenize_dialect)
     if tokens is None:
         return CommandPathExtraction(
             applicable=True,
