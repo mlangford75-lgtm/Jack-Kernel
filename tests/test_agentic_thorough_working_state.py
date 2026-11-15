@@ -128,10 +128,11 @@ def test_all_profiles_receive_only_frozen_reasoning_and_complete_tool_evidence(
     )
     assert [event["type"] for event in events] == expected_types
     if profile != "flash":
-        assert events[0] == {"type": "reasoning_segment", "phase": "initial", "content": REASONING}
+        phase = "stage1" if profile == "exhaustive" else "initial"
+        assert events[0] == {"type": "reasoning_segment", "phase": phase, "content": REASONING}
         assert events[3] == {
             "type": "reasoning_segment",
-            "phase": "initial",
+            "phase": phase,
             "content": "Tool returned success; actual artifact correctness remains unverified.",
         }
     issued, returned = (events[0], events[1]) if profile == "flash" else (events[1], events[2])
