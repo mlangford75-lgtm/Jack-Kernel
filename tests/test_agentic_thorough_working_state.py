@@ -119,15 +119,81 @@ def test_all_profiles_receive_only_frozen_reasoning_and_complete_tool_evidence(
         "JACK READ-ONLY WORKING-STATE SOURCE DATA, NOT A USER REQUEST.\n", 1
     )[1].split("\nEND JACK WORKING-STATE SOURCE DATA.", 1)[0]
     capsule = json.loads(capsule_text)
-    assert capsule["tool_records"][0]["calls"][0]["function"]["arguments"] == ARGS
-    assert capsule["tool_records"][1]["content"] == RESULT
-    assert (capsule["native_reasoning"] is None) is (profile == "flash")
+    assert "native_reasoning" not in capsule
+    assert "tool_records" not in capsule
+    events = capsule["events"]
+    expected_types = (
+        ["issued_calls", "returned_result"] if profile == "flash"
+        else ["reasoning_segment", "issued_calls", "returned_result", "reasoning_segment"]
+    )
+    assert [event["type"] for event in events] == expected_types
+    if profile != "flash":
+        assert events[0] == {"type": "reasoning_segment", "phase": "initial", "content": REASONING}
+        assert events[3] == {
+            "type": "reasoning_segment",
+            "phase": "initial",
+            "content": "Tool returned success; actual artifact correctness remains unverified.",
+        }
+    issued, returned = (events[0], events[1]) if profile == "flash" else (events[1], events[2])
+    assert issued["calls"][0]["function"]["arguments"] == ARGS
+    assert returned["call_id"] == "call-a1"
+    assert returned["content"] == RESULT
     assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE
     assert "No task description" in k.AGENTIC_36_STAGE2_PROMPT
     assert all(
         "reasoning_content" not in m and "reasoning" not in m and "thinking" not in m
         for m in payload["messages"]
     )
+
+
+@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "exhaustive"))
+def test_chronological_source_preserves_interleaved_reasoning_tools_and_review(
+    monkeypatch, tmp_path, profile,
+):
+    k = load(monkeypatch, tmp_path, profile=profile)
+    h = [
+        {"role": "user", "content": REQUEST},
+        {"role": "assistant", "reasoning_content": "Before first action.",
+         "tool_calls": [{"id": "call-1", "function": {"name": "bash", "arguments": "{}"}}],
+         "_jack_internal_tool_exchange": True},
+        {"role": "tool", "name": "bash", "tool_call_id": "call-1",
+         "content": "first result", "_jack_internal_tool_exchange": True},
+        {"role": "assistant", "reasoning_content": "Observed first result; changing approach.",
+         "tool_calls": [{"id": "call-2", "function": {"name": "write", "arguments": "{}"}}],
+         "_jack_internal_tool_exchange": True},
+        {"role": "tool", "name": "write", "tool_call_id": "call-2",
+         "content": "second result", "_jack_internal_tool_exchange": True},
+        {"role": "system", "_jack_internal_agentic_final_review_trigger": True,
+         "content": "Private host review boundary"},
+        {"role": "assistant", "reasoning_content": "Verified second action after review.",
+         "_jack_extended_candidate_response": True, "content": ANSWER},
+    ]
+    saved = copy.deepcopy(h)
+    events = k._agentic_stage2_chronological_source(h)
+    assert h == saved
+    if profile == "flash":
+        assert [e["type"] for e in events] == [
+            "issued_calls", "returned_result", "issued_calls", "returned_result"
+        ]
+    else:
+        assert [e["type"] for e in events] == [
+            "reasoning_segment", "issued_calls", "returned_result",
+            "reasoning_segment", "issued_calls", "returned_result",
+            "reasoning_segment"
+        ]
+        assert [e["phase"] for e in events if e["type"] == "reasoning_segment"] == [
+            "initial", "initial", "verification"
+        ]
+        assert [e["content"] for e in events if e["type"] == "reasoning_segment"] == [
+            "Before first action.",
+            "Observed first result; changing approach.",
+            "Verified second action after review.",
+        ]
+    assert [e["call_id"] for e in events if e["type"] == "returned_result"] == [
+        "call-1", "call-2"
+    ]
+    assert REQUEST not in json.dumps(events)
+    assert ANSWER not in json.dumps(events)
 
 
 @pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "exhaustive"))
