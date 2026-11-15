@@ -303,9 +303,9 @@ def test_agentic_qwen_single_system_template_wire_contract(monkeypatch, tmp_path
         if stream:
             return httpx.Response(
                 200,
-                text='data: {"choices":[{"index":0,"delta":{"content":"Working state"},"finish_reason":null}]}\\n\\n'
-                     'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\\n\\n'
-                     'data: [DONE]\\n\\n',
+                text='data: {"choices":[{"index":0,"delta":{"content":"Working state"},"finish_reason":null}]}\n\n'
+                     'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+                     'data: [DONE]\n\n',
                 headers={"content-type": "text/event-stream"},
             )
         return httpx.Response(200, json={
@@ -359,7 +359,7 @@ def test_work_id_and_review_system_authority_are_folded_without_losing_identity(
     assert len(folded) == 2
     assert folded[0] == {
         "role": "system",
-        "content": "Pi caller system instructions\\n\\nAuthenticated current work ID: jack-turn-abc",
+        "content": "Pi caller system instructions\n\nAuthenticated current work ID: jack-turn-abc",
     }
     assert folded[1] == original[2]
 
