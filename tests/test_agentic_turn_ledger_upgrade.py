@@ -51,7 +51,7 @@ def test_journal_sequential_transactional_numbers_timestamps_and_failure(tmp_pat
     ledgers = [j.ledger(key) for key in ids]
     assert [r["turn_number"] for r in ledgers] == [1, 2, 3]
     assert len({r["started_utc"] for r in ledgers}) >= 1
-    assert all(re.fullmatch(r"\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z",
+    assert all(re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z",
                             r["started_utc"]) for r in ledgers)
     j.begin(ids[1], "a" * 64, attempts[1],
             conversation_key="same-verified-scope", initial_turn_number=1)
