@@ -1329,11 +1329,14 @@ def _agentic_stage2_put_authenticated_user_last(
         raise ForensicConflict("Stage-2 user authority projection is ambiguous")
 
 
-def _agentic_stage2_source_tool_records(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Exact current-turn host tool protocol for source-only working memory.
+def _agentic_stage2_chronological_source(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Lossless, current-turn Stage-1 reasoning/tool events in observed order.
 
-    Do not truncate call arguments, returned content, or the event count.
-    Preserve canonical history independently; the model sees quoted data only.
+    Keep each available native-reasoning segment at its original position
+    relative to issued calls, returned results and host-retired receipts.
+    The source is read-only: no U, A1, intermediate assistant prose, R2,
+    invented outcome, tool invocation, or arbitrary evidence budget.
+    Flash has no contractual R1 and excludes incidental reasoning.
     """
     target = active_response_target(history)
     if target is None:
@@ -1347,34 +1350,51 @@ def _agentic_stage2_source_tool_records(history: List[Dict[str, Any]]) -> List[D
     )
     if frozen is None:
         raise ForensicConflict("Agentic memory source missing frozen A1")
-    records: List[Dict[str, Any]] = []
-    for item in history[start + 1:frozen]:
+    events: List[Dict[str, Any]] = []
+    in_review = False
+    for item in history[start + 1:frozen + 1]:
         if not isinstance(item, dict):
             continue
-        if item.get("_jack_internal_tool_exchange") is True:
-            if item.get("role") == "assistant" and item.get("tool_calls"):
-                records.append({
+        if item.get("_jack_internal_agentic_final_review_trigger") is True:
+            in_review = True
+            continue
+        if item.get("role") == "assistant":
+            # Reasoning in a tool-call message precedes its proposed calls.
+            # Include final-A1 reasoning, never its completed answer text.
+            if not AGENTIC_FLASH_MODE:
+                reasoning = (
+                    item.get("reasoning_content")
+                    or item.get("reasoning")
+                    or item.get("thinking")
+                )
+                if isinstance(reasoning, str) and reasoning:
+                    events.append({
+                        "type": "reasoning_segment",
+                        "phase": "verification" if in_review else "initial",
+                        "content": reasoning,
+                    })
+            if item.get("_jack_internal_tool_exchange") is True and item.get("tool_calls"):
+                events.append({
                     "type": "issued_calls",
                     "calls": copy.deepcopy(item["tool_calls"]),
                 })
-            elif item.get("role") == "tool":
-                records.append({
-                    "type": "returned_result",
-                    "call_id": item.get("tool_call_id"),
-                    "tool": item.get("name"),
-                    "reported_failure": item.get("_jack_internal_tool_failed") is True,
-                    "content": copy.deepcopy(item.get("content")),
-                })
-        elif item.get("_jack_tool_evidence_receipt") is True:
-            records.append({
+        elif item.get("role") == "tool" and item.get("_jack_internal_tool_exchange") is True:
+            events.append({
+                "type": "returned_result",
+                "call_id": item.get("tool_call_id"),
+                "tool": item.get("name"),
+                "reported_failure": item.get("_jack_internal_tool_failed") is True,
+                "content": copy.deepcopy(item.get("content")),
+            })
+        if item.get("_jack_tool_evidence_receipt") is True:
+            events.append({
                 "type": "host_retired_tool_receipt",
                 "call_id": item.get("_jack_tool_call_id"),
                 "tool": item.get("_jack_tool_name"),
                 "reported_status": item.get("_jack_tool_status"),
                 "content": copy.deepcopy(item.get("content")),
             })
-    return records
-
+    return events
 
 def _agentic_stage2_project_historical_evidence(
     stage_messages: List[Dict[str, Any]],
@@ -1431,8 +1451,7 @@ def _agentic_stage2_project_historical_evidence(
         source_capsule = {
             "kind": "jack_stage1_frozen_working_evidence",
             "scope": "authenticated_current_turn_only",
-            "native_reasoning": native_reasoning or None,
-            "tool_records": _agentic_stage2_source_tool_records(canonical_history),
+            "events": _agentic_stage2_chronological_source(canonical_history),
         }
         stage_messages[-1] = {
             **source_request,
