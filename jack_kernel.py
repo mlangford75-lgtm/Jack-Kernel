@@ -7216,12 +7216,6 @@ class OpenAICompatibleBackend:
         if self.cfg.backend_profile == "llamacpp" and AGENTIC_MODE:
             if _agentic_zero_reasoning(profile):
                 payload["thinking_budget_tokens"] = 0
-            elif AGENTIC_BALANCED_MODE and profile.name == "Agentic native pass 1":
-                # Balanced Stage 1 gets the configured allowance (100k default).
-                # A Jack budget of 0 still means unlimited; do not turn that
-                # existing configuration into a hard zero at the backend.
-                if self.cfg.reasoning_budget_tokens > 0:
-                    payload["thinking_budget_tokens"] = self.cfg.reasoning_budget_tokens
 
         # Ollama's OpenAI-compatible API maps reasoning_effort onto its native
         # thinking control. xhigh maps to Ollama's current "max" level.
