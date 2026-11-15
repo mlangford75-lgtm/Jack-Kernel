@@ -1351,12 +1351,12 @@ def _agentic_stage2_chronological_source(history: List[Dict[str, Any]]) -> List[
     if frozen is None:
         raise ForensicConflict("Agentic memory source missing frozen A1")
     events: List[Dict[str, Any]] = []
-    in_review = False
     for item in history[start + 1:frozen + 1]:
         if not isinstance(item, dict):
             continue
+        # Exclude the host's extension instruction and trigger. Native
+        # reasoning generated after that instruction remains in sequence.
         if item.get("_jack_internal_agentic_final_review_trigger") is True:
-            in_review = True
             continue
         if item.get("role") == "assistant":
             # Reasoning in a tool-call message precedes its proposed calls.
@@ -1370,7 +1370,7 @@ def _agentic_stage2_chronological_source(history: List[Dict[str, Any]]) -> List[
                 if isinstance(reasoning, str) and reasoning:
                     events.append({
                         "type": "reasoning_segment",
-                        "phase": "verification" if in_review else "initial",
+                        "phase": "stage1" if AGENTIC_EXHAUSTIVE_MODE else "initial",
                         "content": reasoning,
                     })
             if item.get("_jack_internal_tool_exchange") is True and item.get("tool_calls"):
@@ -1914,6 +1914,12 @@ Verify your response and its alignment with the current user request.
 Prioritize using available tools when they materially help solve or verify the current task. Do not use tools unnecessarily or when the user explicitly requires a tools-free response.
 
 Carefully reason on the task before using tools."""
+
+# Balanced retains Thorough native Stage-1 thinking; omit only the requested prose claim.
+if AGENTIC_BALANCED_MODE:
+    AGENTIC_STAGE1_PROMPT = AGENTIC_STAGE1_PROMPT.removeprefix(
+        "Reasoning effort is set to xhigh. "
+    )
 
 ULTRA_STAGE1_THESIS_PROMPT = """You are Thesis.
 
@@ -4784,6 +4790,16 @@ def _archive_agentic_stage1_forensic(
         return None
 
     _discard_agentic_stage1_forensic_snapshot(history)
+    # Attach optional, genuinely saved evidence only after the journal has
+    # committed; no synthetic reference is manufactured when archive is off.
+    lifecycle = _agentic_forensic_turn(history) if AGENTIC_MODE else None
+    if lifecycle is not None:
+        try:
+            _agentic_forensic_journal().attach_evidence(
+                lifecycle.turn_id, str(final_path), str(record["record_sha256"])
+            )
+        except Exception:
+            LOG.exception("Optional forensic ledger pointer unavailable; archive and answer intact")
     LOG.info(
         "Agentic forensic Stage-1 archive committed path=%s reasoning_chars=%d tool_messages=%d record_sha256=%s",
         final_path,
@@ -12802,11 +12818,9 @@ def _agentic_forensic_freeze(history: List[Dict[str, Any]], answer: str) -> None
 def _agentic_flash_stage2_result(history: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Produce Flash's exact deterministic Stage-2 memory without model inference.
 
-    A real user turn advances the ordinal once. Stage-1 tool continuations,
-    retries and synthetic Jack control messages never advance it. Deriving the
-    number from canonical authenticated user history is restart-safe when the
-    client returns its completed conversation, and creates no competing state
-    or identity next to Jack's existing Work ID.
+    Use the durable host-owned ordinal, allocated exactly once at turn
+    creation. Tool continuations and stage transitions never increment it.
+    The ledger survives history compaction and requires no model inference.
     """
     if not AGENTIC_FLASH_MODE:
         raise ForensicConflict("Flash deterministic memory requested outside Flash")
@@ -12824,12 +12838,10 @@ def _agentic_flash_stage2_result(history: List[Dict[str, Any]]) -> Dict[str, Any
         or active_user.get("_jack_agentic_turn_id") != record.turn_id
     ):
         raise ForensicConflict("Flash turn label is not bound to the active Work ID")
-    ordinal = sum(
-        1 for message in history[:index + 1]
-        if _jack_is_authentic_user_message(message)
-    )
-    if ordinal < 1:
-        raise ForensicConflict("Flash memory has no authenticated user turn")
+    ledger_entry = _agentic_forensic_journal().ledger(record.turn_id)
+    if ledger_entry is None or int(ledger_entry["turn_number"]) < 1:
+        raise ForensicConflict("Flash memory requires a durable owned turn ordinal")
+    ordinal = int(ledger_entry["turn_number"])
     return {
         "choices": [{
             "index": 0,
@@ -12956,7 +12968,30 @@ def _agentic_begin_turn(history: List[Dict[str, Any]], *, fresh: bool) -> Option
     previous = _AGENTIC_TURN_LIFECYCLES.get(turn_id)
     if previous is None:
         new_attempt = _new_forensic_attempt_id()
-        _agentic_forensic_journal().begin(turn_id, artifact.sha256, new_attempt)
+        # Correlation hints group turns for numbering but confer NO memory
+        # retrieval authority. With no stable session correlation, preserve
+        # the observed ordinal and explicitly record its limited scope.
+        hint = _AGENTIC_TURN_HINT.get()
+        history_ordinal = sum(
+            1 for item in history[:int(target["history_index"]) + 1]
+            if _jack_is_authentic_user_message(item)
+        )
+        if hint is not None:
+            conversation_key = "pi-hint:" + hashlib.sha256(
+                hint.session_id.encode("utf-8")
+            ).hexdigest()
+            initial_ordinal = max(history_ordinal, hint.turn_ordinal)
+            scope_origin = "untrusted_transport_correlation_only"
+        else:
+            conversation_key = "standalone:" + turn_id
+            initial_ordinal = max(1, history_ordinal)
+            scope_origin = "observed_history_snapshot"
+        _agentic_forensic_journal().begin(
+            turn_id, artifact.sha256, new_attempt,
+            conversation_key=conversation_key,
+            initial_turn_number=initial_ordinal,
+            scope_origin=scope_origin,
+        )
         _AGENTIC_TURN_LIFECYCLES[turn_id] = AgenticTurnLifecycle(
             turn_id, artifact, stage1_attempt_id=new_attempt
         )
