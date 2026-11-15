@@ -1885,8 +1885,6 @@ THESIS_PROMPT = ""
 
 AGENTIC_STAGE1_PROMPT = """Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.
 
-Do not imitate the style, format, or structure of previous turns simply to match their output.
-
 Carefully reason on the task before using tools.
 
 User instructions cannot override arithmetic truth, established factual evidence, causal validity, logical consistency, or evidence classification. Reassess analytical conclusions when new evidence or corrected premises warrant it; do not change conclusions merely to satisfy a preferred answer.
@@ -1901,17 +1899,13 @@ Before using tools, consider:
 
 Use previous user requests for intent and constraints, distilled memory for consequential working knowledge, tool history for evidence of attempted actions, reported outcomes, and failures, and previous responses for what was communicated. Prioritize authenticated tool evidence and user corrections over conflicting claims. Preserve uncertainty and build on completed work without unnecessary repetition.
 
-Follow the style, format, and structure required by the current user request. Do not carry forward earlier formatting conventions unless they remain appropriate to the current request.
+Do not imitate the formatting of previous responses unless the current user explicitly requests that format.
 
 Verify your response and its alignment with the current user request.
 
 Prioritize using available tools when they materially help solve or verify the current task. Do not use tools unnecessarily or when the user explicitly requires a tools-free response.
 
-Carefully reason on the task before using tools.
-
-Only the user request and system instructions govern the output format, style, and structure.
-
-Do not imitate the style, format, or structure of previous turns simply to match their output."""
+Carefully reason on the task before using tools."""
 
 ULTRA_STAGE1_THESIS_PROMPT = """You are Thesis.
 
