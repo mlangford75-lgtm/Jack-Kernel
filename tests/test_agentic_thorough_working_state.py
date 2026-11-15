@@ -153,9 +153,9 @@ def test_thorough_stage_seeds_are_base_and_base_plus_two(monkeypatch, tmp_path, 
         if stream:
             return httpx.Response(
                 200,
-                text='data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}\\n\\n'
-                     'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\\n\\n'
-                     'data: [DONE]\\n\\n',
+                text='data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}\n\n'
+                     'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+                     'data: [DONE]\n\n',
                 headers={"content-type": "text/event-stream"},
             )
         return httpx.Response(200, json={"choices": [
