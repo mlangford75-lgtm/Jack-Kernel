@@ -1860,6 +1860,46 @@ def _agentic_translated_project_completed_answer(
     ]
 
 
+
+
+def _agentic_translated_guard_literal_tool_call(
+    history: List[Dict[str, Any]],
+    message: Dict[str, Any],
+) -> None:
+    """Never let a fabricated literal action replace completed Stage-1 work.
+
+    A model may emit text that visually resembles a tool call even when no
+    tools were provided. Those bytes are not executable, but are not a valid
+    translation either. Preserve the original completed result with an
+    explicit warning, rather than committing fictional action text as A1.
+    """
+    if not AGENTIC_TRANSLATED_MODE or not _agentic_final_review_is_pending(history):
+        return
+    text = _content_to_text(message.get("content"))
+    if not re.search(r"<\\s*(?:tool_call\\b|function\\s*=|parameter\\s*=)", text, re.I):
+        return
+    target = active_response_target(history)
+    if target is None:
+        raise ForensicConflict("Translated output has no authenticated user turn")
+    drafts = [
+        item for item in history[int(target["history_index"]) + 1:]
+        if isinstance(item, dict)
+        and item.get("_jack_internal_agentic_final_review_draft") is True
+        and item.get("role") == "assistant"
+    ]
+    if len(drafts) != 1:
+        raise ForensicConflict("Translated output has no unique preserved Stage-1 draft")
+    draft = _content_to_text(drafts[0].get("content"))
+    # A literal tag already in the source may be quoted data, not a new action.
+    if re.search(r"<\\s*(?:tool_call\\b|function\\s*=|parameter\\s*=)", draft, re.I):
+        return
+    LOG.warning("Translated extension emitted literal tool/action markup; original Stage-1 answer preserved")
+    message["content"] = (
+        "[Jack: translation output was invalid; original completed response preserved.]\\n\\n"
+        + draft
+    )
+
+
 def _stage_generation_trigger(
     profile: "StageProfile", messages: List[Dict[str, Any]]
 ) -> Dict[str, Any]:
@@ -8447,6 +8487,8 @@ class JackQwenKernel:
                 msg["_jack_phase4_withheld_tool_call_ids"] = withheld_ids
 
         if not msg.get("tool_calls"):
+            if AGENTIC_TRANSLATED_MODE and stage_key == "extended_initial":
+                _agentic_translated_guard_literal_tool_call(history, msg)
             if AGENTIC_MODE and self.cfg.agentic_final_review and stage_key == "extended_initial" and not _agentic_final_review_is_pending(history):
                 _agentic_begin_final_review(history, data)
                 return await self._run_stage(
@@ -9144,6 +9186,8 @@ class JackQwenKernel:
             )
 
         if not message.get("tool_calls"):
+            if AGENTIC_TRANSLATED_MODE and stage_key == "extended_initial":
+                _agentic_translated_guard_literal_tool_call(history, message)
             if SELF_ADVERSARIAL_MODE and stage_key == "extended_initial":
                 if AGENTIC_MODE and CFG.forensic_archive_mode == "stage":
                     message["_jack_agentic_stage1_forensic_snapshot"] = _capture_agentic_stage1_forensic_snapshot(
