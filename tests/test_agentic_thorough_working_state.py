@@ -428,3 +428,18 @@ def test_exhaustive_retention_is_profile_scoped_and_not_future_usefulness_filter
         assert k.STAGES["extended_reflection"].thinking is (profile == "thorough")
     else:
         assert k._AGENTIC_STAGE2_EXHAUSTIVE_PRESERVATION not in prompt
+
+
+@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough"))
+def test_stage2_has_no_canned_empty_memory_fallback(monkeypatch, tmp_path, profile):
+    """The model must not receive a fixed phrase it can repeatedly imitate."""
+    k = load(monkeypatch, tmp_path, profile=profile)
+    prompt = k.AGENTIC_36_STAGE2_PROMPT
+    banned = (
+        "No consequential working state established.",
+        "minimal empty-state indication",
+        "If nothing consequential remains",
+        "If no consequential working knowledge",
+    )
+    assert all(item not in prompt for item in banned)
+    assert "working" in prompt.lower()
