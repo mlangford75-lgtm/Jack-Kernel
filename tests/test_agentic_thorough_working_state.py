@@ -417,13 +417,61 @@ def test_exhaustive_retention_is_profile_scoped_and_not_future_usefulness_filter
 ):
     k = load(monkeypatch, tmp_path, profile=profile)
     prompt = k.AGENTIC_36_STAGE2_PROMPT
-    if profile in ("balanced", "thorough"):
+    if profile in ("balanced", "thorough", "translated"):
         assert k._AGENTIC_STAGE2_EXHAUSTIVE_PRESERVATION in prompt
         assert "Do not discard established information." in prompt
         assert "Remove only redundant deliberation, superseded speculation" in prompt
         assert "Before retaining information, determine whether it would materially help" not in prompt
         assert "materially help a future agent" not in prompt
         assert k._stage_continuation(k.STAGES["extended_reflection"]) == prompt
-        assert k.STAGES["extended_reflection"].thinking is (profile == "thorough")
+        assert k.STAGES["extended_reflection"].thinking is (profile in {"thorough", "translated"})
     else:
         assert k._AGENTIC_STAGE2_EXHAUSTIVE_PRESERVATION not in prompt
+
+@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "translated"))
+def test_translated_is_thorough_plus_translation_extension(monkeypatch, tmp_path, profile):
+    monkeypatch.setenv("JACK_TRANSLATED_LANGUAGE", "es")
+    k = load(monkeypatch, tmp_path, profile=profile)
+    assert k.CFG.agentic_final_review is (profile == "translated")
+    assert k.AGENTIC_TRANSLATED_MODE is (profile == "translated")
+    assert k.STAGES["extended_initial"].thinking is (profile != "flash")
+    assert k.STAGES["extended_reflection"].thinking is (profile in ("thorough", "translated"))
+    assert k.AGENTIC_36_STAGE2_PROMPT == (
+        k._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
+        if profile in {"thorough", "translated"} else
+        k._AGENTIC_STAGE2_BALANCED_EXHAUSTIVE_DIRECTIVE
+        if profile == "balanced" else k._AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE
+    )
+    if profile == "translated":
+        assert "Spanish" in k.AGENTIC_FINAL_REVIEW_TRIGGER
+        assert "Translate the completed Stage 1 response" in k.AGENTIC_FINAL_REVIEW_TRIGGER
+        assert "do not resume the original task" in k.AGENTIC_FINAL_REVIEW_TRIGGER
+        assert k._runtime_identity_details()["agentic_translation_target_language"] == "Spanish"
+    else:
+        assert "Spanish" not in k.AGENTIC_FINAL_REVIEW_TRIGGER
+
+
+def test_translator_coming_soon_and_exhaustive_rejected(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path)
+    assert k.REASONING_PROFILES["translator"]["disabled"] is True
+    assert "Coming Soon" in k.REASONING_PROFILES["translator"]["label"]
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "exhaustive")
+    with pytest.raises(RuntimeError, match="flash, balanced, thorough, or translated"):
+        load(monkeypatch, tmp_path, profile="exhaustive")
+
+
+def test_translated_extension_captures_prior_completed_draft(monkeypatch, tmp_path):
+    monkeypatch.setenv("JACK_TRANSLATED_LANGUAGE", "fr")
+    k = load(monkeypatch, tmp_path, profile="translated")
+    h = [{"role": "user", "content": "Explain the calculation."}]
+    response = {"choices": [{"finish_reason": "stop", "message": {
+        "role": "assistant", "content": "The calculation is accurate.",
+        "reasoning_content": "Checked the values independently."
+    }}]}
+    k._agentic_begin_final_review(h, response)
+    assert h[-2]["content"] == "The calculation is accurate."
+    assert h[-2]["reasoning_content"] == "Checked the values independently."
+    assert h[-1]["_jack_internal_agentic_final_review_trigger"] is True
+    assert "French" in h[-1]["content"]
+    assert "Translate the completed Stage 1 response" in h[-1]["content"]
+    assert k._agentic_final_review_is_pending(h)
