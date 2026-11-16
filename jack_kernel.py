@@ -5098,13 +5098,27 @@ def self_adversarial_stage_reasoning_trace(
 
 # One Stage-1 continuation, in Thorough only. Exact user wording.
 AGENTIC_STAGE1_VERIFICATION_PROMPT = "Wait, re-verify the latest reasoning and chain-of-thought. Test for errors, mistakes, or poor quality. Make changes, if necessary, to ensure alignment with the instructions and user request before responding"
-AGENTIC_FINAL_REVIEW_PROMPT = AGENTIC_STAGE1_VERIFICATION_PROMPT
+AGENTIC_FINAL_REVIEW_PROMPT = (
+    "Translate the completed Stage 1 response into "
+    + TRANSLATOR_LANGUAGES[AGENTIC_TRANSLATED_LANGUAGE or "en"]
+    + ". Preserve meaning, factual statements, qualifications, filenames, "
+      "commands, code, identifiers, numbers, links, and structural formatting. "
+      "Translate human-readable prose only; do not execute or redo the task, "
+      "add claims, alter conclusions, or modify technical syntax."
+    if AGENTIC_TRANSLATED_MODE else AGENTIC_STAGE1_VERIFICATION_PROMPT
+)
 AGENTIC_FINAL_REVIEW_TRIGGER = (
-    "Jack internal same-turn continuation, not a new user request. "
-    "Review the draft answer for the authenticated user request above, "
-    "not this continuation instruction.\n\n"
-    + AGENTIC_FINAL_REVIEW_PROMPT
-    + "\n\nReturn the complete final answer to the original user request, not a report about verification. If no changes are needed, reproduce the draft answer."
+    ("Jack internal same-turn translation continuation, not a new user request. "
+     "The original user request has already been completed in the Stage 1 draft. "
+     "Translate that completed draft only; do not resume the original task.\n\n"
+     + AGENTIC_FINAL_REVIEW_PROMPT
+     + "\n\nReturn only the complete translated final response, not commentary about translation.")
+    if AGENTIC_TRANSLATED_MODE else
+    ("Jack internal same-turn continuation, not a new user request. "
+     "Review the draft answer for the authenticated user request above, "
+     "not this continuation instruction.\n\n"
+     + AGENTIC_FINAL_REVIEW_PROMPT
+     + "\n\nReturn the complete final answer to the original user request, not a report about verification. If no changes are needed, reproduce the draft answer.")
 )
 
 
@@ -9139,17 +9153,18 @@ class JackQwenKernel:
             and not _agentic_final_review_is_pending(history)
         ):
             _agentic_begin_final_review(history, data)
-            yield {"kind": "reasoning", "text": "\n[AGENTIC FINAL REVIEW — SAME TURN]\n"}
+            yield {"kind": "reasoning", "text": ("\n[AGENTIC TRANSLATION — SAME TURN]\n" if AGENTIC_TRANSLATED_MODE else "\n[AGENTIC FINAL REVIEW — SAME TURN]\n")}
             try:
                 async with contextlib.aclosing(self._run_stage_streamed(
                     history, secondary_system, stage_key, usage,
-                    tools=tools, tool_choice=tool_choice, append=append,
-                    same_stage_resume=True,
+                    tools=(None if AGENTIC_TRANSLATED_MODE else tools),
+                    tool_choice=("none" if AGENTIC_TRANSLATED_MODE else tool_choice),
+                    append=append, same_stage_resume=True,
                 )) as review_packets:
                     async for packet in review_packets:
                         yield packet
             except HTTPException as exc:
-                if not recover_optional_empty_stream(exc):
+                if AGENTIC_TRANSLATED_MODE or not recover_optional_empty_stream(exc):
                     raise
                 LOG.warning(
                     "Optional Agentic continuation returned two empty streams; "
