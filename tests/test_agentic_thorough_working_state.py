@@ -56,7 +56,7 @@ def history():
     ]
 
 
-@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "exhaustive"))
+@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "translated"))
 @pytest.mark.parametrize("stream", (False, True))
 def test_all_profiles_receive_only_frozen_reasoning_and_complete_tool_evidence(
     monkeypatch, tmp_path, profile, stream,
@@ -147,7 +147,7 @@ def test_all_profiles_receive_only_frozen_reasoning_and_complete_tool_evidence(
     )
     assert [event["type"] for event in events] == expected_types
     if profile != "flash":
-        phase = "stage1" if profile == "exhaustive" else "initial"
+        phase = "initial"
         assert events[0] == {"type": "reasoning_segment", "phase": phase, "content": REASONING}
         assert events[3] == {
             "type": "reasoning_segment",
@@ -160,19 +160,19 @@ def test_all_profiles_receive_only_frozen_reasoning_and_complete_tool_evidence(
     assert returned["content"] == RESULT
     assert k.AGENTIC_36_STAGE2_PROMPT == (
         k._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
-        if profile == "thorough" else k._AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE
+        if profile in {"thorough", "translated"} else k._AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE
     )
     assert "No task description" in k.AGENTIC_36_STAGE2_PROMPT
     assert (
         k._AGENTIC_STAGE2_EXHAUSTIVE_PRESERVATION in k.AGENTIC_36_STAGE2_PROMPT
-    ) is (profile == "thorough")
+    ) is (profile in {"thorough", "translated"})
     assert all(
         "reasoning_content" not in m and "reasoning" not in m and "thinking" not in m
         for m in payload["messages"]
     )
 
 
-@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "exhaustive"))
+@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "translated"))
 def test_chronological_source_preserves_interleaved_reasoning_tools_and_review(
     monkeypatch, tmp_path, profile,
 ):
@@ -207,10 +207,9 @@ def test_chronological_source_preserves_interleaved_reasoning_tools_and_review(
             "reasoning_segment", "issued_calls", "returned_result",
             "reasoning_segment"
         ]
-        # Exhaustive treats extension-generated cognition as one Stage-1 trace;
-        # Thorough/Balanced retain their established source presentation.
+        # Translated uses Thorough chronology with its extension marked as translation.
         expected_phases = (
-            ["stage1", "stage1", "stage1"] if profile == "exhaustive"
+            ["initial", "initial", "translation"] if profile == "translated"
             else ["initial", "initial", "verification"]
         )
         assert [e["phase"] for e in events if e["type"] == "reasoning_segment"] == expected_phases
@@ -226,7 +225,7 @@ def test_chronological_source_preserves_interleaved_reasoning_tools_and_review(
     assert ANSWER not in json.dumps(events)
 
 
-@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "exhaustive"))
+@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "translated"))
 def test_source_only_is_universal_even_when_stale_env_requests_legacy(monkeypatch, tmp_path, profile):
     k = load(monkeypatch, tmp_path, profile=profile)
     assert k.AGENTIC_SOURCE_ONLY_WORKING_STATE
@@ -236,12 +235,12 @@ def test_source_only_is_universal_even_when_stale_env_requests_legacy(monkeypatc
         k._AGENTIC_STAGE2_BALANCED_EXHAUSTIVE_DIRECTIVE
         if profile == "balanced" else
         k._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
-        if profile == "thorough" else k._AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE
+        if profile in {"thorough", "translated"} else k._AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE
     )
     assert k._runtime_identity_details()["agentic_stage2_source_only"] is True
 
 
-@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "exhaustive"))
+@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "translated"))
 @pytest.mark.parametrize("stream", (False, True))
 def test_all_profile_stage_seeds_are_base_and_base_plus_two(monkeypatch, tmp_path, profile, stream):
     monkeypatch.setenv("JACK_SEED", "314159")
@@ -283,7 +282,7 @@ def test_all_profile_stage_seeds_are_base_and_base_plus_two(monkeypatch, tmp_pat
     assert [r["seed"] for r in requests] == [314159, 314161]
 
 
-@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "exhaustive"))
+@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "translated"))
 def test_random_work_id_seed_stable_across_tool_continuations(monkeypatch, tmp_path, profile):
     monkeypatch.setenv("JACK_SEED", "")
     k = load(monkeypatch, tmp_path, profile=profile)
@@ -305,7 +304,7 @@ def test_random_work_id_seed_stable_across_tool_continuations(monkeypatch, tmp_p
     assert stage2_seed == original_seed + 2
 
 
-@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "exhaustive"))
+@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "translated"))
 def test_seed_separation_preserves_explicit_base_in_all_profiles(monkeypatch, tmp_path, profile):
     monkeypatch.setenv("JACK_SEED", "123")
     k = load(monkeypatch, tmp_path, profile=profile)
@@ -314,7 +313,7 @@ def test_seed_separation_preserves_explicit_base_in_all_profiles(monkeypatch, tm
     assert backend._seed_for_stage(k.STAGES["extended_reflection"], history()) == 125
 
 
-@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "exhaustive"))
+@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "translated"))
 @pytest.mark.parametrize("stream", (False, True))
 def test_agentic_qwen_single_system_template_wire_contract(monkeypatch, tmp_path, profile, stream):
     """A model template that rejects a second system role must accept Jack's wire.
@@ -412,7 +411,7 @@ def test_work_id_and_review_system_authority_are_folded_without_losing_identity(
     assert collapsed[-1]["content"] == "Frozen answer"
 
 
-@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "exhaustive"))
+@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "translated"))
 def test_exhaustive_retention_is_profile_scoped_and_not_future_usefulness_filtered(
     monkeypatch, tmp_path, profile,
 ):
