@@ -5529,7 +5529,7 @@ def _agentic_unwrap_visible_memory(assistant_text: str) -> Tuple[Optional[str], 
     return turn_id, assistant_text[match.end():]
 
 
-_FLASH_TRAILING_WORK_ID_RE = re.compile(r"\\n\\n\\[Jack Work ID: ([A-Za-z0-9_-]{22})\\]\\Z")
+_FLASH_TRAILING_WORK_ID_RE = re.compile(r"\n\n\[Jack Work ID: ([A-Za-z0-9_-]{22})\]\Z")
 
 
 def _agentic_flash_completed_response(frozen_answer: str, turn_id: str) -> str:
