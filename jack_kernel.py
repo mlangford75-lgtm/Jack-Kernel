@@ -5503,11 +5503,9 @@ def _agentic_visible_memory_header(turn_id: Optional[str]) -> str:
     The header is therefore required for lossless repeated-turn attribution
     after process restart; the frozen response stays byte-exact at the end.
     """
-    # Flash needs its host-authenticated Work ID in the committed output to
-    # recover a verified predecessor after history compaction, even when the
-    # optional legacy transaction-link experiment is OFF. This does not alter
-    # Thorough, Balanced or Translated request/content presentation.
-    if not (AGENTIC_MODE and (AGENTIC_TRANSACTION_LINKS_ENABLED or AGENTIC_FLASH_MODE) and turn_id):
+    # Flash has a trailing host-owned Work ID and no memory prefix.
+    # Other profiles preserve their existing memory/answer presentation.
+    if not (AGENTIC_MODE and AGENTIC_TRANSACTION_LINKS_ENABLED and turn_id):
         return ""
     label = _agentic_visible_turn_label(turn_id)
     return "[" + label + "] Memory\n" if label else ""
@@ -5529,6 +5527,37 @@ def _agentic_unwrap_visible_memory(assistant_text: str) -> Tuple[Optional[str], 
     except (ValueError, AttributeError, TypeError):
         return None, assistant_text
     return turn_id, assistant_text[match.end():]
+
+
+_FLASH_TRAILING_WORK_ID_RE = re.compile(r"\\n\\n\\[Jack Work ID: ([A-Za-z0-9_-]{22})\\]\\Z")
+
+
+def _agentic_flash_completed_response(frozen_answer: str, turn_id: str) -> str:
+    """One-model-stage Flash response with a host-owned trailing Work ID."""
+    label = _agentic_visible_turn_label(turn_id)
+    if not label or not isinstance(frozen_answer, str) or not frozen_answer.strip():
+        raise ForensicConflict("Flash commit requires an owned turn and exact frozen answer")
+    return frozen_answer + "\n\n[Jack Work ID: " + label + "]"
+
+
+def _agentic_unwrap_flash_trailing_id(assistant_text: str) -> Tuple[Optional[str], str]:
+    """Parse a candidate trailer; journal verification is mandatory before use."""
+    if not isinstance(assistant_text, str):
+        return None, assistant_text
+    match = _FLASH_TRAILING_WORK_ID_RE.search(assistant_text)
+    if match is None:
+        return None, assistant_text
+    label = match.group(1)
+    try:
+        raw = base64.urlsafe_b64decode(label + "==")
+        if len(raw) != 16:
+            return None, assistant_text
+        turn_id = "jack-turn-" + uuid.UUID(bytes=raw).hex
+        if _agentic_visible_turn_label(turn_id) != label:
+            return None, assistant_text
+    except (ValueError, AttributeError, TypeError):
+        return None, assistant_text
+    return turn_id, assistant_text[:match.start()]
 
 
 def _format_agentic_completed_response(
@@ -7358,6 +7387,7 @@ class OpenAICompatibleBackend:
             if (
                 AGENTIC_MODE
                 and profile.name == "Agentic native pass 1"
+                and not AGENTIC_FLASH_MODE
                 and item.get("role") == "user"
                 and _jack_is_authentic_user_message(item)
                 and stage1_work_id is not None
@@ -7372,6 +7402,7 @@ class OpenAICompatibleBackend:
                 })
             if (
                 AGENTIC_MODE and AGENTIC_TASK_ANCHOR_ENABLED
+                and not AGENTIC_FLASH_MODE
                 and item.get("role") == "user"
                 and _agentic_task_marker_supported(item.get("content"))
             ):
@@ -7390,6 +7421,7 @@ class OpenAICompatibleBackend:
                         ]
             if (
                 AGENTIC_MODE and AGENTIC_TASK_ANCHOR_ENABLED
+                and not AGENTIC_FLASH_MODE
                 and item.get("_jack_forensic_turn_id")
                 and item.get("_jack_forensic_role") in {"M", "A1"}
                 and isinstance(item.get("content"), str)
@@ -13079,6 +13111,32 @@ def _agentic_forensic_project_visible(
         )
     except (TypeError, ValueError):
         return None
+    flash_turn, flash_answer = _agentic_unwrap_flash_trailing_id(assistant_text)
+    if flash_turn is not None:
+        committed = _agentic_forensic_journal().match_visible_turn(
+            flash_turn, _sha256_text(canonical), _sha256_text(assistant_text)
+        )
+        # Flash records are answer-only, have no Stage-2 attempt or semantic memory,
+        # and are matched against the immutable original U/A fingerprint.
+        if not (
+            committed is not None
+            and committed["stage2_attempt"] is None
+            and committed["memory_chars"] == 0
+            and committed["receipt_chars"] == 0
+            and committed["answer_chars"] == len(flash_answer)
+            and committed["a1_sha256"] == _sha256_text(flash_answer)
+        ):
+            return None
+        latest_user["_jack_forensic_turn_id"] = flash_turn
+        return [{
+            "role": "assistant", "content": flash_answer,
+            "_jack_forensic_turn_id": flash_turn,
+            "_jack_forensic_role": "A1",
+            "_jack_agentic_projected_kind": "A1",
+        }]
+    if _FLASH_TRAILING_WORK_ID_RE.search(assistant_text):
+        # A syntactically plausible but noncanonical/forged trailer is not memory.
+        return None
     claimed_turn, unwrapped_text = _agentic_unwrap_visible_memory(assistant_text)
     if assistant_text.startswith("[") and claimed_turn is None and re.match(
         r"^\[[A-Za-z0-9_-]{22}\] Memory", assistant_text
@@ -13340,7 +13398,12 @@ def _agentic_begin_turn(history: List[Dict[str, Any]], *, fresh: bool) -> Option
                     continue
                 prior_id, prior_wire = _agentic_unwrap_visible_memory(completed)
                 if prior_id is None:
-                    continue
+                    prior_id, prior_wire = _agentic_unwrap_flash_trailing_id(completed)
+                    if prior_id is None:
+                        continue
+                    wire_hash = _sha256_text(completed)
+                else:
+                    wire_hash = _sha256_text(prior_wire)
                 try:
                     user_json = json.dumps(
                         {key: value for key, value in prior_user.items()
@@ -13351,8 +13414,11 @@ def _agentic_begin_turn(history: List[Dict[str, Any]], *, fresh: bool) -> Option
                 except (ValueError, TypeError):
                     continue
                 verified = _agentic_forensic_journal().match_visible_turn(
-                    prior_id, _sha256_text(user_json), _sha256_text(prior_wire)
+                    prior_id, _sha256_text(user_json), wire_hash
                 )
+                if verified is not None and prior_wire != completed:
+                    if verified["a1_sha256"] != _sha256_text(prior_wire):
+                        verified = None
                 if verified is not None:
                     prior_ledger = _agentic_forensic_journal().ledger(prior_id)
             if prior_ledger is not None:
