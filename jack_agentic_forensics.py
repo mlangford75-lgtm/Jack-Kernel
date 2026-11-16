@@ -287,6 +287,36 @@ class AgenticForensicJournal:
             )
             self._event(db, turn_id, a2_attempt, "complete", sha256(memory))
 
+    def commit_flash(self, turn_id, stage1_attempt, answer, wire):
+        """Commit Flash directly from a frozen Stage 1, without a Stage 2 attempt.
+
+        The caller-visible wire includes a host-generated trailing Work ID; only
+        its fingerprint is retained. The exact frozen answer remains separate.
+        """
+        self._check(isinstance(answer, str) and bool(answer.strip()),
+                    "Flash has no frozen Stage-1 answer")
+        self._check(isinstance(wire, str) and wire.startswith(answer)
+                    and len(wire) > len(answer),
+                    "Flash committed wire must contain the original answer and trailer")
+        a1_hash = sha256(answer)
+        with self._write() as db:
+            old = self._get(db, turn_id)
+            self._check(
+                old is not None and old["status"] == "stage1_frozen"
+                and old["stage1_attempt"] == stage1_attempt
+                and old["stage2_attempt"] is None
+                and old["a1_sha256"] == a1_hash,
+                "Flash direct commit does not own the frozen Stage-1 answer",
+            )
+            db.execute(
+                "UPDATE turns SET status='complete',memory_sha256=?,tool_sha256=?,"
+                "wire_sha256=?,memory_chars=0,receipt_chars=0,answer_chars=?,updated=? "
+                "WHERE turn_id=?",
+                (sha256(""), sha256(""), sha256(wire), len(answer),
+                 time.time(), turn_id),
+            )
+            self._event(db, turn_id, stage1_attempt, "complete", a1_hash)
+
     def fail(self, turn_id, attempt, reason):
         with self._write() as db:
             old = self._get(db, turn_id)
