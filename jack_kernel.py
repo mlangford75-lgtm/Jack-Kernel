@@ -13461,6 +13461,7 @@ def _agentic_begin_turn(history: List[Dict[str, Any]], *, fresh: bool) -> Option
                     continue
                 prior_id, prior_wire = _agentic_unwrap_visible_memory(completed)
                 recovered_flash = False
+                legacy_wire_hash = None
                 if prior_id is None:
                     prior_id, prior_wire = _agentic_unwrap_flash_trailing_id(completed)
                     if prior_id is not None:
@@ -13501,7 +13502,7 @@ def _agentic_begin_turn(history: List[Dict[str, Any]], *, fresh: bool) -> Option
                 verified = _agentic_forensic_journal().match_visible_turn(
                     prior_id, _sha256_text(user_json), wire_hash
                 )
-                if verified is None and recovered_flash and "legacy_wire_hash" in locals():
+                if verified is None and recovered_flash and legacy_wire_hash is not None:
                     verified = _agentic_forensic_journal().match_visible_turn(
                         prior_id, _sha256_text(user_json), legacy_wire_hash
                     )
