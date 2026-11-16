@@ -104,13 +104,11 @@ def test_translated_extension_is_a_same_turn_second_stage1_generation(monkeypatc
                 )
             assert result["choices"][0]["message"]["content"] == "Réponse française."
             assert len(observed) == 2
-            assert observed[1]["messages"][0]["role"] == "system"
+            assert [m["role"] for m in observed[1]["messages"]] == ["system", "user"]
             assert "French" in observed[1]["messages"][0]["content"]
-            assert observed[1]["messages"][-1]["role"] == "user"
-            assert any(
-                m["role"] == "assistant" and m.get("content") == "Original English response."
-                for m in observed[1]["messages"]
-            )
+            assert "Original English response." in observed[1]["messages"][1]["content"]
+            assert "Explain the result." not in json.dumps(observed[1]["messages"])
+            assert "tool_calls" not in json.dumps(observed[1]["messages"])
             assert "tools" not in observed[1]
             assert "tool_choice" not in observed[1]
         finally:
