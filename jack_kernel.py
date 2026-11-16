@@ -13459,11 +13459,29 @@ def _agentic_begin_turn(history: List[Dict[str, Any]], *, fresh: bool) -> Option
                 if not isinstance(completed, str):
                     continue
                 prior_id, prior_wire = _agentic_unwrap_visible_memory(completed)
+                recovered_flash = False
                 if prior_id is None:
                     prior_id, prior_wire = _agentic_unwrap_flash_trailing_id(completed)
-                    if prior_id is None:
-                        continue
-                    wire_hash = _sha256_text(completed)
+                    if prior_id is not None:
+                        wire_hash = _sha256_text(completed)
+                        recovered_flash = True
+                    else:
+                        # Compaction already verified the trailing Flash artifact,
+                        # then removed its model-visible trailer for prefix reuse.
+                        # Its host-private ownership is safe only when rechecked
+                        # against the immutable journal and exact prior U/A.
+                        projected_id = item.get("_jack_forensic_turn_id")
+                        if (
+                            item.get("_jack_forensic_role") != "A1"
+                            or not isinstance(projected_id, str)
+                            or _agentic_visible_turn_label(projected_id) is None
+                        ):
+                            continue
+                        prior_id, prior_wire = projected_id, completed
+                        wire_hash = _sha256_text(
+                            _agentic_flash_completed_response(completed, projected_id)
+                        )
+                        recovered_flash = True
                 else:
                     wire_hash = _sha256_text(prior_wire)
                 try:
@@ -13478,8 +13496,13 @@ def _agentic_begin_turn(history: List[Dict[str, Any]], *, fresh: bool) -> Option
                 verified = _agentic_forensic_journal().match_visible_turn(
                     prior_id, _sha256_text(user_json), wire_hash
                 )
-                if verified is not None and prior_wire != completed:
-                    if verified["a1_sha256"] != _sha256_text(prior_wire):
+                if verified is not None and recovered_flash:
+                    if (
+                        verified["stage2_attempt"] is not None
+                        or verified["memory_chars"] != 0
+                        or verified["receipt_chars"] != 0
+                        or verified["a1_sha256"] != _sha256_text(prior_wire)
+                    ):
                         verified = None
                 if verified is not None:
                     prior_ledger = _agentic_forensic_journal().ledger(prior_id)
