@@ -5529,7 +5529,7 @@ def _agentic_unwrap_visible_memory(assistant_text: str) -> Tuple[Optional[str], 
     return turn_id, assistant_text[match.end():]
 
 
-_FLASH_TRAILING_WORK_ID_RE = re.compile(r"\n\n\[Jack Work ID: ([A-Za-z0-9_-]{22})\]\Z")
+_FLASH_TRAILING_WORK_ID_RE = re.compile(r"\n\n\[(?:Jack )?Work ID: ([A-Za-z0-9_-]{22})\]\Z")
 
 
 def _agentic_flash_completed_response(frozen_answer: str, turn_id: str) -> str:
@@ -5537,7 +5537,7 @@ def _agentic_flash_completed_response(frozen_answer: str, turn_id: str) -> str:
     label = _agentic_visible_turn_label(turn_id)
     if not label or not isinstance(frozen_answer, str) or not frozen_answer.strip():
         raise ForensicConflict("Flash commit requires an owned turn and exact frozen answer")
-    return frozen_answer + "\n\n[Jack Work ID: " + label + "]"
+    return frozen_answer + "\n\n[Work ID: " + label + "]"
 
 
 def _agentic_unwrap_flash_trailing_id(assistant_text: str) -> Tuple[Optional[str], str]:
@@ -13482,6 +13482,10 @@ def _agentic_begin_turn(history: List[Dict[str, Any]], *, fresh: bool) -> Option
                         wire_hash = _sha256_text(
                             _agentic_flash_completed_response(completed, projected_id)
                         )
+                        legacy_wire_hash = _sha256_text(
+                            completed + "\n\n[Jack Work ID: "
+                            + _agentic_visible_turn_label(projected_id) + "]"
+                        )
                         recovered_flash = True
                 else:
                     wire_hash = _sha256_text(prior_wire)
@@ -13497,6 +13501,10 @@ def _agentic_begin_turn(history: List[Dict[str, Any]], *, fresh: bool) -> Option
                 verified = _agentic_forensic_journal().match_visible_turn(
                     prior_id, _sha256_text(user_json), wire_hash
                 )
+                if verified is None and recovered_flash and "legacy_wire_hash" in locals():
+                    verified = _agentic_forensic_journal().match_visible_turn(
+                        prior_id, _sha256_text(user_json), legacy_wire_hash
+                    )
                 if verified is not None and recovered_flash:
                     if (
                         verified["stage2_attempt"] is not None
