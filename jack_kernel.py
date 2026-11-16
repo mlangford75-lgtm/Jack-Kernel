@@ -10459,6 +10459,37 @@ class JackQwenKernel:
             agentic_turn_id=visible_turn_id,
         )
 
+    def _complete_flash_stage1(
+        self, history: List[Dict[str, Any]], usage: Dict[str, int], frozen_answer: str,
+    ) -> KernelResult:
+        """Flash: one model stage, then a host-only frozen-answer commit.
+
+        The Work ID stays in the forensic owner from the first tool call onward.
+        It is appended to the committed assistant artifact only after inference,
+        with no model-generated memory and no Stage-2 journal transition.
+        """
+        if not AGENTIC_FLASH_MODE:
+            raise ForensicConflict("Flash direct commit is not available to other Agentic profiles")
+        record = _agentic_forensic_turn(history)
+        if record is None or not record.frozen_a1_sha256:
+            raise ForensicConflict("Flash direct commit requires an authenticated frozen Stage 1")
+        wire = _agentic_flash_completed_response(frozen_answer, record.turn_id)
+        _agentic_forensic_journal().commit_flash(
+            record.turn_id, record.stage1_attempt_id, frozen_answer, wire
+        )
+        record.status = "complete"
+        # Optional forensic archiving is strictly post-commit and non-authoritative.
+        try:
+            _archive_agentic_stage1_forensic(history, frozen_answer, "")
+        except Exception:
+            LOG.exception("Flash optional Stage-1 archive failed after durable commit")
+        _agentic_finish_delayed_one_hop(history)
+        history.clear()
+        return KernelResult(
+            content=wire, tool_calls=None, finish_reason="stop",
+            usage=normalize_usage(dict(usage)), reasoning_content=None,
+        )
+
     def _agentic_degraded_result(
         self, history: List[Dict[str, Any]], usage: Dict[str, int], frozen_stage1_answer: str, reason: str
     ) -> KernelResult:
@@ -10821,6 +10852,10 @@ class JackQwenKernel:
             self._agentic_require_completed_stage(stage, "Agentic Stage 1")
             first_msg = ((stage.get("choices") or [{}])[0].get("message") or {})
             frozen_stage1_answer = append_extended_candidate_response(history, first_msg)
+            if AGENTIC_FLASH_MODE:
+                completed = self._complete_flash_stage1(history, usage, frozen_stage1_answer)
+                await self._retire_pending_tool_resume(state)
+                return completed
             try:
                 xml_stage = await self._run_stage(
                     history,
@@ -10952,6 +10987,8 @@ class JackQwenKernel:
             self._agentic_require_completed_stage(first, "Agentic Stage 1")
             first_msg = ((first.get("choices") or [{}])[0].get("message") or {})
             frozen_stage1_answer = append_extended_candidate_response(history, first_msg)
+            if AGENTIC_FLASH_MODE:
+                return self._complete_flash_stage1(history, usage, frozen_stage1_answer)
             try:
                 second = await self._run_stage(
                     history,
@@ -11831,6 +11868,8 @@ class JackQwenKernel:
                 self_adversarial_results: Dict[str, Dict[str, Any]] = {}
                 if AGENTIC_MODE:
                     sequence = (
+                        [("extended_initial", False)]
+                        if AGENTIC_FLASH_MODE else
                         [("extended_reflection", False)]
                         if resume_stage_key == "extended_reflection"
                         else [("extended_initial", False), ("extended_reflection", False)]
@@ -11940,6 +11979,29 @@ class JackQwenKernel:
                         anti_msg = ((stage_result.get("choices") or [{}])[0].get("message") or {})
                         append_ultra_intermediate_response(history, "extended_reflection", anti_msg)
                         yield event({"reasoning_content": "\n[END DEEP RESEARCH STAGE 2 — ANTITHESIS COMPLETE]\n"})
+
+                if AGENTIC_FLASH_MODE:
+                    if agentic_frozen_stage1_answer is None:
+                        raise HTTPException(status_code=500, detail="Flash Stage-1 answer was unavailable at commit")
+                    try:
+                        completed = self._complete_flash_stage1(
+                            history, usage, agentic_frozen_stage1_answer
+                        )
+                    except Exception as exc:
+                        if isinstance(exc, GenerationBudgetExceeded):
+                            raise
+                        detail = str(exc.detail) if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
+                        completed = self._agentic_degraded_result(
+                            history, usage, agentic_frozen_stage1_answer, detail
+                        )
+                        yield event({"reasoning_content": "\n" + (completed.reasoning_content or "") + "\n"})
+                    if pending_state is not None:
+                        await self._retire_pending_tool_resume(pending_state)
+                    yield event({"content": completed.content or ""})
+                    yield event({}, "stop")
+                    yield usage_event(usage_delta(usage, response_usage_baseline))
+                    yield b"data: [DONE]\\n\\n".replace(b"\\\\n", b"\\n")
+                    return
 
                 final_result = self_adversarial_results["extended_synthesis"] if ULTRA_MODE else self_adversarial_results["extended_reflection"]
                 choice = (final_result.get("choices") or [{}])[0] or {}
