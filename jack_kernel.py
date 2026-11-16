@@ -8396,8 +8396,9 @@ class JackQwenKernel:
                 _agentic_begin_final_review(history, data)
                 return await self._run_stage(
                     history, secondary_system, stage_key, usage,
-                    tools=tools, tool_choice=tool_choice, append=append,
-                    same_stage_resume=True,
+                    tools=(None if AGENTIC_TRANSLATED_MODE else tools),
+                    tool_choice=("none" if AGENTIC_TRANSLATED_MODE else tool_choice),
+                    append=append, same_stage_resume=True,
                 )
             if SELF_ADVERSARIAL_MODE and stage_key == "extended_initial":
                 if AGENTIC_MODE and CFG.forensic_archive_mode == "stage":
