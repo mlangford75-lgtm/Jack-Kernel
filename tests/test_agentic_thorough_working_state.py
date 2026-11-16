@@ -444,7 +444,7 @@ def test_translated_is_thorough_plus_translation_extension(monkeypatch, tmp_path
     )
     if profile == "translated":
         assert "Spanish" in k.AGENTIC_FINAL_REVIEW_TRIGGER
-        assert "Translate the completed Stage 1 response" in k.AGENTIC_FINAL_REVIEW_TRIGGER
+        assert "the translation-only pass of Jack Agentic" in k.AGENTIC_FINAL_REVIEW_TRIGGER
         assert "do not resume the original task" in k.AGENTIC_FINAL_REVIEW_TRIGGER
         assert k._runtime_identity_details()["agentic_translation_target_language"] == "Spanish"
     else:
@@ -473,5 +473,5 @@ def test_translated_extension_captures_prior_completed_draft(monkeypatch, tmp_pa
     assert h[-2]["reasoning_content"] == "Checked the values independently."
     assert h[-1]["_jack_internal_agentic_final_review_trigger"] is True
     assert "French" in h[-1]["content"]
-    assert "Translate the completed Stage 1 response" in h[-1]["content"]
+    assert "the translation-only pass of Jack Agentic" in h[-1]["content"]
     assert k._agentic_final_review_is_pending(h)
