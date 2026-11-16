@@ -312,6 +312,7 @@ class KernelConfig:
     # Profiles are resolved below into Qwen per-stage native-thinking controls.
     reasoning_level: str = os.getenv("JACK_REASONING_LEVEL", "x-high").strip().lower()
     translator_language: str = os.getenv("JACK_TRANSLATOR_LANGUAGE", "en").strip()
+    translated_language: str = os.getenv("JACK_TRANSLATED_LANGUAGE", "en").strip()
 
     # Profiles own Stage-1 review scheduling. Legacy review environment toggles
     # cannot override the selected profile's thinking and continuation contract.
@@ -320,8 +321,8 @@ class KernelConfig:
 
     @property
     def agentic_final_review(self) -> bool:
-        # One Stage-1 verification continuation in Exhaustive only.
-        return self.agentic_profile == "exhaustive"
+        # One Stage-1 translation continuation in Translated only.
+        return self.agentic_profile == "translated"
 
     # Human-configurable Qwen preserve-thinking policy. Calling agents cannot
     # override this value; it is owned by the Jack Kernel runtime.
@@ -827,10 +828,10 @@ REASONING_PROFILES: Dict[str, Dict[str, Any]] = {
         "disabled": False,
     },
     "translator": {
-        "label": "Translator",
+        "label": "Translator (Coming Soon)",
         "mode": "translator",
         "answer": "off",
-        "disabled": False,
+        "disabled": True,
     },
     "code-debugging": {
         "label": "Code Debugging",
@@ -888,15 +889,18 @@ _REASONING_LEVEL_ALIASES = {
 }
 _reasoning_level = _REASONING_LEVEL_ALIASES.get(CFG.reasoning_level, CFG.reasoning_level)
 if _reasoning_level not in REASONING_PROFILES:
-    raise RuntimeError("JACK_REASONING_LEVEL must be off, medium, x-high, translator, deep-reasoning (legacy), deep-research, Local Agentic (Preserve Thinking), code-debugging, or code-debugging-deep; low is listed but disabled")
+    raise RuntimeError("JACK_REASONING_LEVEL must be off, medium, x-high, deep-reasoning (legacy), deep-research, Local Agentic (Preserve Thinking), code-debugging, or code-debugging-deep; low and Translator are unavailable")
 if REASONING_PROFILES[_reasoning_level].get("disabled"):
-    raise RuntimeError("JACK_REASONING_LEVEL=low is disabled in Jack Kernel v0.1.1. Choose off, medium, x-high, translator, deep-research, Local Agentic (Preserve Thinking), code-debugging, or code-debugging-deep.")
+    raise RuntimeError("JACK_REASONING_LEVEL=" + _reasoning_level + " is disabled (Translator: Coming Soon; Low: Disabled).")
 ACTIVE_REASONING_PROFILE = REASONING_PROFILES[_reasoning_level]
 AGENTIC_MODE = ACTIVE_REASONING_PROFILE["mode"] == "agentic"
 TRANSLATOR_MODE = ACTIVE_REASONING_PROFILE["mode"] == "translator"
 TRANSLATOR_LANGUAGE = _TRANSLATOR_LANGUAGE_ALIASES.get(CFG.translator_language.lower())
 if TRANSLATOR_MODE and TRANSLATOR_LANGUAGE is None:
     raise RuntimeError("JACK_TRANSLATOR_LANGUAGE must be a supported language code or name")
+AGENTIC_TRANSLATED_LANGUAGE = _TRANSLATOR_LANGUAGE_ALIASES.get(CFG.translated_language.lower())
+if AGENTIC_MODE and CFG.agentic_profile == "translated" and AGENTIC_TRANSLATED_LANGUAGE is None:
+    raise RuntimeError("JACK_TRANSLATED_LANGUAGE must be a supported language code or name")
 # A/B presentation only: canonical historical M, A1, evidence and stage routing
 # remain untouched. Off by default on every backend and Agentic profile.
 AGENTIC_HISTORICAL_MEMORY_LABELS = AGENTIC_MODE and os.getenv(
@@ -911,17 +915,17 @@ AGENTIC_MEMORY_DATA_CHANNEL = AGENTIC_MODE and os.getenv(
 # Agentic profiles. No environment switch can silently restore U/A1 replay.
 AGENTIC_STAGE2_WITHHOLD_A1 = AGENTIC_MODE
 AGENTIC_STAGE2_FROZEN_CONVERSATION = AGENTIC_MODE
-if AGENTIC_MODE and CFG.agentic_profile not in {"flash", "balanced", "thorough", "exhaustive"}:
-    raise RuntimeError("JACK_AGENTIC_PROFILE must be flash, balanced, thorough, or exhaustive")
+if AGENTIC_MODE and CFG.agentic_profile not in {"flash", "balanced", "thorough", "translated"}:
+    raise RuntimeError("JACK_AGENTIC_PROFILE must be flash, balanced, thorough, or translated")
 AGENTIC_BALANCED_MODE = AGENTIC_MODE and CFG.agentic_profile == "balanced"
 AGENTIC_FLASH_MODE = AGENTIC_MODE and CFG.agentic_profile == "flash"
 AGENTIC_THOROUGH_MODE = AGENTIC_MODE and CFG.agentic_profile == "thorough"
-AGENTIC_EXHAUSTIVE_MODE = AGENTIC_MODE and CFG.agentic_profile == "exhaustive"
+AGENTIC_TRANSLATED_MODE = AGENTIC_MODE and CFG.agentic_profile == "translated"
 # Source-only working memory is a shared kernel policy for Flash, Balanced,
 # Thorough, and Exhaustive. Profiles differ only in their reasoning budgets
 # and Stage-1 review; Jack still owns canonical U, A1, IDs, and tool history.
 AGENTIC_SOURCE_ONLY_WORKING_STATE = AGENTIC_MODE
-# Flash and Balanced have Stage-2 native thinking off; Thorough and Exhaustive
+# Flash and Balanced have Stage-2 native thinking off; Thorough and Translated
 # may think in Stage 2. All use the same tools-off working-memory source.
 AGENTIC_THINKING_OFF_MEMORY_MODE = AGENTIC_BALANCED_MODE
 ULTRA_MODE = ACTIVE_REASONING_PROFILE["mode"] == "ultra"
@@ -1297,7 +1301,7 @@ def _stage_continuation(
             return (_AGENTIC_STAGE2_BALANCED_EXHAUSTIVE_DIRECTIVE
                     if AGENTIC_BALANCED_MODE else
                     _AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
-                    if AGENTIC_THOROUGH_MODE else
+                    if (AGENTIC_THOROUGH_MODE or AGENTIC_TRANSLATED_MODE) else
                     _AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE)
         return (
             _AGENTIC_STAGE2_WITHHELD_A1_CONTINUATION
@@ -1488,9 +1492,9 @@ def _agentic_stage2_chronological_source(history: List[Dict[str, Any]]) -> List[
     for item in history[start + 1:frozen + 1]:
         if not isinstance(item, dict):
             continue
-        # Exclude the host's extension instruction and trigger. For Exhaustive,
-        # both sides of this boundary share one Stage-1 reasoning authority.
-        # Preserve legacy source presentation for Thorough and Balanced.
+        # Exclude the host's extension instruction and trigger. Translated
+        # adds a translation continuation to the normal Thorough Stage 1.
+        # Preserve original source ordering for every Agentic profile.
         if item.get("_jack_internal_agentic_final_review_trigger") is True:
             in_review = True
             continue
@@ -1506,8 +1510,8 @@ def _agentic_stage2_chronological_source(history: List[Dict[str, Any]]) -> List[
                 if isinstance(reasoning, str) and reasoning:
                     events.append({
                         "type": "reasoning_segment",
-                        "phase": ("stage1" if AGENTIC_EXHAUSTIVE_MODE else
-                                  "verification" if in_review else "initial"),
+                        "phase": (("translation" if AGENTIC_TRANSLATED_MODE else "verification")
+                                  if in_review else "initial"),
                         "content": reasoning,
                     })
             if item.get("_jack_internal_tool_exchange") is True and item.get("tool_calls"):
@@ -2120,7 +2124,7 @@ AGENTIC_36_STAGE2_PROMPT = (
     _AGENTIC_STAGE2_BALANCED_EXHAUSTIVE_DIRECTIVE
     if AGENTIC_BALANCED_MODE else
     _AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
-    if AGENTIC_THOROUGH_MODE else
+    if (AGENTIC_THOROUGH_MODE or AGENTIC_TRANSLATED_MODE) else
     _AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE
     if AGENTIC_SOURCE_ONLY_WORKING_STATE else
     _AGENTIC_STAGE2_WITHHELD_A1_CONTINUATION
@@ -3246,7 +3250,7 @@ STAGES: Dict[str, StageProfile] = {
     "extended_reflection": StageProfile(
         "Agentic native pass 2" if AGENTIC_MODE else "Deep Research Antithesis pass 2",
         AGENTIC_36_STAGE2_PROMPT if AGENTIC_MODE else ULTRA_STAGE2_ANTITHESIS_PROMPT,
-        not AGENTIC_MODE or AGENTIC_THOROUGH_MODE or AGENTIC_EXHAUSTIVE_MODE,
+        not AGENTIC_MODE or AGENTIC_THOROUGH_MODE or AGENTIC_TRANSLATED_MODE,
         ACTIVE_REASONING_PROFILE.get("pass2", "xhigh"),
         False,
         0.50 if AGENTIC_MODE else 0.70,
