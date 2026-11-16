@@ -19,7 +19,7 @@ and is the sole authoritative reasoning/execution/final-answer stage. Full
 active cognition is preserved through Synthesis; only Stage-1/Stage-2 native
 reasoning is retired on later re-entry. Deep Research emits no Jack XML.
 
-Agentic is a two-stage retrospective memory program. Stage 1 receives
+Agentic normally uses two stages; Flash uses one model stage and commits directly. Stage 1 receives
 full native cognition and caller-authorized tools, produces A1, and freezes
 that exact answer. Stage 2 has tools off and zero answer authority; while the
 Stage-1 reasoning/tool episode remains available where supported, it produces
@@ -5503,11 +5503,9 @@ def _agentic_visible_memory_header(turn_id: Optional[str]) -> str:
     The header is therefore required for lossless repeated-turn attribution
     after process restart; the frozen response stays byte-exact at the end.
     """
-    # Flash needs its host-authenticated Work ID in the committed output to
-    # recover a verified predecessor after history compaction, even when the
-    # optional legacy transaction-link experiment is OFF. This does not alter
-    # Thorough, Balanced or Translated request/content presentation.
-    if not (AGENTIC_MODE and (AGENTIC_TRANSACTION_LINKS_ENABLED or AGENTIC_FLASH_MODE) and turn_id):
+    # Flash has a trailing host-owned Work ID and no memory prefix.
+    # Other profiles preserve their existing memory/answer presentation.
+    if not (AGENTIC_MODE and AGENTIC_TRANSACTION_LINKS_ENABLED and turn_id):
         return ""
     label = _agentic_visible_turn_label(turn_id)
     return "[" + label + "] Memory\n" if label else ""
@@ -5529,6 +5527,37 @@ def _agentic_unwrap_visible_memory(assistant_text: str) -> Tuple[Optional[str], 
     except (ValueError, AttributeError, TypeError):
         return None, assistant_text
     return turn_id, assistant_text[match.end():]
+
+
+_FLASH_TRAILING_WORK_ID_RE = re.compile(r"\n\n\[(?:Jack )?Work ID: ([A-Za-z0-9_-]{22})\]\Z")
+
+
+def _agentic_flash_completed_response(frozen_answer: str, turn_id: str) -> str:
+    """One-model-stage Flash response with a host-owned trailing Work ID."""
+    label = _agentic_visible_turn_label(turn_id)
+    if not label or not isinstance(frozen_answer, str) or not frozen_answer.strip():
+        raise ForensicConflict("Flash commit requires an owned turn and exact frozen answer")
+    return frozen_answer + "\n\n[Work ID: " + label + "]"
+
+
+def _agentic_unwrap_flash_trailing_id(assistant_text: str) -> Tuple[Optional[str], str]:
+    """Parse a candidate trailer; journal verification is mandatory before use."""
+    if not isinstance(assistant_text, str):
+        return None, assistant_text
+    match = _FLASH_TRAILING_WORK_ID_RE.search(assistant_text)
+    if match is None:
+        return None, assistant_text
+    label = match.group(1)
+    try:
+        raw = base64.urlsafe_b64decode(label + "==")
+        if len(raw) != 16:
+            return None, assistant_text
+        turn_id = "jack-turn-" + uuid.UUID(bytes=raw).hex
+        if _agentic_visible_turn_label(turn_id) != label:
+            return None, assistant_text
+    except (ValueError, AttributeError, TypeError):
+        return None, assistant_text
+    return turn_id, assistant_text[:match.start()]
 
 
 def _format_agentic_completed_response(
@@ -7358,6 +7387,7 @@ class OpenAICompatibleBackend:
             if (
                 AGENTIC_MODE
                 and profile.name == "Agentic native pass 1"
+                and not AGENTIC_FLASH_MODE
                 and item.get("role") == "user"
                 and _jack_is_authentic_user_message(item)
                 and stage1_work_id is not None
@@ -7372,6 +7402,7 @@ class OpenAICompatibleBackend:
                 })
             if (
                 AGENTIC_MODE and AGENTIC_TASK_ANCHOR_ENABLED
+                and not AGENTIC_FLASH_MODE
                 and item.get("role") == "user"
                 and _agentic_task_marker_supported(item.get("content"))
             ):
@@ -7390,6 +7421,7 @@ class OpenAICompatibleBackend:
                         ]
             if (
                 AGENTIC_MODE and AGENTIC_TASK_ANCHOR_ENABLED
+                and not AGENTIC_FLASH_MODE
                 and item.get("_jack_forensic_turn_id")
                 and item.get("_jack_forensic_role") in {"M", "A1"}
                 and isinstance(item.get("content"), str)
@@ -10427,6 +10459,37 @@ class JackQwenKernel:
             agentic_turn_id=visible_turn_id,
         )
 
+    def _complete_flash_stage1(
+        self, history: List[Dict[str, Any]], usage: Dict[str, int], frozen_answer: str,
+    ) -> KernelResult:
+        """Flash: one model stage, then a host-only frozen-answer commit.
+
+        The Work ID stays in the forensic owner from the first tool call onward.
+        It is appended to the committed assistant artifact only after inference,
+        with no model-generated memory and no Stage-2 journal transition.
+        """
+        if not AGENTIC_FLASH_MODE:
+            raise ForensicConflict("Flash direct commit is not available to other Agentic profiles")
+        record = _agentic_forensic_turn(history)
+        if record is None or not record.frozen_a1_sha256:
+            raise ForensicConflict("Flash direct commit requires an authenticated frozen Stage 1")
+        wire = _agentic_flash_completed_response(frozen_answer, record.turn_id)
+        _agentic_forensic_journal().commit_flash(
+            record.turn_id, record.stage1_attempt_id, frozen_answer, wire
+        )
+        record.status = "complete"
+        # Optional forensic archiving is strictly post-commit and non-authoritative.
+        try:
+            _archive_agentic_stage1_forensic(history, frozen_answer, "")
+        except Exception:
+            LOG.exception("Flash optional Stage-1 archive failed after durable commit")
+        _agentic_finish_delayed_one_hop(history)
+        history.clear()
+        return KernelResult(
+            content=wire, tool_calls=None, finish_reason="stop",
+            usage=normalize_usage(dict(usage)), reasoning_content=None,
+        )
+
     def _agentic_degraded_result(
         self, history: List[Dict[str, Any]], usage: Dict[str, int], frozen_stage1_answer: str, reason: str
     ) -> KernelResult:
@@ -10789,6 +10852,10 @@ class JackQwenKernel:
             self._agentic_require_completed_stage(stage, "Agentic Stage 1")
             first_msg = ((stage.get("choices") or [{}])[0].get("message") or {})
             frozen_stage1_answer = append_extended_candidate_response(history, first_msg)
+            if AGENTIC_FLASH_MODE:
+                completed = self._complete_flash_stage1(history, usage, frozen_stage1_answer)
+                await self._retire_pending_tool_resume(state)
+                return completed
             try:
                 xml_stage = await self._run_stage(
                     history,
@@ -10920,6 +10987,8 @@ class JackQwenKernel:
             self._agentic_require_completed_stage(first, "Agentic Stage 1")
             first_msg = ((first.get("choices") or [{}])[0].get("message") or {})
             frozen_stage1_answer = append_extended_candidate_response(history, first_msg)
+            if AGENTIC_FLASH_MODE:
+                return self._complete_flash_stage1(history, usage, frozen_stage1_answer)
             try:
                 second = await self._run_stage(
                     history,
@@ -11430,7 +11499,8 @@ class JackQwenKernel:
             return
         """Stream the active Jack reasoning program.
 
-        Agentic keeps its two-stage frozen-A1/XML behavior. Deep Research runs a full-retention
+        Agentic uses two-stage frozen-A1/memory behavior except Flash, which
+        commits its Stage-1 answer directly. Deep Research runs a full-retention
         Thesis -> Antithesis -> Synthesis transaction. Code Debugging runs five fresh
         report-only inspection passes with report-backed rehydration and exposes only the final report.
         """
@@ -11799,6 +11869,8 @@ class JackQwenKernel:
                 self_adversarial_results: Dict[str, Dict[str, Any]] = {}
                 if AGENTIC_MODE:
                     sequence = (
+                        [("extended_initial", False)]
+                        if AGENTIC_FLASH_MODE else
                         [("extended_reflection", False)]
                         if resume_stage_key == "extended_reflection"
                         else [("extended_initial", False), ("extended_reflection", False)]
@@ -11908,6 +11980,29 @@ class JackQwenKernel:
                         anti_msg = ((stage_result.get("choices") or [{}])[0].get("message") or {})
                         append_ultra_intermediate_response(history, "extended_reflection", anti_msg)
                         yield event({"reasoning_content": "\n[END DEEP RESEARCH STAGE 2 — ANTITHESIS COMPLETE]\n"})
+
+                if AGENTIC_FLASH_MODE:
+                    if agentic_frozen_stage1_answer is None:
+                        raise HTTPException(status_code=500, detail="Flash Stage-1 answer was unavailable at commit")
+                    try:
+                        completed = self._complete_flash_stage1(
+                            history, usage, agentic_frozen_stage1_answer
+                        )
+                    except Exception as exc:
+                        if isinstance(exc, GenerationBudgetExceeded):
+                            raise
+                        detail = str(exc.detail) if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
+                        completed = self._agentic_degraded_result(
+                            history, usage, agentic_frozen_stage1_answer, detail
+                        )
+                        yield event({"reasoning_content": "\n" + (completed.reasoning_content or "") + "\n"})
+                    if pending_state is not None:
+                        await self._retire_pending_tool_resume(pending_state)
+                    yield event({"content": completed.content or ""})
+                    yield event({}, "stop")
+                    yield usage_event(usage_delta(usage, response_usage_baseline))
+                    yield b"data: [DONE]\n\n"
+                    return
 
                 final_result = self_adversarial_results["extended_synthesis"] if ULTRA_MODE else self_adversarial_results["extended_reflection"]
                 choice = (final_result.get("choices") or [{}])[0] or {}
@@ -13079,6 +13174,32 @@ def _agentic_forensic_project_visible(
         )
     except (TypeError, ValueError):
         return None
+    flash_turn, flash_answer = _agentic_unwrap_flash_trailing_id(assistant_text)
+    if flash_turn is not None:
+        committed = _agentic_forensic_journal().match_visible_turn(
+            flash_turn, _sha256_text(canonical), _sha256_text(assistant_text)
+        )
+        # Flash records are answer-only, have no Stage-2 attempt or semantic memory,
+        # and are matched against the immutable original U/A fingerprint.
+        if not (
+            committed is not None
+            and committed["stage2_attempt"] is None
+            and committed["memory_chars"] == 0
+            and committed["receipt_chars"] == 0
+            and committed["answer_chars"] == len(flash_answer)
+            and committed["a1_sha256"] == _sha256_text(flash_answer)
+        ):
+            return None
+        latest_user["_jack_forensic_turn_id"] = flash_turn
+        return [{
+            "role": "assistant", "content": flash_answer,
+            "_jack_forensic_turn_id": flash_turn,
+            "_jack_forensic_role": "A1",
+            "_jack_agentic_projected_kind": "A1",
+        }]
+    if _FLASH_TRAILING_WORK_ID_RE.search(assistant_text):
+        # A syntactically plausible but noncanonical/forged trailer is not memory.
+        return None
     claimed_turn, unwrapped_text = _agentic_unwrap_visible_memory(assistant_text)
     if assistant_text.startswith("[") and claimed_turn is None and re.match(
         r"^\[[A-Za-z0-9_-]{22}\] Memory", assistant_text
@@ -13339,8 +13460,36 @@ def _agentic_begin_turn(history: List[Dict[str, Any]], *, fresh: bool) -> Option
                 if not isinstance(completed, str):
                     continue
                 prior_id, prior_wire = _agentic_unwrap_visible_memory(completed)
+                recovered_flash = False
+                legacy_wire_hash = None
                 if prior_id is None:
-                    continue
+                    prior_id, prior_wire = _agentic_unwrap_flash_trailing_id(completed)
+                    if prior_id is not None:
+                        wire_hash = _sha256_text(completed)
+                        recovered_flash = True
+                    else:
+                        # Compaction already verified the trailing Flash artifact,
+                        # then removed its model-visible trailer for prefix reuse.
+                        # Its host-private ownership is safe only when rechecked
+                        # against the immutable journal and exact prior U/A.
+                        projected_id = item.get("_jack_forensic_turn_id")
+                        if (
+                            item.get("_jack_forensic_role") != "A1"
+                            or not isinstance(projected_id, str)
+                            or _agentic_visible_turn_label(projected_id) is None
+                        ):
+                            continue
+                        prior_id, prior_wire = projected_id, completed
+                        wire_hash = _sha256_text(
+                            _agentic_flash_completed_response(completed, projected_id)
+                        )
+                        legacy_wire_hash = _sha256_text(
+                            completed + "\n\n[Jack Work ID: "
+                            + _agentic_visible_turn_label(projected_id) + "]"
+                        )
+                        recovered_flash = True
+                else:
+                    wire_hash = _sha256_text(prior_wire)
                 try:
                     user_json = json.dumps(
                         {key: value for key, value in prior_user.items()
@@ -13351,8 +13500,20 @@ def _agentic_begin_turn(history: List[Dict[str, Any]], *, fresh: bool) -> Option
                 except (ValueError, TypeError):
                     continue
                 verified = _agentic_forensic_journal().match_visible_turn(
-                    prior_id, _sha256_text(user_json), _sha256_text(prior_wire)
+                    prior_id, _sha256_text(user_json), wire_hash
                 )
+                if verified is None and recovered_flash and legacy_wire_hash is not None:
+                    verified = _agentic_forensic_journal().match_visible_turn(
+                        prior_id, _sha256_text(user_json), legacy_wire_hash
+                    )
+                if verified is not None and recovered_flash:
+                    if (
+                        verified["stage2_attempt"] is not None
+                        or verified["memory_chars"] != 0
+                        or verified["receipt_chars"] != 0
+                        or verified["a1_sha256"] != _sha256_text(prior_wire)
+                    ):
+                        verified = None
                 if verified is not None:
                     prior_ledger = _agentic_forensic_journal().ledger(prior_id)
             if prior_ledger is not None:
@@ -14895,8 +15056,8 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
         return
     if selected == "Local Agentic (Preserve Thinking)":
         print()
-        print("Agentic profile (two-stage lifecycle in all profiles)")
-        print("  1) Flash      - Stage 1 OFF, Stage 2 OFF, no extensions")
+        print("Agentic profile")
+        print("  1) Flash      - single model stage, thinking OFF, no extensions")
         print("  2) Balanced   - Stage 1 ON,  Stage 2 OFF, no extensions (Default)")
         print("  3) Thorough   - Stage 1 ON,  Stage 2 ON, no extensions")
         print("  4) Translated - Thorough + Stage 1 translation extension, Stage 2 ON")
