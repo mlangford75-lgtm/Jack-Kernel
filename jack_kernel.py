@@ -1194,9 +1194,9 @@ No consequential working state established.
 </Prime_Directive>"""
 
 
-# Only Balanced and Thorough receive the exhaustive retention update. Keep the
+# Only Balanced and Thorough-family profiles receive the exhaustive retention update. Keep the
 # approved legacy/source-only directives byte-for-byte intact as baselines, and
-# leave Flash/Exhaustive unchanged. This changes the retention criterion, not
+# leave Flash unchanged; Translated inherits Thorough retention. This changes the retention criterion, not
 # Stage-2 thinking controls, Stage-1 reasoning transport, or tool authority.
 _AGENTIC_STAGE2_EXHAUSTIVE_PRESERVATION = (
     "Preserve exhaustively the consequential working knowledge established in the "
@@ -5396,7 +5396,7 @@ def _agentic_visible_memory_header(turn_id: Optional[str]) -> str:
     # Flash needs its host-authenticated Work ID in the committed output to
     # recover a verified predecessor after history compaction, even when the
     # optional legacy transaction-link experiment is OFF. This does not alter
-    # Thorough, Balanced or Exhaustive request/content presentation.
+    # Thorough, Balanced or Translated request/content presentation.
     if not (AGENTIC_MODE and (AGENTIC_TRANSACTION_LINKS_ENABLED or AGENTIC_FLASH_MODE) and turn_id):
         return ""
     label = _agentic_visible_turn_label(turn_id)
