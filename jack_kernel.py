@@ -13550,6 +13550,10 @@ def _runtime_identity_details() -> Dict[str, Any]:
         "reasoning_profile": "deep-research" if _reasoning_level == "ultra" else _reasoning_level,
         "mode": mode,
         "translation_target_language": TRANSLATOR_LANGUAGES[TRANSLATOR_LANGUAGE] if TRANSLATOR_MODE else None,
+        "agentic_translation_target_language": (
+            TRANSLATOR_LANGUAGES[AGENTIC_TRANSLATED_LANGUAGE]
+            if AGENTIC_TRANSLATED_MODE else None
+        ),
         "flow": flow,
         "authoritative_stage": authoritative_stage,
         "preserve_thinking": bool(CFG.preserve_thinking),
@@ -14260,6 +14264,7 @@ CLI_DEFAULTS: Dict[str, Any] = {
     "reasoning_level": "Local Agentic (Preserve Thinking)",
     "agentic_profile": "balanced",
     "translator_language": "en",
+    "translated_language": "en",
     "preserve_thinking": True,
     "backend_timeout_seconds": 1800.0,
     "reasoning_budget_tokens": 100000,
@@ -14340,7 +14345,9 @@ def _load_cli_config() -> Dict[str, Any]:
             for key in cfg:
                 if key in loaded:
                     cfg[key] = loaded[key]
-            # Preserve saved Exhaustive selection: it now has its own review stage.
+            # Migrate the retired Exhaustive profile to Translated.
+            if str(cfg.get("agentic_profile", "")).lower() == "exhaustive":
+                cfg["agentic_profile"] = "translated"
             cfg["backend_profile"] = _normalize_backend_profile(str(cfg.get("backend_profile", "lmstudio")))
             legacy_reasoning = str(cfg.get("reasoning_level", "x-high")).strip().lower()
             migrated_reasoning = _REASONING_LEVEL_ALIASES.get(legacy_reasoning, legacy_reasoning)
@@ -14710,6 +14717,9 @@ def _print_header(
     print(_status_value("Reasoning level", level_profile["label"]))
     if level_profile["mode"] == "agentic":
         print(_status_value("Agentic profile", str(cfg.get("agentic_profile", "balanced")).capitalize()))
+        if str(cfg.get("agentic_profile", "balanced")).lower() == "translated":
+            language = _TRANSLATOR_LANGUAGE_ALIASES.get(str(cfg.get("translated_language", "en")).lower(), "en")
+            print(_status_value("Translated target", TRANSLATOR_LANGUAGES[language]))
     elif level_profile["mode"] == "translator":
         lang = _TRANSLATOR_LANGUAGE_ALIASES.get(str(cfg.get("translator_language", "en")).lower(), "en")
         print(_status_value("Target language", TRANSLATOR_LANGUAGES[lang]))
@@ -14729,7 +14739,7 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
     print("  3) Medium")
     print("  4) X-High (Default)")
     print("  5) Agentic")
-    print("  6) Translator")
+    print(_ansi_rgb("  6) Translator (Coming Soon)", _JACK_MUTED))
     print("  7) Code Debugging")
     print("  8) Code Debugging (Deep)")
 
@@ -14743,6 +14753,9 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
         return
     if choice in {"2", "low"}:
         print(_ansi_rgb("Low is disabled in Jack Kernel v0.1.1 and cannot be selected.", _JACK_MUTED))
+        return
+    if choice in {"6", "translator", "translate", "translation"}:
+        print(_ansi_rgb("Translator (Coming Soon) cannot be selected.", _JACK_MUTED))
         return
     mapping = {
         "1": "off", "off": "off", "flash": "off",
@@ -14763,20 +14776,44 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
         print("  1) Flash      - Stage 1 OFF, Stage 2 OFF, no extensions")
         print("  2) Balanced   - Stage 1 ON,  Stage 2 OFF, no extensions (Default)")
         print("  3) Thorough   - Stage 1 ON,  Stage 2 ON, no extensions")
-        print("  4) Exhaustive - Stage 1 ON + review ON, Stage 2 ON")
+        print("  4) Translated - Thorough + Stage 1 translation extension, Stage 2 ON")
         print()
         agentic_choice = _cli_input("Select Agentic profile [1-4] [2]: ").strip().lower() or "2"
         selected_profile = {"1": "flash", "flash": "flash",
                             "2": "balanced", "balanced": "balanced",
                             "3": "thorough", "thorough": "thorough",
-                            "4": "exhaustive", "exhaustive": "exhaustive"}.get(agentic_choice)
+                            "4": "translated", "translated": "translated"}.get(agentic_choice)
         if selected_profile is None:
             print("Invalid Agentic profile; keeping current reasoning level.")
             return
+        if selected_profile == "translated":
+            print()
+            print("Translate the completed Stage 1 response into:")
+            for index, (code, name) in enumerate(TRANSLATOR_LANGUAGES.items(), 1):
+                print(f"  {index:2}) {name}")
+            default_code = _TRANSLATOR_LANGUAGE_ALIASES.get(
+                str(cfg.get("translated_language", "en")).lower(), "en"
+            )
+            default_index = list(TRANSLATOR_LANGUAGES).index(default_code) + 1
+            language_choice = _cli_input(
+                f"Select target language [1-{len(TRANSLATOR_LANGUAGES)}] [{default_index}]: "
+            ).strip().lower() or str(default_index)
+            language_codes = list(TRANSLATOR_LANGUAGES)
+            selected_language = (
+                language_codes[int(language_choice) - 1]
+                if language_choice.isdecimal() and 1 <= int(language_choice) <= len(language_codes)
+                else _TRANSLATOR_LANGUAGE_ALIASES.get(language_choice)
+            )
+            if selected_language is None:
+                print("Invalid language selection; keeping current Agentic profile.")
+                return
+            cfg["translated_language"] = selected_language
+            print(f"Translated target language: {TRANSLATOR_LANGUAGES[selected_language]}")
         cfg["agentic_profile"] = selected_profile
         print(f"Agentic profile set to {selected_profile.capitalize()}.")
     elif selected == "translator":
-        print()
+        print(_ansi_rgb("Translator (Coming Soon) cannot be selected.", _JACK_MUTED))
+        return
         print("Translator target language (source language detected automatically)")
         for index, (code, name) in enumerate(TRANSLATOR_LANGUAGES.items(), 1):
             print(f"  {index:2}) {name}")
@@ -15191,6 +15228,7 @@ def _config_to_env(cfg: Dict[str, Any]) -> Dict[str, str]:
         "JACK_REASONING_LEVEL": cfg["reasoning_level"],
         "JACK_AGENTIC_PROFILE": cfg.get("agentic_profile", "balanced"),
         "JACK_TRANSLATOR_LANGUAGE": cfg.get("translator_language", "en"),
+        "JACK_TRANSLATED_LANGUAGE": cfg.get("translated_language", "en"),
         "JACK_PRESERVE_THINKING": "1" if cfg.get("preserve_thinking", True) else "0",
         "JACK_BACKEND_TIMEOUT_SECONDS": cfg["backend_timeout_seconds"],
         "JACK_REASONING_BUDGET_TOKENS": cfg.get("reasoning_budget_tokens", 100000),
@@ -15254,6 +15292,9 @@ def _start_server_from_cli(cfg: Dict[str, Any]) -> None:
     print(f"Reasoning level  : {REASONING_PROFILES.get(level_key, REASONING_PROFILES['x-high'])['label']}")
     if REASONING_PROFILES.get(level_key, {}).get("mode") == "agentic":
         print(f"Agentic profile  : {str(cfg.get('agentic_profile', 'balanced')).capitalize()}")
+        if str(cfg.get("agentic_profile", "balanced")).lower() == "translated":
+            language = _TRANSLATOR_LANGUAGE_ALIASES.get(str(cfg.get("translated_language", "en")).lower(), "en")
+            print(f"Translated target: {TRANSLATOR_LANGUAGES[language]}")
     elif REASONING_PROFILES.get(level_key, {}).get("mode") == "translator":
         lang = _TRANSLATOR_LANGUAGE_ALIASES.get(str(cfg.get("translator_language", "en")).lower(), "en")
         print(f"Target language  : {TRANSLATOR_LANGUAGES[lang]}")
