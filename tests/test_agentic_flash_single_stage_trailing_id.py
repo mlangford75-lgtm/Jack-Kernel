@@ -117,3 +117,56 @@ def test_flash_distinct_turns_do_not_change_leading_prompt(kernel):
     )
     assert not any("Authenticated current work ID:" in json.dumps(m) for m in model_view)
     assert kernel._agentic_unwrap_flash_trailing_id(first.content)[0] == first_id
+
+
+def test_flash_stream_calls_backend_once_and_has_no_stage2(kernel):
+    import asyncio
+    import httpx
+
+    calls = []
+
+    def responder(request):
+        calls.append(json.loads(request.content))
+        chunks = [
+            {"choices": [{"index": 0, "delta": {"content": "Flash response"}, "finish_reason": None}]},
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+             "usage": {"prompt_tokens": 45, "completion_tokens": 3, "total_tokens": 48}},
+        ]
+        return httpx.Response(
+            200,
+            text="".join("data: " + json.dumps(chunk) + "\n\n" for chunk in chunks)
+                 + "data: [DONE]\n\n",
+            headers={"content-type": "text/event-stream"},
+        )
+
+    async def run():
+        backend = kernel.BACKEND
+        await backend._client.aclose()
+        backend._client = httpx.AsyncClient(transport=httpx.MockTransport(responder))
+
+        async def resolve():
+            return "test-model"
+
+        backend.resolve_model = resolve
+        chunks = []
+        try:
+            async for chunk in kernel.KERNEL.stream({
+                "model": "jack-kernel",
+                "stream": True,
+                "messages": [{"role": "user", "content": "Say hello"}],
+            }):
+                chunks.append(chunk)
+        finally:
+            await backend._client.aclose()
+        return chunks
+
+    wire = b"".join(asyncio.run(run())).decode("utf-8")
+    assert len(calls) == 1, "Flash must make exactly one backend request"
+    assert "data: [DONE]\n\n" in wire
+    assert "Flash response" in wire
+    assert "Jack Work ID:" in wire
+    assert "STAGE 2 REASONING DISTILLATION" not in wire
+    assert calls[0]["messages"][0]["role"] == "system"
+    assert "Authenticated current work ID:" not in calls[0]["messages"][0]["content"]
+    assert "reasoning_effort" in calls[0]
+    assert calls[0]["reasoning_effort"] == "none"
