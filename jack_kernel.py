@@ -19,7 +19,7 @@ and is the sole authoritative reasoning/execution/final-answer stage. Full
 active cognition is preserved through Synthesis; only Stage-1/Stage-2 native
 reasoning is retired on later re-entry. Deep Research emits no Jack XML.
 
-Agentic is a two-stage retrospective memory program. Stage 1 receives
+Agentic normally uses two stages; Flash uses one model stage and commits directly. Stage 1 receives
 full native cognition and caller-authorized tools, produces A1, and freezes
 that exact answer. Stage 2 has tools off and zero answer authority; while the
 Stage-1 reasoning/tool episode remains available where supported, it produces
@@ -11499,7 +11499,8 @@ class JackQwenKernel:
             return
         """Stream the active Jack reasoning program.
 
-        Agentic keeps its two-stage frozen-A1/XML behavior. Deep Research runs a full-retention
+        Agentic uses two-stage frozen-A1/memory behavior except Flash, which
+        commits its Stage-1 answer directly. Deep Research runs a full-retention
         Thesis -> Antithesis -> Synthesis transaction. Code Debugging runs five fresh
         report-only inspection passes with report-backed rehydration and exposes only the final report.
         """
@@ -15046,8 +15047,8 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
         return
     if selected == "Local Agentic (Preserve Thinking)":
         print()
-        print("Agentic profile (two-stage lifecycle in all profiles)")
-        print("  1) Flash      - Stage 1 OFF, Stage 2 OFF, no extensions")
+        print("Agentic profile")
+        print("  1) Flash      - single model stage, thinking OFF, no extensions")
         print("  2) Balanced   - Stage 1 ON,  Stage 2 OFF, no extensions (Default)")
         print("  3) Thorough   - Stage 1 ON,  Stage 2 ON, no extensions")
         print("  4) Translated - Thorough + Stage 1 translation extension, Stage 2 ON")
