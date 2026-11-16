@@ -922,7 +922,7 @@ AGENTIC_FLASH_MODE = AGENTIC_MODE and CFG.agentic_profile == "flash"
 AGENTIC_THOROUGH_MODE = AGENTIC_MODE and CFG.agentic_profile == "thorough"
 AGENTIC_TRANSLATED_MODE = AGENTIC_MODE and CFG.agentic_profile == "translated"
 # Source-only working memory is a shared kernel policy for Flash, Balanced,
-# Thorough, and Exhaustive. Profiles differ only in their reasoning budgets
+# Thorough, and Translated. Profiles differ only in their reasoning budgets
 # and Stage-1 review; Jack still owns canonical U, A1, IDs, and tool history.
 AGENTIC_SOURCE_ONLY_WORKING_STATE = AGENTIC_MODE
 # Flash and Balanced have Stage-2 native thinking off; Thorough and Translated
@@ -14811,27 +14811,6 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
             print(f"Translated target language: {TRANSLATOR_LANGUAGES[selected_language]}")
         cfg["agentic_profile"] = selected_profile
         print(f"Agentic profile set to {selected_profile.capitalize()}.")
-    elif selected == "translator":
-        print(_ansi_rgb("Translator (Coming Soon) cannot be selected.", _JACK_MUTED))
-        return
-        print("Translator target language (source language detected automatically)")
-        for index, (code, name) in enumerate(TRANSLATOR_LANGUAGES.items(), 1):
-            print(f"  {index:2}) {name}")
-        print()
-        language_choice = _cli_input(
-            f"Select target language [1-{len(TRANSLATOR_LANGUAGES)}] [1]: "
-        ).strip().lower() or "1"
-        language_codes = list(TRANSLATOR_LANGUAGES)
-        selected_language = (
-            language_codes[int(language_choice) - 1]
-            if language_choice.isdecimal() and 1 <= int(language_choice) <= len(language_codes)
-            else _TRANSLATOR_LANGUAGE_ALIASES.get(language_choice)
-        )
-        if selected_language is None:
-            print("Invalid language selection; keeping current reasoning level.")
-            return
-        cfg["translator_language"] = selected_language
-        print(f"Translator target language set to {TRANSLATOR_LANGUAGES[selected_language]}.")
     cfg["reasoning_level"] = selected
     print(f"Reasoning level set to {REASONING_PROFILES[selected]['label']}.")
 
