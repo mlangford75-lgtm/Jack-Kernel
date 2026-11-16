@@ -111,6 +111,13 @@ def test_translated_extension_is_a_same_turn_second_stage1_generation(monkeypatc
             assert "tool_calls" not in json.dumps(observed[1]["messages"])
             assert "tools" not in observed[1]
             assert "tool_choice" not in observed[1]
+            # Only the translation continuation disables native thinking.
+            assert observed[0]["chat_template_kwargs"]["enable_thinking"] is True
+            assert observed[1]["chat_template_kwargs"]["enable_thinking"] is False
+            assert observed[1]["chat_template_kwargs"]["preserve_thinking"] is False
+            assert observed[1]["reasoning_effort"] == "none"
+            assert k.STAGES["extended_initial"].thinking is True
+            assert k.STAGES["extended_reflection"].thinking is True
         finally:
             await backend._client.aclose()
 
@@ -199,3 +206,13 @@ def test_translated_tool_call_guard_allows_ordinary_translation(monkeypatch, tmp
     msg = {"role": "assistant", "content": "L'espace de travail est vide."}
     k._agentic_translated_guard_literal_tool_call(h, msg)
     assert msg["content"] == "L'espace de travail est vide."
+
+
+def test_translated_memory_is_english_only_and_thorough_unchanged(monkeypatch, tmp_path):
+    translated = load(monkeypatch, tmp_path, "translated", "fr")
+    assert "Write the retained working knowledge in English" in translated.AGENTIC_36_STAGE2_PROMPT
+    assert translated.STAGES["extended_reflection"].thinking is True
+    assert translated._agentic_zero_reasoning(translated.STAGES["extended_initial"]) is False
+    thorough = load(monkeypatch, tmp_path, "thorough", "fr")
+    assert "Write the retained working knowledge in English" not in thorough.AGENTIC_36_STAGE2_PROMPT
+    assert thorough.STAGES["extended_reflection"].thinking is True
