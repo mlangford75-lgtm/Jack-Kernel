@@ -1,6 +1,8 @@
-"""Four Agentic profiles: exact Stage-1 directive, single-pass Stage-2 scheduling.
+"""Agentic profile routing and Stage-1 translation-extension regression coverage.
 
-Tests exercise outbound generations and native-thinking controls, not model quality.
+The retired Exhaustive mode is replaced by Translated. Translated retains
+Thorough's two thinking-on stages and source-only working-memory contract;
+only Translated adds a same-turn Stage-1 translation continuation.
 """
 import asyncio
 import importlib.util
@@ -13,163 +15,127 @@ import httpx
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-STAGE1_EXTENSION = "Wait, re-verify the latest reasoning and chain-of-thought. Test for errors, mistakes, or poor quality. Make changes, if necessary, to ensure alignment with the instructions and user request before responding"
-
 MATRIX = [
     ("flash", False, False, False),
     ("balanced", True, False, False),
     ("thorough", True, False, True),
-    ("exhaustive", True, True, True),
+    ("translated", True, True, True),
 ]
 
 
-def load(monkeypatch, tmp_path, profile):
+def load(monkeypatch, tmp_path, profile, language="es"):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
     monkeypatch.setenv("JACK_AGENTIC_PROFILE", profile)
-    # Intentionally set conflicting legacy toggles: profiles own their routing.
-    monkeypatch.setenv("JACK_AGENTIC_FINAL_REVIEW", "1" if profile in {"flash", "balanced"} else "0")
-    monkeypatch.setenv("JACK_AGENTIC_STAGE2_FINAL_REVIEW", "1")  # obsolete override must have no effect
-    monkeypatch.setenv("JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT", "0")
-    monkeypatch.setenv("JACK_BACKEND_MODEL", "test-model")
-    monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
+    monkeypatch.setenv("JACK_TRANSLATED_LANGUAGE", language)
     monkeypatch.setenv("JACK_FORENSIC_ARCHIVE_MODE", "off")
-    monkeypatch.setenv("JACK_AGENTIC_FORENSIC_DB", str(tmp_path / (uuid.uuid4().hex + '.sqlite')))
-    name = 'agentic_three_profiles_' + uuid.uuid4().hex
-    spec = importlib.util.spec_from_file_location(name, ROOT / 'jack_kernel.py')
-    k = importlib.util.module_from_spec(spec)
-    sys.modules[name] = k
-    spec.loader.exec_module(k)
-    return k
-
-
-async def run_stage(k, stage_key, streaming):
-    payloads = []
-
-    def responder(request):
-        payload = json.loads(request.content)
-        payloads.append(payload)
-        n = len(payloads)
-        text = f"Output {n}"
-        if streaming:
-            rows = [
-                {"choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}]},
-                {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-                 "usage": {"prompt_tokens": 30, "completion_tokens": 5, "total_tokens": 35}},
-            ]
-            return httpx.Response(200, text=''.join('data: ' + json.dumps(x) + '\n\n' for x in rows) + 'data: [DONE]\n\n',
-                                  headers={"content-type": "text/event-stream"})
-        return httpx.Response(200, json={
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 30, "completion_tokens": 5, "total_tokens": 35},
-        })
-
-    backend = k.OpenAICompatibleBackend(k.CFG)
-    await backend._client.aclose()
-    backend._client = httpx.AsyncClient(transport=httpx.MockTransport(responder))
-
-    async def model():
-        return 'test-model'
-
-    backend.resolve_model = model
-    kernel = k.JackQwenKernel(backend, k.CFG)
-    h = [{"role": "user", "content": "Check that the output follows the request."}]
-    if stage_key == "extended_reflection":
-        h.append({"role": "assistant", "content": "Draft response", "reasoning_content": "R1 source content",
-                  "_jack_extended_candidate_response": True, "_jack_stage_key": "extended_initial"})
-    usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-    try:
-        if streaming:
-            packets = [p async for p in kernel._run_stage_streamed(
-                h, "", stage_key, usage, tools=None, tool_choice=None, append=False)]
-            result = [p["data"] for p in packets if p["kind"] == "result"]
-            assert len(result) == 1
-            result = result[0]
-        else:
-            result = await kernel._run_stage(
-                h, "", stage_key, usage, tools=None, tool_choice=None, append=False)
-        return payloads, h, usage, result
-    finally:
-        await backend._client.aclose()
-
-
-@pytest.mark.parametrize('streaming', [False, True])
-@pytest.mark.parametrize('profile,stage1_thinking,stage1_extra,stage2_thinking', MATRIX)
-def test_profile_matrix_and_exact_continuations(
-    monkeypatch, tmp_path, streaming, profile, stage1_thinking, stage1_extra, stage2_thinking
-):
-    k = load(monkeypatch, tmp_path, profile)
-    assert k.CFG.agentic_final_review is stage1_extra
-    assert not hasattr(k.CFG, 'agentic_stage2_final_review')
-    assert k.STAGES['extended_initial'].thinking is stage1_thinking
-    assert k.STAGES['extended_reflection'].thinking is stage2_thinking
-    assert not k.STAGES['extended_reflection'].allow_tools
-    assert k.AGENTIC_FINAL_REVIEW_PROMPT == STAGE1_EXTENSION
-    assert k.AGENTIC_36_STAGE2_PROMPT.count('Remove repetition, unnecessary deliberation, and conversational language.') == 1
-
-    first, h1, usage1, out1 = asyncio.run(run_stage(k, 'extended_initial', streaming))
-    assert len(first) == 1 + int(stage1_extra)
-    assert usage1['completion_tokens'] == len(first) * 5
-    assert out1['choices'][0]['message']['content'] == f'Output {len(first)}'
-    for payload in first:
-        assert payload['chat_template_kwargs']['enable_thinking'] is stage1_thinking
-    if stage1_extra:
-        assert first[1]['messages'][1] == {'role': 'system', 'content': k.AGENTIC_FINAL_REVIEW_TRIGGER}
-        # The review must retain the authenticated user request as its final
-        # model-facing user message, not the former synthetic period.
-        assert first[1]['messages'][-1]['role'] == 'user'
-        assert first[1]['messages'][-1]['content'] == k.active_response_target(h1)['content']
-        assert first[1]['messages'][-1]['content'] != '.'
-        assert first[1]['messages'][-2]['content'] == 'Output 1'
-
-    second, h2, usage2, out2 = asyncio.run(run_stage(k, 'extended_reflection', streaming))
-    assert len(second) == 1
-    assert usage2['completion_tokens'] == 5
-    assert out2['choices'][0]['message']['content'] == 'Output 1'
-    for payload in second:
-        assert payload['chat_template_kwargs']['enable_thinking'] is stage2_thinking
-        assert 'tools' not in payload
-    assert not any(m.get('_jack_internal_agentic_stage2_review_trigger') for m in h2)
-    if profile in {'balanced', 'thorough', 'exhaustive'}:
-        assert second[0]['messages'][-2]['reasoning_content'] == 'R1 source content'
-        assert second[0]['chat_template_kwargs']['preserve_thinking'] is True
-    else:
-        assert 'reasoning_content' not in second[0]['messages'][-2]
-
-
-def test_default_profile_is_balanced_and_both_legacy_toggles_ignored(monkeypatch, tmp_path):
-    monkeypatch.delenv('JACK_AGENTIC_PROFILE', raising=False)
-    k = load(monkeypatch, tmp_path, 'balanced')
-    assert k.CFG.agentic_profile == 'balanced'
-    assert not k.CFG.agentic_final_review
-    assert not hasattr(k.CFG, 'agentic_stage2_final_review')
-
-
-def test_exhaustive_is_a_runtime_profile(monkeypatch, tmp_path):
-    monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
-    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "exhaustive")
-    monkeypatch.setenv("JACK_FORENSIC_ARCHIVE_MODE", "off")
-    name = "active_exhaustive_" + uuid.uuid4().hex
+    monkeypatch.setenv("JACK_AGENTIC_FORENSIC_DB", str(tmp_path / (uuid.uuid4().hex + ".sqlite")))
+    name = "agentic_profiles_" + uuid.uuid4().hex
     spec = importlib.util.spec_from_file_location(name, ROOT / "jack_kernel.py")
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
-    assert module.CFG.agentic_profile == "exhaustive"
-    assert module.CFG.agentic_final_review is True
-    assert module.STAGES["extended_reflection"].thinking is True
+    return module
 
 
-def test_saved_exhaustive_config_remains_exhaustive(monkeypatch, tmp_path):
+@pytest.mark.parametrize("profile,stage1_thinking,extension,stage2_thinking", MATRIX)
+def test_profile_matrix(monkeypatch, tmp_path, profile, stage1_thinking, extension, stage2_thinking):
+    k = load(monkeypatch, tmp_path, profile)
+    assert k.STAGES["extended_initial"].thinking is stage1_thinking
+    assert k.STAGES["extended_reflection"].thinking is stage2_thinking
+    assert not k.STAGES["extended_reflection"].allow_tools
+    assert k.CFG.agentic_final_review is extension
+    assert k._agentic_zero_reasoning(k.STAGES["extended_reflection"]) is (profile in {"flash", "balanced"})
+    if profile in {"thorough", "translated"}:
+        assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
+    if profile == "translated":
+        assert "Spanish" in k.AGENTIC_FINAL_REVIEW_TRIGGER
+        assert "Translate the completed Stage 1 response" in k.AGENTIC_FINAL_REVIEW_TRIGGER
+        assert k._runtime_identity_details()["agentic_translation_target_language"] == "Spanish"
+    else:
+        assert "Spanish" not in k.AGENTIC_FINAL_REVIEW_TRIGGER
+
+
+@pytest.mark.parametrize("streaming", (False, True))
+def test_translated_extension_is_a_same_turn_second_stage1_generation(monkeypatch, tmp_path, streaming):
+    k = load(monkeypatch, tmp_path, "translated", "fr")
+    observed = []
+
+    def responder(request):
+        payload = json.loads(request.content)
+        observed.append(payload)
+        value = "Original English response." if len(observed) == 1 else "Réponse française."
+        if streaming:
+            parts = [
+                {"choices": [{"index": 0, "delta": {"content": value}, "finish_reason": None}]},
+                {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                 "usage": {"prompt_tokens": 12, "completion_tokens": 5, "total_tokens": 17}},
+            ]
+            return httpx.Response(
+                200,
+                text="".join("data: " + json.dumps(p) + "\n\n" for p in parts) + "data: [DONE]\n\n",
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(200, json={
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": value}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 12, "completion_tokens": 5, "total_tokens": 17},
+        })
+
+    async def run():
+        backend = k.OpenAICompatibleBackend(k.CFG)
+        await backend._client.aclose()
+        backend._client = httpx.AsyncClient(transport=httpx.MockTransport(responder))
+        async def model():
+            return "test-model"
+        backend.resolve_model = model
+        kernel = k.JackQwenKernel(backend, k.CFG)
+        history = [{"role": "user", "content": "Explain the result."}]
+        usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        try:
+            if streaming:
+                packets = [p async for p in kernel._run_stage_streamed(
+                    history, "", "extended_initial", usage, append=False
+                )]
+                results = [p["data"] for p in packets if p["kind"] == "result"]
+                assert len(results) == 1
+                result = results[0]
+            else:
+                result = await kernel._run_stage(
+                    history, "", "extended_initial", usage, append=False
+                )
+            assert result["choices"][0]["message"]["content"] == "Réponse française."
+            assert len(observed) == 2
+            assert observed[1]["messages"][0]["role"] == "system"
+            assert "French" in observed[1]["messages"][0]["content"]
+            assert observed[1]["messages"][-1]["role"] == "user"
+            assert any(
+                m["role"] == "assistant" and m.get("content") == "Original English response."
+                for m in observed[1]["messages"]
+            )
+            assert "tools" not in observed[1]
+            assert "tool_choice" not in observed[1]
+        finally:
+            await backend._client.aclose()
+
+    asyncio.run(run())
+
+
+def test_retired_exhaustive_and_document_translator_not_selectable(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path, "balanced")
-    config_path = tmp_path / "config.json"
-    config_path.write_text(json.dumps({
+    assert k.REASONING_PROFILES["translator"]["disabled"]
+    assert "Coming Soon" in k.REASONING_PROFILES["translator"]["label"]
+    with pytest.raises(RuntimeError, match="flash, balanced, thorough, or translated"):
+        load(monkeypatch, tmp_path, "exhaustive")
+
+
+def test_saved_exhaustive_migrates_without_reenabling_it(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path, "balanced")
+    saved = tmp_path / "config.json"
+    saved.write_text(json.dumps({
         "config_schema_version": k.CONFIG_SCHEMA_VERSION,
         "agentic_profile": "exhaustive",
         "backend_model": "test-model",
     }), encoding="utf-8")
-    monkeypatch.setattr(k, "_config_paths", lambda: (config_path, tmp_path / "secondary.txt"))
+    monkeypatch.setattr(k, "_config_paths", lambda: (saved, tmp_path / "secondary.txt"))
     loaded = k._load_cli_config()
-    assert loaded["agentic_profile"] == "exhaustive"
-    assert k._config_to_env(loaded)["JACK_AGENTIC_PROFILE"] == "exhaustive"
-    assert k._config_to_env({"agentic_profile":"exhaustive", **{
-        key: val for key, val in loaded.items() if key != "agentic_profile"
-    }})["JACK_AGENTIC_PROFILE"] == "exhaustive"
+    assert loaded["agentic_profile"] == "translated"
+    assert k._config_to_env(loaded)["JACK_AGENTIC_PROFILE"] == "translated"
