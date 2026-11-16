@@ -137,3 +137,65 @@ def test_saved_exhaustive_migrates_without_reenabling_it(monkeypatch, tmp_path):
     loaded = k._load_cli_config()
     assert loaded["agentic_profile"] == "translated"
     assert k._config_to_env(loaded)["JACK_AGENTIC_PROFILE"] == "translated"
+
+
+def test_translated_projection_never_replays_authenticated_request_or_tools(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path, "translated", "de")
+    authenticated_request = "Inspect a local workspace and execute bash."
+    original_reasoning = "The user requested file inspection."
+    previous_tool_call = "call-real-1"
+    h = [
+        {"role": "user", "content": authenticated_request},
+        {"role": "assistant", "content": "", "reasoning_content": original_reasoning,
+         "_jack_internal_tool_exchange": True,
+         "tool_calls": [{"id": previous_tool_call, "type": "function", "function": {
+             "name": "bash", "arguments": '{"command":"ls -la"}'
+         }}]},
+        {"role": "tool", "tool_call_id": previous_tool_call, "content": "only . and ..",
+         "_jack_internal_tool_exchange": True},
+    ]
+    k._agentic_begin_final_review(h, {"choices": [{"finish_reason": "stop", "message": {
+        "role": "assistant", "content": "Workspace is empty.",
+        "reasoning_content": "Confirmed by ls listing."
+    }}]})
+    original_h = json.dumps(h, ensure_ascii=False)
+    payload = [{"role": "system", "content": "This will be overwritten."},
+               {"role": "user", "content": authenticated_request}]
+    k._agentic_translated_project_completed_answer(payload, h)
+    assert [m["role"] for m in payload] == ["system", "user"]
+    assert "German" in payload[0]["content"]
+    assert "Workspace is empty." in payload[1]["content"]
+    wire = json.dumps(payload, ensure_ascii=False)
+    for forbidden in (authenticated_request, previous_tool_call, original_reasoning,
+                      "only . and ..", "bash", "tool_calls"):
+        assert forbidden not in wire
+    assert json.dumps(h, ensure_ascii=False) == original_h
+
+
+def test_translated_literal_fake_tool_call_preserves_verified_stage1_draft(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path, "translated", "es")
+    h = [{"role": "user", "content": "Verify the workspace."}]
+    k._agentic_begin_final_review(h, {"choices": [{"finish_reason": "stop", "message": {
+        "role": "assistant", "content": "The workspace is empty."
+    }}]})
+    model_message = {"role": "assistant", "content": (
+        "I should check the folder again.<tool_call><function=bash>"
+        "<parameter=command>ls -la</parameter></function></tool_call>"
+    )}
+    k._agentic_translated_guard_literal_tool_call(h, model_message)
+    assert "original completed response preserved" in model_message["content"]
+    assert "The workspace is empty." in model_message["content"]
+    assert "<tool_call>" not in model_message["content"]
+    assert "tool_calls" not in model_message
+    assert h[-2]["content"] == "The workspace is empty."
+
+
+def test_translated_tool_call_guard_allows_ordinary_translation(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path, "translated", "fr")
+    h = [{"role": "user", "content": "Verify the workspace."}]
+    k._agentic_begin_final_review(h, {"choices": [{"finish_reason": "stop", "message": {
+        "role": "assistant", "content": "The workspace is empty."
+    }}]})
+    msg = {"role": "assistant", "content": "L'espace de travail est vide."}
+    k._agentic_translated_guard_literal_tool_call(h, msg)
+    assert msg["content"] == "L'espace de travail est vide."
