@@ -56,7 +56,7 @@ def commit(kernel, question="Original request", answer="Exact answer\n"):
 def test_flash_commits_from_stage1_without_stage2(kernel):
     work_id, result = commit(kernel)
     label = kernel._agentic_visible_turn_label(work_id)
-    assert result.content == "Exact answer\n" + "\n\n[Jack Work ID: " + label + "]"
+    assert result.content == "Exact answer\n" + "\n\n[Work ID: " + label + "]"
     recovered, frozen = kernel._agentic_unwrap_flash_trailing_id(result.content)
     assert recovered == work_id and frozen == "Exact answer\n"
     row = kernel._agentic_forensic_journal().get(work_id)
@@ -82,7 +82,7 @@ def test_flash_history_reconstructs_after_journal_restart(kernel):
     assert json.dumps(inputs, sort_keys=True) == original
     assert projected[1]["role"] == "assistant"
     assert projected[1]["content"] == "Exact answer\n"
-    assert "[Jack Work ID:" not in json.dumps(projected)
+    assert "[Work ID:" not in json.dumps(projected)
     assert projected[1]["_jack_forensic_turn_id"] == work_id
     assert projected[-1]["content"] == "Second request"
     successor = kernel._agentic_begin_turn(projected, fresh=True)
@@ -91,7 +91,7 @@ def test_flash_history_reconstructs_after_journal_restart(kernel):
     model_view = kernel.BACKEND._stage_messages_for_profile(
         projected, kernel.STAGES["extended_initial"]
     )
-    assert not any("Jack Work ID" in json.dumps(item) for item in model_view)
+    assert not any("Work ID" in json.dumps(item) for item in model_view)
     assert not any(successor in json.dumps(item) for item in model_view)
 
 
@@ -164,9 +164,33 @@ def test_flash_stream_calls_backend_once_and_has_no_stage2(kernel):
     assert len(calls) == 1, "Flash must make exactly one backend request"
     assert "data: [DONE]\n\n" in wire
     assert "Flash response" in wire
-    assert "Jack Work ID:" in wire
+    assert "Work ID:" in wire
     assert "STAGE 2 REASONING DISTILLATION" not in wire
     assert calls[0]["messages"][0]["role"] == "system"
     assert "Authenticated current work ID:" not in calls[0]["messages"][0]["content"]
     assert "reasoning_effort" in calls[0]
     assert calls[0]["reasoning_effort"] == "none"
+
+
+def test_previous_flash_trailer_remains_recoverable(kernel):
+    work_id, response = commit(kernel, "Legacy request", "Legacy answer")
+    shortened = response.content
+    assert shortened.endswith("]")
+    old_label = shortened.replace("[Work ID:", "[Jack Work ID:")
+    journal = kernel._agentic_forensic_journal()
+    # Old completed artifacts had a different byte-exact wire fingerprint.
+    # Simulate an original legacy commit without changing the model answer.
+    with journal._write() as db:
+        db.execute(
+            "UPDATE turns SET wire_sha256=? WHERE turn_id=?",
+            (kernel._sha256_text(old_label), work_id),
+        )
+    projected = kernel.compact_incoming_history([
+        {"role": "user", "content": "Legacy request"},
+        {"role": "assistant", "content": old_label},
+        {"role": "user", "content": "Next request"},
+    ])
+    assert projected[1]["content"] == "Legacy answer"
+    assert projected[1]["_jack_forensic_turn_id"] == work_id
+    successor = kernel._agentic_begin_turn(projected, fresh=True)
+    assert journal.ledger(successor)["scope_origin"] == "verified_predecessor"
