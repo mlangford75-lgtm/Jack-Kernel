@@ -12000,7 +12000,7 @@ class JackQwenKernel:
                     yield event({"content": completed.content or ""})
                     yield event({}, "stop")
                     yield usage_event(usage_delta(usage, response_usage_baseline))
-                    yield b"data: [DONE]\\n\\n".replace(b"\\\\n", b"\\n")
+                    yield b"data: [DONE]\n\n"
                     return
 
                 final_result = self_adversarial_results["extended_synthesis"] if ULTRA_MODE else self_adversarial_results["extended_reflection"]
