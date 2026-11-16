@@ -295,16 +295,24 @@ export default async function (pi) {
   }
 
   function syncNativeEditGuidance(event, ctx) {
-    // Pi's structured prompt can provide the alternative BEFORE tool use;
-    // only when Pi positively identifies the editor as native.
-    const guidelines = event?.systemPromptOptions?.promptGuidelines;
-    if (!Array.isArray(guidelines)) return;
+    // Native-only: never impose this instruction on third-party/SDK editors.
     const shouldGuide =
       String(ctx?.model?.provider || "") === PROVIDER_NAME &&
       editToolOrigin() === "builtin";
-    const next = guidelines.filter((line) => line !== NATIVE_EDIT_ALTERNATIVE);
-    if (shouldGuide) next.push(NATIVE_EDIT_ALTERNATIVE);
-    guidelines.splice(0, guidelines.length, ...next);
+    const guidelines = event?.systemPromptOptions?.promptGuidelines;
+    if (Array.isArray(guidelines)) {
+      const next = guidelines.filter((line) => line !== NATIVE_EDIT_ALTERNATIVE);
+      if (shouldGuide) next.push(NATIVE_EDIT_ALTERNATIVE);
+      guidelines.splice(0, guidelines.length, ...next);
+    }
+    // Pi's before_agent_start prompt is already constructed when this event
+    // fires. Mutating promptGuidelines alone may not change its actual text.
+    // Return the explicit replacement prompt through Pi's documented hook.
+    if (shouldGuide && typeof event?.systemPrompt === "string" &&
+        !event.systemPrompt.includes(NATIVE_EDIT_ALTERNATIVE)) {
+      return { systemPrompt: event.systemPrompt + "\n\n" + NATIVE_EDIT_ALTERNATIVE };
+    }
+    return undefined;
   }
 
   function reconcileEditToolAvailability(ctx) {
@@ -655,9 +663,10 @@ export default async function (pi) {
   let refreshedThisTurn = false;
   pi.on("before_agent_start", async (event, ctx) => {
     reconcileEditToolAvailability(ctx);
-    syncNativeEditGuidance(event, ctx);
+    const nativeEditPrompt = syncNativeEditGuidance(event, ctx);
     refreshedThisTurn = false;
     await syncProvider();
+    return nativeEditPrompt;
   });
   pi.on("message_end", async (event) => {
     if (event?.message?.role === "assistant" && !refreshedThisTurn) {
