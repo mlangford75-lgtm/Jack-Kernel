@@ -1243,7 +1243,15 @@ _AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE = (
     _AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE
     .replace(
         "<Prime_Directive>\n",
-        "<Prime_Directive>\n" + _AGENTIC_STAGE2_EXHAUSTIVE_PRESERVATION + "\n\n",
+        "<Prime_Directive>\n"
+        + (
+            "Write the retained working knowledge in English, regardless of the "
+            "language selected for translation of the completed answer. Preserve "
+            "source quotations, names, paths, identifiers, and technical literals "
+            "unchanged.\n\n"
+            if AGENTIC_TRANSLATED_MODE else ""
+        )
+        + _AGENTIC_STAGE2_EXHAUSTIVE_PRESERVATION + "\n\n",
         1,
     )
     .replace(
@@ -3296,8 +3304,23 @@ def _agentic_zero_reasoning(profile: StageProfile) -> bool:
         and (
             (AGENTIC_FLASH_MODE and profile.name in {"Agentic native pass 1", "Agentic native pass 2"})
             or (AGENTIC_BALANCED_MODE and profile.name == "Agentic native pass 2")
+            or (AGENTIC_TRANSLATED_MODE and profile.name == "Agentic native pass 1" and not profile.thinking)
         )
     )
+
+
+def _agentic_translated_generation_profile(
+    profile: StageProfile, history: List[Dict[str, Any]]
+) -> StageProfile:
+    """Disable thinking only for the completed-answer translation continuation."""
+    if (
+        AGENTIC_TRANSLATED_MODE
+        and profile.name == "Agentic native pass 1"
+        and _agentic_final_review_is_pending(history)
+    ):
+        return replace(profile, thinking=False, reasoning_effort=None,
+                       force_preserve_thinking=False)
+    return profile
 
 
 # No Jack-imposed generation-token ceilings. Backends retain their native
@@ -8349,6 +8372,7 @@ class JackQwenKernel:
             if force_native_resume
             else STAGES[stage_key]
         )
+        profile = _agentic_translated_generation_profile(profile, history)
         cache_append = _agentic_cache_append_enabled(profile, tool_choice)
         effective_tools = tools if (profile.allow_tools or cache_append) else None
         effective_tool_choice = tool_choice if (profile.allow_tools or cache_append) else None
@@ -8599,6 +8623,7 @@ class JackQwenKernel:
             if force_native_resume
             else STAGES[stage_key]
         )
+        profile = _agentic_translated_generation_profile(profile, history)
         cache_append = _agentic_cache_append_enabled(profile, tool_choice)
         effective_tools = tools if (profile.allow_tools or cache_append) else None
         effective_tool_choice = tool_choice if (profile.allow_tools or cache_append) else None
