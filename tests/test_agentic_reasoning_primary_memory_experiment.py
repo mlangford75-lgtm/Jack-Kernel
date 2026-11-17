@@ -180,7 +180,7 @@ def test_other_stage_does_not_see_modified_history(monkeypatch, tmp_path):
     ) is original
 
 
-def test_owned_stage2_sees_authentic_work_and_memory_attempt_ids(monkeypatch, tmp_path):
+def test_owned_stage2_keeps_authenticated_ids_in_host_state_only(monkeypatch, tmp_path):
     k = kernel(monkeypatch, tmp_path)
     initial = history()
     source_text = initial[2]["content"]
@@ -195,18 +195,15 @@ def test_owned_stage2_sees_authentic_work_and_memory_attempt_ids(monkeypatch, tm
     before = copy.deepcopy(initial)
     stage2_source = k._agentic_stage2_test_history(initial, k.STAGES["extended_reflection"])
     assert initial == before
-    assert [m["role"] for m in stage2_source] == ["system", "user", "assistant"]
-    binding = stage2_source[0]["content"]
-    assert work_id in binding
-    assert record.stage2_attempt_id in binding
-    assert stage2_source[1]["content"] == source_text
-    assert stage2_source[2]["content"] == answer_text
-    assert "Chose B." in stage2_source[2]["reasoning_content"]
+    assert [m["role"] for m in stage2_source] == ["user", "assistant"]
+    assert stage2_source[0]["content"] == source_text
+    assert stage2_source[1]["content"] == answer_text
+    assert "Chose B." in stage2_source[1]["reasoning_content"]
     projected = k.OpenAICompatibleBackend(k.CFG)._stage_messages_for_profile(
         stage2_source, k.STAGES["extended_reflection"]
     )
-    assert work_id in projected[0]["content"]
-    assert record.stage2_attempt_id in projected[0]["content"]
+    assert all(work_id not in str(m) for m in projected)
+    assert all(record.stage2_attempt_id not in str(m) for m in projected)
     assert all(not any(key.startswith("_jack_") for key in m) for m in projected)
     assert initial[2]["content"] == source_text
 
@@ -288,7 +285,7 @@ def test_stage2_rejects_inconsistent_work_binding(monkeypatch, tmp_path):
     with pytest.raises((k.ForensicConflict, k.HTTPException)):
         k._agentic_stage2_test_history(h, k.STAGES["extended_reflection"])
     h[2]["_jack_agentic_turn_id"] = old
-    assert k._agentic_stage2_test_history(h, k.STAGES["extended_reflection"])[0]["role"] == "system"
+    assert k._agentic_stage2_test_history(h, k.STAGES["extended_reflection"])[0]["role"] == "user"
 
 
 def test_stage2_rejects_changed_user_request_even_with_valid_work_id(monkeypatch, tmp_path):
@@ -303,7 +300,7 @@ def test_stage2_rejects_changed_user_request_even_with_valid_work_id(monkeypatch
     with pytest.raises(k.ForensicConflict, match="request differs"):
         k._agentic_stage2_test_history(h, k.STAGES["extended_reflection"])
     h[2]["content"] = original
-    assert k._agentic_stage2_test_history(h, k.STAGES["extended_reflection"])[1]["content"] == original
+    assert k._agentic_stage2_test_history(h, k.STAGES["extended_reflection"])[0]["content"] == original
 
 
 @pytest.mark.parametrize("stream", (False, True))
