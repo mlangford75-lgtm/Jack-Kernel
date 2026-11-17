@@ -14,7 +14,7 @@ TOOL_MODES = [
 ]
 
 @pytest.mark.parametrize("stage", TOOL_MODES)
-def test_tool_stages_preserve_initial_contract_on_confirmed_resume(stage):
+def test_tool_stages_preserve_new_system_instructions_on_confirmed_resume(stage):
     helper = Stage1CacheStabilizer()
     original = [{"role":"system","content":"caller\n\n--- JACK STAGE ---\nOriginal"}, {"role":"user","content":"task"}]
     result = helper.apply(stage=stage,turn_id="work::"+stage,messages=original,
@@ -26,8 +26,9 @@ def test_tool_stages_preserve_initial_contract_on_confirmed_resume(stage):
                  {"role":"tool","tool_call_id":"a","content":"done"}]
     result = helper.apply(stage=stage,turn_id="work::"+stage,messages=continued,
                           tool_continuation=True,eligible=True)
-    assert result["action"] == "stabilized"
-    assert continued[0] == original[0]
+    assert result["action"] == "preserved_change"
+    assert continued[0]["content"] == "caller\nTRANSIENT\n\n--- JACK STAGE ---\nOriginal"
+    assert original[0]["content"] == "caller\n\n--- JACK STAGE ---\nOriginal"
     assert len(continued) == 4
 
 @pytest.mark.parametrize("stage", [
