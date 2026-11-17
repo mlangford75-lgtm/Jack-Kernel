@@ -4834,6 +4834,20 @@ def _agentic_caller_system_for_actual_stage(caller_system: str, profile: "StageP
     return caller_system
 
 
+def _tool_stage_system_with_provenance(stage_system: str, profile: StageProfile) -> str:
+    """Stable host-owned tool-result authority from the FIRST stage request.
+
+    The caller's system message is never edited. The shared backend invokes
+    this identically for streamed and buffered inference before folding system
+    roles, ensuring the security notice is already in the cached prefix.
+    """
+    if not profile.allow_tools:
+        return stage_system
+    if TOOL_RESUME_PROVENANCE_NOTE in stage_system:
+        return stage_system
+    return stage_system + TOOL_RESUME_PROVENANCE_NOTE
+
+
 def build_stage_system_prompt(secondary_system: str, profile: StageProfile, messages: Optional[Iterable[Dict[str, Any]]] = None) -> str:
     """Build the stage-local system instruction surface.
 
@@ -7787,12 +7801,11 @@ class OpenAICompatibleBackend:
         self, stage_messages: List[Dict[str, Any]],
         history: List[Dict[str, Any]], profile: StageProfile,
     ) -> None:
-        """Universal per-work tool-stage prompt continuity; host-only and fail-open.
+        """Observe per-work tool-stage prompt continuity without rewriting text.
 
-        A tool-capable stage may reuse ONLY its own initial system contract on
-        the same authenticated work's subsequent tool continuation, and ONLY
-        when the source change is a single pure insertion. No stage transition,
-        tool-free memory pass, or independent user turn can inherit it.
+        Stage and authenticated work identity isolate observations. No new
+        instruction may be discarded for cache reuse; a mismatched prefix is
+        reported and delivered intact to the model.
         """
         if not profile.allow_tools:
             return
@@ -7852,12 +7865,7 @@ class OpenAICompatibleBackend:
                 prepared_messages,
             )
         )
-        # Host-authenticated tool-result provenance is part of the stage's
-        # INITIAL system contract, not a continuation-time system insertion.
-        # Every inference with executor authority sees the same guard instruction
-        # regardless of mode, model, backend, or streaming transport.
-        if profile.allow_tools:
-            stage_system = stage_system + TOOL_RESUME_PROVENANCE_NOTE
+        stage_system = _tool_stage_system_with_provenance(stage_system, profile)
         stage_messages = (
             [{"role": "system", "content": stage_system}] if stage_system else []
         ) + prepared_messages
@@ -8049,12 +8057,7 @@ class OpenAICompatibleBackend:
                 prepared_messages,
             )
         )
-        # Host-authenticated tool-result provenance is part of the stage's
-        # INITIAL system contract, not a continuation-time system insertion.
-        # Every inference with executor authority sees the same guard instruction
-        # regardless of mode, model, backend, or streaming transport.
-        if profile.allow_tools:
-            stage_system = stage_system + TOOL_RESUME_PROVENANCE_NOTE
+        stage_system = _tool_stage_system_with_provenance(stage_system, profile)
         stage_messages = (
             [{"role": "system", "content": stage_system}] if stage_system else []
         ) + prepared_messages
