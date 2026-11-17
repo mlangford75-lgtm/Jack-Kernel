@@ -4834,18 +4834,40 @@ def _agentic_caller_system_for_actual_stage(caller_system: str, profile: "StageP
     return caller_system
 
 
-def _tool_stage_system_with_provenance(stage_system: str, profile: StageProfile) -> str:
-    """Stable host-owned tool-result authority from the FIRST stage request.
+def _tool_stage_system_with_provenance(
+    stage_messages: List[Dict[str, Any]], profile: StageProfile,
+) -> List[Dict[str, Any]]:
+    """Attach host provenance to the FIRST system request without role inflation.
 
-    The caller's system message is never edited. The shared backend invokes
-    this identically for streamed and buffered inference before folding system
-    roles, ensuring the security notice is already in the cached prefix.
+    Never modify a source/caller message dictionary: model input is a private
+    copy. Reuse the earliest existing system message, or create one if absent.
+    The same operation is used by streaming and nonstreaming backend requests.
+    All non-tool stages are unchanged; repeat calls are idempotent.
     """
     if not profile.allow_tools:
-        return stage_system
-    if TOOL_RESUME_PROVENANCE_NOTE in stage_system:
-        return stage_system
-    return stage_system + TOOL_RESUME_PROVENANCE_NOTE
+        return stage_messages
+    if any(
+        isinstance(item, dict)
+        and item.get("role") == "system"
+        and isinstance(item.get("content"), str)
+        and TOOL_RESUME_PROVENANCE_NOTE in item["content"]
+        for item in stage_messages
+    ):
+        return stage_messages
+    for index, item in enumerate(stage_messages):
+        if (
+            isinstance(item, dict)
+            and item.get("role") == "system"
+            and isinstance(item.get("content"), str)
+        ):
+            amended = dict(item)
+            amended["content"] = item["content"] + TOOL_RESUME_PROVENANCE_NOTE
+            stage_messages[index] = amended
+            return stage_messages
+    stage_messages.insert(
+        0, {"role": "system", "content": TOOL_RESUME_PROVENANCE_NOTE.lstrip("\n")}
+    )
+    return stage_messages
 
 
 def build_stage_system_prompt(secondary_system: str, profile: StageProfile, messages: Optional[Iterable[Dict[str, Any]]] = None) -> str:
@@ -7865,10 +7887,10 @@ class OpenAICompatibleBackend:
                 prepared_messages,
             )
         )
-        stage_system = _tool_stage_system_with_provenance(stage_system, profile)
         stage_messages = (
             [{"role": "system", "content": stage_system}] if stage_system else []
         ) + prepared_messages
+        stage_messages = _tool_stage_system_with_provenance(stage_messages, profile)
         _agentic_attach_system_stage_control(stage_messages, messages, profile)
         if reasoning_primary:
             # Current-turn failed/unmatched call IDs only; no raw transcript
@@ -8057,10 +8079,10 @@ class OpenAICompatibleBackend:
                 prepared_messages,
             )
         )
-        stage_system = _tool_stage_system_with_provenance(stage_system, profile)
         stage_messages = (
             [{"role": "system", "content": stage_system}] if stage_system else []
         ) + prepared_messages
+        stage_messages = _tool_stage_system_with_provenance(stage_messages, profile)
         _agentic_attach_system_stage_control(stage_messages, messages, profile)
         if reasoning_primary:
             # Current-turn failed/unmatched call IDs only; no raw transcript
