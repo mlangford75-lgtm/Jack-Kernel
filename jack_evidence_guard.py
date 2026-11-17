@@ -1849,14 +1849,11 @@ def _install_tool_result_origin(jk: Any) -> None:
                     item["_jack_evidence_origin"] = EVIDENCE_ORIGIN_CALLER_TOOL_RESULT
                     marked = True
 
-        # The immediate same-stage resume must expose host provenance separately
-        # from caller-controlled tool content. Preserve the tool payload exactly;
-        # add provenance only to Jack's existing host/system control context.
-        if marked:
-            secondary_system = str(getattr(state, "secondary_system", "") or "")
-            if _TOOL_RESUME_PROVENANCE_NOTE not in secondary_system:
-                state.secondary_system = secondary_system + _TOOL_RESUME_PROVENANCE_NOTE
-
+        # The shared backend now installs this *same* provenance instruction
+        # before the FIRST inference of every tool-capable stage. Never mutate
+        # the caller's secondary system on resume: doing so breaks the system
+        # prefix and unnecessarily promotes a continuation-specific insertion.
+        # Tool-origin metadata remains host-owned and the tool payload stays exact.
         return state, tool_messages
 
     guarded._jack_provenance_guard = True
