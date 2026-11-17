@@ -2010,16 +2010,11 @@ def _agentic_stage2_test_history(
             raise ForensicConflict("Stage-2 response differs from the owned frozen A1")
         if not record.stage2_attempt_id:
             raise ForensicConflict("Stage-2 attempt identity missing")
-        # A distinct system-source datum makes identifiers visible to native
-        # Stage-2 reasoning without rewriting the user's exact request or A1.
-        binding = {
-            "role": "system",
-            "content": (
-                "Authenticated current work ID: " + record.turn_id
-                + "\nMemory attempt ID: " + record.stage2_attempt_id
-            ),
-        }
-        return [binding, source_user, frozen_view] + [
+        # Identity remains authenticated in the host lifecycle and journal.
+        # Never put changing turn/attempt IDs in the model's Stage-2 prefix.
+        # This is a request-view change only; canonical U/R1/A1 and ownership
+        # checks above remain byte-exact for every backend and agent.
+        return [source_user, frozen_view] + [
             dict(recovery[idx]) for idx in range(1, len(recovery), 2)
         ]
     return [source_user, frozen_view] + [
@@ -6908,6 +6903,10 @@ class OpenAICompatibleBackend:
         self._model_metadata_checked: bool = False
         self._client = httpx.AsyncClient(timeout=cfg.backend_timeout_seconds)
         self._model_lock = asyncio.Lock()
+        # Bounded, content-free prompt fingerprints, not caches or replay state.
+        # Neither provider support nor telemetry success affects inference.
+        self._agentic_previous_prompt_by_stage: Dict[str, Dict[str, Any]] = {}
+        self._agentic_previous_prompt: Optional[Dict[str, Any]] = None
 
     @property
     def context_length(self) -> int:
@@ -7649,6 +7648,132 @@ class OpenAICompatibleBackend:
         payload["tools"] = tools
         payload["tool_choice"] = tool_choice if tool_choice is not None else "auto"
 
+    def _agentic_cache_prefix_probe(
+        self, stage_messages: List[Dict[str, Any]],
+        payload: Dict[str, Any], profile: StageProfile,
+    ) -> None:
+        """Universal, non-authoritative transport-prefix diagnostics.
+
+        Store SHA-256 and UTF-8 byte lengths per message, never prompt text.
+        A matching OpenAI-compatible message prefix is not a promise that a
+        backend retained tokenized KV state or uses the same chat template.
+        This code sends no provider hints and never affects request dispatch.
+        """
+        if not AGENTIC_MODE:
+            return
+        try:
+            # Include token-template-affecting request fields, not stochastic
+            # sampling or the seed. Keep one previous snapshot per stage.
+            controls = {
+                name: payload.get(name) for name in (
+                    "model", "tools", "tool_choice", "chat_template_kwargs",
+                    "reasoning_effort", "reasoning_strength",
+                    "thinking_budget", "response_format",
+                ) if name in payload
+            }
+            header = json.dumps(
+                controls, ensure_ascii=False, sort_keys=True,
+                separators=(",", ":"), default=str,
+            ).encode("utf-8")
+            fingerprints = []
+            for message in stage_messages:
+                wire = json.dumps(
+                    message, ensure_ascii=False, sort_keys=True,
+                    separators=(",", ":"), default=str,
+                ).encode("utf-8")
+                fingerprints.append((hashlib.sha256(wire).hexdigest(), len(wire)))
+            current = {
+                "stage": profile.name,
+                "model": str(payload.get("model") or ""),
+                "header_sha256": hashlib.sha256(header).hexdigest(),
+                "message_fingerprints": fingerprints,
+            }
+            # Stage-name keys keep storage bounded independently of model churn.
+            key = profile.name
+            previous_same = self._agentic_previous_prompt_by_stage.get(key)
+            previous_any = self._agentic_previous_prompt
+            def compare(previous: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+                if previous is None:
+                    return {"relation": "no_prior_observation"}
+                left = previous["message_fingerprints"]
+                right = current["message_fingerprints"]
+                matched = 0
+                while (
+                    matched < len(left) and matched < len(right)
+                    and left[matched] == right[matched]
+                ):
+                    matched += 1
+                if matched == len(left) == len(right):
+                    relation = "identical_messages"
+                elif matched == len(left):
+                    relation = "append_only"
+                elif matched == len(right):
+                    relation = "shortened"
+                else:
+                    relation = "first_message_changed" if matched == 0 else "middle_changed"
+                return {
+                    "relation": relation,
+                    "header_equal": previous["header_sha256"] == current["header_sha256"],
+                    "prior_stage": previous["stage"],
+                    "prior_messages": len(left),
+                    "matched_messages": matched,
+                    "matched_message_json_bytes": sum(length for _, length in left[:matched]),
+                    "first_changed_message_index": (
+                        matched if matched < min(len(left), len(right)) else None
+                    ),
+                }
+            LOG.info(
+                "Agentic transport-prefix diagnostic: %s",
+                json.dumps({
+                    "schema": "jack.agentic.transport_prefix.v1",
+                    "stage": profile.name,
+                    "messages": len(fingerprints),
+                    "same_stage": compare(previous_same),
+                    "immediately_preceding": compare(previous_any),
+                    "measurement": "message-json-prefix-not-backend-KV-cache",
+                }, sort_keys=True),
+            )
+            self._agentic_previous_prompt_by_stage[key] = current
+            self._agentic_previous_prompt = current
+        except Exception as exc:
+            # Instrumentation is deliberately fail-open, including serializers
+            # for unusual provider/agent payloads.
+            LOG.warning(
+                "Agentic transport-prefix diagnostic unavailable (nonblocking): %s",
+                type(exc).__name__,
+            )
+
+    @staticmethod
+    def _agentic_log_optional_backend_cache_usage(
+        result: Dict[str, Any], profile: StageProfile,
+    ) -> bool:
+        """Report only backend-supplied cache numbers; absence means unknown."""
+        if not AGENTIC_MODE:
+            return False
+        try:
+            usage = result.get("usage") if isinstance(result, dict) else None
+            if not isinstance(usage, dict) or not usage:
+                return False
+            details = usage.get("prompt_tokens_details")
+            cached = details.get("cached_tokens") if isinstance(details, dict) else None
+            if type(cached) is not int or cached < 0:
+                cached = None
+            report = {
+                "schema": "jack.agentic.backend_cache_usage.v1",
+                "stage": profile.name,
+                "prompt_tokens": usage.get("prompt_tokens"),
+                "cached_prompt_tokens": cached,
+                "cached_tokens_status": "backend_reported" if cached is not None else "unavailable",
+            }
+            LOG.info("Agentic backend cache usage: %s", json.dumps(report, sort_keys=True))
+            return cached is not None
+        except Exception as exc:
+            LOG.warning(
+                "Agentic backend cache usage unavailable (nonblocking): %s",
+                type(exc).__name__,
+            )
+            return False
+
     async def chat(
         self,
         *,
@@ -7734,6 +7859,7 @@ class OpenAICompatibleBackend:
         if profile.allow_tools and tools:
             self._apply_tool_policy(payload, tools, tool_choice)
 
+        self._agentic_cache_prefix_probe(stage_messages, payload, profile)
         _agentic_context_report_request(stage_messages, payload, profile)
         if DEEP_REASONING_MODE:
             from jack_tas_context_accounting import emit_tas_context_report
@@ -7775,6 +7901,9 @@ class OpenAICompatibleBackend:
             )
 
         data = response.json()
+        if not self._agentic_log_optional_backend_cache_usage(data, profile) and AGENTIC_MODE:
+            # A backend with no cache counters must never be reported as a miss.
+            LOG.info("Agentic backend cached_prompt_tokens: unavailable")
         choice = (data.get("choices") or [{}])[0]
         message = choice.get("message") or {}
         usage = data.get("usage") or {}
@@ -7877,6 +8006,7 @@ class OpenAICompatibleBackend:
         if profile.allow_tools and tools:
             self._apply_tool_policy(payload, tools, tool_choice)
 
+        self._agentic_cache_prefix_probe(stage_messages, payload, profile)
         _agentic_context_report_request(stage_messages, payload, profile)
         if DEEP_REASONING_MODE:
             from jack_tas_context_accounting import emit_tas_context_report
@@ -7939,6 +8069,7 @@ class OpenAICompatibleBackend:
                 ),
             )
 
+        cache_usage_reported = False
         try:
             async for line in response.aiter_lines():
                 if not line or not line.startswith("data:"):
@@ -7955,8 +8086,15 @@ class OpenAICompatibleBackend:
                         ) from exc
                     LOG.warning("Ignoring malformed backend SSE chunk: %r", data_text[:500])
                     continue
+                if isinstance(chunk, dict) and chunk.get("usage"):
+                    cache_usage_reported = (
+                        self._agentic_log_optional_backend_cache_usage(chunk, profile)
+                        or cache_usage_reported
+                    )
                 yield chunk
         finally:
+            if AGENTIC_MODE and not cache_usage_reported:
+                LOG.info("Agentic backend cached_prompt_tokens: unavailable")
             await response.aclose()
 
 
