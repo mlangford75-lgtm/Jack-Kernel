@@ -1825,6 +1825,12 @@ _TOOL_RESUME_PROVENANCE_NOTE = (
 )
 
 
+# Public shared value: the same exact system notice is used on the first
+# tool-capable inference and by the existing tool-resume provenance guard.
+# Its bytes and host ownership are not altered by cache optimization.
+TOOL_RESUME_PROVENANCE_NOTE = _TOOL_RESUME_PROVENANCE_NOTE
+
+
 def _install_tool_result_origin(jk: Any) -> None:
     kernel = getattr(jk, "KERNEL", None)
     original = getattr(kernel, "_consume_pending_tool_resume", None)
