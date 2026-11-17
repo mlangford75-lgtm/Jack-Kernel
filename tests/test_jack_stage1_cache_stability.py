@@ -11,15 +11,16 @@ def first(s, turn='jack-turn-abc', **kw):
     return x, a
 
 
-def test_same_work_insertion_suppressed_only_on_wire():
+def test_same_work_insertion_preserved_on_wire():
     stab, original = first('Caller contract\n-- stage --\nInstruction')
     canonical = [{'role':'assistant', 'content':'tool call'}, {'role':'tool','content':'ok'}]
     wire = [{'role':'system', 'content':'Caller contract\nTRANSIENT\n-- stage --\nInstruction'},
             {'role':'user', 'content':'task'}, *copy.deepcopy(canonical)]
     r = stab.apply(stage='Agentic native pass 1', turn_id='jack-turn-abc',
                    messages=wire, tool_continuation=True)
-    assert r['action'] == 'stabilized'
-    assert wire[0] == original[0]
+    assert r['action'] == 'preserved_change'
+    assert wire[0]['content'] == 'Caller contract\nTRANSIENT\n-- stage --\nInstruction'
+    assert original[0]['content'] == 'Caller contract\n-- stage --\nInstruction'
     assert wire[1:] == [{'role':'user','content':'task'}, *canonical]
 
 
