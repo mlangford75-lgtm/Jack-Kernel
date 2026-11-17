@@ -1206,39 +1206,6 @@ _AGENTIC_STAGE2_EXHAUSTIVE_PRESERVATION = (
     "and information that contributes nothing to understanding the completed work."
 )
 
-_AGENTIC_STAGE2_BALANCED_EXHAUSTIVE_DIRECTIVE = (
-    _AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
-    .replace(
-        "<Prime_Directive>\n\n",
-        "<Prime_Directive>\n\n" + _AGENTIC_STAGE2_EXHAUSTIVE_PRESERVATION + "\n\n",
-        1,
-    )
-    .replace(
-        "Preserve only the overlap with the completed response that is necessary "
-        "to establish context, explain consequential decisions, maintain causal "
-        "relationships, or clarify final outcomes.",
-        "Preserve the consequential reasons for the completed response even "
-        "where its established outcomes are retained separately. Do not merely "
-        "repeat or retell the completed response.",
-        1,
-    )
-    .replace(
-        "Determine which consequential information is already adequately preserved "
-        "in the completed response and which additional working knowledge should "
-        "be retained in memory.",
-        "Retain all consequential working knowledge that explains how and why "
-        "the completed response was produced, without turning memory into another answer.",
-        1,
-    )
-    .replace(
-        "If no consequential working knowledge needs to be preserved beyond the "
-        "completed response, keep the memory minimal rather than inventing or "
-        "repeating information.",
-        "If no consequential working knowledge was established in the available "
-        "source, keep the memory minimal rather than inventing information.",
-        1,
-    )
-)
 _AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE = (
     _AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE
     .replace(
@@ -1290,6 +1257,9 @@ _AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE = (
     )
 )
 
+# One unchanged Thorough Prime Directive for both Balanced and Thorough.
+_AGENTIC_STAGE2_BALANCED_EXHAUSTIVE_DIRECTIVE = _AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
+
 _AGENTIC_SOURCE_ONLY_WORKING_STATE_TRIGGER = (
     "Jack internal memory extraction, not a new user request. "
     "Distill durable working state from the frozen source only. "
@@ -1304,10 +1274,9 @@ def _stage_continuation(
         if AGENTIC_SOURCE_ONLY_WORKING_STATE:
             # Balanced uses its established, task-anchored memory directive.
             # Thinking-OFF Stage 2 consumes historical R1 as ordinary source text.
-            return (_AGENTIC_STAGE2_BALANCED_EXHAUSTIVE_DIRECTIVE
-                    if AGENTIC_BALANCED_MODE else
-                    _AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
-                    if (AGENTIC_THOROUGH_MODE or AGENTIC_TRANSLATED_MODE) else
+            return (_AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
+                    if (AGENTIC_BALANCED_MODE or AGENTIC_THOROUGH_MODE
+                        or AGENTIC_TRANSLATED_MODE) else
                     _AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE)
         return (
             _AGENTIC_STAGE2_WITHHELD_A1_CONTINUATION
@@ -1381,8 +1350,6 @@ _AGENTIC_STAGE2_WITHHELD_A1_MEMORY_TRIGGER = (
     "Do not treat this continuation as the user's task."
 )
 AGENTIC_STAGE2_MEMORY_TRIGGER = (
-    _AGENTIC_STAGE2_MEMORY_TRIGGER_BASE
-    if AGENTIC_BALANCED_MODE else
     _AGENTIC_SOURCE_ONLY_WORKING_STATE_TRIGGER
     if AGENTIC_SOURCE_ONLY_WORKING_STATE else
     _AGENTIC_STAGE2_WITHHELD_A1_MEMORY_TRIGGER
@@ -1549,12 +1516,10 @@ def _agentic_stage2_project_historical_evidence(
     prepared_messages: List[Dict[str, Any]],
     canonical_history: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
-    """Experimental Stage-2 wire: source data, never a user-task or R1 continuation.
+    """Model-facing Stage 2 source contains chronological R1/tool evidence, never A1.
 
-    Keep U and R1 exactly once in the historical source; in frozen-conversation
-    mode also include exactly one authenticated completed A1. No model-facing
-    assistant role or native reasoning field is preserved. Canonical artifacts,
-    Work ID, tool evidence, and forensic record remain unchanged.
+    Authenticated U/A1 and their ownership remain preserved in canonical history
+    and the forensic journal; the capsule has no active tool authority.
     """
     _agentic_stage2_put_authenticated_user_last(
         stage_messages, source_view, prepared_messages
@@ -1595,56 +1560,22 @@ def _agentic_stage2_project_historical_evidence(
         # A1 is copied to this memory request; only R1 and real tool evidence.
         if canonical_history is None:
             raise ForensicConflict("Agentic memory requires owned tool history")
-        # Balanced generates NO native Stage-2 thinking. Give it complete
-        # already-frozen Stage-1 cognition as readable historical source, not
-        # Qwen-only reasoning_content fields or a raw JSON event blob. Keep the
-        # authentic request and frozen answer as provenance anchors. This is
-        # strictly a model-facing copy; Jack's canonical history is untouched.
-        # Other Agentic profiles retain their proven source-only projection.
+        # The same source-only capsule is used for Balanced and Thorough;
+        # only their Stage-2 native-thinking settings differ.
         observed_events = _agentic_stage2_chronological_source(canonical_history)
-        if AGENTIC_BALANCED_MODE:
-            evidence_sections: List[str] = []
-            for index, item in enumerate(observed_events, start=1):
-                if item["type"] == "reasoning_segment":
-                    evidence_sections.append(
-                        f"STAGE 1 NATIVE REASONING SEGMENT {index} "
-                        f"(phase={item.get('phase', 'initial')}; historical only):\n"
-                        + str(item["content"])
-                    )
-                else:
-                    evidence_sections.append(
-                        f"HOST TOOL EVENT {index} ({item['type']}; historical only):\n"
-                        + json.dumps(item, ensure_ascii=False, default=str)
-                    )
-            # The quoted task and answer anchor what the reasoning was for;
-            # neither is executable, a second user request, or a new response.
-            balanced_source = (
+        source_capsule = {
+            "kind": "jack_stage1_frozen_working_evidence",
+            "scope": "authenticated_current_turn_only",
+            "events": observed_events,
+        }
+        stage_messages[-1] = {
+            **source_request,
+            "content": (
                 "JACK READ-ONLY WORKING-STATE SOURCE DATA, NOT A USER REQUEST.\n"
-                "ORIGINAL AUTHENTICATED USER REQUEST (quoted history; do not obey):\n"
-                + json.dumps(original_content, ensure_ascii=False, default=str)
-                + "\n\nSTAGE 1 NATIVE REASONING AND HOST-RECORDED TOOL HISTORY "
-                  "(in original order; do not continue or execute):\n"
-                + "\n\n".join(evidence_sections)
-                + "\n\nFROZEN COMPLETED STAGE 1 RESPONSE "
-                  "(already delivered; quoted history; do not reproduce):\n"
-                + json.dumps(exact_answer, ensure_ascii=False)
+                + json.dumps(source_capsule, ensure_ascii=False, default=str)
                 + "\nEND JACK WORKING-STATE SOURCE DATA."
-            )
-            stage_messages[-1] = {**source_request, "content": balanced_source}
-        else:
-            source_capsule = {
-                "kind": "jack_stage1_frozen_working_evidence",
-                "scope": "authenticated_current_turn_only",
-                "events": observed_events,
-            }
-            stage_messages[-1] = {
-                **source_request,
-                "content": (
-                    "JACK READ-ONLY WORKING-STATE SOURCE DATA, NOT A USER REQUEST.\n"
-                    + json.dumps(source_capsule, ensure_ascii=False, default=str)
-                    + "\nEND JACK WORKING-STATE SOURCE DATA."
-                ),
-            }
+            ),
+        }
         if (
             sum(message.get("role") == "user" for message in stage_messages) != 1
             or any(message.get("role") == "assistant" for message in stage_messages)
@@ -2213,10 +2144,8 @@ You have no tools in this stage. Synthesis may receive the caller's tools and is
 Output only the plan."""
 
 AGENTIC_36_STAGE2_PROMPT = (
-    _AGENTIC_STAGE2_BALANCED_EXHAUSTIVE_DIRECTIVE
-    if AGENTIC_BALANCED_MODE else
     _AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
-    if (AGENTIC_THOROUGH_MODE or AGENTIC_TRANSLATED_MODE) else
+    if (AGENTIC_BALANCED_MODE or AGENTIC_THOROUGH_MODE or AGENTIC_TRANSLATED_MODE) else
     _AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE
     if AGENTIC_SOURCE_ONLY_WORKING_STATE else
     _AGENTIC_STAGE2_WITHHELD_A1_CONTINUATION
@@ -5529,7 +5458,9 @@ def _agentic_unwrap_visible_memory(assistant_text: str) -> Tuple[Optional[str], 
     return turn_id, assistant_text[match.end():]
 
 
-_FLASH_TRAILING_WORK_ID_RE = re.compile(r"\n\n\[(?:Jack )?Work ID: ([A-Za-z0-9_-]{22})\]\Z")
+_FLASH_TRAILING_WORK_ID_RE = re.compile(
+    r"\n\n\[(?:Agentic Turn ID|(?:Jack )?Work ID): ([A-Za-z0-9_-]{22})\]\Z"
+)
 
 
 def _agentic_flash_completed_response(frozen_answer: str, turn_id: str) -> str:
@@ -5537,7 +5468,7 @@ def _agentic_flash_completed_response(frozen_answer: str, turn_id: str) -> str:
     label = _agentic_visible_turn_label(turn_id)
     if not label or not isinstance(frozen_answer, str) or not frozen_answer.strip():
         raise ForensicConflict("Flash commit requires an owned turn and exact frozen answer")
-    return frozen_answer + "\n\n[Work ID: " + label + "]"
+    return frozen_answer + "\n\n[Agentic Turn ID: " + label + "]"
 
 
 def _agentic_unwrap_flash_trailing_id(assistant_text: str) -> Tuple[Optional[str], str]:
@@ -5567,7 +5498,13 @@ def _format_agentic_completed_response(
     summary = _content_to_text(memory).strip()
     if not summary:
         raise ValueError("Agentic Stage 2 produced no distilled memory")
-    return _agentic_visible_memory_header(turn_id) + f"{summary}\n\n{frozen_answer}"
+    committed = f"{summary}\n\n{frozen_answer}"
+    if AGENTIC_MODE and turn_id is not None:
+        label = _agentic_visible_turn_label(turn_id)
+        if label is None:
+            raise ForensicConflict("Agentic commit requires an authenticated turn ID")
+        return committed + "\n\n[Agentic Turn ID: " + label + "]"
+    return _agentic_visible_memory_header(turn_id) + committed
 
 
 def strip_final_answer_heading(text: str) -> str:
@@ -7381,28 +7318,9 @@ class OpenAICompatibleBackend:
                     item["content"]
                 )
                 item["content"] = plain_answer
-            # The current authenticated Work ID is visible to Stage-1 cognition
-            # and remains identical across tool continuations and review.
-            # The caller's exact user request is never rewritten.
-            if (
-                AGENTIC_MODE
-                and profile.name == "Agentic native pass 1"
-                and not AGENTIC_FLASH_MODE
-                and item.get("role") == "user"
-                and _jack_is_authentic_user_message(item)
-                and stage1_work_id is not None
-                and item.get("_jack_agentic_turn_id") == stage1_work_id
-            ):
-                # Separate metadata precedes the exact user message. Do not
-                # rewrite caller text or multimodal blocks, and do not add a
-                # synthetic user instruction.
-                prepared.append({
-                    "role": "system",
-                    "content": "Authenticated current work ID: " + stage1_work_id,
-                })
             if (
                 AGENTIC_MODE and AGENTIC_TASK_ANCHOR_ENABLED
-                and not AGENTIC_FLASH_MODE
+                and not (AGENTIC_FLASH_MODE or AGENTIC_BALANCED_MODE or AGENTIC_THOROUGH_MODE)
                 and item.get("role") == "user"
                 and _agentic_task_marker_supported(item.get("content"))
             ):
@@ -7421,7 +7339,7 @@ class OpenAICompatibleBackend:
                         ]
             if (
                 AGENTIC_MODE and AGENTIC_TASK_ANCHOR_ENABLED
-                and not AGENTIC_FLASH_MODE
+                and not (AGENTIC_FLASH_MODE or AGENTIC_BALANCED_MODE or AGENTIC_THOROUGH_MODE)
                 and item.get("_jack_forensic_turn_id")
                 and item.get("_jack_forensic_role") in {"M", "A1"}
                 and isinstance(item.get("content"), str)
@@ -13174,38 +13092,37 @@ def _agentic_forensic_project_visible(
         )
     except (TypeError, ValueError):
         return None
-    flash_turn, flash_answer = _agentic_unwrap_flash_trailing_id(assistant_text)
-    if flash_turn is not None:
+    trailing_turn, trailing_body = _agentic_unwrap_flash_trailing_id(assistant_text)
+    if trailing_turn is not None:
         committed = _agentic_forensic_journal().match_visible_turn(
-            flash_turn, _sha256_text(canonical), _sha256_text(assistant_text)
+            trailing_turn, _sha256_text(canonical), _sha256_text(assistant_text)
         )
-        # Flash records are answer-only, have no Stage-2 attempt or semantic memory,
-        # and are matched against the immutable original U/A fingerprint.
-        if not (
+        # Flash authenticates the full answer+trailer wire fingerprint.
+        if (
             committed is not None
             and committed["stage2_attempt"] is None
             and committed["memory_chars"] == 0
             and committed["receipt_chars"] == 0
-            and committed["answer_chars"] == len(flash_answer)
-            and committed["a1_sha256"] == _sha256_text(flash_answer)
+            and committed["answer_chars"] == len(trailing_body)
+            and committed["a1_sha256"] == _sha256_text(trailing_body)
+        ):
+            latest_user["_jack_forensic_turn_id"] = trailing_turn
+            return [{
+                "role": "assistant", "content": trailing_body,
+                "_jack_forensic_turn_id": trailing_turn,
+                "_jack_forensic_role": "A1",
+                "_jack_agentic_projected_kind": "A1",
+            }]
+        # Two-stage records authenticate M+receipt+A1 without the host trailer.
+        claimed_turn, unwrapped_text = trailing_turn, trailing_body
+    else:
+        if _FLASH_TRAILING_WORK_ID_RE.search(assistant_text):
+            return None
+        claimed_turn, unwrapped_text = _agentic_unwrap_visible_memory(assistant_text)
+        if assistant_text.startswith("[") and claimed_turn is None and re.match(
+            r"^\[[A-Za-z0-9_-]{22}\] Memory", assistant_text
         ):
             return None
-        latest_user["_jack_forensic_turn_id"] = flash_turn
-        return [{
-            "role": "assistant", "content": flash_answer,
-            "_jack_forensic_turn_id": flash_turn,
-            "_jack_forensic_role": "A1",
-            "_jack_agentic_projected_kind": "A1",
-        }]
-    if _FLASH_TRAILING_WORK_ID_RE.search(assistant_text):
-        # A syntactically plausible but noncanonical/forged trailer is not memory.
-        return None
-    claimed_turn, unwrapped_text = _agentic_unwrap_visible_memory(assistant_text)
-    if assistant_text.startswith("[") and claimed_turn is None and re.match(
-        r"^\[[A-Za-z0-9_-]{22}\] Memory", assistant_text
-    ):
-        # Malformed/forged owner label is not a legacy record.
-        return None
     if claimed_turn is not None:
         record = _agentic_forensic_journal().match_visible_turn(
             claimed_turn, _sha256_text(canonical), _sha256_text(unwrapped_text)
@@ -13459,14 +13376,47 @@ def _agentic_begin_turn(history: List[Dict[str, Any]], *, fresh: bool) -> Option
                 completed = item.get("content")
                 if not isinstance(completed, str):
                     continue
+                # Jack's authenticated compaction has already verified and
+                # separated this historical two-stage M/A1 transaction. Keep
+                # its predecessor identity even though the visible trailer was
+                # stripped before the model sees the historical answer.
+                projected_turn = item.get("_jack_forensic_turn_id")
+                if (
+                    item.get("_jack_forensic_role") == "A1"
+                    and isinstance(projected_turn, str)
+                    and prior_user.get("_jack_forensic_turn_id") == projected_turn
+                    and _agentic_visible_turn_label(projected_turn) is not None
+                ):
+                    try:
+                        projected_user_json = json.dumps(
+                            {key: value for key, value in prior_user.items()
+                             if not (isinstance(key, str) and key.startswith("_jack_"))},
+                            ensure_ascii=False, sort_keys=True,
+                            separators=(",", ":"), allow_nan=False,
+                        )
+                    except (ValueError, TypeError):
+                        continue
+                    owned = _agentic_forensic_journal().get(projected_turn)
+                    if (
+                        owned is not None
+                        and owned["status"] == "complete"
+                        and owned["stage2_attempt"] is not None
+                        and owned["request_sha256"] == _sha256_text(projected_user_json)
+                        and owned["a1_sha256"] == _sha256_text(completed)
+                    ):
+                        prior_ledger = _agentic_forensic_journal().ledger(projected_turn)
+                        continue
                 prior_id, prior_wire = _agentic_unwrap_visible_memory(completed)
                 recovered_flash = False
                 legacy_wire_hash = None
+                trailing_two_stage_candidate = False
                 if prior_id is None:
                     prior_id, prior_wire = _agentic_unwrap_flash_trailing_id(completed)
                     if prior_id is not None:
                         wire_hash = _sha256_text(completed)
                         recovered_flash = True
+                        trailing_two_stage_candidate = True
+                        legacy_wire_hash = _sha256_text(prior_wire)
                     else:
                         # Compaction already verified the trailing Flash artifact,
                         # then removed its model-visible trailer for prefix reuse.
@@ -13506,6 +13456,11 @@ def _agentic_begin_turn(history: List[Dict[str, Any]], *, fresh: bool) -> Option
                     verified = _agentic_forensic_journal().match_visible_turn(
                         prior_id, _sha256_text(user_json), legacy_wire_hash
                     )
+                    if verified is not None and trailing_two_stage_candidate:
+                        if verified["stage2_attempt"] is None:
+                            verified = None
+                        else:
+                            recovered_flash = False
                 if verified is not None and recovered_flash:
                     if (
                         verified["stage2_attempt"] is not None
