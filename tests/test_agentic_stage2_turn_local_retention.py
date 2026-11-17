@@ -240,7 +240,11 @@ def test_stage1_backend_payload_is_unmodified_by_experiment(monkeypatch, tmp_pat
     assert payload["messages"][1:] == k.BACKEND._stage_messages_for_profile(
         request, k.STAGES["extended_initial"]
     )
-    assert payload["messages"][0]["content"] == k.AGENTIC_STAGE1_PROMPT
+    # Initial tool-capable inference includes the exact host-owned provenance
+    # guard, while the original Stage-1 directive and caller history stay intact.
+    assert payload["messages"][0]["content"] == (
+        k.AGENTIC_STAGE1_PROMPT + k.TOOL_RESUME_PROVENANCE_NOTE
+    )
 
 
 @pytest.mark.parametrize("variant", ("isolate", "isolate-retain"))
