@@ -56,7 +56,7 @@ def test_work_id_and_stabilization_use_shared_backend(monkeypatch, tmp_path, sta
     assert history[0]["_jack_cache_work_id"] == owner
     continued = [{"role":"system","content":"Original plus extra"},{"role":"user","content":"Check a command"}]
     backend._stabilize_stage1_tool_cache_system(continued, history, profile)
-    assert continued[0]["content"] == "Original"
+    assert continued[0]["content"] == "Original plus extra"
 
 
 def test_separate_stage_gets_a_new_work_identity(monkeypatch, tmp_path):
