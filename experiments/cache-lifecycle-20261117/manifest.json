@@ -1,0 +1,94 @@
+﻿{
+    "branch":  "experiment/universal-cache-lifecycle-20261117",
+    "baseline_commit":  "f8c0abc0ae8220808267dac4ac38e4ebb9290403",
+    "preserved_from":  "Original Windows checkout, copied byte-for-byte",
+    "changes_to_main":  false,
+    "source_working_tree_status_entries_at_capture":  7,
+    "copied_files":  [
+                         {
+                             "path":  "jack_kernel.py",
+                             "sha256":  "71b4aac9d0b7932361f607cc7b399e99be9f347b12099982d36786d4c961daa9"
+                         },
+                         {
+                             "path":  "jack_cache_orchestrator.py",
+                             "sha256":  "0b7e9f478afaac3979aeb3e64e40dfd6b0cf079e3ba54a031b6e7191d63a38cb"
+                         },
+                         {
+                             "path":  "jack_cache_prefix_diagnostics.py",
+                             "sha256":  "bed948dcaed8d446afedd1b5186b2f4e1a054909042d7a34913762a7757237eb"
+                         },
+                         {
+                             "path":  "jack_stage1_cache_stability.py",
+                             "sha256":  "27152d5a962f6d7dfcf711a84ef5baa5f7f0e1e54de811925d66bcf7d1992926"
+                         },
+                         {
+                             "path":  "tests/test_jack_cache_orchestrator.py",
+                             "sha256":  "0f487ba263e36cdf6c8cdb6b54894035bc03a56979f58da62c17f4d7334f8b58"
+                         },
+                         {
+                             "path":  "tests/test_jack_cache_prefix_diagnostics.py",
+                             "sha256":  "0da84aa6cb58cfb5d7210a5de47ca19d8841ba82fc691af7804b460239022cd0"
+                         },
+                         {
+                             "path":  "tests/test_jack_stage1_cache_stability.py",
+                             "sha256":  "a4bb271b68147fe0afd8f2eda6ee316fb13af81213ccaa9fb17f042f2d6769d5"
+                         },
+                         {
+                             "path":  "experiments/cache-lifecycle-20261117/original-upgrade-folder/Install-JackCacheByteDiagnostics.ps1",
+                             "sha256":  "4e553d344c0d0ce8bec7b551651f3d1b6c3d0021961a438b76a286f268cf121b"
+                         },
+                         {
+                             "path":  "experiments/cache-lifecycle-20261117/original-upgrade-folder/Install-JackCacheOrchestrator.ps1",
+                             "sha256":  "b45006aa900d1442d01de4ac98415e258f148e3d885035435b9ffb0f4d158908"
+                         },
+                         {
+                             "path":  "experiments/cache-lifecycle-20261117/original-upgrade-folder/Install-JackStage1CacheStability.ps1",
+                             "sha256":  "57657afead32025eb8fd4f1fa4b7b55e19d7164ec587918b42a27567f220c505"
+                         },
+                         {
+                             "path":  "experiments/cache-lifecycle-20261117/original-upgrade-folder/jack_cache_orchestrator.py",
+                             "sha256":  "0b7e9f478afaac3979aeb3e64e40dfd6b0cf079e3ba54a031b6e7191d63a38cb"
+                         },
+                         {
+                             "path":  "experiments/cache-lifecycle-20261117/original-upgrade-folder/jack_cache_prefix_diagnostics.py",
+                             "sha256":  "bed948dcaed8d446afedd1b5186b2f4e1a054909042d7a34913762a7757237eb"
+                         },
+                         {
+                             "path":  "experiments/cache-lifecycle-20261117/original-upgrade-folder/jack_stage1_cache_stability.py",
+                             "sha256":  "27152d5a962f6d7dfcf711a84ef5baa5f7f0e1e54de811925d66bcf7d1992926"
+                         },
+                         {
+                             "path":  "experiments/cache-lifecycle-20261117/original-upgrade-folder/Publish-JackCacheExperimentToGitHub.ps1",
+                             "sha256":  "84e47264a29c4840cbda2f1b08ab510e22f854ba1f77a10d0487e5d074d2d9e9"
+                         },
+                         {
+                             "path":  "experiments/cache-lifecycle-20261117/original-upgrade-folder/README-JackCacheByteDiagnostics.md",
+                             "sha256":  "50dc41d7681108ae8c3101f067460205f5d43edec55ce983e8692fcc427c674e"
+                         },
+                         {
+                             "path":  "experiments/cache-lifecycle-20261117/original-upgrade-folder/README-JackCacheOrchestrator.md",
+                             "sha256":  "ef9991dd8c49bad14e8154393b3258e8829be9fd0a5ca4235fc06b77fb74d5cd"
+                         },
+                         {
+                             "path":  "experiments/cache-lifecycle-20261117/original-upgrade-folder/README-JackStage1CacheStability.md",
+                             "sha256":  "3ad380bae1190201ca6ca21d28b7caa947766c9e2440c85523e54336ceb40930"
+                         },
+                         {
+                             "path":  "experiments/cache-lifecycle-20261117/original-upgrade-folder/Run-JackWithCache.ps1",
+                             "sha256":  "2f324591ea15479e9659ea97d83d75c0a76687e53c694e7e4253858b95ac849e"
+                         },
+                         {
+                             "path":  "experiments/cache-lifecycle-20261117/original-upgrade-folder/test_jack_cache_orchestrator.py",
+                             "sha256":  "0f487ba263e36cdf6c8cdb6b54894035bc03a56979f58da62c17f4d7334f8b58"
+                         },
+                         {
+                             "path":  "experiments/cache-lifecycle-20261117/original-upgrade-folder/test_jack_cache_prefix_diagnostics.py",
+                             "sha256":  "0da84aa6cb58cfb5d7210a5de47ca19d8841ba82fc691af7804b460239022cd0"
+                         },
+                         {
+                             "path":  "experiments/cache-lifecycle-20261117/original-upgrade-folder/test_jack_stage1_cache_stability.py",
+                             "sha256":  "a4bb271b68147fe0afd8f2eda6ee316fb13af81213ccaa9fb17f042f2d6769d5"
+                         }
+                     ],
+    "note":  "Exact local integrated code plus complete 14-file upgrade source inventory; non-source artifacts, secrets and forensic logs excluded"
+}

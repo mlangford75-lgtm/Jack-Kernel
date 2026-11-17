@@ -85,6 +85,9 @@ from jack_loop_shadow import LongCycleShadowDetector, LongCycleRepeatedReasoning
 from jack_tool_outcomes import reported_tool_outcome, SUCCESS as TOOL_SUCCESS, FAILED as TOOL_FAILED, UNKNOWN as TOOL_UNKNOWN
 from jack_tool_recovery import ToolRecoveryState, ToolRecoveryExhausted, operation_key
 from jack_tool_lifecycle import ToolLifecycleObserver
+from jack_cache_orchestrator import CacheOrchestrator
+from jack_cache_prefix_diagnostics import CacheBytePrefixProbe
+from jack_stage1_cache_stability import Stage1CacheStabilizer
 import os
 import shutil
 import socket
@@ -6907,6 +6910,11 @@ class OpenAICompatibleBackend:
         # Neither provider support nor telemetry success affects inference.
         self._agentic_previous_prompt_by_stage: Dict[str, Dict[str, Any]] = {}
         self._agentic_previous_prompt: Optional[Dict[str, Any]] = None
+        # Host-only route planner; never changes model-visible messages.
+        self._cache_router = CacheOrchestrator(cfg)
+        # Host-only byte-level cache prefix diagnostics (no prompt mutation).
+        self._cache_byte_probe = CacheBytePrefixProbe()
+        self._stage1_cache_stabilizer = Stage1CacheStabilizer()
 
     @property
     def context_length(self) -> int:
@@ -7774,6 +7782,41 @@ class OpenAICompatibleBackend:
             )
             return False
 
+    def _stabilize_stage1_tool_cache_system(
+        self, stage_messages: List[Dict[str, Any]],
+        history: List[Dict[str, Any]], profile: StageProfile,
+    ) -> None:
+        """Experimental, fail-open, source-only snapshot for SAME-work tool resumes.
+
+        The original stage instruction is the authority for the active turn;
+        a newly inserted system fragment is not silently promoted on resume.
+        Never modify the canonical history or the caller-owned original.
+        """
+        if not AGENTIC_MODE or profile.name != "Agentic native pass 1":
+            return
+        try:
+            owned = _agentic_forensic_turn(history)
+            turn_id = getattr(owned, "turn_id", None) if owned is not None else None
+            target = active_response_target(history)
+            if target is None:
+                return
+            index = int(target["history_index"])
+            # Only same-turn tool results count; earlier turns' retained tool
+            # history is NOT evidence that this new request is a continuation.
+            tool_continuation = any(
+                isinstance(item, dict) and item.get("_jack_internal_tool_exchange")
+                and item.get("role") in {"tool", "assistant"}
+                for item in history[index + 1:]
+            )
+            report = self._stage1_cache_stabilizer.apply(
+                stage=profile.name, turn_id=turn_id, messages=stage_messages,
+                tool_continuation=tool_continuation,
+                review_pending=_agentic_final_review_is_pending(history),
+            )
+            LOG.info("Jack Stage-1 system cache stability: %s", json.dumps(report, sort_keys=True))
+        except Exception as exc:
+            # Cache optimization is never an inference prerequisite.
+            LOG.warning("Stage-1 system cache stabilization skipped (nonblocking): %s", type(exc).__name__)
     async def chat(
         self,
         *,
@@ -7839,8 +7882,16 @@ class OpenAICompatibleBackend:
         ):
             stage_messages.append(_stage_generation_trigger(profile, messages))
 
+        cache_probe_regions = ()
         if AGENTIC_MODE:
+            try:
+                cache_probe_regions = self._cache_byte_probe.capture_regions(
+                    stage_messages, prepared_messages, stage_system
+                )
+            except Exception as exc:
+                LOG.warning("Jack cache byte-prefix region capture unavailable (nonblocking): %s", type(exc).__name__)
             stage_messages = self._fold_model_facing_system_messages(stage_messages)
+            self._stabilize_stage1_tool_cache_system(stage_messages, messages, profile)
         sampling = self._sampling_for_profile(profile)
         payload: Dict[str, Any] = {
             "model": model,
@@ -7859,20 +7910,54 @@ class OpenAICompatibleBackend:
         if profile.allow_tools and tools:
             self._apply_tool_policy(payload, tools, tool_choice)
 
+        cache_decision = self._cache_router.plan(profile.name, str(model), stage_messages)
+        self._cache_router.apply_hint(payload, cache_decision)
+        LOG.info("Jack cache routing: %s", self._cache_router.diagnostic(cache_decision))
         self._agentic_cache_prefix_probe(stage_messages, payload, profile)
+        if AGENTIC_MODE:
+            try:
+                cache_byte_diag = self._cache_byte_probe.observe(
+                    stage_messages, profile.name, cache_probe_regions
+                )
+                if cache_byte_diag is not None:
+                    LOG.info("Jack cache byte-prefix diagnostic: %s", json.dumps(cache_byte_diag, sort_keys=True))
+            except Exception as exc:
+                LOG.warning("Jack cache byte-prefix diagnostic unavailable (nonblocking): %s", type(exc).__name__)
         _agentic_context_report_request(stage_messages, payload, profile)
         if DEEP_REASONING_MODE:
             from jack_tas_context_accounting import emit_tas_context_report
             emit_tas_context_report(stage_messages, payload, profile.name, LOG)
-        url = f"{self.cfg.backend_base_url}/chat/completions"
+        url = f"{cache_decision.base_url}/chat/completions"
+        primary_url = f"{cache_decision.primary_base_url}/chat/completions"
         current_payload = payload
         try:
+            response = await self._client.post(url, headers=self._headers(), json=current_payload)
+        except httpx.ConnectError as exc:
+            if not cache_decision.alternate_endpoint:
+                raise HTTPException(status_code=502, detail=f"Backend connection failed: {exc}") from exc
+            LOG.warning("Optional auxiliary cache endpoint unavailable; falling back to primary backend")
+            self._cache_router.disable_unavailable_aux()
+            url = primary_url
             response = await self._client.post(url, headers=self._headers(), json=current_payload)
         except Exception as exc:
             raise HTTPException(
                 status_code=502,
                 detail=f"Backend request failed during {profile.name}: {exc}",
             ) from exc
+
+        # Only retry before generation when an OPTIONAL cache feature is rejected.
+        if cache_decision.alternate_endpoint and response.status_code == 404:
+            LOG.warning("Optional auxiliary cache endpoint returned 404; falling back to primary backend")
+            self._cache_router.disable_unavailable_aux()
+            url = primary_url
+            response = await self._client.post(url, headers=self._headers(), json=current_payload)
+        if (response.status_code == 400 and "id_slot" in current_payload
+                and ("id_slot" in response.text.lower() or "unknown" in response.text.lower()
+                     or "unsupported" in response.text.lower())):
+            LOG.warning("Optional backend slot hint rejected; disabling hint and retrying unchanged inference")
+            self._cache_router.disable_unsupported_hint()
+            current_payload = self._cache_router.strip_hint(current_payload)
+            response = await self._client.post(url, headers=self._headers(), json=current_payload)
 
         # min_p is a Qwen-recommended no-op at 0.0, but some OpenAI-compatible
         # implementations reject the field. Retry once without only that no-op.
@@ -7987,8 +8072,16 @@ class OpenAICompatibleBackend:
         ):
             stage_messages.append(_stage_generation_trigger(profile, messages))
 
+        cache_probe_regions = ()
         if AGENTIC_MODE:
+            try:
+                cache_probe_regions = self._cache_byte_probe.capture_regions(
+                    stage_messages, prepared_messages, stage_system
+                )
+            except Exception as exc:
+                LOG.warning("Jack cache byte-prefix region capture unavailable (nonblocking): %s", type(exc).__name__)
             stage_messages = self._fold_model_facing_system_messages(stage_messages)
+            self._stabilize_stage1_tool_cache_system(stage_messages, messages, profile)
         sampling = self._sampling_for_profile(profile)
         payload: Dict[str, Any] = {
             "model": model,
@@ -8006,12 +8099,25 @@ class OpenAICompatibleBackend:
         if profile.allow_tools and tools:
             self._apply_tool_policy(payload, tools, tool_choice)
 
+        cache_decision = self._cache_router.plan(profile.name, str(model), stage_messages)
+        self._cache_router.apply_hint(payload, cache_decision)
+        LOG.info("Jack cache routing: %s", self._cache_router.diagnostic(cache_decision))
         self._agentic_cache_prefix_probe(stage_messages, payload, profile)
+        if AGENTIC_MODE:
+            try:
+                cache_byte_diag = self._cache_byte_probe.observe(
+                    stage_messages, profile.name, cache_probe_regions
+                )
+                if cache_byte_diag is not None:
+                    LOG.info("Jack cache byte-prefix diagnostic: %s", json.dumps(cache_byte_diag, sort_keys=True))
+            except Exception as exc:
+                LOG.warning("Jack cache byte-prefix diagnostic unavailable (nonblocking): %s", type(exc).__name__)
         _agentic_context_report_request(stage_messages, payload, profile)
         if DEEP_REASONING_MODE:
             from jack_tas_context_accounting import emit_tas_context_report
             emit_tas_context_report(stage_messages, payload, profile.name, LOG)
-        url = f"{self.cfg.backend_base_url}/chat/completions"
+        url = f"{cache_decision.base_url}/chat/completions"
+        primary_url = f"{cache_decision.primary_base_url}/chat/completions"
 
         async def send_stream(current_payload: Dict[str, Any]) -> httpx.Response:
             req = self._client.build_request(
@@ -8020,8 +8126,21 @@ class OpenAICompatibleBackend:
             return await self._client.send(req, stream=True)
 
         current_payload = payload
-        response = await send_stream(current_payload)
-
+        try:
+            response = await send_stream(current_payload)
+        except httpx.ConnectError:
+            if not cache_decision.alternate_endpoint:
+                raise
+            LOG.warning("Optional auxiliary cache endpoint unavailable; falling back to primary backend")
+            self._cache_router.disable_unavailable_aux()
+            url = primary_url
+            response = await send_stream(current_payload)
+        if cache_decision.alternate_endpoint and response.status_code == 404:
+            await response.aclose()
+            LOG.warning("Optional auxiliary cache endpoint returned 404; falling back to primary backend")
+            self._cache_router.disable_unavailable_aux()
+            url = primary_url
+            response = await send_stream(current_payload)
         # Compatibility retry: min_p=0 is a recommended no-op but may be
         # rejected by some OpenAI-compatible builds. Some builds also reject
         # stream_options; usage streaming is optional, live token streaming is not.
@@ -8031,6 +8150,12 @@ class OpenAICompatibleBackend:
             retry_payload = dict(current_payload)
             changed = False
             lower = raw.lower()
+            if "id_slot" in retry_payload and (
+                    "id_slot" in lower or "unknown" in lower or "unsupported" in lower
+            ):
+                self._cache_router.disable_unsupported_hint()
+                retry_payload.pop("id_slot", None)
+                changed = True
             if "min_p" in retry_payload and (
                 "min_p" in lower or "unknown" in lower or "unsupported" in lower
             ):
