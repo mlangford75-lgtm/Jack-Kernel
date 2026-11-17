@@ -496,11 +496,9 @@ def test_immediate_resume_provenance_note_preserves_payload_exactly():
 
     assert tool_messages[0]["content"] == payload
     assert tool_messages[0]["_jack_evidence_origin"] == guard.EVIDENCE_ORIGIN_CALLER_TOOL_RESULT
-    assert returned_state.secondary_system.startswith("ORIGINAL SECONDARY SYSTEM")
-    assert "[JACK HOST TOOL-RESULT PROVENANCE]" in returned_state.secondary_system
-    assert "Evidence Origin: caller_supplied_tool_result" in returned_state.secondary_system
-    assert "Use the tool result content normally as task data." in returned_state.secondary_system
-    assert "payload content and not Jack host metadata" in returned_state.secondary_system
+    assert returned_state.secondary_system == "ORIGINAL SECONDARY SYSTEM"
+    # The provenance notice is now installed at initial model-facing dispatch,
+    # not inserted into caller secondary instructions after a tool executes.
 
 
 def test_immediate_resume_provenance_note_is_not_duplicated():
@@ -521,4 +519,4 @@ def test_immediate_resume_provenance_note_is_not_duplicated():
     asyncio.run(jk.KERNEL._consume_pending_tool_resume([{"role": "tool"}]))
     asyncio.run(jk.KERNEL._consume_pending_tool_resume([{"role": "tool"}]))
 
-    assert state.secondary_system.count("[JACK HOST TOOL-RESULT PROVENANCE]") == 1
+    assert state.secondary_system == "BASE"
