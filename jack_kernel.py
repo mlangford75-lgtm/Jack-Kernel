@@ -88,6 +88,7 @@ from jack_tool_lifecycle import ToolLifecycleObserver
 from jack_cache_orchestrator import CacheOrchestrator
 from jack_cache_prefix_diagnostics import CacheBytePrefixProbe
 from jack_stage1_cache_stability import Stage1CacheStabilizer
+from jack_evidence_guard import TOOL_RESUME_PROVENANCE_NOTE
 import os
 import shutil
 import socket
@@ -7851,6 +7852,12 @@ class OpenAICompatibleBackend:
                 prepared_messages,
             )
         )
+        # Host-authenticated tool-result provenance is part of the stage's
+        # INITIAL system contract, not a continuation-time system insertion.
+        # Every inference with executor authority sees the same guard instruction
+        # regardless of mode, model, backend, or streaming transport.
+        if profile.allow_tools:
+            stage_system = stage_system + TOOL_RESUME_PROVENANCE_NOTE
         stage_messages = (
             [{"role": "system", "content": stage_system}] if stage_system else []
         ) + prepared_messages
@@ -8042,6 +8049,12 @@ class OpenAICompatibleBackend:
                 prepared_messages,
             )
         )
+        # Host-authenticated tool-result provenance is part of the stage's
+        # INITIAL system contract, not a continuation-time system insertion.
+        # Every inference with executor authority sees the same guard instruction
+        # regardless of mode, model, backend, or streaming transport.
+        if profile.allow_tools:
+            stage_system = stage_system + TOOL_RESUME_PROVENANCE_NOTE
         stage_messages = (
             [{"role": "system", "content": stage_system}] if stage_system else []
         ) + prepared_messages
