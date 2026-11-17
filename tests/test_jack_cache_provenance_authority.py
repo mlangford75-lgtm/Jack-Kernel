@@ -47,14 +47,17 @@ TOOL_STAGES = (
 def test_provenance_note_in_initial_and_resume_system_prefix(monkeypatch, tmp_path, stage):
     kernel = _kernel(monkeypatch, tmp_path)
     profile = SimpleNamespace(name=stage, allow_tools=True)
-    original = "ORIGINAL SYSTEM INSTRUCTIONS"
-    initial = kernel._tool_stage_system_with_provenance(original, profile)
-    resumed = kernel._tool_stage_system_with_provenance(original, profile)
+    original = [{"role": "system", "content": "ORIGINAL SYSTEM INSTRUCTIONS"},
+                {"role": "user", "content": "task"}]
+    initial = kernel._tool_stage_system_with_provenance(list(original), profile)
+    resumed = kernel._tool_stage_system_with_provenance(list(original), profile)
     assert initial == resumed
-    assert initial.startswith(original)
-    assert initial.endswith(TOOL_RESUME_PROVENANCE_NOTE)
-    assert initial.count("[JACK HOST TOOL-RESULT PROVENANCE]") == 1
-    assert EVIDENCE_ORIGIN_CALLER_TOOL_RESULT in initial
+    assert len(initial) == 2
+    assert initial[0]["content"].startswith("ORIGINAL SYSTEM INSTRUCTIONS")
+    assert initial[0]["content"].endswith(TOOL_RESUME_PROVENANCE_NOTE)
+    assert initial[0]["content"].count("[JACK HOST TOOL-RESULT PROVENANCE]") == 1
+    assert EVIDENCE_ORIGIN_CALLER_TOOL_RESULT in initial[0]["content"]
+    assert original[0]["content"] == "ORIGINAL SYSTEM INSTRUCTIONS"
     # Calling twice should not duplicate any host-owned instruction.
     assert kernel._tool_stage_system_with_provenance(initial, profile) == initial
 
@@ -67,9 +70,9 @@ def test_provenance_note_in_initial_and_resume_system_prefix(monkeypatch, tmp_pa
 ))
 def test_tool_free_stage_receives_no_tool_provenance(monkeypatch, tmp_path, stage):
     kernel = _kernel(monkeypatch, tmp_path)
-    original = "SEPARATE STAGE CONTRACT"
+    original = [{"role": "system", "content": "SEPARATE STAGE CONTRACT"}]
     assert kernel._tool_stage_system_with_provenance(
-        original, SimpleNamespace(name=stage, allow_tools=False)
+        list(original), SimpleNamespace(name=stage, allow_tools=False)
     ) == original
 
 
@@ -103,5 +106,44 @@ def test_the_shared_entrypoint_is_called_by_both_transports(monkeypatch, tmp_pat
     import inspect
     source_a = inspect.getsource(kernel.OpenAICompatibleBackend.chat)
     source_b = inspect.getsource(kernel.OpenAICompatibleBackend.chat_stream)
-    assert "_tool_stage_system_with_provenance(stage_system, profile)" in source_a
-    assert "_tool_stage_system_with_provenance(stage_system, profile)" in source_b
+    assert "_tool_stage_system_with_provenance(stage_messages, profile)" in source_a
+    assert "_tool_stage_system_with_provenance(stage_messages, profile)" in source_b
+
+
+def test_no_extra_system_role_if_caller_system_exists(monkeypatch, tmp_path):
+    kernel = _kernel(monkeypatch, tmp_path)
+    caller = {"role": "system", "content": "CALLER AUTHORITY"}
+    prepared = [caller, {"role": "user", "content": "Task"}]
+    wire = kernel._tool_stage_system_with_provenance(
+        list(prepared), SimpleNamespace(name="Native answer", allow_tools=True)
+    )
+    assert len(wire) == 2
+    assert wire[0] is not caller
+    assert wire[0]["content"].startswith("CALLER AUTHORITY")
+    assert caller["content"] == "CALLER AUTHORITY"
+    assert wire[0]["content"].count("[JACK HOST TOOL-RESULT PROVENANCE]") == 1
+
+
+def test_missing_caller_system_adds_one_host_owned_system(monkeypatch, tmp_path):
+    kernel = _kernel(monkeypatch, tmp_path)
+    wire = kernel._tool_stage_system_with_provenance(
+        [{"role": "user", "content": "Task"}],
+        SimpleNamespace(name="Native answer", allow_tools=True)
+    )
+    assert [item["role"] for item in wire] == ["system", "user"]
+    assert "[JACK HOST TOOL-RESULT PROVENANCE]" in wire[0]["content"]
+
+
+def test_first_system_amended_and_later_system_retained(monkeypatch, tmp_path):
+    kernel = _kernel(monkeypatch, tmp_path)
+    wire = kernel._tool_stage_system_with_provenance(
+        [
+            {"role": "system", "content": "STAGE"},
+            {"role": "system", "content": "CALLER"},
+            {"role": "user", "content": "Task"},
+        ],
+        SimpleNamespace(name="Agentic native pass 1", allow_tools=True)
+    )
+    assert wire[0]["content"].startswith("STAGE")
+    assert "[JACK HOST TOOL-RESULT PROVENANCE]" in wire[0]["content"]
+    assert wire[1]["content"] == "CALLER"
