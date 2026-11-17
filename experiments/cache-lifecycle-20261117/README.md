@@ -40,3 +40,22 @@ This branch is intended to hold ALL of the following, with complete contents and
 - Audit optional alternate endpoint/slot fallback and prompt authority.
 - Bring existing baseline tests in line with production Stage 2 *without changing production behavior*, then run a reliable full regression suite.
 - No mainline merge until scope, safety, and regression tests are established.
+
+## Universal tool-stage extension — 17 November 2026
+
+**GitHub experiment only; main unchanged.** The original 14-file upgrade folder remains snapshotted unmodified at `original-upgrade-folder/`, alongside the original manifest. New experimental commits generalize the stabilizer from Agentic Stage 1 to Jack's shared tool-capable backend stages. Every non-Agentic stage gets a host-minted private, stage-scoped work ID at its first inference; same-stage tool resumes reuse the same ID. Agentic retains its authenticated forensic Work ID. Host-only markers are stripped from the model-facing projection, and stream/nonstream dispatch share the same enforcement point.
+
+The optimization is applied only where `profile.allow_tools` is true and source history contains authenticated same-turn tool evidence; separate stages (Stage 2, reports, reviews, fresh debugging passes) retain their own instructions. Unknown ownership, changed/replaced instructions, missing snapshots, and instrumentation errors fail open to the unmodified model request. Backend slot routing remains provider-aware and optional. This is a behavioral prototype, **not a claim of verified universal backend cache hits**.
+
+**Crucial pending safety review:** The baseline fix suppresses a newly inserted system fragment on a confirmed same-work tool resume. The actual content and authority of that fragment have not been independently reviewed. Even if prefix reuse improves, this technique must not be promoted into main unless we establish that it never discards consequential continuation instructions. Reconcile this with Jack's no-loss authority requirements before promotion.
+
+New regression files:
+- `tests/test_jack_universal_cache_stability.py`
+- `tests/test_jack_universal_cache_backend_integration.py`
+
+On an isolated Windows worktree, run:
+```powershell
+python -m pytest -q tests/test_jack_cache_orchestrator.py tests/test_jack_cache_prefix_diagnostics.py tests/test_jack_stage1_cache_stability.py tests/test_jack_universal_cache_stability.py tests/test_jack_universal_cache_backend_integration.py
+```
+
+Initial pure stabilizer tests: 27 passed in the build environment. Actual full Windows integration and all-mode/provider end-to-end cache reuse **not yet verified**. The old full regression suite also contains known mismatches with the current source-only Stage 2 contract and is not a reliable pass/fail gate without reconciliation. No experimental toggles, diagnostic scaffolding, or unsafe text suppression should be merged into main unreviewed.
