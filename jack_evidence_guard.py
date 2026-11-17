@@ -1842,12 +1842,10 @@ def _install_tool_result_origin(jk: Any) -> None:
         if not result:
             return result
         state, tool_messages = result
-        marked = False
         if isinstance(tool_messages, list):
             for item in tool_messages:
                 if isinstance(item, dict) and item.get("role") == "tool":
                     item["_jack_evidence_origin"] = EVIDENCE_ORIGIN_CALLER_TOOL_RESULT
-                    marked = True
 
         # The shared backend now installs this *same* provenance instruction
         # before the FIRST inference of every tool-capable stage. Never mutate
