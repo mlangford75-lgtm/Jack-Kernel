@@ -1,10 +1,10 @@
-"""Experimental, provider-neutral per-work tool-stage system-prefix stabilization.
+"""Provider-neutral, observational per-work tool-stage system-prefix monitor.
 
-Never edits canonical history, prompts on the first inference, or Stage 2.
-When a later tool-stage continuation contains ONLY a pure insertion into its
-system text, retain the originally-authorized system text for that same work/stage key.
-Replacement/removal, changed message role, unrecognized work, or non-tool stages
-are deliberately left alone. No system text is logged or persisted.
+Never edits canonical history or model-facing prompts. Records the initial
+system-contract digest per work/stage and detects subsequent changes. All new
+instructions, including pure insertions, must reach the model unchanged.
+The shared backend installs authenticated tool provenance on the first request.
+No system text is logged or persisted.
 """
 from __future__ import annotations
 
@@ -16,10 +16,10 @@ from typing import Any, Dict, List, Optional
 
 
 class Stage1CacheStabilizer:
-    """Shared inference-layer stabilizer for any host-confirmed tool-capable stage.
+    """Shared inference-layer prefix observer for every tool-capable stage.
 
-    The legacy class name is retained to keep saved experiments and tests usable.
-    Eligibility comes from Jack's real stage profile, never a provider or mode name.
+    Retains historical class name and method signature for compatibility.
+    Eligibility follows Jack's stage profile, not a mode or provider name.
     """
     def __init__(self, enabled: Optional[bool] = None, max_turns: int = 8):
         self.enabled = (os.getenv('JACK_STAGE1_CACHE_STABILITY', '1').strip().lower()
@@ -87,12 +87,11 @@ class Stage1CacheStabilizer:
         if insertion is None:
             decision['reason'] = 'non_insert_change_preserved'
             return decision
-        # Protect original system authority from a continuation-specific insertion.
-        # Caller and Jack controls on the FIRST request are retained byte-for-byte.
-        # The added fragment is suppressed only in the model-facing copy.
-        first['content'] = old
+        # No cache optimization may remove a host or caller instruction.
+        # A pure insertion is reported but MUST be preserved on the wire.
         decision.update({
-            'action': 'stabilized', 'reason': 'pure_insertion_on_same_work_tool_resume',
+            'action': 'preserved_change',
+            'reason': 'pure_insertion_preserved_on_same_work_tool_resume',
             'original_sha256_prefix': self._hash(old),
             'changed_sha256_prefix': self._hash(value),
             'insertion': insertion,
