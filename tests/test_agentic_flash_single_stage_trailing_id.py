@@ -56,7 +56,7 @@ def commit(kernel, question="Original request", answer="Exact answer\n"):
 def test_flash_commits_from_stage1_without_stage2(kernel):
     work_id, result = commit(kernel)
     label = kernel._agentic_visible_turn_label(work_id)
-    assert result.content == "Exact answer\n" + "\n\n[Agentic Turn ID: " + label + "]""
+    assert result.content == "Exact answer\n" + "\n\n[Agentic Turn ID: " + label + "]"
     recovered, frozen = kernel._agentic_unwrap_flash_trailing_id(result.content)
     assert recovered == work_id and frozen == "Exact answer\n"
     row = kernel._agentic_forensic_journal().get(work_id)
