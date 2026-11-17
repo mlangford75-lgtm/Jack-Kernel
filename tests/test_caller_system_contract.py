@@ -154,7 +154,10 @@ def test_actual_backend_payload_begins_with_stable_caller_prefix(monkeypatch):
     outbound = client.payloads[0]["messages"]
     assert outbound[0]["role"] == "system"
     expected_system = CALLER if not original_stage else CALLER + DELIMITER + original_stage
-    assert outbound[0]["content"] == expected_system
+    # The full caller/stage contract is preserved, with the authenticated
+    # tool-result provenance instruction added once on the FIRST inference.
+    assert outbound[0]["content"] == expected_system + mod.TOOL_RESUME_PROVENANCE_NOTE
+    assert outbound[0]["content"].count("[JACK HOST TOOL-RESULT PROVENANCE]") == 1
     assert outbound[0]["content"].startswith(CALLER)
     assert outbound[1] == {"role": "user", "content": "x"}
 
