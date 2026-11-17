@@ -7786,37 +7786,46 @@ class OpenAICompatibleBackend:
         self, stage_messages: List[Dict[str, Any]],
         history: List[Dict[str, Any]], profile: StageProfile,
     ) -> None:
-        """Experimental, fail-open, source-only snapshot for SAME-work tool resumes.
+        """Universal per-work tool-stage prompt continuity; host-only and fail-open.
 
-        The original stage instruction is the authority for the active turn;
-        a newly inserted system fragment is not silently promoted on resume.
-        Never modify the canonical history or the caller-owned original.
+        A tool-capable stage may reuse ONLY its own initial system contract on
+        the same authenticated work's subsequent tool continuation, and ONLY
+        when the source change is a single pure insertion. No stage transition,
+        tool-free memory pass, or independent user turn can inherit it.
         """
-        if not AGENTIC_MODE or profile.name != "Agentic native pass 1":
+        if not profile.allow_tools:
             return
         try:
-            owned = _agentic_forensic_turn(history)
-            turn_id = getattr(owned, "turn_id", None) if owned is not None else None
             target = active_response_target(history)
             if target is None:
                 return
             index = int(target["history_index"])
-            # Only same-turn tool results count; earlier turns' retained tool
-            # history is NOT evidence that this new request is a continuation.
+            user = history[index]
+            if not isinstance(user, dict):
+                return
+            if AGENTIC_MODE:
+                owned = _agentic_forensic_turn(history)
+                work_id = getattr(owned, "turn_id", None) if owned is not None else None
+            else:
+                work_id = user.get("_jack_cache_work_id")
+            if not isinstance(work_id, str) or not work_id:
+                return
+            # Only tool records after the authenticated active user establish a
+            # continuation. Historical tools from earlier turns do not qualify.
             tool_continuation = any(
                 isinstance(item, dict) and item.get("_jack_internal_tool_exchange")
                 and item.get("role") in {"tool", "assistant"}
                 for item in history[index + 1:]
             )
             report = self._stage1_cache_stabilizer.apply(
-                stage=profile.name, turn_id=turn_id, messages=stage_messages,
-                tool_continuation=tool_continuation,
-                review_pending=_agentic_final_review_is_pending(history),
+                stage=profile.name, turn_id=profile.name + "::" + work_id,
+                messages=stage_messages, tool_continuation=tool_continuation,
+                review_pending=(AGENTIC_MODE and _agentic_final_review_is_pending(history)),
+                eligible=True,
             )
-            LOG.info("Jack Stage-1 system cache stability: %s", json.dumps(report, sort_keys=True))
+            LOG.info("Jack tool-stage system cache stability: %s", json.dumps(report, sort_keys=True))
         except Exception as exc:
-            # Cache optimization is never an inference prerequisite.
-            LOG.warning("Stage-1 system cache stabilization skipped (nonblocking): %s", type(exc).__name__)
+            LOG.warning("Tool-stage cache stabilization skipped (nonblocking): %s", type(exc).__name__)
     async def chat(
         self,
         *,
@@ -7891,6 +7900,7 @@ class OpenAICompatibleBackend:
             except Exception as exc:
                 LOG.warning("Jack cache byte-prefix region capture unavailable (nonblocking): %s", type(exc).__name__)
             stage_messages = self._fold_model_facing_system_messages(stage_messages)
+        if profile.allow_tools:
             self._stabilize_stage1_tool_cache_system(stage_messages, messages, profile)
         sampling = self._sampling_for_profile(profile)
         payload: Dict[str, Any] = {
@@ -8081,6 +8091,7 @@ class OpenAICompatibleBackend:
             except Exception as exc:
                 LOG.warning("Jack cache byte-prefix region capture unavailable (nonblocking): %s", type(exc).__name__)
             stage_messages = self._fold_model_facing_system_messages(stage_messages)
+        if profile.allow_tools:
             self._stabilize_stage1_tool_cache_system(stage_messages, messages, profile)
         sampling = self._sampling_for_profile(profile)
         payload: Dict[str, Any] = {
@@ -8562,6 +8573,42 @@ class JackQwenKernel:
                     "Runtime activity telemetry finalization failed; "
                     "cognition result preserved"
                 )
+    @staticmethod
+    def _cache_bind_stage_work(
+        history: List[Dict[str, Any]], stage_key: str, same_stage_resume: bool,
+    ) -> None:
+        """Mint a private work identity for every non-Agentic stage lifecycle.
+
+        The host creates it at the beginning of a stage, and reuses it only
+        when resuming THAT stage. Copy-on-write keeps the caller's original
+        user message object untouched; the projection removes _jack_ metadata.
+        """
+        if AGENTIC_MODE:
+            return  # Existing authenticated forensic Work ID owns Agentic.
+        try:
+            target = active_response_target(history)
+            if target is None:
+                return
+            index = int(target["history_index"])
+            original = history[index]
+            if not isinstance(original, dict):
+                return
+            existing = original.get("_jack_cache_work_id")
+            if same_stage_resume:
+                if not isinstance(existing, str) or not existing:
+                    return  # Unknown work identity must not gain cache authority.
+                if original.get("_jack_cache_work_stage") != stage_key:
+                    return
+            else:
+                existing = "jack-cache-work-" + uuid.uuid4().hex
+            updated = dict(original)
+            updated["_jack_cache_work_id"] = existing
+            updated["_jack_cache_work_stage"] = stage_key
+            history[index] = updated
+        except Exception:
+            # Cache telemetry and optimization may never gate inference.
+            LOG.warning("Unable to bind optional tool-stage cache identity; continuing")
+
     async def _run_stage(
         self,
         history: List[Dict[str, Any]],
@@ -8586,6 +8633,8 @@ class JackQwenKernel:
             else STAGES[stage_key]
         )
         profile = _agentic_translated_generation_profile(profile, history)
+        if profile.allow_tools:
+            self._cache_bind_stage_work(history, stage_key, same_stage_resume)
         cache_append = _agentic_cache_append_enabled(profile, tool_choice)
         effective_tools = tools if (profile.allow_tools or cache_append) else None
         effective_tool_choice = tool_choice if (profile.allow_tools or cache_append) else None
@@ -8837,6 +8886,8 @@ class JackQwenKernel:
             else STAGES[stage_key]
         )
         profile = _agentic_translated_generation_profile(profile, history)
+        if profile.allow_tools:
+            self._cache_bind_stage_work(history, stage_key, same_stage_resume)
         cache_append = _agentic_cache_append_enabled(profile, tool_choice)
         effective_tools = tools if (profile.allow_tools or cache_append) else None
         effective_tool_choice = tool_choice if (profile.allow_tools or cache_append) else None
