@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _load(monkeypatch, tmp_path):
-    monkeypatch.setenv("JACK_REASONING_LEVEL", "native")
+    monkeypatch.setenv("JACK_REASONING_LEVEL", "x-high")
     monkeypatch.setenv("JACK_FORENSIC_ARCHIVE_MODE", "off")
     monkeypatch.setenv("JACK_AGENTIC_FORENSIC_DB", str(tmp_path / "cache.sqlite"))
     name = "universal_cache_test_" + uuid.uuid4().hex
