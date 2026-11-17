@@ -1,8 +1,8 @@
-"""Experimental, provider-neutral per-work Stage-1 system-prefix stabilization.
+"""Experimental, provider-neutral per-work tool-stage system-prefix stabilization.
 
 Never edits canonical history, prompts on the first inference, or Stage 2.
-When a later Stage-1 tool continuation contains ONLY a pure insertion into its
-system text, retain the originally-authorized system text for that same work ID.
+When a later tool-stage continuation contains ONLY a pure insertion into its
+system text, retain the originally-authorized system text for that same work/stage key.
 Replacement/removal, changed message role, unrecognized work, or non-tool stages
 are deliberately left alone. No system text is logged or persisted.
 """
@@ -16,6 +16,11 @@ from typing import Any, Dict, List, Optional
 
 
 class Stage1CacheStabilizer:
+    """Shared inference-layer stabilizer for any host-confirmed tool-capable stage.
+
+    The legacy class name is retained to keep saved experiments and tests usable.
+    Eligibility comes from Jack's real stage profile, never a provider or mode name.
+    """
     def __init__(self, enabled: Optional[bool] = None, max_turns: int = 8):
         self.enabled = (os.getenv('JACK_STAGE1_CACHE_STABILITY', '1').strip().lower()
                         not in {'0', 'off', 'no', 'false'}) if enabled is None else bool(enabled)
@@ -41,13 +46,17 @@ class Stage1CacheStabilizer:
         return hashlib.sha256(value.encode('utf-8')).hexdigest()[:16]
 
     def apply(self, *, stage: str, turn_id: Optional[str], messages: List[Dict[str, Any]],
-              tool_continuation: bool, review_pending: bool = False) -> Dict[str, Any]:
+              tool_continuation: bool, review_pending: bool = False,
+              eligible: Optional[bool] = None) -> Dict[str, Any]:
         """In-place only on a private model-facing message list; never source messages."""
         decision: Dict[str, Any] = {
             'schema': 'jack.cache.stage1_stability.v1', 'stage': stage,
             'action': 'unchanged', 'reason': 'not_eligible',
         }
-        if not self.enabled or stage != 'Agentic native pass 1' or not turn_id or review_pending:
+        # Legacy direct callers keep original Agentic Stage-1 eligibility.
+        # The shared backend supplies profile.allow_tools for all modes.
+        permitted = (stage == 'Agentic native pass 1') if eligible is None else bool(eligible)
+        if not self.enabled or not permitted or not turn_id or review_pending:
             return decision
         if not isinstance(messages, list) or not messages or not isinstance(messages[0], dict):
             return decision
