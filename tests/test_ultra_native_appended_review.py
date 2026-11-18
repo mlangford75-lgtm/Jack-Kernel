@@ -259,10 +259,16 @@ def test_tool_resume_before_review_retains_tool_evidence(monkeypatch, tmp_path):
         messages = backend.calls[-1]["messages"]
         assert any(x.get("role") == "tool" and x.get("content") == "TOOL_RESULT"
                    for x in messages)
-        assert messages[-1]["role"] == "user"
-        assert messages[-1]["content"] == "Execute a command."
+        # FakeBackend records canonical host history, not the wire projection.
+        # The projector is covered separately with httpx.MockTransport above.
+        assert messages[-1]["role"] == "assistant"
+        assert messages[-1]["_jack_internal_ultra_review_trigger"] is True
         assert sum(m["role"] == "user" for m in messages) == 1
-        assert any(m["role"] == "system" and k.ULTRA_REVIEW_TRIGGER in m["content"]
+        assert any(m["role"] == "user" and m["content"] == "Execute a command."
+                   for m in messages)
+        assert any(m["role"] == "assistant"
+                   and m.get("_jack_internal_ultra_review_draft") is True
+                   and m.get("content") == "unseen first draft"
                    for m in messages)
     asyncio.run(run())
 
