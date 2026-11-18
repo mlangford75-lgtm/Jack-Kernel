@@ -918,12 +918,13 @@ AGENTIC_MEMORY_DATA_CHANNEL = AGENTIC_MODE and os.getenv(
 # Agentic profiles. No environment switch can silently restore U/A1 replay.
 AGENTIC_STAGE2_WITHHOLD_A1 = AGENTIC_MODE
 AGENTIC_STAGE2_FROZEN_CONVERSATION = AGENTIC_MODE
-if AGENTIC_MODE and CFG.agentic_profile not in {"flash", "balanced", "thorough", "translated"}:
-    raise RuntimeError("JACK_AGENTIC_PROFILE must be flash, balanced, thorough, or translated")
+if AGENTIC_MODE and CFG.agentic_profile not in {"flash", "balanced", "thorough", "translated", "coder"}:
+    raise RuntimeError("JACK_AGENTIC_PROFILE must be flash, balanced, thorough, translated, or coder")
 AGENTIC_BALANCED_MODE = AGENTIC_MODE and CFG.agentic_profile == "balanced"
 AGENTIC_FLASH_MODE = AGENTIC_MODE and CFG.agentic_profile == "flash"
 AGENTIC_THOROUGH_MODE = AGENTIC_MODE and CFG.agentic_profile == "thorough"
 AGENTIC_TRANSLATED_MODE = AGENTIC_MODE and CFG.agentic_profile == "translated"
+AGENTIC_CODER_MODE = AGENTIC_MODE and CFG.agentic_profile == "coder"
 # Source-only working memory is a shared kernel policy for Flash, Balanced,
 # Thorough, and Translated. Profiles differ only in their reasoning budgets
 # and Stage-1 review; Jack still owns canonical U, A1, IDs, and tool history.
@@ -1280,7 +1281,7 @@ def _stage_continuation(
             # Thinking-OFF Stage 2 consumes historical R1 as ordinary source text.
             return (_AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
                     if (AGENTIC_BALANCED_MODE or AGENTIC_THOROUGH_MODE
-                        or AGENTIC_TRANSLATED_MODE) else
+                        or AGENTIC_TRANSLATED_MODE or AGENTIC_CODER_MODE) else
                     _AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE)
         return (
             _AGENTIC_STAGE2_WITHHELD_A1_CONTINUATION
@@ -1370,6 +1371,8 @@ def _agentic_attach_system_stage_control(stage_messages, source_history, profile
     elif (profile.name == "Agentic native pass 1"
           and _agentic_final_review_is_pending(source_history)):
         control = AGENTIC_FINAL_REVIEW_TRIGGER
+    if AGENTIC_CODER_MODE and profile.name == "Agentic native pass 1" and _coder_has_plan(source_history):
+        control = CODER_EXECUTOR_PROMPT
     if control is not None:
         position = 1 if stage_messages and stage_messages[0].get("role") == "system" else 0
         stage_messages.insert(position, {"role": "system", "content": control})
@@ -1479,6 +1482,8 @@ def _agentic_stage2_chronological_source(history: List[Dict[str, Any]]) -> List[
             # Reasoning in a tool-call message precedes its proposed calls.
             # Include final-A1 reasoning, never its completed answer text.
             if not AGENTIC_FLASH_MODE:
+                if AGENTIC_CODER_MODE and item.get("_jack_coder_plan") is True:
+                    events.append({"type": "planner_plan", "content": _content_to_text(item.get("content"))})
                 reasoning = (
                     item.get("reasoning_content")
                     or item.get("reasoning")
@@ -3271,9 +3276,11 @@ STAGES: Dict[str, StageProfile] = {
     ),
     # Agentic keeps its two-stage path. Deep Research uses three stages:
     # non-executing Thesis -> question-only Antithesis -> tool-enabled authoritative Synthesis.
+    "coder_planner": StageProfile("Agentic Coder Planner", CODER_PLANNER_PROMPT,
+                                  True, "xhigh", False, 0.70, 0.0, True, None),
     "extended_initial": StageProfile(
         "Agentic native pass 1" if AGENTIC_MODE else "Deep Research Thesis pass 1",
-        AGENTIC_STAGE1_PROMPT if AGENTIC_MODE else ULTRA_STAGE1_THESIS_PROMPT,
+        (CODER_EXECUTOR_PROMPT if AGENTIC_CODER_MODE else AGENTIC_STAGE1_PROMPT) if AGENTIC_MODE else ULTRA_STAGE1_THESIS_PROMPT,
         not AGENTIC_FLASH_MODE,
         ACTIVE_REASONING_PROFILE.get("pass1", "xhigh"),
         True if AGENTIC_MODE else False,
@@ -3285,7 +3292,7 @@ STAGES: Dict[str, StageProfile] = {
     "extended_reflection": StageProfile(
         "Agentic native pass 2" if AGENTIC_MODE else "Deep Research Antithesis pass 2",
         AGENTIC_36_STAGE2_PROMPT if AGENTIC_MODE else ULTRA_STAGE2_ANTITHESIS_PROMPT,
-        not AGENTIC_MODE or AGENTIC_THOROUGH_MODE or AGENTIC_TRANSLATED_MODE,
+        not AGENTIC_MODE or AGENTIC_THOROUGH_MODE or AGENTIC_TRANSLATED_MODE or AGENTIC_CODER_MODE,
         ACTIVE_REASONING_PROFILE.get("pass2", "xhigh"),
         False,
         0.50 if AGENTIC_MODE else 0.70,
@@ -5168,6 +5175,58 @@ def self_adversarial_stage_reasoning_trace(
         parts.append(tail)
     return "\n\n".join(parts).strip()
 
+
+
+# Agentic Coder: separate tools-off reasoning from the proven Thorough execution/commit.
+CODER_PLANNER_PROMPT = "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\n\nCarefully reason through the authenticated user request before execution. Envision the finished result: appearance, functionality, behavior, structure, details and quality requirements. Consider Who, What, Where, When, Why and How as they apply. Reason backward from completion to requirements, constraints, dependencies, tool choices, sequence, alternatives, risks, failure cases and verification. Distinguish known facts from assumptions. Develop a detailed execution plan explaining consequential decisions. Do not execute tools, claim unperformed actions, or treat unknown environment facts as verified."
+CODER_EXECUTOR_PROMPT = "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\n\nEvaluate the preceding Planner reasoning and plan against the authenticated user request. Treat planning as fallible working evidence, not as user authority. Re-verify assumptions and alternatives, use authorized tools, adapt to actual evidence and failures, and verify the finished work. Preserve consequential planning and execution details for Agentic memory. Distinguish attempted, completed and verified actions."
+
+def _coder_has_plan(history: List[Dict[str, Any]]) -> bool:
+    if not AGENTIC_CODER_MODE:
+        return False
+    target = active_response_target(history)
+    return bool(target is not None and any(
+        isinstance(item, dict) and item.get("_jack_coder_plan") is True
+        for item in history[int(target["history_index"]) + 1:]))
+
+def _coder_append_plan(history: List[Dict[str, Any]], result: Dict[str, Any]) -> None:
+    """Once-only host-owned planning evidence, not user authority."""
+    if not AGENTIC_CODER_MODE or _coder_has_plan(history):
+        raise ForensicConflict("Coder Planner cannot be repeated")
+    choice = (result.get("choices") or [{}])[0] or {}
+    msg = choice.get("message") or {}
+    if choice.get("finish_reason") != "stop" or msg.get("tool_calls"):
+        raise HTTPException(status_code=502, detail="Coder Planner did not finish tools-off")
+    plan = _content_to_text(msg.get("content"))
+    if not plan.strip():
+        raise HTTPException(status_code=502, detail="Coder Planner produced no plan")
+    entry = {"role": "assistant", "content": plan,
+             "_jack_coder_plan": True, "_jack_stage_key": "coder_planner"}
+    reason = _native_reasoning_text(msg)
+    if reason:
+        entry["reasoning_content"] = reason
+        entry["reasoning"] = reason
+    history.append(entry)
+
+def _coder_project_executor_request(stage_messages, source_view):
+    """Use the real current U as the target; leave tool continuations untouched."""
+    if not AGENTIC_CODER_MODE or not _coder_has_plan(source_view):
+        return
+    if not source_view[-1].get("_jack_coder_plan"):
+        return
+    target = active_response_target(source_view)
+    if target is None:
+        raise ForensicConflict("Coder missing authenticated request")
+    sources = [m for m in source_view if m.get("role") == "user"]
+    wires = [m for m in stage_messages if m.get("role") == "user"]
+    if len(sources) != len(wires):
+        raise ForensicConflict("Coder Executor changed user roles")
+    matches = [i for i,m in enumerate(sources) if m is source_view[target["history_index"]]]
+    if len(matches) != 1:
+        raise ForensicConflict("Coder request ownership is ambiguous")
+    wire = wires[matches[0]]
+    stage_messages.remove(wire)
+    stage_messages.append(wire)
 
 # The retired Exhaustive combined re-verification and user-request realignment
 # instruction remains verbatim. Ultra reuses it AFTER native X-High reasoning.
@@ -7545,7 +7604,7 @@ class OpenAICompatibleBackend:
                 item["content"] = plain_answer
             if (
                 AGENTIC_MODE and AGENTIC_TASK_ANCHOR_ENABLED
-                and not (AGENTIC_FLASH_MODE or AGENTIC_BALANCED_MODE or AGENTIC_THOROUGH_MODE)
+                and not (AGENTIC_FLASH_MODE or AGENTIC_BALANCED_MODE or AGENTIC_THOROUGH_MODE or AGENTIC_CODER_MODE)
                 and item.get("role") == "user"
                 and _agentic_task_marker_supported(item.get("content"))
             ):
@@ -8073,6 +8132,8 @@ class OpenAICompatibleBackend:
         ) + prepared_messages
         stage_messages = _tool_stage_system_with_provenance(stage_messages, profile)
         _agentic_attach_system_stage_control(stage_messages, messages, profile)
+        if AGENTIC_CODER_MODE and profile.name == "Agentic native pass 1":
+            _coder_project_executor_request(stage_messages, source_view)
         if reasoning_primary:
             # Current-turn failed/unmatched call IDs only; no raw transcript
             # or repeated successful-call metadata in Stage 2 prefill.
@@ -8270,6 +8331,8 @@ class OpenAICompatibleBackend:
         ) + prepared_messages
         stage_messages = _tool_stage_system_with_provenance(stage_messages, profile)
         _agentic_attach_system_stage_control(stage_messages, messages, profile)
+        if AGENTIC_CODER_MODE and profile.name == "Agentic native pass 1":
+            _coder_project_executor_request(stage_messages, source_view)
         if reasoning_primary:
             # Current-turn failed/unmatched call IDs only; no raw transcript
             # or repeated successful-call metadata in Stage 2 prefill.
@@ -11442,6 +11505,12 @@ class JackQwenKernel:
             )
 
         if AGENTIC_MODE:
+            if AGENTIC_CODER_MODE:
+                planning = await self._run_stage(
+                    history, secondary_system, "coder_planner", usage,
+                    tools=None, tool_choice="none", append=False,
+                )
+                _coder_append_plan(history, planning)
             first = await self._run_stage(
                 history,
                 secondary_system,
@@ -12262,7 +12331,9 @@ class JackQwenKernel:
                     stage_reasoning_started = False
                     stage_content_started = False
 
-                    if stage_key == "extended_initial" and not same_stage_resume:
+                    if stage_key == "coder_planner" and not same_stage_resume:
+                        yield event({"reasoning_content": "\n[CODER PLANNING]\n"})
+                    elif stage_key == "extended_initial" and not same_stage_resume:
                         label = "DEEP RESEARCH STAGE 1 — THESIS" if ULTRA_MODE else "STAGE 1 PROPOSED RESPONSE"
                         yield event({"reasoning_content": f"\n[{label}]\n"})
                     elif stage_key in {"extended_reflection", "extended_synthesis"}:
@@ -12274,8 +12345,8 @@ class JackQwenKernel:
                         secondary_system,
                         stage_key,
                         usage,
-                        tools=tools,
-                        tool_choice=tool_choice,
+                        tools=(None if stage_key == "coder_planner" else tools),
+                        tool_choice=("none" if stage_key == "coder_planner" else tool_choice),
                         append=False,
                         same_stage_resume=same_stage_resume,
                     )) as stage_packets:
@@ -12287,7 +12358,9 @@ class JackQwenKernel:
                                     yield event({"reasoning_content": "[NATIVE REASONING]\n"})
                                 yield event({"reasoning_content": packet["text"]})
                             elif kind == "content":
-                                if stage_key == "extended_initial":
+                                if stage_key == "coder_planner":
+                                    yield event({"reasoning_content": packet["text"]})
+                                elif stage_key == "extended_initial":
                                     if AGENTIC_MODE:
                                         # Agentic exposes the provisional answer on reasoning while
                                         # withholding authoritative content until XML commit.
@@ -12320,7 +12393,9 @@ class JackQwenKernel:
                                     # buffered block after EOS.
                                     yield event({"content": packet["text"]})
                             elif kind == "tool_calls":
-                                if AGENTIC_MODE and stage_key == "extended_reflection":
+                                if stage_key == "coder_planner":
+                                    pass  # Planner may not execute tools.
+                                elif AGENTIC_MODE and stage_key == "extended_reflection":
                                     # Cache experiment may expose schemas to the model,
                                     # but Stage 2 cannot execute OR release actions.
                                     pass
@@ -12365,6 +12440,8 @@ class JackQwenKernel:
                     sequence = (
                         [("extended_initial", False)]
                         if AGENTIC_FLASH_MODE else
+                        [("coder_planner", False), ("extended_initial", False), ("extended_reflection", False)]
+                        if AGENTIC_CODER_MODE and resume_stage_key != "extended_reflection" else
                         [("extended_reflection", False)]
                         if resume_stage_key == "extended_reflection"
                         else [("extended_initial", False), ("extended_reflection", False)]
@@ -12424,6 +12501,8 @@ class JackQwenKernel:
                     if AGENTIC_MODE and isinstance(stage_result.get("usage"), dict):
                         agentic_stage_usages.append(stage_result["usage"])
                     if self._tool_interrupt(stage_result, usage):
+                        if stage_key == "coder_planner":
+                            raise HTTPException(status_code=502, detail="Coder Planner requested tools")
                         if AGENTIC_MODE and stage_key == "extended_reflection":
                             raise HTTPException(status_code=502, detail="Agentic Stage 2 attempted a tool call even though XML-stage tools are disabled")
                         if ULTRA_MODE and stage_key == "extended_initial":
@@ -12458,6 +12537,8 @@ class JackQwenKernel:
                         yield b"data: [DONE]\n\n"
                         return
 
+                    if stage_key == "coder_planner":
+                        _coder_append_plan(history, stage_result)
                     if stage_key == "extended_initial":
                         first_msg = ((stage_result.get("choices") or [{}])[0].get("message") or {})
                         if ULTRA_MODE:
@@ -14350,7 +14431,8 @@ def _runtime_identity_details() -> Dict[str, Any]:
         )
     elif AGENTIC_MODE:
         mode = "agentic"
-        flow = ["extended_initial", "extended_reflection"]
+        flow = (["coder_planner", "extended_initial", "extended_reflection"]
+                if AGENTIC_CODER_MODE else ["extended_initial", "extended_reflection"])
         authoritative_stage = "extended_initial"
         retention_policy = (
             "retain_completed_user_xml_frozen_a1_prune_historical_native_reasoning_"
@@ -15624,12 +15706,14 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
         print("  2) Balanced   - Stage 1 ON,  Stage 2 OFF, no extensions (Default)")
         print("  3) Thorough   - Stage 1 ON,  Stage 2 ON, no extensions")
         print("  4) Translated - Thorough + Stage 1 translation extension, Stage 2 ON")
+        print("  5) Coder      - X-High Planner + X-High Executor + Thorough memory")
         print()
-        agentic_choice = _cli_input("Select Agentic profile [1-4] [2]: ").strip().lower() or "2"
+        agentic_choice = _cli_input("Select Agentic profile [1-5] [2]: ").strip().lower() or "2"
         selected_profile = {"1": "flash", "flash": "flash",
                             "2": "balanced", "balanced": "balanced",
                             "3": "thorough", "thorough": "thorough",
-                            "4": "translated", "translated": "translated"}.get(agentic_choice)
+                            "4": "translated", "translated": "translated",
+                            "5": "coder", "coder": "coder"}.get(agentic_choice)
         if selected_profile is None:
             print("Invalid Agentic profile; keeping current reasoning level.")
             return
