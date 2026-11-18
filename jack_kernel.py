@@ -12778,68 +12778,93 @@ class JackQwenKernel:
             # trace, deterministic commit wrapper, and Jack XML generation.
             if not AGENTIC_MODE:
                 yield event({"role": "assistant"})
-                native_result: Optional[Dict[str, Any]] = None
-                async for packet in self._run_stage_streamed(
-                    history,
-                    secondary_system,
-                    "thesis",
-                    usage,
-                    tools=tools,
-                    tool_choice=tool_choice,
-                    append=False,
-                    same_stage_resume=(resume_stage_key == "thesis"),
-                ):
-                    kind = packet.get("kind")
-                    if kind == "reasoning":
-                        yield event({"reasoning_content": packet["text"]})
-                    elif kind == "content":
-                        yield event({"content": packet["text"]})
-                    elif kind == "tool_calls":
-                        yield event({"tool_calls": packet["tool_calls"]})
-                    elif kind == "keepalive":
-                        label = str(packet.get("event") or "backend.activity")
-                        yield f": qwen-keepalive {label}\n\n".encode("utf-8")
-                    elif kind == "result":
-                        native_result = packet["data"]
-
-                if native_result is None:
-                    raise HTTPException(status_code=502, detail="Native Qwen completion produced no result")
-
-                interrupted = self._tool_interrupt(native_result, usage)
-                if interrupted:
-                    await self._register_stage_tool_resume(
-                        stage_key="thesis",
-                        history=history,
-                        secondary_system=secondary_system,
-                        usage=usage,
+                # Ultra is X-High with one appended SAME-STAGE review inference.
+                # Do not emit a provisional draft as user-visible content:
+                # pass 1 streams only native reasoning and authenticated tool
+                # calls; pass 2 streams the authoritative answer as generated.
+                # A tool checkpoint may interrupt either inference; a resumed
+                # review resumes the same stage and cannot trigger review again.
+                needs_ultra_review = ULTRA_REVIEW_MODE and not _ultra_review_pending(history)
+                for phase in range(2 if needs_ultra_review else 1):
+                    first_ultra_pass = needs_ultra_review and phase == 0
+                    native_result: Optional[Dict[str, Any]] = None
+                    async with contextlib.aclosing(self._run_stage_streamed(
+                        history,
+                        secondary_system,
+                        "thesis",
+                        usage,
                         tools=tools,
                         tool_choice=tool_choice,
-                        data=native_result,
-                    )
+                        append=False,
+                        same_stage_resume=(
+                            resume_stage_key == "thesis" or
+                            (ULTRA_REVIEW_MODE and phase > 0)
+                        ),
+                    )) as packets:
+                        async for packet in packets:
+                            kind = packet.get("kind")
+                            if kind == "reasoning":
+                                yield event({"reasoning_content": packet["text"]})
+                            elif kind == "content":
+                                if not first_ultra_pass:
+                                    yield event({"content": packet["text"]})
+                            elif kind == "tool_calls":
+                                # Ultra withholds unvalidated partial tool calls.
+                                # Complete calls go through the existing host
+                                # checkpoint/Phase-4 admission below.
+                                if not ULTRA_REVIEW_MODE:
+                                    yield event({"tool_calls": packet["tool_calls"]})
+                            elif kind == "keepalive":
+                                label = str(packet.get("event") or "backend.activity")
+                                yield f": qwen-keepalive {label}\\n\\n".encode("utf-8")
+                            elif kind == "result":
+                                native_result = packet["data"]
+
+                    if native_result is None:
+                        raise HTTPException(status_code=502, detail="Native Qwen completion produced no result")
+
+                    interrupted = self._tool_interrupt(native_result, usage)
+                    if interrupted:
+                        await self._register_stage_tool_resume(
+                            stage_key="thesis",
+                            history=history,
+                            secondary_system=secondary_system,
+                            usage=usage,
+                            tools=tools,
+                            tool_choice=tool_choice,
+                            data=native_result,
+                        )
+                        if pending_state is not None and resume_stage_key == "thesis":
+                            await self._retire_pending_tool_resume(pending_state)
+                        calls = (((native_result.get("choices") or [{}])[0].get("message") or {}).get("tool_calls") or [])
+                        if calls and (ULTRA_REVIEW_MODE or not native_result.get("_jack_tool_call_fragments_streamed")):
+                            wire_calls = []
+                            for index, call in enumerate(calls):
+                                item = copy.deepcopy(call)
+                                if isinstance(item, dict):
+                                    item["index"] = index
+                                wire_calls.append(item)
+                            yield event({"tool_calls": wire_calls})
+                        yield event({}, "tool_calls")
+                        yield usage_event(usage_delta(usage, response_usage_baseline))
+                        yield b"data: [DONE]\\n\\n"
+                        return
+
+                    if first_ultra_pass:
+                        _ultra_begin_review(history, native_result)
+                        # The first assistant draft and all R1/tool traffic remain
+                        # in the prefix. Only this small Jack-owned user-role
+                        # continuation is appended. No extra system prompt.
+                        yield event({"reasoning_content": "\\n[ULTRA — RE-VERIFY AND REALIGN]\\n"})
+                        continue
+
                     if pending_state is not None and resume_stage_key == "thesis":
                         await self._retire_pending_tool_resume(pending_state)
-                    calls = (((native_result.get("choices") or [{}])[0].get("message") or {}).get("tool_calls") or [])
-                    if calls and not native_result.get("_jack_tool_call_fragments_streamed"):
-                        wire_calls = []
-                        for index, call in enumerate(calls):
-                            item = copy.deepcopy(call)
-                            if isinstance(item, dict):
-                                item["index"] = index
-                            wire_calls.append(item)
-                        yield event({"tool_calls": wire_calls})
-                    yield event({}, "tool_calls")
+                    choice = (native_result.get("choices") or [{}])[0] or {}
+                    yield event({}, str(choice.get("finish_reason") or "stop"))
                     yield usage_event(usage_delta(usage, response_usage_baseline))
-                    yield b"data: [DONE]\n\n"
+                    yield b"data: [DONE]\\n\\n"
                     return
-
-                if pending_state is not None and resume_stage_key == "thesis":
-                    await self._retire_pending_tool_resume(pending_state)
-                choice = (native_result.get("choices") or [{}])[0] or {}
-                yield event({}, str(choice.get("finish_reason") or "stop"))
-                yield usage_event(usage_delta(usage, response_usage_baseline))
-                yield b"data: [DONE]\n\n"
-                return
-
 
 
 # ---------------------------------------------------------------------------
