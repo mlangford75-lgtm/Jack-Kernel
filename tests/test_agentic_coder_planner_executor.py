@@ -47,6 +47,7 @@ def test_profile_isolated_and_reasoning_contract(monkeypatch, tmp_path):
     assert k.STAGES["extended_initial"].reasoning_effort == "xhigh"
     assert k.STAGES["extended_initial"].allow_tools
     assert k.STAGES["extended_reflection"].thinking
+    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
     assert not k.STAGES["extended_reflection"].allow_tools
     assert k.CODER_PLANNER_PROMPT.startswith(PREFIX)
     assert k.CODER_EXECUTOR_PROMPT.startswith(PREFIX)
