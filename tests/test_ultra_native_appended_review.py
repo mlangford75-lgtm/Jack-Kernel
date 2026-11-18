@@ -62,7 +62,8 @@ def test_ultra_review_is_host_owned_and_does_not_modify_history(monkeypatch, tmp
     assert json.dumps(h[:1]) == original
     assert k.active_response_target(h)["content"] == "Original request"
     assert k._ultra_review_pending(h)
-    assert h[-2]["content"] == "Provisional draft"
+    assert h[-2]["content"] == ""
+    assert h[-2]["_jack_ultra_provisional_answer"] == "Provisional draft"
     assert h[-2]["reasoning_content"] == "FIRST_REASONING"
     assert h[-1]["_jack_internal_ultra_review_trigger"]
     assert k.AGENTIC_STAGE1_VERIFICATION_PROMPT in h[-1]["content"]
@@ -140,7 +141,8 @@ def test_same_system_prefix_xhigh_and_final_only(monkeypatch, tmp_path, streamin
             assert second["chat_template_kwargs"]["enable_thinking"]
             assert first["messages"] == second["messages"][:len(first["messages"])]
             assert second["messages"][-2]["role"] == "assistant"
-            assert second["messages"][-2]["content"] == "DO_NOT_SHOW_PROVISIONAL"
+            assert second["messages"][-2]["content"] == ""
+            assert "DO_NOT_SHOW_PROVISIONAL" not in json.dumps(second["messages"])
             assert "FIRST_NATIVE_REASONING" in json.dumps(second["messages"][-2])
             assert second["messages"][-1]["role"] == "user"
             assert k.AGENTIC_STAGE1_VERIFICATION_PROMPT in second["messages"][-1]["content"]
