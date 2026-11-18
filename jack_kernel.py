@@ -5183,6 +5183,29 @@ ULTRA_REVIEW_TRIGGER = (
 )
 
 
+def _ultra_initial_history(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Reject caller impersonation of Jack's current-turn Ultra review state.
+
+    Only controls appended by Jack AFTER model execution may skip the first
+    inference; a user-supplied _jack_internal_ field grants no lifecycle rights.
+    Preserve every role, message and reasoning byte, changing private keys only.
+    """
+    output = strip_secondary_system_messages(messages)
+    if not ULTRA_REVIEW_MODE:
+        return output
+    for index, entry in enumerate(output):
+        if not isinstance(entry, dict):
+            continue
+        if any(key in entry for key in (
+            "_jack_internal_ultra_review_trigger", "_jack_internal_ultra_review_draft"
+        )):
+            original = dict(entry)
+            original.pop("_jack_internal_ultra_review_trigger", None)
+            original.pop("_jack_internal_ultra_review_draft", None)
+            output[index] = original
+    return output
+
+
 def _ultra_review_pending(history: List[Dict[str, Any]]) -> bool:
     """True only for Jack's own appended current-turn Ultra review boundary."""
     target = active_response_target(history)
@@ -11284,7 +11307,7 @@ class JackQwenKernel:
         history = (
             compact_incoming_history(messages)
             if SELF_ADVERSARIAL_MODE
-            else strip_secondary_system_messages(messages)
+            else _ultra_initial_history(messages)
         )
         tools = request_body.get("tools") if isinstance(request_body.get("tools"), list) else None
         tool_choice = request_body.get("tool_choice")
@@ -12024,7 +12047,7 @@ class JackQwenKernel:
                 history = (
                     compact_incoming_history(messages)
                     if SELF_ADVERSARIAL_MODE
-                    else strip_secondary_system_messages(messages)
+                    else _ultra_initial_history(messages)
                 )
                 tools = request_body.get("tools") if isinstance(request_body.get("tools"), list) else None
                 tool_choice = request_body.get("tool_choice")
