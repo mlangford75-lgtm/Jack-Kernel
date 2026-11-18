@@ -8172,6 +8172,8 @@ class OpenAICompatibleBackend:
         elif (
             prepared_messages
             and prepared_messages[-1].get("role") == "assistant"
+            and not (AGENTIC_CODER_MODE and profile.name == "Agentic native pass 1"
+                     and _coder_has_plan(messages) and messages[-1].get("_jack_coder_plan"))
             and _stage_requires_user_continuation(profile)
         ):
             stage_messages.append(_stage_generation_trigger(profile, messages))
@@ -8371,6 +8373,8 @@ class OpenAICompatibleBackend:
         elif (
             prepared_messages
             and prepared_messages[-1].get("role") == "assistant"
+            and not (AGENTIC_CODER_MODE and profile.name == "Agentic native pass 1"
+                     and _coder_has_plan(messages) and messages[-1].get("_jack_coder_plan"))
             and _stage_requires_user_continuation(profile)
         ):
             stage_messages.append(_stage_generation_trigger(profile, messages))
