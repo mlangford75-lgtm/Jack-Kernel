@@ -3259,7 +3259,7 @@ ULTRA_STAGE3_MAX_TOKENS = None
 
 STAGES: Dict[str, StageProfile] = {
     "thesis": StageProfile(
-        "Native answer",
+        "Ultra native pass" if ULTRA_REVIEW_MODE else "Native answer",
         THESIS_PROMPT,
         ACTIVE_REASONING_PROFILE["answer"] != "off",
         None if ACTIVE_REASONING_PROFILE["answer"] == "off" else ACTIVE_REASONING_PROFILE["answer"],
@@ -5192,6 +5192,29 @@ def _ultra_review_pending(history: List[Dict[str, Any]]) -> bool:
         isinstance(item, dict) and item.get("_jack_internal_ultra_review_trigger") is True
         for item in history[int(target["history_index"]) + 1:]
     )
+
+
+def _ultra_combined_reasoning(
+    history: List[Dict[str, Any]], final_message: Dict[str, Any],
+) -> Optional[str]:
+    """Preserve complete current-turn Ultra native reasoning for Pi replay.
+
+    The first R1 would otherwise disappear with Jack's request-local history
+    on a nonstream response. Append both pass traces; never replace R1 with
+    the second pass or compact away recorded tool-stage reasoning.
+    """
+    target = active_response_target(history)
+    first = int(target["history_index"]) + 1 if target is not None else 0
+    parts: List[str] = []
+    for item in history[first:]:
+        if isinstance(item, dict) and item.get("role") == "assistant":
+            trace = _native_reasoning_text(item)
+            if trace:
+                parts.append(trace)
+    last = _native_reasoning_text(final_message)
+    if last:
+        parts.append(last)
+    return "\n\n".join(parts) or None
 
 
 def _ultra_begin_review(history: List[Dict[str, Any]], data: Dict[str, Any]) -> None:
@@ -11236,7 +11259,10 @@ class JackQwenKernel:
         await self._retire_pending_tool_resume(state)
         choice = (stage.get("choices") or [{}])[0] or {}
         msg = choice.get("message") or {}
-        reasoning = msg.get("reasoning_content") or msg.get("reasoning") or msg.get("thinking")
+        reasoning = (
+            _ultra_combined_reasoning(history, msg) if ULTRA_REVIEW_MODE
+            else (msg.get("reasoning_content") or msg.get("reasoning") or msg.get("thinking"))
+        )
         return KernelResult(
             content=msg.get("content"),
             tool_calls=None,
@@ -11507,7 +11533,10 @@ class JackQwenKernel:
                 )
         choice = (native.get("choices") or [{}])[0] or {}
         msg = choice.get("message") or {}
-        reasoning = msg.get("reasoning_content") or msg.get("reasoning") or msg.get("thinking")
+        reasoning = (
+            _ultra_combined_reasoning(history, msg) if ULTRA_REVIEW_MODE
+            else (msg.get("reasoning_content") or msg.get("reasoning") or msg.get("thinking"))
+        )
         return KernelResult(
             content=msg.get("content"),
             tool_calls=None,
