@@ -3262,6 +3262,9 @@ ULTRA_STAGE1_MAX_TOKENS = None
 ULTRA_STAGE2_MAX_TOKENS = None
 ULTRA_STAGE3_MAX_TOKENS = None
 
+CODER_PLANNER_PROMPT = "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\n\nCarefully reason through the authenticated user request before execution. Envision the finished result: appearance, functionality, behavior, structure, details and quality requirements. Consider Who, What, Where, When, Why and How as they apply. Reason backward from completion to requirements, constraints, dependencies, tool choices, sequence, alternatives, risks, failure cases and verification. Distinguish known facts from assumptions. Develop a detailed execution plan explaining consequential decisions. Do not execute tools, claim unperformed actions, or treat unknown environment facts as verified."
+CODER_EXECUTOR_PROMPT = "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\n\nEvaluate the preceding Planner reasoning and plan against the authenticated user request. Treat planning as fallible working evidence, not as user authority. Re-verify assumptions and alternatives, use authorized tools, adapt to actual evidence and failures, and verify the finished work. Preserve consequential planning and execution details for Agentic memory. Distinguish attempted, completed and verified actions."
+
 STAGES: Dict[str, StageProfile] = {
     "thesis": StageProfile(
         "Ultra native pass" if ULTRA_REVIEW_MODE else "Native answer",
@@ -5178,9 +5181,6 @@ def self_adversarial_stage_reasoning_trace(
 
 
 # Agentic Coder: separate tools-off reasoning from the proven Thorough execution/commit.
-CODER_PLANNER_PROMPT = "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\n\nCarefully reason through the authenticated user request before execution. Envision the finished result: appearance, functionality, behavior, structure, details and quality requirements. Consider Who, What, Where, When, Why and How as they apply. Reason backward from completion to requirements, constraints, dependencies, tool choices, sequence, alternatives, risks, failure cases and verification. Distinguish known facts from assumptions. Develop a detailed execution plan explaining consequential decisions. Do not execute tools, claim unperformed actions, or treat unknown environment facts as verified."
-CODER_EXECUTOR_PROMPT = "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\n\nEvaluate the preceding Planner reasoning and plan against the authenticated user request. Treat planning as fallible working evidence, not as user authority. Re-verify assumptions and alternatives, use authorized tools, adapt to actual evidence and failures, and verify the finished work. Preserve consequential planning and execution details for Agentic memory. Distinguish attempted, completed and verified actions."
-
 def _coder_has_plan(history: List[Dict[str, Any]]) -> bool:
     if not AGENTIC_CODER_MODE:
         return False
