@@ -1,5 +1,7 @@
 """Focused deterministic Coder profile and phase-authority regression tests."""
 import importlib.util
+import asyncio
+import httpx
 import json
 import sys
 import uuid
@@ -118,3 +120,52 @@ def test_thorough_is_unchanged(monkeypatch, tmp_path):
     assert k._runtime_identity_details()["flow"] == [
         "extended_initial", "extended_reflection"
     ]
+
+
+def test_backend_planner_tools_off_executor_tools_on(monkeypatch, tmp_path):
+    async def run():
+        k = load(monkeypatch, tmp_path)
+        payloads = []
+        def respond(request):
+            payloads.append(json.loads(request.content))
+            return httpx.Response(200, json={
+                "choices": [{"index": 0, "message": {"role": "assistant",
+                            "content": "Planned response", "reasoning_content": "R1"},
+                            "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28},
+            })
+        backend = k.OpenAICompatibleBackend(k.CFG)
+        await backend._client.aclose()
+        backend._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        async def model():
+            return "test-model"
+        backend.resolve_model = model
+        h = [{"role": "system", "content": "User-defined stable system"},
+             {"role": "user", "content": "Build a working clock."}]
+        available = [{"type": "function", "function": {"name": "read",
+                     "parameters": {"type": "object", "properties": {}}}}]
+        try:
+            planned = await backend.chat(messages=h, secondary_system="",
+                                         profile=k.STAGES["coder_planner"],
+                                         tools=available)
+            k._coder_append_plan(h, planned)
+            await backend.chat(messages=h, secondary_system="",
+                               profile=k.STAGES["extended_initial"],
+                               tools=available)
+            assert len(payloads) == 2
+            first, second = payloads
+            assert first["reasoning_effort"] == "xhigh"
+            assert second["reasoning_effort"] == "xhigh"
+            assert "tools" not in first or not first["tools"]
+            assert second["tools"][0]["function"]["name"] == "read"
+            assert sum(m["role"] == "user" for m in second["messages"]) == 1
+            assert second["messages"][-1]["role"] == "user"
+            assert second["messages"][-1]["content"] == "Build a working clock."
+            assert any(m["role"] == "assistant" and m["content"] == "Planned response"
+                       and m.get("reasoning_content") == "R1"
+                       for m in second["messages"])
+            assert any(m["role"] == "system" and k.CODER_EXECUTOR_PROMPT in m["content"]
+                       for m in second["messages"])
+        finally:
+            await backend._client.aclose()
+    asyncio.run(run())
