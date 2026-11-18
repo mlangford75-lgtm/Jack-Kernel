@@ -4877,7 +4877,9 @@ def build_stage_system_prompt(secondary_system: str, profile: StageProfile, mess
     receives its minimal directive. Every Deep Research stage receives only its own current stage contract; no
     completed stage instruction is carried into another stage's system message.
     """
-    if profile.name == "Native answer":
+    if profile.name in {"Native answer", "Ultra native pass"}:
+        # Ultra is native X-High with appended re-verification; it must retain
+        # the same authenticated caller system contract as ordinary X-High.
         if TRANSLATOR_MODE:
             return "\n\n".join(part for part in ((secondary_system or "").strip(), TRANSLATOR_SYSTEM_PROMPT) if part)
         return (secondary_system or "").strip()
