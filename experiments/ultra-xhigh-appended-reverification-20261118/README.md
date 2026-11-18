@@ -8,8 +8,12 @@ The interactive reasoning selector places **Ultra** immediately after **X-High (
 
 Ultra executes the ordinary tool-capable **X-High** answer stage, using the caller's authenticated system contract, normal tools and native thinking. On completion of current-turn tool work, Jack holds the provisional answer back and performs **one second inference in the same native reasoning stage**. Its input is an append-only continuation of the first request: unchanged system text + original user and exact historical tool messages + first-pass native R1 (as assistant reasoning), followed by the **retired Exhaustive combined verification and user-request realignment instruction**. The speculative first-pass answer is not injected into the second model prompt; it is host-only draft state. Only the final inference's content reaches the caller. Both passes use `reasoning_effort=xhigh` and native thinking controls.
 
-Exact combined instruction reused from retired Exhaustive/Agentic:
+Ultra's exact appended continued-reasoning instruction (retaining the retired Exhaustive re-verification sentence verbatim):
+> Ultra Reasoning: [Not a new user request. Continued Reasoning]
+>
 > Wait, re-verify the latest reasoning and chain-of-thought. Test for errors, mistakes, or poor quality. Make changes, if necessary, to ensure alignment with the instructions and user request before responding
+>
+> Return the new, complete answer to the current user request, not a report about re-verification. Preserve correct reasoning, established findings, completed work, and verified results. Correct identified errors, omissions, or misalignment without discarding valid work. Do not repeat completed tool effects.
 
 This is *not* model-side token insertion into an already-running decoder. Ordinary OpenAI-compatible APIs do not supply a universal deterministic injection point inside one native reasoning generation. Jack **ends the first backend request**, appends a Jack-owned continuation preserving the original prefix, then **opens a second backend request**. This is the portable approximation, with its inevitable second-generation cost. Physical KV-cache residency and prefill penalty must be measured at LM Studio or the selected server; a stable JSON/chat prefix alone is not a cache-hit claim.
 
