@@ -14197,7 +14197,7 @@ def completion_envelope(result: KernelResult) -> Dict[str, Any]:
 def _runtime_identity_details() -> Dict[str, Any]:
     if ULTRA_REVIEW_MODE:
         mode = "ultra"
-        flow = ["native_xhigh_reasoning", "appended_same_stage_reverification", "final_response"]
+        flow = ["thesis", "thesis"]
         authoritative_stage = "thesis"
         retention_policy = "no_stage2_no_history_or_tool_reasoning_pruning"
     elif ULTRA_MODE:
@@ -14252,7 +14252,7 @@ def _runtime_identity_details() -> Dict[str, Any]:
         }
 
     return {
-        "reasoning_profile": "deep-research" if _reasoning_level == "ultra" else _reasoning_level,
+        "reasoning_profile": "deep-research" if ULTRA_MODE else _reasoning_level,
         "mode": mode,
         "translation_target_language": TRANSLATOR_LANGUAGES[TRANSLATOR_LANGUAGE] if TRANSLATOR_MODE else None,
         "agentic_translation_target_language": (
