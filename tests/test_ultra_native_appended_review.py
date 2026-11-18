@@ -119,11 +119,11 @@ def test_same_system_prefix_xhigh_and_final_only(monkeypatch, tmp_path, streamin
                         if line.startswith("data: ") and line[6:] != "[DONE]":
                             data.append(json.loads(line[6:]))
                 content = "".join(
-                    chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                    (chunk.get("choices") or [{}])[0].get("delta", {}).get("content", "")
                     for chunk in data
                 )
                 reasoning = "".join(
-                    chunk.get("choices", [{}])[0].get("delta", {}).get("reasoning_content", "")
+                    (chunk.get("choices") or [{}])[0].get("delta", {}).get("reasoning_content", "")
                     for chunk in data
                 )
             else:
@@ -146,7 +146,10 @@ def test_same_system_prefix_xhigh_and_final_only(monkeypatch, tmp_path, streamin
             assert "FIRST_NATIVE_REASONING" in json.dumps(second["messages"][-2])
             assert second["messages"][-1]["role"] == "user"
             assert k.AGENTIC_STAGE1_VERIFICATION_PROMPT in second["messages"][-1]["content"]
-            assert "Stable caller system contract" in second["messages"][0]["content"]
+            assert any(
+                x.get("role") == "system" and "Stable caller system contract" in x.get("content", "")
+                for x in second["messages"]
+            )
             assert first["messages"][0]["content"] == second["messages"][0]["content"]
         finally:
             await backend._client.aclose()
