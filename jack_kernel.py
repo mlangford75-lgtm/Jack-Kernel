@@ -5173,9 +5173,9 @@ AGENTIC_STAGE1_VERIFICATION_PROMPT = "Wait, re-verify the latest reasoning and c
 
 ULTRA_REVIEW_TRIGGER = (
     "Jack internal Ultra continuation; not a new user request. "
-    "Review the just-completed native X-High reasoning and the provisional answer "
+    "Review the just-completed native X-High reasoning "
     "against the authenticated user request earlier in this conversation. "
-    "The provisional answer is not yet the user-visible response.\n\n"
+    "No user-visible answer has been released.\n\n"
     + AGENTIC_STAGE1_VERIFICATION_PROMPT
     + "\n\nReturn the complete answer to the original user request, not a "
       "report about re-verification. If the draft already satisfies the request, "
@@ -5258,7 +5258,11 @@ def _ultra_begin_review(history: List[Dict[str, Any]], data: Dict[str, Any]) -> 
         raise HTTPException(status_code=502, detail="Ultra first inference produced no provisional answer")
     entry: Dict[str, Any] = {
         "role": "assistant",
-        "content": draft,
+        # Keep native R1 immediately adjacent to the appended instruction.
+        # Do NOT replay the speculative first-pass answer into model context:
+        # it is not the authoritative response and would incur extra prefill.
+        "content": "",
+        "_jack_ultra_provisional_answer": draft,
         "_jack_internal_ultra_review_draft": True,
     }
     reasoning = _native_reasoning_text(message)
