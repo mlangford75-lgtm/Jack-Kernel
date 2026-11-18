@@ -1371,8 +1371,6 @@ def _agentic_attach_system_stage_control(stage_messages, source_history, profile
     elif (profile.name == "Agentic native pass 1"
           and _agentic_final_review_is_pending(source_history)):
         control = AGENTIC_FINAL_REVIEW_TRIGGER
-    if AGENTIC_CODER_MODE and profile.name == "Agentic native pass 1" and _coder_has_plan(source_history):
-        control = CODER_EXECUTOR_PROMPT
     if control is not None:
         position = 1 if stage_messages and stage_messages[0].get("role") == "system" else 0
         stage_messages.insert(position, {"role": "system", "content": control})
@@ -5225,7 +5223,10 @@ def _coder_project_executor_request(stage_messages, source_view):
     if len(matches) != 1:
         raise ForensicConflict("Coder request ownership is ambiguous")
     wire = wires[matches[0]]
-    stage_messages.remove(wire)
+    positions = [i for i, m in enumerate(stage_messages) if m is wire]
+    if len(positions) != 1:
+        raise ForensicConflict("Coder wire request identity is ambiguous")
+    stage_messages.pop(positions[0])
     stage_messages.append(wire)
 
 # The retired Exhaustive combined re-verification and user-request realignment
