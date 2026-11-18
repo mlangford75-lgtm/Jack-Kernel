@@ -115,7 +115,8 @@ def test_complete_serialized_backend_payloads_keep_roles_independent(monkeypatch
         serialized = json.dumps(payload, ensure_ascii=False)
         system = payload["messages"][0]["content"]
         assert system.startswith("CALLER_SYSTEM_KEPT_EXACT")
-        assert system.endswith(jk.STAGES[stage].prompt)
+        assert system.endswith(jk.STAGES[stage].prompt + jk.TOOL_RESUME_PROVENANCE_NOTE)
+        assert system.count("[JACK HOST TOOL-RESULT PROVENANCE]") == 1
         for other in STAGES:
             if other != stage:
                 assert jk.STAGES[other].prompt not in system
@@ -152,7 +153,9 @@ def test_own_native_tool_reasoning_remains_only_within_its_stage(monkeypatch):
             if other != stage:
                 assert f"STAGE_LOCAL_NATIVE_ONLY_{other.upper()}" not in wire
         assert "HOST_TOOL_RESULT" in wire
-        assert payload["messages"][0]["content"].endswith(jk.STAGES[stage].prompt)
+        assert payload["messages"][0]["content"].endswith(
+            jk.STAGES[stage].prompt + jk.TOOL_RESUME_PROVENANCE_NOTE
+        )
 
 
 def test_actual_backend_dispatch_emits_only_opt_in_counts(monkeypatch, caplog):

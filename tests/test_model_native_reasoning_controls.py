@@ -113,8 +113,19 @@ def test_muse_uses_its_template_max_without_generic_effort(monkeypatch, tmp_path
     else:
         assert "reasoning_effort" not in p
         assert p["chat_template_kwargs"]["enable_thinking"] is True
-    assert p["messages"][0]["content"] == k.AGENTIC_STAGE1_PROMPT
-    assert p["messages"][1]["content"] == "Build a clock"
+    # Only the tool-capable stage gets the host provenance note. The
+    # tool-free memory stage keeps its exact isolated Prime Directive.
+    expected_system = (
+        k.AGENTIC_STAGE1_PROMPT + k.TOOL_RESUME_PROVENANCE_NOTE
+        if stage == "extended_initial" else k.AGENTIC_36_STAGE2_PROMPT
+    )
+    assert p["messages"][0]["content"] == expected_system
+    assert p["messages"][0]["content"].count("[JACK HOST TOOL-RESULT PROVENANCE]") == (
+        1 if stage == "extended_initial" else 0
+    )
+    assert p["messages"][1 if stage == "extended_initial" else -1]["content"] == "Build a clock"
+    if stage == "extended_reflection":
+        assert p["messages"][1] == {"role": "system", "content": k.AGENTIC_STAGE2_MEMORY_TRIGGER}
     if stage == "extended_initial":
         assert p["tools"][0]["function"]["name"] == "read"
     else:

@@ -8,12 +8,12 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-COMBINED_PROMPT = "Wait, re-verify your reasoning. Test for errors, mistakes, or poor quality. Make changes, if necessary, to ensure alignment with the instructions and user request before responding"
+COMBINED_PROMPT = "Wait, re-verify the latest reasoning and chain-of-thought. Test for errors, mistakes, or poor quality. Make changes, if necessary, to ensure alignment with the instructions and user request before responding"
 
 
 def load(monkeypatch, tmp_path, *, enabled=True):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
-    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "thorough" if enabled else "balanced")
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "exhaustive" if enabled else "balanced")
     monkeypatch.setenv("JACK_BACKEND_MODEL", "unit-test-model")
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
     monkeypatch.setenv("JACK_LOOP_DETECTOR", "0")
@@ -66,7 +66,7 @@ def test_combined_checks_run_in_exactly_one_continuation(monkeypatch, tmp_path, 
         result = asyncio.run(kernel._run_stage(h, "", "extended_initial", usage, append=False))
     assert len(b.calls) == 2
     assert b.calls[0][-1]["content"] == "Verify a claim using available tools."
-    assert b.calls[1][-1]["content"] == COMBINED_PROMPT
+    assert b.calls[1][-1]["content"] == k.AGENTIC_FINAL_REVIEW_TRIGGER
     assert b.calls[1][-1]["content"] == k.AGENTIC_FINAL_REVIEW_TRIGGER
     assert b.calls[1][-2]["content"] == "Draft"
     assert len([x for x in h if x.get("_jack_internal_agentic_final_review_trigger")]) == 1

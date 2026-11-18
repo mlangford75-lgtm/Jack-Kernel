@@ -60,11 +60,18 @@ const jackCtx = {model:{provider:"jack-kernel"},cwd:"D:\\Projects"};
 const otherCtx = {model:{provider:"other"},cwd:"D:\\Projects"};
 const editRequest = {toolName:"edit",toolCallId:"edit-1",input:{path:"file.py",oldText:"a",newText:"b"}};
 
-const nativeStartEvent = {systemPromptOptions:{promptGuidelines:["Original guideline"]}};
-await start(nativeStartEvent,jackCtx);
+const nativeStartEvent = {
+  systemPrompt:"Original Pi system prompt",
+  systemPromptOptions:{promptGuidelines:["Original guideline"]},
+};
+const nativePrompt = await start(nativeStartEvent,jackCtx);
 assert.equal(active.includes("edit"),false,"native edit must be removed from active tools");
 assert.equal(nativeStartEvent.systemPromptOptions.promptGuidelines.length,2,"native edit alternative must be in model prompt");
 assert.match(nativeStartEvent.systemPromptOptions.promptGuidelines[1],/write tool/);
+assert.match(nativePrompt?.systemPrompt || "",/built-in edit tool is disabled/);
+assert.match(nativePrompt?.systemPrompt || "",/read the file back to verify/);
+assert.equal((nativePrompt.systemPrompt.match(/built-in edit tool is disabled/g)||[]).length,1,
+  "native restriction must be inserted exactly once");
 let result=await call(editRequest,jackCtx);
 assert.equal(result?.block,true);
 assert.match(result.reason,/built-in edit tool is disabled/);
@@ -76,13 +83,27 @@ assert.equal(active.includes("edit"),true,"non-Jack provider's original tool sel
 toolSource="extension";
 toolPath="~/.pi/agent/extensions/alternative-editor.ts";
 const extensionStartEvent = {systemPromptOptions:{promptGuidelines:["Original guideline"]}};
-await start(extensionStartEvent,jackCtx);
+const extensionPrompt = await start(extensionStartEvent,jackCtx);
+assert.equal(extensionPrompt,undefined,"replacement edit must not receive native-only prompt");
 assert.equal(active.includes("edit"),true,"extension override must stay exposed");
 assert.deepEqual(extensionStartEvent.systemPromptOptions.promptGuidelines,["Original guideline"],"extension must not be given native edit restriction");
 result=await call(editRequest,jackCtx);
 assert.equal(result,undefined,"extension override goes through normal admission");
 assert.equal(admission.length,1);
 assert.equal(admission[0].tool_name,"edit");
+
+// Repeated starts must not accumulate duplicate native-only instructions.
+toolSource="builtin";
+toolPath="<builtin:edit>";
+const alreadyGuidedEvent = {
+  systemPrompt:"Original Pi system prompt\\n\\nPi's built-in edit tool is disabled by Jack. Read the existing file, use the available write tool to save the complete updated contents or another authorized patch/script tool, then read the file back to verify. Do not retry Pi's built-in edit. Third-party replacement edit tools are allowed.",
+  systemPromptOptions:{promptGuidelines:[]},
+};
+const repeatedPrompt = await start(alreadyGuidedEvent,jackCtx);
+assert.equal(repeatedPrompt,undefined,"native guidance must not duplicate on repeated starts");
+toolSource="extension";
+toolPath="~/.pi/agent/extensions/alternative-editor.ts";
+await start({systemPrompt:"Other Pi prompt"},jackCtx);
 
 toolSource="sdk";
 toolPath="sdk:edit";

@@ -114,7 +114,7 @@ def test_stage2_single_pass_preserves_current_turn_evidence(monkeypatch, tmp_pat
     assert not hasattr(k.CFG, "agentic_stage2_final_review")
     assert first["chat_template_kwargs"]["enable_thinking"] is True
     assert "re-verify that the Prime Directive" not in json.dumps(first_messages)
-    assert "Remove unnecessary conversational language" in json.dumps(first_messages)
+    assert "Remove repetition, unnecessary deliberation, and conversational language." in json.dumps(first_messages)
 
     serialized = json.dumps(first_messages)
     for marker in ("R1_INITIAL", "R1_VERIFICATION", "R1_ALIGNMENT", "R1_FINAL",

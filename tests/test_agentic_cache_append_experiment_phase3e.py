@@ -64,11 +64,13 @@ def test_cache_route_exact_prompt_and_schema(stream):
     k=load(True)
     p=asyncio.run(collect(k,True,stream))
     assert p["messages"][0]["role"]=="system"
-    assert p["messages"][0]["content"]==k.AGENTIC_STAGE1_PROMPT
-    assert p["messages"][-1]["role"]=="user"
-    assert p["messages"][-1]["content"] == k.AGENTIC_36_STAGE2_PROMPT
-    assert "working knowledge" in p["messages"][-1]["content"]
-    assert "preserve what was established" in p["messages"][-1]["content"].lower()
+    # The retired cache-append setting cannot substitute the Stage-1 system
+    # prompt or reintroduce a competing user-role memory directive.
+    assert p["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
+    assert p["messages"][0]["content"].startswith("You must always follow the Prime Directive.")
+    assert p["messages"][1] == {"role": "system", "content": k.AGENTIC_STAGE2_MEMORY_TRIGGER}
+    assert p["messages"][-1] == {"role": "user", "content": "explain the clock"}
+    assert "Preserve what was established" in p["messages"][0]["content"]
     assert p["messages"][-2]["content"]=="A1 exact"
     assert p["messages"][-2]["reasoning_content"]=="Stage 1 native R1"
     assert "tools" not in p

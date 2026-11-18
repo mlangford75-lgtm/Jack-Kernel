@@ -233,6 +233,14 @@ Do not treat available lane count as inference-slot count. Before declaring a sh
 - degraded telemetry reports unknown rather than inventing state;
 - client transport disconnect does not authorize cognition cancellation.
 
+### Standalone Windows Context Monitor (experimental)
+
+When **Start Kernel** launches on Windows, Jack opens a separate **Jack — LLM Context Monitor** window by default. The window connects only to Jack's authenticated loopback `/jack/runtime/status` endpoint, using the actual runtime-bound port (including dynamic fallback ports) and exact runtime ID. It polls approximately every 1.5 seconds. It never sends a generation request, modifies model context, controls tools, or blocks Jack if its GUI/telemetry fails. Closing the monitor leaves the kernel running.
+
+In the launcher, select **C — Context monitor** to toggle the next startup ON/OFF; select **S** to save the preference. Defaults to ON for a Windows interactive launch. Headless/non-Windows servers do not launch a GUI. The monitor requires Python's standard-library Tkinter installation; if unavailable it exits independently without impacting Jack. Multiple Jack lanes can have their own windows and runtime identities.
+
+The gauge uses **backend-reported request usage**, when supplied, and the loaded model's capacity. With LM Studio's Chat Completions streaming, token usage is generally reported at completion, **not continuously during active inference**. While a new request runs, the monitor keeps the last confirmed reading with an explicit historical label, rather than fabricating current occupancy. Unknown values remain unknown. This is **not a live KV-cache occupancy meter**; cumulative session input/output counters are distinct measurements. No backend API tokens or prompt text appear in the window.
+
 ## 11. Current security configuration
 
 The latest validated, frozen security checkpoint is **Phase 8**. The operational controls below describe earlier configuration cumulatively; later phases do not erase earlier configuration. Phase 9A produced experimental research only, with no loaded-code integrity enforcement. For current status see `CURRENT_SECURITY_STATUS.md`.

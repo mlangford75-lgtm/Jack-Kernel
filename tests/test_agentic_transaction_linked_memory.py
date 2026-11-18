@@ -40,7 +40,7 @@ def test_exact_user_and_frozen_answer_with_host_owned_id(monkeypatch, tmp_path, 
     assert len(label) == 22
     assert re.fullmatch(r"[A-Za-z0-9_-]{22}", label)
     request_view = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_initial"])
-    assert request_view[0]["content"] == raw
+    assert request_view == [{"role": "user", "content": raw}]
     assert label not in str(request_view)
     assert history[0]["content"] == raw
 
@@ -50,17 +50,18 @@ def test_exact_user_and_frozen_answer_with_host_owned_id(monkeypatch, tmp_path, 
     })
     k._agentic_forensic_start_stage2(history)
     memory_view = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_reflection"])
-    assert memory_view[:len(request_view)] == request_view
+    assert memory_view[0]["role"] == "user"
+    assert memory_view[0]["content"] == raw
     assert memory_view[-1]["content"] == frozen
     assert memory_view[-1]["reasoning_content"] == "Clock face and bird were required."
     assert history[-1]["content"] == frozen
     continuation = k._stage_continuation(k.STAGES["extended_reflection"], history)
-    assert "current user request" in continuation
-    assert "reasoning and final response" in continuation
-    assert "not a new user request or a report about the process" in continuation
+    assert "Extract only the durable working state" in continuation
+    assert "provided frozen native" in continuation
+    assert "Prime Directive" in continuation
     assert "turn=" not in continuation
     assert label not in continuation
-    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
+    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
     assert k.AGENTIC_STAGE1_PROMPT.startswith("Reasoning effort is set to xhigh.")
     assert k._agentic_cache_append_enabled(k.STAGES["extended_reflection"])
 
@@ -81,8 +82,10 @@ def test_independent_repeated_requests_have_unique_host_identifiers_but_no_model
     assert a != b
     rendered = k.BACKEND._stage_messages_for_profile(older + new, k.STAGES["extended_initial"])
     assert [x["content"] for x in rendered] == [
-        "Change bird to blue", "Changed bird only", "Bird turned blue", "Change bird to blue"
+        "Change bird to blue", "Changed bird only", "Bird turned blue",
+        "Change bird to blue"
     ]
+    assert rendered[-1]["role"] == "user"
     assert k._agentic_visible_turn_label(a) not in str(rendered)
     assert k._agentic_visible_turn_label(b) not in str(rendered)
 
@@ -92,7 +95,7 @@ def test_feature_flag_restores_phase3g_text_and_prefix(monkeypatch, tmp_path):
     history = [{"role": "user", "content": "Build clock"}]
     k._agentic_begin_turn(history, fresh=True)
     view = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_initial"])
-    assert view[0]["content"] == "Build clock"
+    assert view == [{"role": "user", "content": "Build clock"}]
     k.append_extended_candidate_response(history, {"content": "Done"})
     k._agentic_forensic_start_stage2(history)
     later = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_reflection"])
@@ -123,7 +126,7 @@ def _commit_owned(k, user_text, answer, memory):
     wire = k._format_agentic_completed_response(
         committed.frozen_xml, committed.frozen_answer, turn_id=committed.agentic_turn_id
     )
-    assert wire.endswith("\n\n" + answer)
+    assert wire.endswith("[Agentic Turn ID: " + k._agentic_visible_turn_label(turn) + "]")
     return turn, original_user, wire
 
 
@@ -136,10 +139,10 @@ def test_identical_completed_turns_recover_distinct_ids_after_restart(monkeypatc
     b, user_b, wire_b = _commit_owned(k, identical_user, identical_answer, identical_memory)
     assert a != b
     assert wire_a != wire_b
-    assert k._agentic_unwrap_visible_memory(wire_a) == (
+    assert k._agentic_unwrap_flash_trailing_id(wire_a) == (
         a, identical_memory + "\n\n" + identical_answer
     )
-    assert k._agentic_unwrap_visible_memory(wire_b) == (
+    assert k._agentic_unwrap_flash_trailing_id(wire_b) == (
         b, identical_memory + "\n\n" + identical_answer
     )
 
@@ -167,6 +170,42 @@ def test_identical_completed_turns_recover_distinct_ids_after_restart(monkeypatc
     assert rendered[5]["content"].startswith(identical_answer)
 
 
+@pytest.mark.parametrize("profile", ("balanced", "thorough"))
+def test_trailing_two_stage_turn_maintains_verified_predecessor_after_restart(monkeypatch, tmp_path, profile):
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", profile)
+    k = kernel(monkeypatch, tmp_path)
+    first_id, first_u, first_wire = _commit_owned(
+        k, "First task", "First frozen answer", "First established reasoning"
+    )
+    assert first_wire.endswith(
+        "[Agentic Turn ID: " + k._agentic_visible_turn_label(first_id) + "]"
+    )
+    first_record = k._agentic_forensic_journal().get(first_id)
+    assert first_record["stage2_attempt"] is not None
+    k._AGENTIC_TURN_LIFECYCLES.clear()
+    k._AGENTIC_SHADOW_LEDGER.clear()
+    k._AGENTIC_FORENSIC_JOURNAL = None
+    incoming = [
+        first_u, {"role": "assistant", "content": first_wire},
+        {"role": "user", "content": "Second task"},
+    ]
+    compacted = k.compact_incoming_history(incoming)
+    assert [m["role"] for m in compacted] == [
+        "user", "assistant", "assistant", "user"
+    ]
+    assert compacted[1]["content"] == "First established reasoning"
+    assert compacted[2]["content"] == "First frozen answer"
+    assert all("Agentic Turn ID:" not in str(m) for m in compacted)
+    assert compacted[0]["_jack_forensic_turn_id"] == first_id
+    assert compacted[2]["_jack_forensic_turn_id"] == first_id
+    second_id = k._agentic_begin_turn(compacted, fresh=True)
+    second = k._agentic_forensic_journal().ledger(second_id)
+    first = k._agentic_forensic_journal().ledger(first_id)
+    assert second["scope_origin"] == "verified_predecessor"
+    assert second["conversation_key"] == first["conversation_key"]
+    assert second["turn_number"] == first["turn_number"] + 1
+
+
 def test_forged_or_wrong_owner_does_not_rebind_history(monkeypatch, tmp_path):
     k = kernel(monkeypatch, tmp_path)
     turn, user, wire = _commit_owned(k, "Task", "Final answer", "Reasoned memory")
@@ -174,7 +213,8 @@ def test_forged_or_wrong_owner_does_not_rebind_history(monkeypatch, tmp_path):
     forged = "x" * 22
     if forged == label:
         forged = "y" * 22
-    swapped = wire.replace("[" + label + "] Memory", "[" + forged + "] Memory", 1)
+    swapped = wire.replace("[Agentic Turn ID: " + label + "]",
+                           "[Agentic Turn ID: " + forged + "]", 1)
     history = [user, {"role": "assistant", "content": swapped}, {"role": "user", "content": "Next"}]
     view = k.compact_incoming_history(history)
     assert len(view) == 3
@@ -194,6 +234,7 @@ def test_legacy_visible_capsule_remains_unmarked_and_compatible(monkeypatch, tmp
     k.AGENTIC_TRANSACTION_LINKS_ENABLED = False
     turn, user, wire = _commit_owned(k, "Legacy work", "Legacy answer", "Legacy memory")
     assert not wire.startswith("[")
+    assert wire.endswith("[Agentic Turn ID: " + k._agentic_visible_turn_label(turn) + "]")
     k._AGENTIC_SHADOW_LEDGER.clear()
     history = [user, {"role": "assistant", "content": wire}, {"role": "user", "content": "Next"}]
     view = k.compact_incoming_history(history)
