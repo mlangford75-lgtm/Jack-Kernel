@@ -2147,7 +2147,7 @@ Output only the plan."""
 
 AGENTIC_36_STAGE2_PROMPT = (
     _AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
-    if (AGENTIC_BALANCED_MODE or AGENTIC_THOROUGH_MODE or AGENTIC_TRANSLATED_MODE) else
+    if (AGENTIC_BALANCED_MODE or AGENTIC_THOROUGH_MODE or AGENTIC_TRANSLATED_MODE or AGENTIC_CODER_MODE) else
     _AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE
     if AGENTIC_SOURCE_ONLY_WORKING_STATE else
     _AGENTIC_STAGE2_WITHHELD_A1_CONTINUATION
@@ -7624,7 +7624,7 @@ class OpenAICompatibleBackend:
                         ]
             if (
                 AGENTIC_MODE and AGENTIC_TASK_ANCHOR_ENABLED
-                and not (AGENTIC_FLASH_MODE or AGENTIC_BALANCED_MODE or AGENTIC_THOROUGH_MODE)
+                and not (AGENTIC_FLASH_MODE or AGENTIC_BALANCED_MODE or AGENTIC_THOROUGH_MODE or AGENTIC_CODER_MODE)
                 and item.get("_jack_forensic_turn_id")
                 and item.get("_jack_forensic_role") in {"M", "A1"}
                 and isinstance(item.get("content"), str)
