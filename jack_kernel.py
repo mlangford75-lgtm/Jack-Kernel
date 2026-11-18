@@ -5245,8 +5245,9 @@ def _ultra_begin_review(history: List[Dict[str, Any]], data: Dict[str, Any]) -> 
     """Append the exact retired instruction after R1, preserving the entire prefix.
 
     This is a second INFERENCE in the same normal answer transaction, not an
-    Agentic Stage 2 or memory extraction. Provisional output is withheld from
-    the user; complete native reasoning, tool evidence, and source history stay.
+    Agentic Stage 2 or memory extraction. The provisional answer remains
+    hidden from the user but available to the internal re-verification inference.
+    Native reasoning, tools, and canonical user authority are preserved.
     """
     if not ULTRA_REVIEW_MODE or _ultra_review_pending(history):
         raise HTTPException(status_code=409, detail="Ultra review already active or mode invalid")
@@ -5259,10 +5260,10 @@ def _ultra_begin_review(history: List[Dict[str, Any]], data: Dict[str, Any]) -> 
         raise HTTPException(status_code=502, detail="Ultra first inference produced no provisional answer")
     entry: Dict[str, Any] = {
         "role": "assistant",
-        # Keep native R1 immediately adjacent to the appended instruction.
-        # Do NOT replay the speculative first-pass answer into model context:
-        # it is not the authoritative response and would incur extra prefill.
-        "content": "",
+        # The uncommitted A1 is review evidence, not a user-facing answer.
+        # Preserve it and native R1 for the second inference without replaying
+        # any completed tool effect.
+        "content": draft,
         "_jack_ultra_provisional_answer": draft,
         "_jack_internal_ultra_review_draft": True,
     }
@@ -5271,11 +5272,83 @@ def _ultra_begin_review(history: List[Dict[str, Any]], data: Dict[str, Any]) -> 
         entry["reasoning_content"] = reasoning
         entry["reasoning"] = reasoning
     history.append(entry)
+    # Host-only boundary. The backend projector removes this marker and
+    # places Ultra's unchanged directive in Jack-owned system authority.
     history.append({
-        "role": "user",
-        "content": ULTRA_REVIEW_TRIGGER,
+        "role": "assistant",
+        "content": "",
         "_jack_internal_ultra_review_trigger": True,
     })
+
+
+def _ultra_project_review_request(
+    stage_messages: List[Dict[str, Any]],
+    source_view: List[Dict[str, Any]],
+    prepared_messages: List[Dict[str, Any]],
+) -> None:
+    """Reuse Agentic's same-turn review projection without fabricating user turns.
+
+    The original U remains authenticated, R1 and the provisional A1 remain
+    reviewable, and the host-only review boundary never reaches the backend.
+    This is a backend-only projection; canonical history is unchanged.
+    """
+    if not ULTRA_REVIEW_MODE or not _ultra_review_pending(source_view):
+        raise ForensicConflict("Ultra review request has no host-owned boundary")
+    if len(source_view) != len(prepared_messages):
+        raise ForensicConflict("Ultra review source projection changed message count")
+    target = active_response_target(source_view)
+    if target is None:
+        raise ForensicConflict("Ultra review has no authenticated user request")
+    user_index = int(target["history_index"])
+    if not _jack_is_authentic_user_message(source_view[user_index]):
+        raise ForensicConflict("Ultra review current request is not authenticated")
+    boundaries = [
+        i for i, item in enumerate(source_view)
+        if isinstance(item, dict)
+        and item.get("_jack_internal_ultra_review_trigger") is True
+    ]
+    drafts = [
+        i for i, item in enumerate(source_view)
+        if isinstance(item, dict)
+        and item.get("_jack_internal_ultra_review_draft") is True
+    ]
+    if (len(boundaries) != 1 or len(drafts) != 1
+            or not (user_index < drafts[0] < boundaries[0])):
+        raise ForensicConflict("Ultra review draft/boundary is missing or ambiguous")
+    user_wire = prepared_messages[user_index]
+    draft_wire = prepared_messages[drafts[0]]
+    boundary_wire = prepared_messages[boundaries[0]]
+    if (user_wire.get("role") != "user"
+            or draft_wire.get("role") != "assistant"
+            or boundary_wire.get("role") != "assistant"
+            or draft_wire.get("content") != source_view[drafts[0]].get("_jack_ultra_provisional_answer")):
+        raise ForensicConflict("Ultra review projection lost the authenticated request or A1")
+    genuine_users = sum(
+        _jack_is_authentic_user_message(item) for item in source_view
+    )
+    if sum(item.get("role") == "user" for item in source_view) != genuine_users:
+        raise ForensicConflict("Ultra review source contains an internal user-role message")
+    if sum(item.get("role") == "user" for item in stage_messages) != genuine_users:
+        raise ForensicConflict("Ultra review introduced a user-role message")
+
+    def remove_exact(wire: Dict[str, Any]) -> None:
+        matches = [i for i, item in enumerate(stage_messages) if item is wire]
+        if len(matches) != 1:
+            raise ForensicConflict("Ultra review wire message identity is ambiguous")
+        stage_messages.pop(matches[0])
+
+    remove_exact(boundary_wire)
+    remove_exact(user_wire)
+    # Agentic's already-tested review pattern: authenticated U opens generation,
+    # while the review instruction is owned by the deterministic system.
+    stage_messages.append(user_wire)
+    system_index = 1 if stage_messages and stage_messages[0].get("role") == "system" else 0
+    stage_messages.insert(system_index, {"role": "system", "content": ULTRA_REVIEW_TRIGGER})
+    if (stage_messages[-1] is not user_wire
+            or any(item is boundary_wire for item in stage_messages)
+            or sum(item.get("role") == "user" for item in stage_messages) != genuine_users):
+        raise ForensicConflict("Ultra review backend authority projection is ambiguous")
+
 
 AGENTIC_FINAL_REVIEW_PROMPT = (
     "You are the translation-only pass of Jack Agentic. Translate the "
@@ -8025,6 +8098,11 @@ class OpenAICompatibleBackend:
             _agentic_stage1_review_put_authenticated_user_last(
                 stage_messages, source_view, prepared_messages
             )
+        elif (ULTRA_REVIEW_MODE and profile.name == "Ultra native pass"
+              and _ultra_review_pending(messages)):
+            _ultra_project_review_request(
+                stage_messages, source_view, prepared_messages
+            )
         elif cache_append:
             evidence_note = _agentic_stage2_host_tool_evidence_note(messages)
             stage_messages.append({"role": "user", "content": (evidence_note + "\n\n" if evidence_note else "") + AGENTIC_36_STAGE2_PROMPT})
@@ -8215,6 +8293,11 @@ class OpenAICompatibleBackend:
         elif (AGENTIC_MODE and profile.name == "Agentic native pass 1"
               and _agentic_final_review_is_pending(messages)):
             _agentic_stage1_review_put_authenticated_user_last(
+                stage_messages, source_view, prepared_messages
+            )
+        elif (ULTRA_REVIEW_MODE and profile.name == "Ultra native pass"
+              and _ultra_review_pending(messages)):
+            _ultra_project_review_request(
                 stage_messages, source_view, prepared_messages
             )
         elif cache_append:
@@ -12909,9 +12992,9 @@ class JackQwenKernel:
 
                     if first_ultra_pass:
                         _ultra_begin_review(history, native_result)
-                        # The first assistant draft and all R1/tool traffic remain
-                        # in the prefix. Only this small Jack-owned user-role
-                        # continuation is appended. No extra system prompt.
+                        # R1/A1 and tool traffic remain in canonical history.
+                        # The next backend request projects the internal review
+                        # under system authority, with the actual user request.
                         yield event({"reasoning_content": "\n[ULTRA — RE-VERIFY AND REALIGN]\n"})
                         continue
 
