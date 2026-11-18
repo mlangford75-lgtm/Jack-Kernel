@@ -12816,7 +12816,7 @@ class JackQwenKernel:
                                     yield event({"tool_calls": packet["tool_calls"]})
                             elif kind == "keepalive":
                                 label = str(packet.get("event") or "backend.activity")
-                                yield f": qwen-keepalive {label}\\n\\n".encode("utf-8")
+                                yield f": qwen-keepalive {label}\n\n".encode("utf-8")
                             elif kind == "result":
                                 native_result = packet["data"]
 
@@ -12847,7 +12847,7 @@ class JackQwenKernel:
                             yield event({"tool_calls": wire_calls})
                         yield event({}, "tool_calls")
                         yield usage_event(usage_delta(usage, response_usage_baseline))
-                        yield b"data: [DONE]\\n\\n"
+                        yield b"data: [DONE]\n\n"
                         return
 
                     if first_ultra_pass:
@@ -12855,7 +12855,7 @@ class JackQwenKernel:
                         # The first assistant draft and all R1/tool traffic remain
                         # in the prefix. Only this small Jack-owned user-role
                         # continuation is appended. No extra system prompt.
-                        yield event({"reasoning_content": "\\n[ULTRA — RE-VERIFY AND REALIGN]\\n"})
+                        yield event({"reasoning_content": "\n[ULTRA — RE-VERIFY AND REALIGN]\n"})
                         continue
 
                     if pending_state is not None and resume_stage_key == "thesis":
@@ -12863,7 +12863,7 @@ class JackQwenKernel:
                     choice = (native_result.get("choices") or [{}])[0] or {}
                     yield event({}, str(choice.get("finish_reason") or "stop"))
                     yield usage_event(usage_delta(usage, response_usage_baseline))
-                    yield b"data: [DONE]\\n\\n"
+                    yield b"data: [DONE]\n\n"
                     return
 
 
