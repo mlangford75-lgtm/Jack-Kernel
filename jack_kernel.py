@@ -5174,14 +5174,13 @@ def self_adversarial_stage_reasoning_trace(
 AGENTIC_STAGE1_VERIFICATION_PROMPT = "Wait, re-verify the latest reasoning and chain-of-thought. Test for errors, mistakes, or poor quality. Make changes, if necessary, to ensure alignment with the instructions and user request before responding"
 
 ULTRA_REVIEW_TRIGGER = (
-    "Jack internal Ultra continuation; not a new user request. "
-    "Review the just-completed native X-High reasoning "
-    "against the authenticated user request earlier in this conversation. "
-    "No user-visible answer has been released.\n\n"
+    "Ultra Reasoning: [Not a new user request. Continued Reasoning]\n\n"
     + AGENTIC_STAGE1_VERIFICATION_PROMPT
-    + "\n\nReturn the complete answer to the original user request, not a "
-      "report about re-verification. If the draft already satisfies the request, "
-      "preserve it. Do not repeat completed tool effects."
+    + "\n\nReturn the new, complete answer to the current user request, "
+      "not a report about re-verification. Preserve correct reasoning, "
+      "established findings, completed work, and verified results. "
+      "Correct identified errors, omissions, or misalignment without "
+      "discarding valid work. Do not repeat completed tool effects."
 )
 
 
