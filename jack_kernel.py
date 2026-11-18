@@ -5167,8 +5167,65 @@ def self_adversarial_stage_reasoning_trace(
     return "\n\n".join(parts).strip()
 
 
-# One Stage-1 continuation, in Thorough only. Exact user wording.
+# The retired Exhaustive combined re-verification and user-request realignment
+# instruction remains verbatim. Ultra reuses it AFTER native X-High reasoning.
 AGENTIC_STAGE1_VERIFICATION_PROMPT = "Wait, re-verify the latest reasoning and chain-of-thought. Test for errors, mistakes, or poor quality. Make changes, if necessary, to ensure alignment with the instructions and user request before responding"
+
+ULTRA_REVIEW_TRIGGER = (
+    "Jack internal Ultra continuation; not a new user request. "
+    "Review the just-completed native X-High reasoning and the provisional answer "
+    "against the authenticated user request earlier in this conversation. "
+    "The provisional answer is not yet the user-visible response.\n\n"
+    + AGENTIC_STAGE1_VERIFICATION_PROMPT
+    + "\n\nReturn the complete answer to the original user request, not a "
+      "report about re-verification. If the draft already satisfies the request, "
+      "preserve it. Do not repeat completed tool effects."
+)
+
+
+def _ultra_review_pending(history: List[Dict[str, Any]]) -> bool:
+    """True only for Jack's own appended current-turn Ultra review boundary."""
+    target = active_response_target(history)
+    if target is None:
+        return False
+    return any(
+        isinstance(item, dict) and item.get("_jack_internal_ultra_review_trigger") is True
+        for item in history[int(target["history_index"]) + 1:]
+    )
+
+
+def _ultra_begin_review(history: List[Dict[str, Any]], data: Dict[str, Any]) -> None:
+    """Append the exact retired instruction after R1, preserving the entire prefix.
+
+    This is a second INFERENCE in the same normal answer transaction, not an
+    Agentic Stage 2 or memory extraction. Provisional output is withheld from
+    the user; complete native reasoning, tool evidence, and source history stay.
+    """
+    if not ULTRA_REVIEW_MODE or _ultra_review_pending(history):
+        raise HTTPException(status_code=409, detail="Ultra review already active or mode invalid")
+    choice = (data.get("choices") or [{}])[0] or {}
+    message = choice.get("message") or {}
+    if choice.get("finish_reason") != "stop" or message.get("tool_calls"):
+        raise HTTPException(status_code=502, detail="Ultra cannot review incomplete work or a pending tool call")
+    draft = _content_to_text(message.get("content"))
+    if not draft.strip():
+        raise HTTPException(status_code=502, detail="Ultra first inference produced no provisional answer")
+    entry: Dict[str, Any] = {
+        "role": "assistant",
+        "content": draft,
+        "_jack_internal_ultra_review_draft": True,
+    }
+    reasoning = _native_reasoning_text(message)
+    if reasoning:
+        entry["reasoning_content"] = reasoning
+        entry["reasoning"] = reasoning
+    history.append(entry)
+    history.append({
+        "role": "user",
+        "content": ULTRA_REVIEW_TRIGGER,
+        "_jack_internal_ultra_review_trigger": True,
+    })
+
 AGENTIC_FINAL_REVIEW_PROMPT = (
     "You are the translation-only pass of Jack Agentic. Translate the "
     "read-only completed response provided as source text into "
@@ -11160,6 +11217,22 @@ class JackQwenKernel:
             await self._retire_pending_tool_resume(state)
             return completed
 
+        if ULTRA_REVIEW_MODE and not _ultra_review_pending(history):
+            _ultra_begin_review(history, stage)
+            stage = await self._run_stage(
+                history, state.secondary_system, "thesis", usage,
+                tools=state.tools, tool_choice=state.tool_choice,
+                append=False, same_stage_resume=True,
+            )
+            if self._tool_interrupt(stage, usage):
+                successor = await self._register_stage_tool_resume(
+                    stage_key="thesis", history=history,
+                    secondary_system=state.secondary_system, usage=usage,
+                    tools=state.tools, tool_choice=state.tool_choice,
+                    data=stage,
+                )
+                await self._retire_pending_tool_resume(state)
+                return successor
         await self._retire_pending_tool_resume(state)
         choice = (stage.get("choices") or [{}])[0] or {}
         msg = choice.get("message") or {}
@@ -11419,6 +11492,19 @@ class JackQwenKernel:
                 tool_choice=tool_choice,
                 data=native,
             )
+        if ULTRA_REVIEW_MODE:
+            _ultra_begin_review(history, native)
+            native = await self._run_stage(
+                history, secondary_system, "thesis", usage,
+                tools=tools, tool_choice=tool_choice, append=False,
+                same_stage_resume=True,
+            )
+            if self._tool_interrupt(native, usage):
+                return await self._register_stage_tool_resume(
+                    stage_key="thesis", history=history,
+                    secondary_system=secondary_system, usage=usage,
+                    tools=tools, tool_choice=tool_choice, data=native,
+                )
         choice = (native.get("choices") or [{}])[0] or {}
         msg = choice.get("message") or {}
         reasoning = msg.get("reasoning_content") or msg.get("reasoning") or msg.get("thinking")
