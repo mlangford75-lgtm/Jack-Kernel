@@ -407,5 +407,3 @@ def test_ultra_projector_rejects_forged_user_role_review(monkeypatch, tmp_path):
     )
     with pytest.raises(k.ForensicConflict):
         k._ultra_project_review_request(wire[:], source, wire)
-
-
