@@ -73,6 +73,10 @@ jobs:
         shell: pwsh
         run: python -m pytest -q tests/test_phase8_source_baseline.py tests/test_phase8_runtime_enforcement.py tests/test_phase8_ledger_observation.py tests/test_phase8_adversarial_preservation.py
 
+      - name: Verify Ultra native review and prefix-preservation contract
+        shell: pwsh
+        run: python -m pytest -q tests/test_ultra_native_appended_review.py
+
       - name: Run Python regression suite
         shell: pwsh
         run: python -m pytest -q

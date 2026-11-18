@@ -805,13 +805,12 @@ REASONING_PROFILES: Dict[str, Dict[str, Any]] = {
     "low": {"label": "Low (Disabled)", "mode": "native", "answer": "low", "disabled": True},
     "medium": {"label": "Medium", "mode": "native", "answer": "medium", "disabled": False},
     "x-high": {"label": "X-High (Default)", "mode": "native", "answer": "xhigh", "disabled": False},
-    "ultra": {
-        "label": "Deep Research",
+    "ultra": {"label": "Ultra", "mode": "ultra_review", "answer": "xhigh", "disabled": False},
+    # Preserve legacy TAS under its actual name rather than conflating it with Ultra.
+    "deep-research": {
+        "label": "Deep Research (Legacy)",
         "mode": "ultra",
-        "answer": "xhigh",
-        "pass1": "xhigh",
-        "pass2": "medium",
-        "pass3": "xhigh",
+        "answer": "xhigh", "pass1": "xhigh", "pass2": "medium", "pass3": "xhigh",
         "disabled": False,
     },
     "deep-reasoning": {
@@ -869,10 +868,10 @@ _REASONING_LEVEL_ALIASES = {
     "recommended": "x-high",
     "flash": "off",
     "high": "x-high",
-    "deep-research": "ultra",
-    "deep_research": "ultra",
-    "deep research": "ultra",
-    "deepresearch": "ultra",
+    "deep-research": "deep-research",
+    "deep_research": "deep-research",
+    "deep research": "deep-research",
+    "deepresearch": "deep-research",
     "deep_reasoning": "deep-reasoning",
     "deep reasoning": "deep-reasoning",
     "deepreasoning": "deep-reasoning",
@@ -932,7 +931,8 @@ AGENTIC_SOURCE_ONLY_WORKING_STATE = AGENTIC_MODE
 # Flash and Balanced have Stage-2 native thinking off; Thorough and Translated
 # may think in Stage 2. All use the same tools-off working-memory source.
 AGENTIC_THINKING_OFF_MEMORY_MODE = AGENTIC_BALANCED_MODE
-ULTRA_MODE = ACTIVE_REASONING_PROFILE["mode"] == "ultra"
+ULTRA_MODE = ACTIVE_REASONING_PROFILE["mode"] == "ultra"  # legacy TAS
+ULTRA_REVIEW_MODE = ACTIVE_REASONING_PROFILE["mode"] == "ultra_review"
 DEEP_REASONING_MODE = ACTIVE_REASONING_PROFILE["mode"] == "deep_reasoning"
 CODE_DEBUGGING_MODE = ACTIVE_REASONING_PROFILE["mode"] == "code_debugging"
 SELF_ADVERSARIAL_MODE = AGENTIC_MODE or ULTRA_MODE or DEEP_REASONING_MODE
@@ -3259,14 +3259,14 @@ ULTRA_STAGE3_MAX_TOKENS = None
 
 STAGES: Dict[str, StageProfile] = {
     "thesis": StageProfile(
-        "Native answer",
+        "Ultra native pass" if ULTRA_REVIEW_MODE else "Native answer",
         THESIS_PROMPT,
         ACTIVE_REASONING_PROFILE["answer"] != "off",
         None if ACTIVE_REASONING_PROFILE["answer"] == "off" else ACTIVE_REASONING_PROFILE["answer"],
         True,
         None,
         None,
-        False,
+        ULTRA_REVIEW_MODE,
         None,
     ),
     # Agentic keeps its two-stage path. Deep Research uses three stages:
@@ -4877,7 +4877,9 @@ def build_stage_system_prompt(secondary_system: str, profile: StageProfile, mess
     receives its minimal directive. Every Deep Research stage receives only its own current stage contract; no
     completed stage instruction is carried into another stage's system message.
     """
-    if profile.name == "Native answer":
+    if profile.name in {"Native answer", "Ultra native pass"}:
+        # Ultra is native X-High with appended re-verification; it must retain
+        # the same authenticated caller system contract as ordinary X-High.
         if TRANSLATOR_MODE:
             return "\n\n".join(part for part in ((secondary_system or "").strip(), TRANSLATOR_SYSTEM_PROMPT) if part)
         return (secondary_system or "").strip()
@@ -5167,8 +5169,114 @@ def self_adversarial_stage_reasoning_trace(
     return "\n\n".join(parts).strip()
 
 
-# One Stage-1 continuation, in Thorough only. Exact user wording.
+# The retired Exhaustive combined re-verification and user-request realignment
+# instruction remains verbatim. Ultra reuses it AFTER native X-High reasoning.
 AGENTIC_STAGE1_VERIFICATION_PROMPT = "Wait, re-verify the latest reasoning and chain-of-thought. Test for errors, mistakes, or poor quality. Make changes, if necessary, to ensure alignment with the instructions and user request before responding"
+
+ULTRA_REVIEW_TRIGGER = (
+    "Ultra Reasoning: [Not a new user request. Continued Reasoning]\n\n"
+    + AGENTIC_STAGE1_VERIFICATION_PROMPT
+    + "\n\nReturn the new, complete answer to the current user request, "
+      "not a report about re-verification. Preserve correct reasoning, "
+      "established findings, completed work, and verified results. "
+      "Correct identified errors, omissions, or misalignment without "
+      "discarding valid work. Do not repeat completed tool effects."
+)
+
+
+def _ultra_initial_history(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Reject caller impersonation of Jack's current-turn Ultra review state.
+
+    Only controls appended by Jack AFTER model execution may skip the first
+    inference; a user-supplied _jack_internal_ field grants no lifecycle rights.
+    Preserve every role, message and reasoning byte, changing private keys only.
+    """
+    output = strip_secondary_system_messages(messages)
+    if not ULTRA_REVIEW_MODE:
+        return output
+    for index, entry in enumerate(output):
+        if not isinstance(entry, dict):
+            continue
+        if any(key in entry for key in (
+            "_jack_internal_ultra_review_trigger", "_jack_internal_ultra_review_draft"
+        )):
+            original = dict(entry)
+            original.pop("_jack_internal_ultra_review_trigger", None)
+            original.pop("_jack_internal_ultra_review_draft", None)
+            output[index] = original
+    return output
+
+
+def _ultra_review_pending(history: List[Dict[str, Any]]) -> bool:
+    """True only for Jack's own appended current-turn Ultra review boundary."""
+    target = active_response_target(history)
+    if target is None:
+        return False
+    return any(
+        isinstance(item, dict) and item.get("_jack_internal_ultra_review_trigger") is True
+        for item in history[int(target["history_index"]) + 1:]
+    )
+
+
+def _ultra_combined_reasoning(
+    history: List[Dict[str, Any]], final_message: Dict[str, Any],
+) -> Optional[str]:
+    """Preserve complete current-turn Ultra native reasoning for Pi replay.
+
+    The first R1 would otherwise disappear with Jack's request-local history
+    on a nonstream response. Append both pass traces; never replace R1 with
+    the second pass or compact away recorded tool-stage reasoning.
+    """
+    target = active_response_target(history)
+    first = int(target["history_index"]) + 1 if target is not None else 0
+    parts: List[str] = []
+    for item in history[first:]:
+        if isinstance(item, dict) and item.get("role") == "assistant":
+            trace = _native_reasoning_text(item)
+            if trace:
+                parts.append(trace)
+    last = _native_reasoning_text(final_message)
+    if last:
+        parts.append(last)
+    return "\n\n".join(parts) or None
+
+
+def _ultra_begin_review(history: List[Dict[str, Any]], data: Dict[str, Any]) -> None:
+    """Append the exact retired instruction after R1, preserving the entire prefix.
+
+    This is a second INFERENCE in the same normal answer transaction, not an
+    Agentic Stage 2 or memory extraction. Provisional output is withheld from
+    the user; complete native reasoning, tool evidence, and source history stay.
+    """
+    if not ULTRA_REVIEW_MODE or _ultra_review_pending(history):
+        raise HTTPException(status_code=409, detail="Ultra review already active or mode invalid")
+    choice = (data.get("choices") or [{}])[0] or {}
+    message = choice.get("message") or {}
+    if choice.get("finish_reason") != "stop" or message.get("tool_calls"):
+        raise HTTPException(status_code=502, detail="Ultra cannot review incomplete work or a pending tool call")
+    draft = _content_to_text(message.get("content"))
+    if not draft.strip():
+        raise HTTPException(status_code=502, detail="Ultra first inference produced no provisional answer")
+    entry: Dict[str, Any] = {
+        "role": "assistant",
+        # Keep native R1 immediately adjacent to the appended instruction.
+        # Do NOT replay the speculative first-pass answer into model context:
+        # it is not the authoritative response and would incur extra prefill.
+        "content": "",
+        "_jack_ultra_provisional_answer": draft,
+        "_jack_internal_ultra_review_draft": True,
+    }
+    reasoning = _native_reasoning_text(message)
+    if reasoning:
+        entry["reasoning_content"] = reasoning
+        entry["reasoning"] = reasoning
+    history.append(entry)
+    history.append({
+        "role": "user",
+        "content": ULTRA_REVIEW_TRIGGER,
+        "_jack_internal_ultra_review_trigger": True,
+    })
+
 AGENTIC_FINAL_REVIEW_PROMPT = (
     "You are the translation-only pass of Jack Agentic. Translate the "
     "read-only completed response provided as source text into "
@@ -8836,10 +8944,8 @@ class JackQwenKernel:
                 if trace:
                     msg["_jack_stage3_reasoning_trace"] = trace
             defer_extended_context = bool(
-                (
-                    ULTRA_MODE
-                    and stage_key in {"extended_initial", "extended_reflection", "extended_synthesis"}
-                )
+                ULTRA_REVIEW_MODE
+                or (ULTRA_MODE and stage_key in {"extended_initial", "extended_reflection", "extended_synthesis"})
                 or (AGENTIC_MODE and stage_key in {"extended_initial", "extended_reflection", "extended_synthesis"})
                 or (CODE_DEBUGGING_MODE and _debugging_pass_from_stage_key(stage_key) is not None)
             )
@@ -9530,10 +9636,8 @@ class JackQwenKernel:
                 if trace:
                     message["_jack_stage3_reasoning_trace"] = trace
             defer_extended_context = bool(
-                (
-                    ULTRA_MODE
-                    and stage_key in {"extended_initial", "extended_reflection", "extended_synthesis"}
-                )
+                ULTRA_REVIEW_MODE
+                or (ULTRA_MODE and stage_key in {"extended_initial", "extended_reflection", "extended_synthesis"})
                 or (AGENTIC_MODE and stage_key in {"extended_initial", "extended_reflection", "extended_synthesis"})
                 or (CODE_DEBUGGING_MODE and _debugging_pass_from_stage_key(stage_key) is not None)
             )
@@ -10271,8 +10375,10 @@ class JackQwenKernel:
         # one pass is active. At pass commit Jack drops that entire context and the next
         # next pass receives exact user-origin Pass 0 plus only the host-derived confirmed prior-finding registry.
         if (
-            SELF_ADVERSARIAL_MODE and stage_key in {"extended_initial", "extended_reflection", "extended_synthesis"}
-        ) or (CODE_DEBUGGING_MODE and _debugging_pass_from_stage_key(stage_key) is not None):
+            ULTRA_REVIEW_MODE
+            or (SELF_ADVERSARIAL_MODE and stage_key in {"extended_initial", "extended_reflection", "extended_synthesis"})
+            or (CODE_DEBUGGING_MODE and _debugging_pass_from_stage_key(stage_key) is not None)
+        ):
             resume_history = list(history)
             pruned_messages = 0
             carried_failures = 0
@@ -11162,10 +11268,29 @@ class JackQwenKernel:
             await self._retire_pending_tool_resume(state)
             return completed
 
+        if ULTRA_REVIEW_MODE and not _ultra_review_pending(history):
+            _ultra_begin_review(history, stage)
+            stage = await self._run_stage(
+                history, state.secondary_system, "thesis", usage,
+                tools=state.tools, tool_choice=state.tool_choice,
+                append=False, same_stage_resume=True,
+            )
+            if self._tool_interrupt(stage, usage):
+                successor = await self._register_stage_tool_resume(
+                    stage_key="thesis", history=history,
+                    secondary_system=state.secondary_system, usage=usage,
+                    tools=state.tools, tool_choice=state.tool_choice,
+                    data=stage,
+                )
+                await self._retire_pending_tool_resume(state)
+                return successor
         await self._retire_pending_tool_resume(state)
         choice = (stage.get("choices") or [{}])[0] or {}
         msg = choice.get("message") or {}
-        reasoning = msg.get("reasoning_content") or msg.get("reasoning") or msg.get("thinking")
+        reasoning = (
+            _ultra_combined_reasoning(history, msg) if ULTRA_REVIEW_MODE
+            else (msg.get("reasoning_content") or msg.get("reasoning") or msg.get("thinking"))
+        )
         return KernelResult(
             content=msg.get("content"),
             tool_calls=None,
@@ -11187,7 +11312,7 @@ class JackQwenKernel:
         history = (
             compact_incoming_history(messages)
             if SELF_ADVERSARIAL_MODE
-            else strip_secondary_system_messages(messages)
+            else _ultra_initial_history(messages)
         )
         tools = request_body.get("tools") if isinstance(request_body.get("tools"), list) else None
         tool_choice = request_body.get("tool_choice")
@@ -11421,9 +11546,25 @@ class JackQwenKernel:
                 tool_choice=tool_choice,
                 data=native,
             )
+        if ULTRA_REVIEW_MODE:
+            _ultra_begin_review(history, native)
+            native = await self._run_stage(
+                history, secondary_system, "thesis", usage,
+                tools=tools, tool_choice=tool_choice, append=False,
+                same_stage_resume=True,
+            )
+            if self._tool_interrupt(native, usage):
+                return await self._register_stage_tool_resume(
+                    stage_key="thesis", history=history,
+                    secondary_system=secondary_system, usage=usage,
+                    tools=tools, tool_choice=tool_choice, data=native,
+                )
         choice = (native.get("choices") or [{}])[0] or {}
         msg = choice.get("message") or {}
-        reasoning = msg.get("reasoning_content") or msg.get("reasoning") or msg.get("thinking")
+        reasoning = (
+            _ultra_combined_reasoning(history, msg) if ULTRA_REVIEW_MODE
+            else (msg.get("reasoning_content") or msg.get("reasoning") or msg.get("thinking"))
+        )
         return KernelResult(
             content=msg.get("content"),
             tool_calls=None,
@@ -11911,7 +12052,7 @@ class JackQwenKernel:
                 history = (
                     compact_incoming_history(messages)
                     if SELF_ADVERSARIAL_MODE
-                    else strip_secondary_system_messages(messages)
+                    else _ultra_initial_history(messages)
                 )
                 tools = request_body.get("tools") if isinstance(request_body.get("tools"), list) else None
                 tool_choice = request_body.get("tool_choice")
@@ -12694,68 +12835,93 @@ class JackQwenKernel:
             # trace, deterministic commit wrapper, and Jack XML generation.
             if not AGENTIC_MODE:
                 yield event({"role": "assistant"})
-                native_result: Optional[Dict[str, Any]] = None
-                async for packet in self._run_stage_streamed(
-                    history,
-                    secondary_system,
-                    "thesis",
-                    usage,
-                    tools=tools,
-                    tool_choice=tool_choice,
-                    append=False,
-                    same_stage_resume=(resume_stage_key == "thesis"),
-                ):
-                    kind = packet.get("kind")
-                    if kind == "reasoning":
-                        yield event({"reasoning_content": packet["text"]})
-                    elif kind == "content":
-                        yield event({"content": packet["text"]})
-                    elif kind == "tool_calls":
-                        yield event({"tool_calls": packet["tool_calls"]})
-                    elif kind == "keepalive":
-                        label = str(packet.get("event") or "backend.activity")
-                        yield f": qwen-keepalive {label}\n\n".encode("utf-8")
-                    elif kind == "result":
-                        native_result = packet["data"]
-
-                if native_result is None:
-                    raise HTTPException(status_code=502, detail="Native Qwen completion produced no result")
-
-                interrupted = self._tool_interrupt(native_result, usage)
-                if interrupted:
-                    await self._register_stage_tool_resume(
-                        stage_key="thesis",
-                        history=history,
-                        secondary_system=secondary_system,
-                        usage=usage,
+                # Ultra is X-High with one appended SAME-STAGE review inference.
+                # Do not emit a provisional draft as user-visible content:
+                # pass 1 streams only native reasoning and authenticated tool
+                # calls; pass 2 streams the authoritative answer as generated.
+                # A tool checkpoint may interrupt either inference; a resumed
+                # review resumes the same stage and cannot trigger review again.
+                needs_ultra_review = ULTRA_REVIEW_MODE and not _ultra_review_pending(history)
+                for phase in range(2 if needs_ultra_review else 1):
+                    first_ultra_pass = needs_ultra_review and phase == 0
+                    native_result: Optional[Dict[str, Any]] = None
+                    async with contextlib.aclosing(self._run_stage_streamed(
+                        history,
+                        secondary_system,
+                        "thesis",
+                        usage,
                         tools=tools,
                         tool_choice=tool_choice,
-                        data=native_result,
-                    )
+                        append=False,
+                        same_stage_resume=(
+                            resume_stage_key == "thesis" or
+                            (ULTRA_REVIEW_MODE and phase > 0)
+                        ),
+                    )) as packets:
+                        async for packet in packets:
+                            kind = packet.get("kind")
+                            if kind == "reasoning":
+                                yield event({"reasoning_content": packet["text"]})
+                            elif kind == "content":
+                                if not first_ultra_pass:
+                                    yield event({"content": packet["text"]})
+                            elif kind == "tool_calls":
+                                # Ultra withholds unvalidated partial tool calls.
+                                # Complete calls go through the existing host
+                                # checkpoint/Phase-4 admission below.
+                                if not ULTRA_REVIEW_MODE:
+                                    yield event({"tool_calls": packet["tool_calls"]})
+                            elif kind == "keepalive":
+                                label = str(packet.get("event") or "backend.activity")
+                                yield f": qwen-keepalive {label}\n\n".encode("utf-8")
+                            elif kind == "result":
+                                native_result = packet["data"]
+
+                    if native_result is None:
+                        raise HTTPException(status_code=502, detail="Native Qwen completion produced no result")
+
+                    interrupted = self._tool_interrupt(native_result, usage)
+                    if interrupted:
+                        await self._register_stage_tool_resume(
+                            stage_key="thesis",
+                            history=history,
+                            secondary_system=secondary_system,
+                            usage=usage,
+                            tools=tools,
+                            tool_choice=tool_choice,
+                            data=native_result,
+                        )
+                        if pending_state is not None and resume_stage_key == "thesis":
+                            await self._retire_pending_tool_resume(pending_state)
+                        calls = (((native_result.get("choices") or [{}])[0].get("message") or {}).get("tool_calls") or [])
+                        if calls and (ULTRA_REVIEW_MODE or not native_result.get("_jack_tool_call_fragments_streamed")):
+                            wire_calls = []
+                            for index, call in enumerate(calls):
+                                item = copy.deepcopy(call)
+                                if isinstance(item, dict):
+                                    item["index"] = index
+                                wire_calls.append(item)
+                            yield event({"tool_calls": wire_calls})
+                        yield event({}, "tool_calls")
+                        yield usage_event(usage_delta(usage, response_usage_baseline))
+                        yield b"data: [DONE]\n\n"
+                        return
+
+                    if first_ultra_pass:
+                        _ultra_begin_review(history, native_result)
+                        # The first assistant draft and all R1/tool traffic remain
+                        # in the prefix. Only this small Jack-owned user-role
+                        # continuation is appended. No extra system prompt.
+                        yield event({"reasoning_content": "\n[ULTRA — RE-VERIFY AND REALIGN]\n"})
+                        continue
+
                     if pending_state is not None and resume_stage_key == "thesis":
                         await self._retire_pending_tool_resume(pending_state)
-                    calls = (((native_result.get("choices") or [{}])[0].get("message") or {}).get("tool_calls") or [])
-                    if calls and not native_result.get("_jack_tool_call_fragments_streamed"):
-                        wire_calls = []
-                        for index, call in enumerate(calls):
-                            item = copy.deepcopy(call)
-                            if isinstance(item, dict):
-                                item["index"] = index
-                            wire_calls.append(item)
-                        yield event({"tool_calls": wire_calls})
-                    yield event({}, "tool_calls")
+                    choice = (native_result.get("choices") or [{}])[0] or {}
+                    yield event({}, str(choice.get("finish_reason") or "stop"))
                     yield usage_event(usage_delta(usage, response_usage_baseline))
                     yield b"data: [DONE]\n\n"
                     return
-
-                if pending_state is not None and resume_stage_key == "thesis":
-                    await self._retire_pending_tool_resume(pending_state)
-                choice = (native_result.get("choices") or [{}])[0] or {}
-                yield event({}, str(choice.get("finish_reason") or "stop"))
-                yield usage_event(usage_delta(usage, response_usage_baseline))
-                yield b"data: [DONE]\n\n"
-                return
-
 
 
 # ---------------------------------------------------------------------------
@@ -14086,7 +14252,12 @@ def completion_envelope(result: KernelResult) -> Dict[str, Any]:
 
 
 def _runtime_identity_details() -> Dict[str, Any]:
-    if ULTRA_MODE:
+    if ULTRA_REVIEW_MODE:
+        mode = "ultra"
+        flow = ["thesis", "thesis"]
+        authoritative_stage = "thesis"
+        retention_policy = "no_stage2_no_history_or_tool_reasoning_pruning"
+    elif ULTRA_MODE:
         mode = "deep-research"
         flow = ["extended_initial", "extended_reflection", "extended_synthesis"]
         authoritative_stage = "extended_synthesis"
@@ -14138,7 +14309,7 @@ def _runtime_identity_details() -> Dict[str, Any]:
         }
 
     return {
-        "reasoning_profile": "deep-research" if _reasoning_level == "ultra" else _reasoning_level,
+        "reasoning_profile": "deep-research" if ULTRA_MODE else _reasoning_level,
         "mode": mode,
         "translation_target_language": TRANSLATOR_LANGUAGES[TRANSLATOR_LANGUAGE] if TRANSLATOR_MODE else None,
         "agentic_translation_target_language": (
@@ -15329,33 +15500,35 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
     print(_ansi_rgb("  2) Low (Disabled)", _JACK_MUTED))
     print("  3) Medium")
     print("  4) X-High (Default)")
-    print("  5) Agentic")
-    print(_ansi_rgb("  6) Translator (Coming Soon)", _JACK_MUTED))
-    print("  7) Code Debugging")
-    print("  8) Code Debugging (Deep)")
+    print("  5) Ultra")
+    print("  6) Agentic")
+    print(_ansi_rgb("  7) Translator (Coming Soon)", _JACK_MUTED))
+    print("  8) Code Debugging")
+    print("  9) Code Debugging (Deep)")
 
     print()
     current = str(cfg.get("reasoning_level", "x-high")).lower()
     current = _REASONING_LEVEL_ALIASES.get(current, current)
     if current == "low" or current not in REASONING_PROFILES or REASONING_PROFILES[current].get("disabled"):
         current = "x-high"
-    choice = _cli_input(f"Select level [1-8] [{REASONING_PROFILES[current]['label']}]: ").strip().lower()
+    choice = _cli_input(f"Select level [1-9] [{REASONING_PROFILES[current]['label']}]: ").strip().lower()
     if not choice:
         return
     if choice in {"2", "low"}:
         print(_ansi_rgb("Low is disabled in Jack Kernel v0.1.1 and cannot be selected.", _JACK_MUTED))
         return
-    if choice in {"6", "translator", "translate", "translation"}:
+    if choice in {"7", "translator", "translate", "translation"}:
         print(_ansi_rgb("Translator (Coming Soon) cannot be selected.", _JACK_MUTED))
         return
     mapping = {
         "1": "off", "off": "off", "flash": "off",
         "3": "medium", "medium": "medium", "standard": "medium",
         "4": "x-high", "x-high": "x-high", "xhigh": "x-high", "high": "x-high", "default": "x-high", "recommended": "x-high",
-        "5": "Local Agentic (Preserve Thinking)", "agentic": "Local Agentic (Preserve Thinking)",
-        "6": "translator", "translator": "translator", "translate": "translator", "translation": "translator",
-        "7": "code-debugging", "code-debugging": "code-debugging", "debug": "code-debugging", "debugging": "code-debugging",
-        "8": "code-debugging-deep", "code-debugging-deep": "code-debugging-deep", "code debugging deep": "code-debugging-deep", "debugging deep": "code-debugging-deep", "deep debugging": "code-debugging-deep",
+        "5": "ultra", "ultra": "ultra",
+        "6": "Local Agentic (Preserve Thinking)", "agentic": "Local Agentic (Preserve Thinking)",
+        "7": "translator", "translator": "translator", "translate": "translator", "translation": "translator",
+        "8": "code-debugging", "code-debugging": "code-debugging", "debug": "code-debugging", "debugging": "code-debugging",
+        "9": "code-debugging-deep", "code-debugging-deep": "code-debugging-deep", "code debugging deep": "code-debugging-deep", "debugging deep": "code-debugging-deep", "deep debugging": "code-debugging-deep",
     }
     selected = mapping.get(choice)
     if selected is None:

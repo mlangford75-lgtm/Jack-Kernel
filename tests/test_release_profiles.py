@@ -32,7 +32,7 @@ def main():
     off = load("off")
     medium = load("medium")
     xhigh = load("x-high")
-    deep = load("ultra")
+    deep = load("deep-research")
 
     assert off.REASONING_PROFILES["low"]["disabled"] is True
 
