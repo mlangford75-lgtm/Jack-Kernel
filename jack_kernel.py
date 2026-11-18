@@ -805,13 +805,12 @@ REASONING_PROFILES: Dict[str, Dict[str, Any]] = {
     "low": {"label": "Low (Disabled)", "mode": "native", "answer": "low", "disabled": True},
     "medium": {"label": "Medium", "mode": "native", "answer": "medium", "disabled": False},
     "x-high": {"label": "X-High (Default)", "mode": "native", "answer": "xhigh", "disabled": False},
-    "ultra": {
-        "label": "Deep Research",
+    "ultra": {"label": "Ultra", "mode": "ultra_review", "answer": "xhigh", "disabled": False},
+    # Preserve legacy TAS under its actual name rather than conflating it with Ultra.
+    "deep-research": {
+        "label": "Deep Research (Legacy)",
         "mode": "ultra",
-        "answer": "xhigh",
-        "pass1": "xhigh",
-        "pass2": "medium",
-        "pass3": "xhigh",
+        "answer": "xhigh", "pass1": "xhigh", "pass2": "medium", "pass3": "xhigh",
         "disabled": False,
     },
     "deep-reasoning": {
@@ -869,10 +868,10 @@ _REASONING_LEVEL_ALIASES = {
     "recommended": "x-high",
     "flash": "off",
     "high": "x-high",
-    "deep-research": "ultra",
-    "deep_research": "ultra",
-    "deep research": "ultra",
-    "deepresearch": "ultra",
+    "deep-research": "deep-research",
+    "deep_research": "deep-research",
+    "deep research": "deep-research",
+    "deepresearch": "deep-research",
     "deep_reasoning": "deep-reasoning",
     "deep reasoning": "deep-reasoning",
     "deepreasoning": "deep-reasoning",
@@ -932,7 +931,8 @@ AGENTIC_SOURCE_ONLY_WORKING_STATE = AGENTIC_MODE
 # Flash and Balanced have Stage-2 native thinking off; Thorough and Translated
 # may think in Stage 2. All use the same tools-off working-memory source.
 AGENTIC_THINKING_OFF_MEMORY_MODE = AGENTIC_BALANCED_MODE
-ULTRA_MODE = ACTIVE_REASONING_PROFILE["mode"] == "ultra"
+ULTRA_MODE = ACTIVE_REASONING_PROFILE["mode"] == "ultra"  # legacy TAS
+ULTRA_REVIEW_MODE = ACTIVE_REASONING_PROFILE["mode"] == "ultra_review"
 DEEP_REASONING_MODE = ACTIVE_REASONING_PROFILE["mode"] == "deep_reasoning"
 CODE_DEBUGGING_MODE = ACTIVE_REASONING_PROFILE["mode"] == "code_debugging"
 SELF_ADVERSARIAL_MODE = AGENTIC_MODE or ULTRA_MODE or DEEP_REASONING_MODE
@@ -3266,7 +3266,7 @@ STAGES: Dict[str, StageProfile] = {
         True,
         None,
         None,
-        False,
+        ULTRA_REVIEW_MODE,
         None,
     ),
     # Agentic keeps its two-stage path. Deep Research uses three stages:
@@ -8836,10 +8836,8 @@ class JackQwenKernel:
                 if trace:
                     msg["_jack_stage3_reasoning_trace"] = trace
             defer_extended_context = bool(
-                (
-                    ULTRA_MODE
-                    and stage_key in {"extended_initial", "extended_reflection", "extended_synthesis"}
-                )
+                ULTRA_REVIEW_MODE
+                or (ULTRA_MODE and stage_key in {"extended_initial", "extended_reflection", "extended_synthesis"})
                 or (AGENTIC_MODE and stage_key in {"extended_initial", "extended_reflection", "extended_synthesis"})
                 or (CODE_DEBUGGING_MODE and _debugging_pass_from_stage_key(stage_key) is not None)
             )
@@ -9530,10 +9528,8 @@ class JackQwenKernel:
                 if trace:
                     message["_jack_stage3_reasoning_trace"] = trace
             defer_extended_context = bool(
-                (
-                    ULTRA_MODE
-                    and stage_key in {"extended_initial", "extended_reflection", "extended_synthesis"}
-                )
+                ULTRA_REVIEW_MODE
+                or (ULTRA_MODE and stage_key in {"extended_initial", "extended_reflection", "extended_synthesis"})
                 or (AGENTIC_MODE and stage_key in {"extended_initial", "extended_reflection", "extended_synthesis"})
                 or (CODE_DEBUGGING_MODE and _debugging_pass_from_stage_key(stage_key) is not None)
             )
@@ -10271,8 +10267,10 @@ class JackQwenKernel:
         # one pass is active. At pass commit Jack drops that entire context and the next
         # next pass receives exact user-origin Pass 0 plus only the host-derived confirmed prior-finding registry.
         if (
-            SELF_ADVERSARIAL_MODE and stage_key in {"extended_initial", "extended_reflection", "extended_synthesis"}
-        ) or (CODE_DEBUGGING_MODE and _debugging_pass_from_stage_key(stage_key) is not None):
+            ULTRA_REVIEW_MODE
+            or (SELF_ADVERSARIAL_MODE and stage_key in {"extended_initial", "extended_reflection", "extended_synthesis"})
+            or (CODE_DEBUGGING_MODE and _debugging_pass_from_stage_key(stage_key) is not None)
+        ):
             resume_history = list(history)
             pruned_messages = 0
             carried_failures = 0
@@ -14086,7 +14084,12 @@ def completion_envelope(result: KernelResult) -> Dict[str, Any]:
 
 
 def _runtime_identity_details() -> Dict[str, Any]:
-    if ULTRA_MODE:
+    if ULTRA_REVIEW_MODE:
+        mode = "ultra"
+        flow = ["native_xhigh_reasoning", "appended_same_stage_reverification", "final_response"]
+        authoritative_stage = "thesis"
+        retention_policy = "no_stage2_no_history_or_tool_reasoning_pruning"
+    elif ULTRA_MODE:
         mode = "deep-research"
         flow = ["extended_initial", "extended_reflection", "extended_synthesis"]
         authoritative_stage = "extended_synthesis"
@@ -15329,33 +15332,35 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
     print(_ansi_rgb("  2) Low (Disabled)", _JACK_MUTED))
     print("  3) Medium")
     print("  4) X-High (Default)")
-    print("  5) Agentic")
-    print(_ansi_rgb("  6) Translator (Coming Soon)", _JACK_MUTED))
-    print("  7) Code Debugging")
-    print("  8) Code Debugging (Deep)")
+    print("  5) Ultra")
+    print("  6) Agentic")
+    print(_ansi_rgb("  7) Translator (Coming Soon)", _JACK_MUTED))
+    print("  8) Code Debugging")
+    print("  9) Code Debugging (Deep)")
 
     print()
     current = str(cfg.get("reasoning_level", "x-high")).lower()
     current = _REASONING_LEVEL_ALIASES.get(current, current)
     if current == "low" or current not in REASONING_PROFILES or REASONING_PROFILES[current].get("disabled"):
         current = "x-high"
-    choice = _cli_input(f"Select level [1-8] [{REASONING_PROFILES[current]['label']}]: ").strip().lower()
+    choice = _cli_input(f"Select level [1-9] [{REASONING_PROFILES[current]['label']}]: ").strip().lower()
     if not choice:
         return
     if choice in {"2", "low"}:
         print(_ansi_rgb("Low is disabled in Jack Kernel v0.1.1 and cannot be selected.", _JACK_MUTED))
         return
-    if choice in {"6", "translator", "translate", "translation"}:
+    if choice in {"7", "translator", "translate", "translation"}:
         print(_ansi_rgb("Translator (Coming Soon) cannot be selected.", _JACK_MUTED))
         return
     mapping = {
         "1": "off", "off": "off", "flash": "off",
         "3": "medium", "medium": "medium", "standard": "medium",
         "4": "x-high", "x-high": "x-high", "xhigh": "x-high", "high": "x-high", "default": "x-high", "recommended": "x-high",
-        "5": "Local Agentic (Preserve Thinking)", "agentic": "Local Agentic (Preserve Thinking)",
-        "6": "translator", "translator": "translator", "translate": "translator", "translation": "translator",
-        "7": "code-debugging", "code-debugging": "code-debugging", "debug": "code-debugging", "debugging": "code-debugging",
-        "8": "code-debugging-deep", "code-debugging-deep": "code-debugging-deep", "code debugging deep": "code-debugging-deep", "debugging deep": "code-debugging-deep", "deep debugging": "code-debugging-deep",
+        "5": "ultra", "ultra": "ultra",
+        "6": "Local Agentic (Preserve Thinking)", "agentic": "Local Agentic (Preserve Thinking)",
+        "7": "translator", "translator": "translator", "translate": "translator", "translation": "translator",
+        "8": "code-debugging", "code-debugging": "code-debugging", "debug": "code-debugging", "debugging": "code-debugging",
+        "9": "code-debugging-deep", "code-debugging-deep": "code-debugging-deep", "code debugging deep": "code-debugging-deep", "debugging deep": "code-debugging-deep", "deep debugging": "code-debugging-deep",
     }
     selected = mapping.get(choice)
     if selected is None:
