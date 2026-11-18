@@ -49,11 +49,11 @@ def test_mode_placement_and_reasoning_contract(monkeypatch, tmp_path):
     assert k._runtime_identity_details()["flow"] == ["thesis", "thesis"]
     assert k.AGENTIC_STAGE1_VERIFICATION_PROMPT in k.ULTRA_REVIEW_TRIGGER
     assert k.ULTRA_REVIEW_TRIGGER == (
-        "Ultra Reasoning: [Not a new user request. Continued Reasoning]\\n\\n"
+        "Ultra Reasoning: [Not a new user request. Continued Reasoning]\n\n"
         "Wait, re-verify the latest reasoning and chain-of-thought. "
         "Test for errors, mistakes, or poor quality. Make changes, if necessary, "
         "to ensure alignment with the instructions and user request before responding"
-        "\\n\\nReturn the new, complete answer to the current user request, "
+        "\n\nReturn the new, complete answer to the current user request, "
         "not a report about re-verification. Preserve correct reasoning, "
         "established findings, completed work, and verified results. "
         "Correct identified errors, omissions, or misalignment without "
