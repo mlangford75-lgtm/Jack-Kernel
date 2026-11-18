@@ -128,7 +128,7 @@ def test_retired_exhaustive_and_document_translator_not_selectable(monkeypatch, 
     k = load(monkeypatch, tmp_path, "balanced")
     assert k.REASONING_PROFILES["translator"]["disabled"]
     assert "Coming Soon" in k.REASONING_PROFILES["translator"]["label"]
-    with pytest.raises(RuntimeError, match="flash, balanced, thorough, or translated"):
+    with pytest.raises(RuntimeError, match="flash, balanced, thorough, translated, or coder"):
         load(monkeypatch, tmp_path, "exhaustive")
 
 
