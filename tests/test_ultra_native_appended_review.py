@@ -333,8 +333,8 @@ def test_multi_turn_history_and_review_authority(monkeypatch, tmp_path, streamin
                                "total_tokens": 35}},
                 ]
                 return httpx.Response(200,
-                                      text="".join("data: " + json.dumps(p) + "\\n\\n"
-                                                   for p in packets) + "data: [DONE]\\n\\n",
+                                      text="".join("data: " + json.dumps(p) + "\n\n"
+                                                   for p in packets) + "data: [DONE]\n\n",
                                       headers={"content-type": "text/event-stream"})
             return httpx.Response(200, json=result(content, reasoning))
 
