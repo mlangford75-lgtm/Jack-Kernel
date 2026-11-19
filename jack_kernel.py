@@ -11659,6 +11659,17 @@ class JackQwenKernel:
             await self._retire_pending_tool_resume(state)
             return successor
 
+        if AGENTIC_CODER_MODE and stage_key == "coder_planner":
+            # The Planner's read-only tool episode resumes Planner cognition,
+            # then captures its completed spec exactly once. Only now does
+            # Coder gain the full authorized tool surface and answer authority.
+            _coder_append_plan(history, stage)
+            await self._retire_pending_tool_resume(state)
+            return await self._coder_finish_after_planner_nonstream(
+                history, state.secondary_system, usage,
+                state.tools, state.tool_choice,
+            )
+
         if CODE_DEBUGGING_MODE:
             pass_number = debugging_pass_number
             if pass_number is None:
@@ -11788,6 +11799,54 @@ class JackQwenKernel:
             usage=normalize_usage(dict(usage)),
             reasoning_content=str(reasoning) if reasoning else None,
         )
+
+    async def _coder_finish_after_planner_nonstream(
+        self, history: List[Dict[str, Any]], secondary_system: str,
+        usage: Dict[str, int], tools: Optional[List[Dict[str, Any]]],
+        tool_choice: Any,
+    ) -> KernelResult | PreparedCommit:
+        """Execute after the owned spec is finished, including read-tool resumes."""
+        if not _coder_has_plan(history):
+            raise ForensicConflict("Coder Executor cannot start without an owned developer specification")
+        first = await self._run_stage(
+            history, secondary_system, "extended_initial", usage,
+            tools=tools, tool_choice=tool_choice, append=False,
+        )
+        if self._tool_interrupt(first, usage):
+            return await self._register_stage_tool_resume(
+                stage_key="extended_initial", history=history,
+                secondary_system=secondary_system, usage=usage,
+                tools=tools, tool_choice=tool_choice, data=first,
+            )
+        self._agentic_require_completed_stage(first, "Agentic Stage 1")
+        first_msg = ((first.get("choices") or [{}])[0].get("message") or {})
+        frozen_answer = append_extended_candidate_response(history, first_msg)
+        try:
+            second = await self._run_stage(
+                history, secondary_system, "extended_reflection", usage,
+                tools=tools if AGENTIC_CACHE_APPEND_EXPERIMENT else None,
+                tool_choice=tool_choice if AGENTIC_CACHE_APPEND_EXPERIMENT else None,
+                append=False,
+            )
+            if self._tool_interrupt(second, usage):
+                raise HTTPException(status_code=502, detail="Agentic Stage 2 attempted a tool call even though memory tools are disabled")
+            msg = ((second.get("choices") or [{}])[0].get("message") or {})
+            reasoning = msg.get("_jack_stage2_reasoning_trace") or msg.get("reasoning_content") or msg.get("reasoning") or msg.get("thinking")
+            self._agentic_require_completed_stage(second, "Agentic Stage 2")
+            memory = self._exact_frozen_answer_from_stage(second, "Agentic Stage 2 distillation")
+            completed = await self._complete_commit(
+                history, secondary_system, usage, frozen_answer, memory,
+                stage2_reasoning=str(reasoning or "").strip() or None,
+            )
+            completed.context_usage = _agentic_peak_stage_usage(
+                first.get("usage"), second.get("usage")
+            )
+            return completed
+        except Exception as exc:
+            if isinstance(exc, GenerationBudgetExceeded):
+                raise
+            detail = str(exc.detail) if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
+            return self._agentic_degraded_result(history, usage, frozen_answer, detail)
 
     async def _prepare_commit(
         self, request_body: Dict[str, Any]
