@@ -5400,6 +5400,63 @@ def _coder_append_plan(history: List[Dict[str, Any]], result: Dict[str, Any]) ->
         entry["reasoning"] = reason
     history.append(entry)
 
+def _coder_preserve_goal_artifact(history: List[Dict[str, Any]]) -> Optional[Path]:
+    """Best-effort local, atomic retention of the actual Coder goal checkpoint.
+
+    Call only after a completed answer or degraded turn, before history clears.
+    A disk failure must never invalidate the answer, memory, or journal. Native
+    Planner reasoning is not written here; current-turn raw Planner output and
+    its validated/fallback goals remain inspectable without entering Stage 2.
+    """
+    if not AGENTIC_CODER_MODE:
+        return None
+    try:
+        target = active_response_target(history)
+        if target is None:
+            return None
+        work_id = history[int(target["history_index"])].get("_jack_agentic_turn_id")
+        if not isinstance(work_id, str) or not re.fullmatch(r"jack-turn-[A-Za-z0-9_-]+", work_id):
+            return None
+        if not _coder_has_plan(history):
+            return None
+        plan = next(item for item in history[int(target["history_index"]) + 1:]
+                    if isinstance(item, dict) and item.get("_jack_coder_plan") is True)
+        goal = _content_to_text(plan.get("content"))
+        raw = str(plan.get("_jack_coder_original_planner_output") or "")
+        if _sha256_text(goal) != plan.get("_jack_coder_plan_sha256"):
+            raise ForensicConflict("Coder goal integrity mismatch at preservation")
+        if _sha256_text(raw) != plan.get("_jack_coder_original_planner_output_sha256"):
+            raise ForensicConflict("Coder original Planner output changed")
+        record = {
+            "schema": "jack.coder.goal_checkpoint.v1",
+            "work_id": work_id,
+            "request_sha256": _sha256_text(_content_to_text(history[int(target["history_index"])].get("content"))),
+            "goal_json": json.loads(goal),
+            "planner_output_unverified": raw,
+            "planner_output_sha256": _sha256_text(raw),
+            "used_fallback": bool(plan.get("_jack_coder_goal_fallback")),
+            "planner_incomplete": bool(plan.get("_jack_coder_planner_incomplete")),
+        }
+        root = _config_dir() / "coder_goals"
+        root.mkdir(parents=True, exist_ok=True)
+        destination = root / (work_id + ".json")
+        temporary = destination.with_name(destination.name + "." + uuid.uuid4().hex + ".tmp")
+        try:
+            with temporary.open("w", encoding="utf-8", newline="\\n") as handle:
+                json.dump(record, handle, ensure_ascii=False, indent=2)
+                handle.write("\\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, destination)
+        finally:
+            with contextlib.suppress(OSError):
+                temporary.unlink()
+        return destination
+    except Exception as exc:
+        LOG.warning("Coder optional goal checkpoint unavailable; preserving user result (%s)", type(exc).__name__)
+        return None
+
+
 def _coder_stage_sequence(resume_stage_key: Optional[str], history: List[Dict[str, Any]]) -> List[Tuple[str, bool]]:
     """The Planner runs only on a new turn, never after an Executor tool call."""
     if not AGENTIC_CODER_MODE:
@@ -11214,6 +11271,7 @@ class JackQwenKernel:
         turn_record = _agentic_forensic_turn(history)
         visible_turn_id = turn_record.turn_id if turn_record is not None else None
         _agentic_forensic_commit(history, frozen_stage1_answer, unadorned_memory, tool_receipt)
+        _coder_preserve_goal_artifact(history)
         # The journal is authoritative. Optional archival must never turn a
         # successful durable commit into a degraded result with contradictory state.
         try:
@@ -11272,6 +11330,7 @@ class JackQwenKernel:
         """Preserve exact frozen A1 when zero-authority semantic consolidation cannot complete."""
         _discard_agentic_stage1_forensic_snapshot(history)
         _agentic_forensic_fail_memory(history, reason)
+        _coder_preserve_goal_artifact(history)
         try:
             _agentic_shadow_record_commit(frozen_stage1_answer, None, history=history)
         except Exception:
@@ -12890,6 +12949,7 @@ class JackQwenKernel:
                         turn_id=visible_turn_id,
                     )
                     _agentic_forensic_commit(history, agentic_frozen_stage1_answer, unadorned_memory, tool_receipt)
+                    _coder_preserve_goal_artifact(history)
                     # A committed forensic transaction cannot be downgraded by
                     # non-authoritative archival/shadow telemetry failures.
                     try:
