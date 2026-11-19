@@ -176,6 +176,43 @@ def test_incomplete_planner_preserves_partial_work_as_unverified_data(monkeypatc
     assert k._coder_has_plan(h)
 
 
+def test_goal_checkpoint_persists_after_commit_without_becoming_memory(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path)
+    monkeypatch.setattr(k, "_config_dir", lambda: tmp_path)
+    h = [{"role": "user", "content": "Save the requested SVG",
+          "_jack_agentic_turn_id": "jack-turn-test-goal-checkpoint"}]
+    raw = "Expected result includes a saved, readable SVG."
+    k._coder_append_plan(h, response(raw))
+    target = k._coder_preserve_goal_artifact(h)
+    assert target is not None and target.exists()
+    saved = json.loads(target.read_text(encoding="utf-8"))
+    assert saved["work_id"] == "jack-turn-test-goal-checkpoint"
+    assert saved["goal_json"]["schema"] == k.CODER_GOAL_SCHEMA
+    assert saved["goal_json"]["unverified_planner_observations"] == raw
+    assert saved["planner_output_unverified"] == raw
+    assert saved["planner_output_sha256"] == k._sha256_text(raw)
+    assert saved["used_fallback"] is True
+    assert "PLANNER_R1" not in target.read_text(encoding="utf-8")
+    h.clear()
+    assert target.exists()
+    assert k._coder_preserve_goal_artifact(h) is None
+
+
+def test_goal_checkpoint_io_failure_is_fail_open(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path)
+    monkeypatch.setattr(k, "_config_dir", lambda: tmp_path / "does-not-matter")
+    h = [{"role": "user", "content": "Make a working clock",
+          "_jack_agentic_turn_id": "jack-turn-no-write"}]
+    k._coder_append_plan(h, response())
+    # Explicitly model a persistence failure without losing task/plan data.
+    def cannot_write(*args, **kwargs):
+        raise OSError("storage unavailable")
+    monkeypatch.setattr(k.Path, "mkdir", cannot_write)
+    assert k._coder_preserve_goal_artifact(h) is None
+    assert k._coder_has_plan(h)
+    assert json.loads(h[-1]["content"])["schema"] == k.CODER_GOAL_SCHEMA
+
+
 def test_goal_json_validation_and_multimodal_user_text(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path)
     valid, fallback = k._coder_goal_document("```json\n" + goal_json() + "\n```", "Task")
