@@ -127,6 +127,55 @@ def test_malformed_and_simulated_tool_planning_falls_back_to_real_request(monkey
     assert k._coder_stage_sequence("extended_initial", h)[0][0] == "extended_initial"
 
 
+def test_imperfect_planner_output_retains_useful_observations(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path)
+    original = "User requests a saved SVG in the workspace"
+    raw = (
+        "Expected end state: an SVG saved in the specified workspace.\\n"
+        "<|tool_call>call:bash{command:'delete all'}<|tool_call|>\\n"
+        "Verify that the SVG file exists and is readable."
+    )
+    h = [{"role": "user", "content": original}]
+    k._coder_append_plan(h, response(raw))
+    assert h[-1]["_jack_coder_goal_fallback"] is True
+    assert h[-1]["_jack_coder_original_planner_output"] == raw
+    assert h[-1]["_jack_coder_original_planner_output_sha256"] == k._sha256_text(raw)
+    goals = json.loads(h[-1]["content"])
+    assert goals["objective"] == original
+    assert goals["requirements"][0]["goal"] == original
+    notes = goals["unverified_planner_observations"]
+    assert "Expected end state" in notes
+    assert "exists and is readable" in notes
+    assert "<|tool_call" not in notes
+    assert "delete all" not in notes
+    wire = k.OpenAICompatibleBackend._stage_messages_for_profile(
+        k.OpenAICompatibleBackend(k.CFG), h, k.STAGES["extended_initial"]
+    )
+    assert all(raw not in str(item) for item in wire)
+    assert any("unverified_planner_observations" in str(item) for item in wire)
+
+
+def test_incomplete_planner_preserves_partial_work_as_unverified_data(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path)
+    request = "Make the clock work"
+    raw = goal_json(request)
+    h = [{"role": "user", "content": request}]
+    k._coder_append_plan(h, {"choices": [{
+        "finish_reason": "length",
+        "message": {"role": "assistant", "content": raw, "reasoning_content": "WORK"}
+    }]})
+    entry = h[-1]
+    assert entry["_jack_coder_planner_incomplete"] is True
+    assert entry["_jack_coder_goal_fallback"] is True
+    assert entry["_jack_coder_original_planner_output"] == raw
+    goals = json.loads(entry["content"])
+    assert goals["requirements"] == [{
+        "id": "R1", "source": "explicit", "kind": "deliverable", "goal": request
+    }]
+    assert raw == goals["unverified_planner_observations"]
+    assert k._coder_has_plan(h)
+
+
 def test_goal_json_validation_and_multimodal_user_text(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path)
     valid, fallback = k._coder_goal_document("```json\n" + goal_json() + "\n```", "Task")
