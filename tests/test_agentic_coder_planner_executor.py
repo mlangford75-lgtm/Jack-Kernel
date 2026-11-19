@@ -51,11 +51,12 @@ def test_profile_isolated_and_reasoning_contract(monkeypatch, tmp_path):
     assert not k.STAGES["extended_reflection"].allow_tools
     assert k.CODER_PLANNER_PROMPT.startswith(PREFIX)
     assert k.CODER_EXECUTOR_PROMPT.startswith(PREFIX)
-    assert k.CODER_EXECUTOR_PROMPT.endswith(
-        "Files in the workspace are previous checkpoints, available to build upon."
-    )
+    assert k.CODER_EXECUTOR_PROMPT.endswith("You are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the current user request.")
+    assert k.CODER_EXECUTOR_PROMPT.count("You are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the current user request.") == 1
     assert "Files in the workspace are previous checkpoints, available to build upon." not in k.CODER_PLANNER_PROMPT
     assert "Files in the workspace are previous checkpoints, available to build upon." not in k.AGENTIC_36_STAGE2_PROMPT
+    assert "You are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the current user request." not in k.CODER_PLANNER_PROMPT
+    assert "You are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the current user request." not in k.AGENTIC_36_STAGE2_PROMPT
     assert "Who, What, Where, When, Why and How" in k.CODER_PLANNER_PROMPT
     assert k._runtime_identity_details()["flow"] == [
         "coder_planner", "extended_initial", "extended_reflection"
@@ -173,7 +174,10 @@ def test_backend_planner_tools_off_executor_tools_on(monkeypatch, tmp_path):
                        and m.get("reasoning_content") == "R1"
                        for m in second["messages"])
             assert any(m["role"] == "system" and k.CODER_EXECUTOR_PROMPT in m["content"]
+                       and m["content"].endswith("You are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the current user request.")
                        for m in second["messages"])
+            assert not any("You are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the current user request." in m.get("content", "")
+                           for m in first["messages"] if m["role"] == "system")
         finally:
             await backend._client.aclose()
     asyncio.run(run())
