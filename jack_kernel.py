@@ -5206,6 +5206,22 @@ def _coder_append_plan(history: List[Dict[str, Any]], result: Dict[str, Any]) ->
         entry["reasoning"] = reason
     history.append(entry)
 
+def _coder_stage_sequence(resume_stage_key: Optional[str], history: List[Dict[str, Any]]) -> List[Tuple[str, bool]]:
+    """The Planner runs only on a new turn, never after an Executor tool call."""
+    if not AGENTIC_CODER_MODE:
+        raise ForensicConflict("Coder phase routing requires the Coder profile")
+    if resume_stage_key == "extended_reflection":
+        return [("extended_reflection", False)]
+    if resume_stage_key == "extended_initial":
+        if not _coder_has_plan(history):
+            raise ForensicConflict("Coder Executor tool resume missing original Planner evidence")
+        return [("extended_initial", False), ("extended_reflection", False)]
+    if resume_stage_key is not None:
+        raise ForensicConflict("Unexpected Coder resume stage")
+    if _coder_has_plan(history):
+        raise ForensicConflict("Coder Planner exists without an owned tool-resume checkpoint")
+    return [("coder_planner", False), ("extended_initial", False), ("extended_reflection", False)]
+
 def _coder_project_executor_request(stage_messages, source_view):
     """Use the real current U as the target; leave tool continuations untouched."""
     if not AGENTIC_CODER_MODE or not _coder_has_plan(source_view):
@@ -12445,8 +12461,8 @@ class JackQwenKernel:
                     sequence = (
                         [("extended_initial", False)]
                         if AGENTIC_FLASH_MODE else
-                        [("coder_planner", False), ("extended_initial", False), ("extended_reflection", False)]
-                        if AGENTIC_CODER_MODE and resume_stage_key is None else
+                        _coder_stage_sequence(resume_stage_key, history)
+                        if AGENTIC_CODER_MODE else
                         [("extended_reflection", False)]
                         if resume_stage_key == "extended_reflection"
                         else [("extended_initial", False), ("extended_reflection", False)]
