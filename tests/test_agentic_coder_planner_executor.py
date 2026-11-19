@@ -202,3 +202,84 @@ def test_streaming_tool_resume_skips_planner_and_preserves_tool_checkpoint(monke
         k._coder_stage_sequence(None, h)
     with pytest.raises(k.ForensicConflict, match="missing original Planner"):
         k._coder_stage_sequence("extended_initial", [h[0]])
+
+
+def test_streamed_real_tool_resume_never_replans(monkeypatch, tmp_path):
+    """Host lifecycle test reproducing Planner -> bash -> tool receipt -> Executor."""
+    async def run():
+        k = load(monkeypatch, tmp_path)
+        class Backend:
+            def __init__(self):
+                self.stages = []
+
+            async def chat_stream(self, *, messages, secondary_system, profile,
+                                  tools=None, tool_choice=None):
+                self.stages.append(profile.name)
+                n = len(self.stages)
+                if n == 1:
+                    assert profile.name == "Agentic Coder Planner"
+                    assert not profile.allow_tools
+                    assert tools is None
+                    yield {"choices": [{"index": 0, "delta": {
+                        "reasoning_content": "PLAN_R1"}, "finish_reason": None}]}
+                    yield {"choices": [{"index": 0, "delta": {
+                        "content": "Inspect the target directory and verify whether it contains entries."
+                    }, "finish_reason": None}]}
+                elif n == 2:
+                    assert profile.name == "Agentic native pass 1"
+                    assert profile.allow_tools
+                    assert any(item.get("_jack_coder_plan") for item in messages)
+                    yield {"choices": [{"index": 0, "delta": {
+                        "reasoning_content": "EXECUTOR_BEFORE_TOOL"
+                    }, "finish_reason": None}]}
+                    yield {"choices": [{"index": 0, "delta": {
+                        "tool_calls": [{"index": 0, "id": "coder-test-call",
+                                        "type": "function",
+                                        "function": {"name": "bash",
+                                                     "arguments": '{"command":"ls -A"}'}}]
+                    }, "finish_reason": None}]}
+                elif n == 3:
+                    assert profile.name == "Agentic native pass 1"
+                    assert any(item.get("_jack_coder_plan") for item in messages)
+                    assert any(item.get("role") == "tool" and
+                               item.get("content") == "(no output)" for item in messages)
+                    yield {"choices": [{"index": 0, "delta": {
+                        "reasoning_content": "EXECUTOR_AFTER_TOOL"}, "finish_reason": None}]}
+                    yield {"choices": [{"index": 0, "delta": {
+                        "content": "The workspace is empty."}, "finish_reason": None}]}
+                elif n == 4:
+                    assert profile.name == "Agentic native pass 2"
+                    assert not profile.allow_tools
+                    yield {"choices": [{"index": 0, "delta": {
+                        "content": "Verified empty workspace via bash listing."},
+                        "finish_reason": None}]}
+                else:
+                    raise AssertionError("Unexpected inference or Planner replay")
+                yield {"choices": [{"index": 0, "delta": {}, "finish_reason":
+                                    "tool_calls" if n == 2 else "stop"}],
+                       "usage": {"prompt_tokens": 20, "completion_tokens": 8,
+                                 "total_tokens": 28}}
+
+        backend = Backend()
+        kernel = k.JackQwenKernel(backend, k.CFG)
+        tools = [{"type": "function", "function": {
+            "name": "bash", "parameters": {"type": "object", "required": ["command"],
+                                            "properties": {"command": {"type": "string"}}}}}]
+        initial = {"messages": [{"role": "user", "content": "Verify the workspace is empty"}],
+                   "tools": tools, "stream": True}
+        frames = [part.decode("utf-8") async for part in kernel.stream(initial)]
+        emitted = "".join(frames)
+        assert "coder-test-call" in emitted
+        assert backend.stages == ["Agentic Coder Planner", "Agentic native pass 1"]
+        resumed = {"messages": [
+            {"role": "user", "content": "Verify the workspace is empty"},
+            {"role": "tool", "tool_call_id": "coder-test-call", "content": "(no output)"}],
+            "tools": tools, "stream": True}
+        frames = [part.decode("utf-8") async for part in kernel.stream(resumed)]
+        assert "Coder Planner cannot be repeated" not in "".join(frames)
+        assert "The workspace is empty." in "".join(frames)
+        assert backend.stages == [
+            "Agentic Coder Planner", "Agentic native pass 1",
+            "Agentic native pass 1", "Agentic native pass 2"
+        ]
+    asyncio.run(run())
