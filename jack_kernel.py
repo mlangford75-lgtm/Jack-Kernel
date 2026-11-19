@@ -5442,9 +5442,9 @@ def _coder_preserve_goal_artifact(history: List[Dict[str, Any]]) -> Optional[Pat
         destination = root / (work_id + ".json")
         temporary = destination.with_name(destination.name + "." + uuid.uuid4().hex + ".tmp")
         try:
-            with temporary.open("w", encoding="utf-8", newline="\\n") as handle:
+            with temporary.open("w", encoding="utf-8", newline="\n") as handle:
                 json.dump(record, handle, ensure_ascii=False, indent=2)
-                handle.write("\\n")
+                handle.write("\n")
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temporary, destination)
