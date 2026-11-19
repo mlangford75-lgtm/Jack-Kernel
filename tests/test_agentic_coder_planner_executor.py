@@ -796,3 +796,80 @@ def test_real_streaming_planner_read_resume_hands_spec_to_coder(monkeypatch, tmp
             "Agentic native pass 1", "Agentic native pass 2",
         ]
     asyncio.run(run())
+
+
+def test_nonstream_planner_read_resume_completes_spec_before_coder(monkeypatch, tmp_path):
+    async def run():
+        k = load(monkeypatch, tmp_path)
+        class Backend:
+            def __init__(self):
+                self.calls = []
+            async def chat(self, *, messages, secondary_system, profile,
+                           tools=None, tool_choice=None):
+                self.calls.append(profile.name)
+                n = len(self.calls)
+                if n == 1:
+                    assert profile.name == "Agentic Coder Planner"
+                    assert [x["function"]["name"] for x in tools] == ["read"]
+                    message = {"role": "assistant", "content": "",
+                               "tool_calls": [{"id": "planner-read-nonstream",
+                                               "type": "function",
+                                               "function": {"name": "read",
+                                               "arguments": '{"path":"clock.html"}'}}]}
+                    finish = "tool_calls"
+                elif n == 2:
+                    assert profile.name == "Agentic Coder Planner"
+                    assert any(x.get("role") == "tool" and "Current JS" in str(x.get("content"))
+                               for x in messages)
+                    message = {"role": "assistant",
+                               "content": "Developer spec: preserve the design and correct the clock hands."}
+                    finish = "stop"
+                elif n == 3:
+                    assert profile.name == "Agentic native pass 1"
+                    assert [x["function"]["name"] for x in tools] == ["read", "write"]
+                    assert any(x.get("_jack_coder_plan") for x in messages)
+                    message = {"role": "assistant", "content": "Clock repaired and verified.",
+                               "reasoning_content": "CODER_FINISHED"}
+                    finish = "stop"
+                elif n == 4:
+                    assert profile.name == "Agentic native pass 2"
+                    message = {"role": "assistant", "content": "Coder repaired the clock."}
+                    finish = "stop"
+                else:
+                    raise AssertionError("Planner or Executor replay")
+                return {"choices": [{"index": 0, "message": message,
+                                     "finish_reason": finish}],
+                        "usage": {"prompt_tokens": 10, "completion_tokens": 10,
+                                  "total_tokens": 20}}
+        backend = Backend()
+        kernel = k.JackQwenKernel(backend, k.CFG)
+        tools = [
+            {"type": "function", "function": {"name": "read",
+                "parameters": {"type": "object", "required": ["path"],
+                               "properties": {"path": {"type": "string"}}}}},
+            {"type": "function", "function": {"name": "write",
+                "parameters": {"type": "object", "required": ["path", "content"],
+                               "properties": {"path": {"type": "string"},
+                                              "content": {"type": "string"}}}}},
+        ]
+        first = await kernel.run({
+            "messages": [{"role": "user", "content": "Fix the clock"}],
+            "tools": tools, "stream": False,
+        })
+        assert first.finish_reason == "tool_calls"
+        assert first.content is None
+        assert first.tool_calls[0]["id"] == "planner-read-nonstream"
+        final = await kernel.run({
+            "messages": [
+                {"role": "user", "content": "Fix the clock"},
+                {"role": "tool", "tool_call_id": "planner-read-nonstream",
+                 "content": "Current JS: static minute hand"},
+            ],
+            "tools": tools, "stream": False,
+        })
+        assert "Clock repaired and verified." in str(final.content)
+        assert backend.calls == [
+            "Agentic Coder Planner", "Agentic Coder Planner",
+            "Agentic native pass 1", "Agentic native pass 2",
+        ]
+    asyncio.run(run())
