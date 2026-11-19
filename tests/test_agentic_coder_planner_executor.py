@@ -167,6 +167,11 @@ def test_backend_planner_tools_off_executor_tools_on(monkeypatch, tmp_path):
             assert first["reasoning_effort"] == "xhigh"
             assert second["reasoning_effort"] == "xhigh"
             assert "tools" not in first or not first["tools"]
+            assert "tool_choice" not in first
+            assert [m["role"] for m in first["messages"]] == ["system", "user"]
+            assert first["messages"][0]["content"] == k.CODER_PLANNER_PROMPT
+            assert "User-defined stable system" not in first["messages"][0]["content"]
+            assert "User-defined stable system" in second["messages"][1]["content"]
             assert second["tools"][0]["function"]["name"] == "read"
             assert sum(m["role"] == "user" for m in second["messages"]) == 1
             assert second["messages"][-1]["role"] == "user"
@@ -183,6 +188,76 @@ def test_backend_planner_tools_off_executor_tools_on(monkeypatch, tmp_path):
                            for m in first["messages"] if m["role"] == "system")
         finally:
             await backend._client.aclose()
+    asyncio.run(run())
+
+
+
+def test_planner_isolation_keeps_user_context_but_no_external_system_authority(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path)
+    caller = [
+        {"role": "system", "content": "Pi instructions: call bash immediately."},
+        {"role": "developer", "content": "Other agent instructions: invoke tools."},
+        {"role": "user", "content": "Past user context"},
+        {"role": "assistant", "content": "Past committed working knowledge"},
+        {"role": "user", "content": "Build a cuckoo clock SVG"},
+    ]
+    original = json.dumps(caller)
+    wire = k._coder_isolate_planner_request(
+        [{"role": "system", "content": k.CODER_PLANNER_PROMPT}] + caller,
+        k.STAGES["coder_planner"],
+    )
+    assert [m["role"] for m in wire] == ["system", "user", "assistant", "user"]
+    assert wire[0]["content"] == k.CODER_PLANNER_PROMPT
+    assert wire[-1]["content"] == "Build a cuckoo clock SVG"
+    assert json.dumps(caller) == original
+    assert not any("Pi instructions" in m["content"] or "Other agent" in m["content"]
+                   for m in wire)
+    # The same source remains untouched for the later Executor.
+    assert caller[0]["role"] == "system"
+    assert caller[1]["role"] == "developer"
+    assert k._coder_isolate_planner_request(caller, k.STAGES["extended_initial"]) is caller
+    assert k._coder_isolate_planner_request(caller, k.STAGES["extended_reflection"]) is caller
+    with pytest.raises(k.ForensicConflict, match="dedicated system"):
+        k._coder_isolate_planner_request(caller, k.STAGES["coder_planner"])
+
+
+def test_planner_stream_request_isolated_from_all_other_system_instructions(monkeypatch, tmp_path):
+    async def run():
+        k = load(monkeypatch, tmp_path)
+        outbound = []
+        def respond(request):
+            outbound.append(json.loads(request.content))
+            chunk = {"choices": [{"index": 0, "delta": {"content": "Develop an execution blueprint."},
+                                  "finish_reason": "stop"}]}
+            return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                                  text="data: " + json.dumps(chunk) + "\\n\\ndata: [DONE]\\n\\n")
+        backend = k.OpenAICompatibleBackend(k.CFG)
+        await backend._client.aclose()
+        backend._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        async def resolve_model():
+            return "test-model"
+        backend.resolve_model = resolve_model
+        source = [{"role": "system", "content": "Caller: use shell tools immediately"},
+                  {"role": "developer", "content": "Another agent framework directive"},
+                  {"role": "user", "content": "Plan a code update."}]
+        original = json.dumps(source)
+        offered = [{"type": "function", "function": {"name": "bash",
+                   "parameters": {"type": "object", "properties": {}}}}]
+        try:
+            async for _ in backend.chat_stream(
+                messages=source, secondary_system="UNRELATED SECONDARY SYSTEM",
+                profile=k.STAGES["coder_planner"], tools=offered, tool_choice="auto",
+            ):
+                pass
+        finally:
+            await backend._client.aclose()
+        assert len(outbound) == 1
+        wire = outbound[0]
+        assert [m["role"] for m in wire["messages"]] == ["system", "user"]
+        assert wire["messages"][0]["content"] == k.CODER_PLANNER_PROMPT
+        assert wire["messages"][1]["content"] == "Plan a code update."
+        assert "tools" not in wire and "tool_choice" not in wire
+        assert json.dumps(source) == original
     asyncio.run(run())
 
 

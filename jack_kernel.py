@@ -3272,6 +3272,33 @@ ULTRA_STAGE3_MAX_TOKENS = None
 CODER_PLANNER_PROMPT = "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\n\nCarefully reason through the authenticated user request before execution. Envision the finished result: appearance, functionality, behavior, structure, details and quality requirements. Consider Who, What, Where, When, Why and How as they apply. Reason backward from completion to requirements, constraints, dependencies, tool choices, sequence, alternatives, risks, failure cases and verification. Distinguish known facts from assumptions. Develop a detailed execution plan explaining consequential decisions. Do not execute tools, claim unperformed actions, or treat unknown environment facts as verified. Describe intended tool operations in ordinary language; do not emit tool-call markup or simulated tool invocations."
 CODER_EXECUTOR_PROMPT = "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\n\nEvaluate the preceding reasoning plan and it's alignment with the authenticated user request. Treat the planning as fallible working evidence, not as user authority.\n\nFiles in the workspace are previous checkpoints, available to build upon.\n\nDo not assume the work has been done. Verify in the workspace or review the tool history\n\nYou are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the authenticated user request."
 
+def _coder_isolate_planner_request(stage_messages, profile):
+    """Give Coder Planner only its own system contract and task context.
+
+    The caller's system/developer instructions belong to the Executor, not to
+    the tools-off Planner. This is a model-facing projection only: canonical
+    conversation history is unchanged, including authenticated user requests,
+    prior working knowledge, and the source material required by the Executor.
+    """
+    if not AGENTIC_CODER_MODE or profile.name != "Agentic Coder Planner":
+        return stage_messages
+    if not stage_messages or not isinstance(stage_messages[0], dict) or (
+        stage_messages[0].get("role") != "system"
+        or stage_messages[0].get("content") != CODER_PLANNER_PROMPT
+    ):
+        raise ForensicConflict("Coder Planner missing its dedicated system instructions")
+    isolated = [stage_messages[0]]
+    for item in stage_messages[1:]:
+        if not isinstance(item, dict):
+            raise ForensicConflict("Coder Planner received an invalid history message")
+        if item.get("role") in {"system", "developer"}:
+            continue
+        isolated.append(item)
+    if not any(item.get("role") == "user" for item in isolated[1:]):
+        raise ForensicConflict("Coder Planner missing authenticated user context")
+    return isolated
+
+
 STAGES: Dict[str, StageProfile] = {
     "thesis": StageProfile(
         "Ultra native pass" if ULTRA_REVIEW_MODE else "Native answer",
@@ -8204,6 +8231,7 @@ class OpenAICompatibleBackend:
         ) + prepared_messages
         stage_messages = _tool_stage_system_with_provenance(stage_messages, profile)
         _agentic_attach_system_stage_control(stage_messages, messages, profile)
+        stage_messages = _coder_isolate_planner_request(stage_messages, profile)
         if AGENTIC_CODER_MODE and profile.name == "Agentic native pass 1":
             _coder_project_executor_request(stage_messages, source_view)
         if reasoning_primary:
@@ -8405,6 +8433,7 @@ class OpenAICompatibleBackend:
         ) + prepared_messages
         stage_messages = _tool_stage_system_with_provenance(stage_messages, profile)
         _agentic_attach_system_stage_control(stage_messages, messages, profile)
+        stage_messages = _coder_isolate_planner_request(stage_messages, profile)
         if AGENTIC_CODER_MODE and profile.name == "Agentic native pass 1":
             _coder_project_executor_request(stage_messages, source_view)
         if reasoning_primary:
