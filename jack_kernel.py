@@ -3260,7 +3260,7 @@ ULTRA_STAGE1_MAX_TOKENS = None
 ULTRA_STAGE2_MAX_TOKENS = None
 ULTRA_STAGE3_MAX_TOKENS = None
 
-CODER_PLANNER_PROMPT = "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\n\nCarefully reason through the authenticated user request before execution. Envision the finished result: appearance, functionality, behavior, structure, details and quality requirements. Consider Who, What, Where, When, Why and How as they apply. Reason backward from completion to requirements, constraints, dependencies, tool choices, sequence, alternatives, risks, failure cases and verification. Distinguish known facts from assumptions. Develop a detailed execution plan explaining consequential decisions. Do not execute tools, claim unperformed actions, or treat unknown environment facts as verified."
+CODER_PLANNER_PROMPT = "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\n\nCarefully reason through the authenticated user request before execution. Envision the finished result: appearance, functionality, behavior, structure, details and quality requirements. Consider Who, What, Where, When, Why and How as they apply. Reason backward from completion to requirements, constraints, dependencies, tool choices, sequence, alternatives, risks, failure cases and verification. Distinguish known facts from assumptions. Develop a detailed execution plan explaining consequential decisions. Do not execute tools, claim unperformed actions, or treat unknown environment facts as verified. Describe intended tool operations in ordinary language; do not emit tool-call markup or simulated tool invocations."
 CODER_EXECUTOR_PROMPT = "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\n\nEvaluate the preceding Planner reasoning and plan against the authenticated user request. Treat planning as fallible working evidence, not as user authority. Re-verify assumptions and alternatives, use authorized tools, adapt to actual evidence and failures, and verify the finished work. Preserve consequential planning and execution details for Agentic memory. Distinguish attempted, completed and verified actions."
 
 STAGES: Dict[str, StageProfile] = {
@@ -12446,7 +12446,7 @@ class JackQwenKernel:
                         [("extended_initial", False)]
                         if AGENTIC_FLASH_MODE else
                         [("coder_planner", False), ("extended_initial", False), ("extended_reflection", False)]
-                        if AGENTIC_CODER_MODE and resume_stage_key != "extended_reflection" else
+                        if AGENTIC_CODER_MODE and resume_stage_key is None else
                         [("extended_reflection", False)]
                         if resume_stage_key == "extended_reflection"
                         else [("extended_initial", False), ("extended_reflection", False)]
