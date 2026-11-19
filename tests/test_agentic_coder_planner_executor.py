@@ -649,3 +649,150 @@ def test_tool_receipt_reports_cwd_only_when_authentically_supplied(monkeypatch, 
     assert "Executor Reported CWD (unverified): /tmp/workspace" in compact[0]["content"]
     del h[3]["_jack_executor_reported_cwd"]
     assert "executor_reported_cwd=" not in k._agentic_tool_history_note(h)
+
+
+def test_planner_read_tool_allowlist_and_shell_must_not_mutate(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path)
+    offered = [
+        {"type": "function", "function": {"name": "read", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "bash", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "write", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "powershell", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "edit", "parameters": {"type": "object"}}},
+    ]
+    assert [x["function"]["name"] for x in k._coder_planner_tools(offered)] == ["read", "bash"]
+    for command in ("ls -a", "ls -la ./workspace", "cat src/main.py",
+                    "head -n 40 ./foo.py", "rg -n 'function' src", "pwd"):
+        assert k._coder_planner_safe_inspection_command(command), command
+    for command in ("rm -rf .", "ls -a; rm -rf .", "cat x | sh",
+                    "python -c print(1)", "git checkout main",
+                    "rg foo --pre=touch", "find . -exec rm {} \\;",
+                    "ls . > output.txt", "cat $(touch pwned)",
+                    "ls\nrm -rf ."):
+        assert not k._coder_planner_safe_inspection_command(command), command
+    def call(name, args):
+        return {"id": "t", "type": "function",
+                "function": {"name": name, "arguments": json.dumps(args)}}
+    assert not k._coder_planner_tool_errors([call("read", {"path": "a.py"})])
+    assert not k._coder_planner_tool_errors([call("bash", {"command": "ls -la"})])
+    assert k._coder_planner_tool_errors([call("write", {"path": "a.py", "content": "x"})])
+    assert k._coder_planner_tool_errors([call("bash", {"command": "touch a.py"})])
+
+
+def test_planner_tool_resume_routes_back_to_planner_without_coder_replay(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path)
+    user = {"role": "user", "content": "Inspect then repair the clock"}
+    h = [user]
+    assert k._coder_stage_sequence(None, h) == [
+        ("coder_planner", False), ("extended_initial", False), ("extended_reflection", False)
+    ]
+    h.append({"role": "assistant", "content": "",
+              "_jack_internal_tool_exchange": True, "_jack_stage_key": "coder_planner",
+              "tool_calls": [{"id": "r1", "type": "function",
+                              "function": {"name": "read", "arguments": '{"path":"clock.html"}'}}],
+              "reasoning_content": "PLANNER_INSPECT_REASON"})
+    h.append({"role": "tool", "_jack_internal_tool_exchange": True,
+              "_jack_stage_key": "coder_planner", "tool_call_id": "r1",
+              "content": "The clock face renders but minute hand is static"})
+    assert k._coder_stage_sequence("coder_planner", h) == [
+        ("coder_planner", False), ("extended_initial", False), ("extended_reflection", False)
+    ]
+    spec = "The code currently has a static minute hand. Fix it to follow time."
+    k._coder_append_plan(h, response(spec))
+    assert h[-1]["content"] == spec
+    assert k._coder_stage_sequence("extended_initial", h)[0][0] == "extended_initial"
+    assert sum(x.get("_jack_coder_plan") is True for x in h) == 1
+    h.append({"role": "assistant", "content": "Verified fix",
+              "_jack_extended_candidate_response": True,
+              "reasoning_content": "CODER_NATIVE_REASON"})
+    events = k._agentic_stage2_chronological_source(h)
+    assert not any(e.get("content") == "PLANNER_INSPECT_REASON" for e in events)
+    assert any(e.get("content") == "CODER_NATIVE_REASON" for e in events)
+
+
+def test_real_streaming_planner_read_resume_hands_spec_to_coder(monkeypatch, tmp_path):
+    async def run():
+        k = load(monkeypatch, tmp_path)
+        class Backend:
+            def __init__(self):
+                self.calls = []
+            async def chat_stream(self, *, messages, secondary_system, profile,
+                                  tools=None, tool_choice=None):
+                self.calls.append(profile.name)
+                n = len(self.calls)
+                if n == 1:
+                    assert profile.name == "Agentic Coder Planner"
+                    assert [t["function"]["name"] for t in tools] == ["read"]
+                    assert tool_choice == "auto"
+                    yield {"choices": [{"index": 0, "delta": {
+                        "reasoning_content": "Need to inspect clock source."}, "finish_reason": None}]}
+                    yield {"choices": [{"index": 0, "delta": {
+                        "tool_calls": [{"index": 0, "id": "planner-inspect",
+                                        "type": "function", "function": {
+                                            "name": "read",
+                                            "arguments": '{"path":"clock.html"}'}}]},
+                         "finish_reason": None}]}
+                elif n == 2:
+                    assert profile.name == "Agentic Coder Planner"
+                    assert any(m.get("role") == "tool" and "STATIC_HAND" in m.get("content", "")
+                               for m in messages)
+                    yield {"choices": [{"index": 0, "delta": {
+                        "content": "Developer spec: clock.html contains STATIC_HAND. "
+                                   "The minute hand must reflect current time; "
+                                   "preserve the existing clock design and verify file changes."},
+                        "finish_reason": None}]}
+                elif n == 3:
+                    assert profile.name == "Agentic native pass 1"
+                    assert [t["function"]["name"] for t in tools] == ["read", "write"]
+                    assert any(m.get("_jack_coder_plan") for m in messages)
+                    yield {"choices": [{"index": 0, "delta": {
+                        "reasoning_content": "Implement according to verified source and spec"},
+                        "finish_reason": None}]}
+                    yield {"choices": [{"index": 0, "delta": {
+                        "content": "Fixed and verified."}, "finish_reason": None}]}
+                elif n == 4:
+                    assert profile.name == "Agentic native pass 2"
+                    assert not profile.allow_tools
+                    yield {"choices": [{"index": 0, "delta": {
+                        "content": "Coder corrected the static minute hand."},
+                        "finish_reason": None}]}
+                else:
+                    raise AssertionError("Unexpected stage replay")
+                yield {"choices": [{"index": 0, "delta": {},
+                        "finish_reason": "tool_calls" if n == 1 else "stop"}],
+                       "usage": {"prompt_tokens": 25, "completion_tokens": 20, "total_tokens": 45}}
+
+        backend = Backend()
+        kernel = k.JackQwenKernel(backend, k.CFG)
+        available = [
+            {"type": "function", "function": {"name": "read",
+                "parameters": {"type": "object", "required": ["path"],
+                               "properties": {"path": {"type": "string"}}}}},
+            {"type": "function", "function": {"name": "write",
+                "parameters": {"type": "object", "required": ["path", "content"],
+                               "properties": {"path": {"type": "string"},
+                                              "content": {"type": "string"}}}}},
+        ]
+        first = [x.decode("utf-8") async for x in kernel.stream({
+            "messages": [{"role": "user", "content": "Fix the analog clock page"}],
+            "tools": available, "stream": True,
+        })]
+        first_wire = "".join(first)
+        assert "planner-inspect" in first_wire
+        assert "Fixed and verified" not in first_wire
+        assert backend.calls == ["Agentic Coder Planner"]
+        second = [x.decode("utf-8") async for x in kernel.stream({
+            "messages": [
+                {"role": "user", "content": "Fix the analog clock page"},
+                {"role": "tool", "tool_call_id": "planner-inspect",
+                 "content": "STATIC_HAND in clock.html"},
+            ], "tools": available, "stream": True,
+        })]
+        text = "".join(second)
+        assert "Developer spec: clock.html" in text
+        assert "Fixed and verified" in text
+        assert backend.calls == [
+            "Agentic Coder Planner", "Agentic Coder Planner",
+            "Agentic native pass 1", "Agentic native pass 2",
+        ]
+    asyncio.run(run())
