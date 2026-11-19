@@ -59,11 +59,15 @@ def test_mode_placement_and_reasoning_contract(monkeypatch, tmp_path):
         "Correct identified errors, omissions, or misalignment without "
         "discarding valid work. Do not repeat completed tool effects.\n\n"
         "Files in the workspace are previous checkpoints, available to build upon.\n\n"
+        "Do not assume the work has been done. Verify in the workspace or review the tool history\n\n"
         "You are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the current user request."
     )
     assert "re-verify the latest reasoning" in k.ULTRA_REVIEW_TRIGGER
     assert "alignment with the instructions and user request" in k.ULTRA_REVIEW_TRIGGER
     assert k.ULTRA_REVIEW_TRIGGER.endswith("You are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the current user request.")
+    assert k.ULTRA_REVIEW_TRIGGER.count("Do not assume the work has been done. Verify in the workspace or review the tool history") == 1
+    assert k.ULTRA_REVIEW_TRIGGER.index("Files in the workspace are previous checkpoints, available to build upon.") < k.ULTRA_REVIEW_TRIGGER.index("Do not assume the work has been done. Verify in the workspace or review the tool history") < k.ULTRA_REVIEW_TRIGGER.index("You are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the current user request.")
+    assert "Do not assume the work has been done. Verify in the workspace or review the tool history" not in k.AGENTIC_STAGE1_VERIFICATION_PROMPT
     assert k.ULTRA_REVIEW_TRIGGER.count("You are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the current user request.") == 1
     assert "Files in the workspace are previous checkpoints, available to build upon." not in k.AGENTIC_STAGE1_VERIFICATION_PROMPT
 

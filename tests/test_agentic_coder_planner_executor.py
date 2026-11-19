@@ -52,6 +52,10 @@ def test_profile_isolated_and_reasoning_contract(monkeypatch, tmp_path):
     assert k.CODER_PLANNER_PROMPT.startswith(PREFIX)
     assert k.CODER_EXECUTOR_PROMPT.startswith(PREFIX)
     assert k.CODER_EXECUTOR_PROMPT.endswith("You are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the current user request.")
+    assert k.CODER_EXECUTOR_PROMPT.count("Do not assume the work has been done. Verify in the workspace or review the tool history") == 1
+    assert k.CODER_EXECUTOR_PROMPT.index("Files in the workspace are previous checkpoints, available to build upon.") < k.CODER_EXECUTOR_PROMPT.index("Do not assume the work has been done. Verify in the workspace or review the tool history") < k.CODER_EXECUTOR_PROMPT.index("You are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the current user request.")
+    assert "Do not assume the work has been done. Verify in the workspace or review the tool history" not in k.CODER_PLANNER_PROMPT
+    assert "Do not assume the work has been done. Verify in the workspace or review the tool history" not in k.AGENTIC_36_STAGE2_PROMPT
     assert k.CODER_EXECUTOR_PROMPT.count("You are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the current user request.") == 1
     assert "Files in the workspace are previous checkpoints, available to build upon." not in k.CODER_PLANNER_PROMPT
     assert "Files in the workspace are previous checkpoints, available to build upon." not in k.AGENTIC_36_STAGE2_PROMPT
