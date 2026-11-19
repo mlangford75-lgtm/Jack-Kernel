@@ -170,3 +170,35 @@ def test_backend_planner_tools_off_executor_tools_on(monkeypatch, tmp_path):
         finally:
             await backend._client.aclose()
     asyncio.run(run())
+
+
+def test_streaming_tool_resume_skips_planner_and_preserves_tool_checkpoint(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path)
+    h = [{"role": "user", "content": "Verify an empty directory."}]
+    assert k._coder_stage_sequence(None, h) == [
+        ("coder_planner", False),
+        ("extended_initial", False),
+        ("extended_reflection", False),
+    ]
+    k._coder_append_plan(h, response("Use a listing tool and verify its result."))
+    h.append({
+        "role": "assistant", "content": "",
+        "_jack_internal_tool_exchange": True,
+        "tool_calls": [{"id": "once", "type": "function",
+                        "function": {"name": "bash", "arguments": '{"command":"ls -A"}'}}],
+    })
+    h.append({"role": "tool", "content": "(no output)", "tool_call_id": "once",
+              "_jack_internal_tool_exchange": True})
+    sequence = k._coder_stage_sequence("extended_initial", h)
+    assert sequence == [("extended_initial", False), ("extended_reflection", False)]
+    assert all(stage != "coder_planner" for stage, _ in sequence)
+    assert h[1]["_jack_coder_plan"]
+    assert h[-1]["content"] == "(no output)"
+    assert sum(m.get("_jack_coder_plan") is True for m in h) == 1
+    assert k._coder_stage_sequence("extended_reflection", h) == [
+        ("extended_reflection", False)
+    ]
+    with pytest.raises(k.ForensicConflict, match="Planner exists"):
+        k._coder_stage_sequence(None, h)
+    with pytest.raises(k.ForensicConflict, match="missing original Planner"):
+        k._coder_stage_sequence("extended_initial", [h[0]])
