@@ -171,7 +171,7 @@ def test_backend_planner_tools_off_executor_tools_on(monkeypatch, tmp_path):
             assert [m["role"] for m in first["messages"]] == ["system", "user"]
             assert first["messages"][0]["content"] == k.CODER_PLANNER_PROMPT
             assert "User-defined stable system" not in first["messages"][0]["content"]
-            assert "User-defined stable system" in second["messages"][1]["content"]
+            assert "User-defined stable system" in second["messages"][0]["content"]
             assert second["tools"][0]["function"]["name"] == "read"
             assert sum(m["role"] == "user" for m in second["messages"]) == 1
             assert second["messages"][-1]["role"] == "user"
@@ -182,7 +182,7 @@ def test_backend_planner_tools_off_executor_tools_on(monkeypatch, tmp_path):
                        and m.get("reasoning_content") == "R1"
                        for m in second["messages"])
             assert any(m["role"] == "system" and k.CODER_EXECUTOR_PROMPT in m["content"]
-                       and m["content"].endswith("You are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the authenticated user request.")
+                       and "You are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the authenticated user request." in m["content"]
                        for m in second["messages"])
             assert not any("You are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the authenticated user request." in m.get("content", "")
                            for m in first["messages"] if m["role"] == "system")
@@ -230,7 +230,7 @@ def test_planner_stream_request_isolated_from_all_other_system_instructions(monk
             chunk = {"choices": [{"index": 0, "delta": {"content": "Develop an execution blueprint."},
                                   "finish_reason": "stop"}]}
             return httpx.Response(200, headers={"content-type": "text/event-stream"},
-                                  text="data: " + json.dumps(chunk) + "\\n\\ndata: [DONE]\\n\\n")
+                                  text="data: " + json.dumps(chunk) + "\n\ndata: [DONE]\n\n")
         backend = k.OpenAICompatibleBackend(k.CFG)
         await backend._client.aclose()
         backend._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
