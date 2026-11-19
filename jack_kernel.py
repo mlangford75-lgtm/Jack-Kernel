@@ -10884,7 +10884,9 @@ class JackQwenKernel:
         ):
             _append_ultra_stage_generation_trigger(resume_history, stage_key)
 
-        if AGENTIC_MODE and stage_key == "extended_initial":
+        if AGENTIC_MODE and stage_key in ({"extended_initial", "coder_planner"} if AGENTIC_CODER_MODE else {"extended_initial"}):
+            # Planner inspection is a normal current-turn tool suspension.
+            # Preserve the Work ID rather than marking Stage 1 failed.
             _agentic_turn_status(resume_history, "awaiting_tool")
         # Append the current pre-tool frontier. Self-adversarial stages extend the
         # complete active-stage transcript; other stage paths use
