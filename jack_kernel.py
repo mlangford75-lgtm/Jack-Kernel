@@ -5288,22 +5288,11 @@ def _coder_project_executor_request(stage_messages, source_view):
     stage_messages.pop(positions[0])
     stage_messages.append(wire)
 
-# The retired Exhaustive combined re-verification and user-request realignment
-# instruction remains verbatim. Ultra reuses it AFTER native X-High reasoning.
+# The earlier Exhaustive verification prompt remains for existing legacy paths.
+# Ultra uses its separately defined, user-approved continuation prompt verbatim.
 AGENTIC_STAGE1_VERIFICATION_PROMPT = "Wait, re-verify the latest reasoning and chain-of-thought. Test for errors, mistakes, or poor quality. Make changes, if necessary, to ensure alignment with the instructions and user request before responding"
 
-ULTRA_REVIEW_TRIGGER = (
-    "Ultra Reasoning: [Not a new user request. Continued Reasoning]\n\n"
-    + AGENTIC_STAGE1_VERIFICATION_PROMPT
-    + "\n\nReturn the new, complete answer to the current user request, "
-      "not a report about re-verification. Preserve correct reasoning, "
-      "established findings, completed work, and verified results. "
-      "Correct identified errors, omissions, or misalignment without "
-      "discarding valid work. Do not repeat completed tool effects.\n\n"
-      "Files in the workspace are previous checkpoints, available to build upon.\n\n"
-      "Do not assume the work has been done. Verify in the workspace or review the tool history\n\n"
-      "You are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the current user request."
-)
+ULTRA_REVIEW_TRIGGER = "Ultra Reasoning: [Not a new user request. Continued Reasoning]\n\nTest for errors, mistakes, or poor quality. Make changes, if necessary, to ensure alignment with the instructions and user request before responding\n\nReturn the new, complete answer to the current user request, not a report about re-verification. Preserve correct reasoning, established findings, completed work, and verified results. Correct identified errors, omissions, or misalignment without discarding valid work. Do not repeat completed tool effects.\n\nFiles in the workspace are previous checkpoints, available to build upon.\n\nDo not assume the work has been done. \nThe workspace and the tool history may be used to verify the previous work.\n\nYou are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the current user request."
 
 
 def _ultra_initial_history(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
