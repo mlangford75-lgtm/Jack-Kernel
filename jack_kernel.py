@@ -5277,7 +5277,7 @@ def _coder_unverified_observations(raw: str) -> str:
     if "<|tool_call" not in raw:
         return raw.strip()
     safe = re.sub(
-        r"<\|tool_call[^>]*\|>.*?(?:<\|tool_call\|>|$)", "",
+        r"<\|tool_call\|?>.*?(?:<\|tool_call\|>|$)", "",
         raw, flags=re.DOTALL,
     )
     if "<|tool_call" in safe:
