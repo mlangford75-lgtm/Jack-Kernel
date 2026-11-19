@@ -5277,7 +5277,7 @@ def _coder_unverified_observations(raw: str) -> str:
     if "<|tool_call" not in raw:
         return raw.strip()
     safe = re.sub(
-        r"<\\|tool_call[^>]*\\|>.*?(?:<\\|tool_call\\|>|$)", "",
+        r"<\|tool_call[^>]*\|>.*?(?:<\|tool_call\|>|$)", "",
         raw, flags=re.DOTALL,
     )
     if "<|tool_call" in safe:
@@ -5371,6 +5371,11 @@ def _coder_append_plan(history: List[Dict[str, Any]], result: Dict[str, Any]) ->
         # purported tool calls; pass useful observations as lower-trust data.
         fallback_plan, _ = _coder_goal_document(raw, request_text)
         fallback_data = json.loads(fallback_plan)
+        # An interrupted Planner may have produced a useful valid goal list.
+        # Keep that list as unverified observations without granting it the
+        # authority of a completed, validated plan.
+        if not fallback_data.get("unverified_planner_observations") and raw.strip():
+            fallback_data["unverified_planner_observations"] = _coder_unverified_observations(raw)
         fallback_data["objective"] = request_text
         fallback_data["requirements"] = [{
             "id": "R1", "source": "explicit", "kind": "deliverable",
