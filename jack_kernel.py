@@ -5399,11 +5399,14 @@ def _coder_append_plan(history: List[Dict[str, Any]], result: Dict[str, Any]) ->
         entry["reasoning_content"] = reason
         entry["reasoning"] = reason
     history.append(entry)
+    # Preserve goals at the earliest authenticated boundary, even if the
+    # Executor later fails, stalls, or the Stage-2 memory commit is interrupted.
+    _coder_preserve_goal_artifact(history)
 
 def _coder_preserve_goal_artifact(history: List[Dict[str, Any]]) -> Optional[Path]:
     """Best-effort local, atomic retention of the actual Coder goal checkpoint.
 
-    Call only after a completed answer or degraded turn, before history clears.
+    Called at first Planner capture and again before the completed turn clears.
     A disk failure must never invalidate the answer, memory, or journal. Native
     Planner reasoning is not written here; current-turn raw Planner output and
     its validated/fallback goals remain inspectable without entering Stage 2.
