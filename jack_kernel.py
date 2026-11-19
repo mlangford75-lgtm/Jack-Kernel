@@ -5275,7 +5275,7 @@ def _coder_goal_document(raw: str, authenticated_request: str) -> Tuple[str, boo
     try:
         text = raw.strip()
         if text.startswith("```"):
-            text = re.sub(r"^\`\`\`(?:json)?\\s*|\\s*\`\`\`$", "", text, flags=re.IGNORECASE).strip()
+            text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE).strip()
         if "<|tool_call" in text:
             raise ValueError("Planner emitted simulated tool syntax")
         goal = json.loads(text)
@@ -5329,7 +5329,8 @@ def _coder_append_plan(history: List[Dict[str, Any]], result: Dict[str, Any]) ->
     choice = (result.get("choices") or [{}])[0] or {}
     msg = choice.get("message") or {}
     target = active_response_target(history)
-    if target is None or not isinstance(target.get("content"), str) or not target["content"].strip():
+    request_text = _content_to_text(target.get("content")) if target is not None else ""
+    if not request_text.strip():
         raise ForensicConflict("Coder Planner missing authenticated request")
     owner = _agentic_forensic_turn(history)
     work_id = owner.turn_id if owner is not None else None
@@ -5342,7 +5343,7 @@ def _coder_append_plan(history: List[Dict[str, Any]], result: Dict[str, Any]) ->
         # No tools can execute from Planner. Preserve the task, not a malformed
         # or partial plan, so Coder may still finish the authenticated request.
         raw = ""
-    plan, fallback = _coder_goal_document(raw, target["content"])
+    plan, fallback = _coder_goal_document(raw, request_text)
     entry = {"role": "assistant", "content": plan,
              "_jack_coder_plan": True, "_jack_stage_key": "coder_planner",
              "_jack_coder_goal_fallback": fallback,
