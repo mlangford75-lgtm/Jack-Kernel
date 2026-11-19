@@ -5473,6 +5473,10 @@ def _coder_stage_sequence(resume_stage_key: Optional[str], history: List[Dict[st
         raise ForensicConflict("Coder phase routing requires the Coder profile")
     if resume_stage_key == "extended_reflection":
         return [("extended_reflection", False)]
+    if resume_stage_key == "coder_planner":
+        if _coder_has_plan(history):
+            raise ForensicConflict("Coder Planner inspection resume cannot repeat a committed spec")
+        return [("coder_planner", False), ("extended_initial", False), ("extended_reflection", False)]
     if resume_stage_key == "extended_initial":
         if not _coder_has_plan(history):
             raise ForensicConflict("Coder Executor tool resume missing original Planner evidence")
@@ -9241,6 +9245,9 @@ class JackQwenKernel:
         cache_append = _agentic_cache_append_enabled(profile, tool_choice)
         effective_tools = tools if (profile.allow_tools or cache_append) else None
         effective_tool_choice = tool_choice if (profile.allow_tools or cache_append) else None
+        if AGENTIC_CODER_MODE and stage_key == "coder_planner":
+            effective_tools = _coder_planner_tools(tools)
+            effective_tool_choice = "auto" if effective_tools else "none"
         if AGENTIC_CODER_MODE and stage_key == "coder_planner" and not same_stage_resume:
             _agentic_begin_turn(history, fresh=True)
         elif AGENTIC_MODE and stage_key == "extended_initial":
@@ -9313,6 +9320,8 @@ class JackQwenKernel:
                     f"{profile.name}: this stage has no tool authority"
                 ))
             validation_errors = _tool_call_validation_errors(msg.get("tool_calls"), effective_tools)
+            if AGENTIC_CODER_MODE and stage_key == "coder_planner":
+                validation_errors += _coder_planner_tool_errors(msg["tool_calls"])
             if validation_errors:
                 LOG.warning("%s rejected tool action before execution: %s", STAGES[stage_key].name, "; ".join(validation_errors))
                 repair_history = _tool_recovery_check(history, msg, validation_errors, stage_key, secondary_system, usage)
@@ -9497,6 +9506,9 @@ class JackQwenKernel:
         cache_append = _agentic_cache_append_enabled(profile, tool_choice)
         effective_tools = tools if (profile.allow_tools or cache_append) else None
         effective_tool_choice = tool_choice if (profile.allow_tools or cache_append) else None
+        if AGENTIC_CODER_MODE and stage_key == "coder_planner":
+            effective_tools = _coder_planner_tools(tools)
+            effective_tool_choice = "auto" if effective_tools else "none"
         if AGENTIC_CODER_MODE and stage_key == "coder_planner" and not same_stage_resume:
             _agentic_begin_turn(history, fresh=True)
         elif AGENTIC_MODE and stage_key == "extended_initial":
@@ -9943,6 +9955,8 @@ class JackQwenKernel:
                     f"{profile.name}: this stage has no tool authority"
                 ))
             validation_errors = _tool_call_validation_errors(message.get("tool_calls"), effective_tools)
+            if AGENTIC_CODER_MODE and stage_key == "coder_planner":
+                validation_errors += _coder_planner_tool_errors(message["tool_calls"])
             if validation_errors:
                 LOG.warning("%s rejected streamed tool action before execution: %s", STAGES[stage_key].name, "; ".join(validation_errors))
                 repair_history = _tool_recovery_check(history, message, validation_errors, stage_key, secondary_system, usage)
@@ -10797,7 +10811,7 @@ class JackQwenKernel:
         elif DEEP_REASONING_MODE:
             allowed_tool_stages = {"deep_reasoning_antithesis", "deep_reasoning_synthesis", "deep_reasoning_thesis"}
         elif AGENTIC_MODE:
-            allowed_tool_stages = {"extended_initial"}
+            allowed_tool_stages = {"extended_initial", "coder_planner"} if AGENTIC_CODER_MODE else {"extended_initial"}
         elif CODE_DEBUGGING_MODE:
             allowed_tool_stages = {_debugging_stage_key(i) for i in range(1, DEBUGGING_PASS_COUNT + 1)}
         else:
@@ -10957,7 +10971,7 @@ class JackQwenKernel:
         return KernelResult(
             # Deep Research never exposes provisional Thesis/Antithesis output as authoritative content
             # at a tool boundary. Only the final completed Synthesis is committed.
-            content=None if ULTRA_MODE else msg.get("content"),
+            content=None if ULTRA_MODE or (AGENTIC_CODER_MODE and stage_key == "coder_planner") else msg.get("content"),
             tool_calls=calls,
             finish_reason="tool_calls",
             usage=normalize_usage(dict(usage)),
@@ -11573,7 +11587,7 @@ class JackQwenKernel:
         if ULTRA_MODE:
             allowed = {"extended_synthesis"}
         elif AGENTIC_MODE:
-            allowed = {"extended_initial"}
+            allowed = {"extended_initial", "coder_planner"} if AGENTIC_CODER_MODE else {"extended_initial"}
         elif CODE_DEBUGGING_MODE:
             allowed = {_debugging_stage_key(i) for i in range(1, DEBUGGING_PASS_COUNT + 1)}
         else:
@@ -11838,9 +11852,18 @@ class JackQwenKernel:
             if AGENTIC_CODER_MODE:
                 planning = await self._run_stage(
                     history, secondary_system, "coder_planner", usage,
-                    tools=None, tool_choice="none", append=False,
+                    tools=tools, tool_choice=tool_choice, append=False,
                 )
+                if self._tool_interrupt(planning, usage):
+                    return await self._register_stage_tool_resume(
+                        stage_key="coder_planner", history=history,
+                        secondary_system=secondary_system, usage=usage,
+                        tools=tools, tool_choice=tool_choice, data=planning,
+                    )
                 _coder_append_plan(history, planning)
+                return await self._coder_finish_after_planner_nonstream(
+                    history, secondary_system, usage, tools, tool_choice
+                )
             first = await self._run_stage(
                 history,
                 secondary_system,
@@ -12487,7 +12510,7 @@ class JackQwenKernel:
                 if ULTRA_MODE:
                     allowed = {"extended_synthesis"}
                 elif AGENTIC_MODE:
-                    allowed = {"extended_initial"}
+                    allowed = {"extended_initial", "coder_planner"} if AGENTIC_CODER_MODE else {"extended_initial"}
                 elif CODE_DEBUGGING_MODE:
                     allowed = {_debugging_stage_key(i) for i in range(1, DEBUGGING_PASS_COUNT + 1)}
                 else:
@@ -12661,8 +12684,8 @@ class JackQwenKernel:
                     stage_reasoning_started = False
                     stage_content_started = False
 
-                    if stage_key == "coder_planner" and not same_stage_resume:
-                        pass  # Planner has no user-facing output of any kind.
+                    if stage_key == "coder_planner":
+                        yield event({"reasoning_content": "\n[CODER PLANNER — DEVELOPER SPECIFICATION" + (" CONTINUED" if same_stage_resume else "") + "]\n"})
                     elif stage_key == "extended_initial" and not same_stage_resume:
                         label = "DEEP RESEARCH STAGE 1 — THESIS" if ULTRA_MODE else "STAGE 1 PROPOSED RESPONSE"
                         yield event({"reasoning_content": f"\n[{label}]\n"})
@@ -12675,22 +12698,24 @@ class JackQwenKernel:
                         secondary_system,
                         stage_key,
                         usage,
-                        tools=(None if stage_key == "coder_planner" else tools),
-                        tool_choice=("none" if stage_key == "coder_planner" else tool_choice),
+                        tools=tools,
+                        tool_choice=tool_choice,
                         append=False,
                         same_stage_resume=same_stage_resume,
                     )) as stage_packets:
                         async for packet in stage_packets:
                             kind = packet.get("kind")
                             if kind == "reasoning":
-                                if stage_key != "coder_planner":
-                                    if stage_key in {"extended_reflection", "extended_synthesis"} and not stage_reasoning_started:
-                                        stage_reasoning_started = True
-                                        yield event({"reasoning_content": "[NATIVE REASONING]\n"})
-                                    yield event({"reasoning_content": packet["text"]})
+                                if stage_key in {"extended_reflection", "extended_synthesis"} and not stage_reasoning_started:
+                                    stage_reasoning_started = True
+                                    yield event({"reasoning_content": "[NATIVE REASONING]\n"})
+                                yield event({"reasoning_content": packet["text"]})
                             elif kind == "content":
                                 if stage_key == "coder_planner":
-                                    pass  # The JSON goal artifact is a private Jack handoff.
+                                    if not stage_content_started:
+                                        stage_content_started = True
+                                        yield event({"reasoning_content": "\n[CODER PLANNER — SPEC SHEET]\n"})
+                                    yield event({"reasoning_content": packet["text"]})
                                 elif stage_key == "extended_initial":
                                     if AGENTIC_MODE:
                                         # Agentic exposes the provisional answer on reasoning while
@@ -12725,7 +12750,7 @@ class JackQwenKernel:
                                     yield event({"content": packet["text"]})
                             elif kind == "tool_calls":
                                 if stage_key == "coder_planner":
-                                    pass  # Planner may not execute tools.
+                                    yield event({"reasoning_content": "\n[PLANNER READ-ONLY INSPECTION REQUEST]\n"})
                                 elif AGENTIC_MODE and stage_key == "extended_reflection":
                                     # Cache experiment may expose schemas to the model,
                                     # but Stage 2 cannot execute OR release actions.
@@ -12832,8 +12857,6 @@ class JackQwenKernel:
                     if AGENTIC_MODE and isinstance(stage_result.get("usage"), dict):
                         agentic_stage_usages.append(stage_result["usage"])
                     if self._tool_interrupt(stage_result, usage):
-                        if stage_key == "coder_planner":
-                            raise HTTPException(status_code=502, detail="Coder Planner requested tools")
                         if AGENTIC_MODE and stage_key == "extended_reflection":
                             raise HTTPException(status_code=502, detail="Agentic Stage 2 attempted a tool call even though XML-stage tools are disabled")
                         if ULTRA_MODE and stage_key == "extended_initial":
@@ -12853,7 +12876,7 @@ class JackQwenKernel:
                             await self._retire_pending_tool_resume(pending_state)
                         calls = (((stage_result.get("choices") or [{}])[0].get("message") or {}).get("tool_calls") or [])
                         if calls and (
-                            stage_key in {"extended_initial", "extended_synthesis"}
+                            stage_key in {"coder_planner", "extended_initial", "extended_synthesis"}
                             or not stage_result.get("_jack_tool_call_fragments_streamed")
                         ):
                             wire_calls = []
@@ -12870,6 +12893,7 @@ class JackQwenKernel:
 
                     if stage_key == "coder_planner":
                         _coder_append_plan(history, stage_result)
+                        yield event({"reasoning_content": "\n[CODER PLANNER — SPEC CAPTURED AND DELIVERED TO CODER]\n"})
                     if stage_key == "extended_initial":
                         first_msg = ((stage_result.get("choices") or [{}])[0].get("message") or {})
                         if ULTRA_MODE:
