@@ -3282,13 +3282,14 @@ def _coder_isolate_planner_request(stage_messages, profile):
     """
     if not AGENTIC_CODER_MODE or profile.name != "Agentic Coder Planner":
         return stage_messages
-    if not stage_messages or not isinstance(stage_messages[0], dict) or (
-        stage_messages[0].get("role") != "system"
-        or stage_messages[0].get("content") != CODER_PLANNER_PROMPT
-    ):
-        raise ForensicConflict("Coder Planner missing its dedicated system instructions")
-    isolated = [stage_messages[0]]
-    for item in stage_messages[1:]:
+    # Construct a new model-only Planner request instead of assuming an
+    # upstream stage builder supplied our exact prompt at index zero.
+    # Caller and framework system/developer authority is reserved for the
+    # Executor; the canonical conversation and its history are not modified.
+    if not isinstance(stage_messages, list):
+        raise ForensicConflict("Coder Planner received invalid assembled messages")
+    isolated = [{"role": "system", "content": CODER_PLANNER_PROMPT}]
+    for item in stage_messages:
         if not isinstance(item, dict):
             raise ForensicConflict("Coder Planner received an invalid history message")
         if item.get("role") in {"system", "developer"}:
