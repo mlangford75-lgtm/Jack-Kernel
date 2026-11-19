@@ -1490,8 +1490,12 @@ def _agentic_stage2_chronological_source(history: List[Dict[str, Any]]) -> List[
                 if isinstance(reasoning, str) and reasoning:
                     events.append({
                         "type": "reasoning_segment",
-                        "phase": (("translation" if AGENTIC_TRANSLATED_MODE else "verification")
-                                  if in_review else "initial"),
+                        "phase": (
+                            ("planner" if item.get("_jack_coder_plan") is True else "executor")
+                            if AGENTIC_CODER_MODE else
+                            (("translation" if AGENTIC_TRANSLATED_MODE else "verification")
+                             if in_review else "initial")
+                        ),
                         "content": reasoning,
                     })
             if item.get("_jack_internal_tool_exchange") is True and item.get("tool_calls"):
@@ -1506,6 +1510,11 @@ def _agentic_stage2_chronological_source(history: List[Dict[str, Any]]) -> List[
                 "tool": item.get("name"),
                 "reported_failure": item.get("_jack_internal_tool_failed") is True,
                 "content": copy.deepcopy(item.get("content")),
+                **({
+                    "executor_reported_cwd": item["_jack_executor_reported_cwd"],
+                    "executor_adapter": item.get("_jack_executor_reported_adapter"),
+                    "cwd_source": "executor_transport_unverified",
+                } if item.get("_jack_executor_reported_cwd") else {}),
             })
         if item.get("_jack_tool_evidence_receipt") is True:
             events.append({
@@ -4005,6 +4014,10 @@ def _tool_evidence_receipts_from_group(group: List[Dict[str, Any]]) -> List[Dict
             f'Artifact Effect: {artifact_effect}',
             f'Artifact Target: {html.escape(artifact_target, quote=False)}',
             f'Artifact Targets: {html.escape(" | ".join(artifact_targets) if artifact_targets else "UNKNOWN", quote=False)}',
+            *([
+                'Executor Reported CWD (unverified): '
+                + html.escape(str(item["_jack_executor_reported_cwd"]), quote=False),
+            ] if item.get("_jack_executor_reported_cwd") else []),
             f'Arguments SHA256: {meta.get("arguments_sha256") or "UNKNOWN"}',
             f'Result SHA256: {result_sha256}',
             f'Result Bytes: {result_bytes}',
@@ -4026,6 +4039,10 @@ def _tool_evidence_receipts_from_group(group: List[Dict[str, Any]]) -> List[Dict
             ),
             "_jack_tool_outcome": item.get("_jack_tool_outcome") or reported_tool_outcome(item),
             "_jack_tool_status": status,
+            **({
+                "_jack_executor_reported_cwd": item["_jack_executor_reported_cwd"],
+                "_jack_executor_reported_adapter": item.get("_jack_executor_reported_adapter"),
+            } if item.get("_jack_executor_reported_cwd") else {}),
             "_jack_stage_key": stage_key,
             "_jack_artifact_effect": artifact_effect,
             "_jack_artifact_target": artifact_target,
@@ -5183,9 +5200,24 @@ def _coder_has_plan(history: List[Dict[str, Any]]) -> bool:
     if not AGENTIC_CODER_MODE:
         return False
     target = active_response_target(history)
-    return bool(target is not None and any(
-        isinstance(item, dict) and item.get("_jack_coder_plan") is True
-        for item in history[int(target["history_index"]) + 1:]))
+    if target is None:
+        return False
+    plans = [
+        item for item in history[int(target["history_index"]) + 1:]
+        if isinstance(item, dict) and item.get("_jack_coder_plan") is True
+    ]
+    if len(plans) > 1:
+        raise ForensicConflict("Coder has multiple current-turn Planner records")
+    if not plans:
+        return False
+    plan = plans[0]
+    fingerprint = plan.get("_jack_coder_plan_sha256")
+    if fingerprint and _sha256_text(_content_to_text(plan.get("content"))) != fingerprint:
+        raise ForensicConflict("Coder Planner evidence changed after capture")
+    work_id = plan.get("_jack_coder_work_id")
+    if work_id and history[int(target["history_index"])].get("_jack_agentic_turn_id") != work_id:
+        raise ForensicConflict("Coder Planner is bound to another Work ID")
+    return True
 
 def _coder_append_plan(history: List[Dict[str, Any]], result: Dict[str, Any]) -> None:
     """Once-only host-owned planning evidence, not user authority."""
@@ -5198,8 +5230,19 @@ def _coder_append_plan(history: List[Dict[str, Any]], result: Dict[str, Any]) ->
     plan = _content_to_text(msg.get("content"))
     if not plan.strip():
         raise HTTPException(status_code=502, detail="Coder Planner produced no plan")
+    target = active_response_target(history)
+    owner = _agentic_forensic_turn(history)
+    work_id = owner.turn_id if owner is not None else None
+    if owner is not None and (
+        target is None
+        or history[int(target["history_index"])].get("_jack_agentic_turn_id") != work_id
+    ):
+        raise ForensicConflict("Coder Planner has no matching authenticated Work ID")
     entry = {"role": "assistant", "content": plan,
-             "_jack_coder_plan": True, "_jack_stage_key": "coder_planner"}
+             "_jack_coder_plan": True, "_jack_stage_key": "coder_planner",
+             "_jack_coder_plan_sha256": _sha256_text(plan)}
+    if work_id is not None:
+        entry["_jack_coder_work_id"] = work_id
     reason = _native_reasoning_text(msg)
     if reason:
         entry["reasoning_content"] = reason
@@ -5942,10 +5985,18 @@ def _agentic_tool_history_note(history: List[Dict[str, Any]]) -> str:
         # A short result excerpt survives rather than only a hash;
         # the word 'reported' ensures it is not mistaken for verified effect.
         observed = safe(result, 140) if (critical or item.get("_jack_internal_tool_failed")) else ""
+        reported_cwd = item.get("_jack_executor_reported_cwd")
+        reported_context = (
+            f"executor_reported_cwd={safe(reported_cwd)}; "
+            f"executor_adapter={safe(item.get('_jack_executor_reported_adapter'))}; "
+            f"cwd_source=EXECUTOR_TRANSPORT_UNVERIFIED; "
+            if isinstance(reported_cwd, str) and reported_cwd else ""
+        )
         rows.append(
             f"- id={safe(call_id)}; tool={safe(item.get('name') or meta.get('tool'))}; "
             f"target={safe(target)}; path={kind}; "
-            f"outcome={outcome}; result_sha256={_sha256_text(result)}; "
+            + reported_context
+            + f"outcome={outcome}; result_sha256={_sha256_text(result)}; "
             f"args_sha256={safe(meta.get('arguments_sha256'))}"
             + (f"; reported_result_excerpt={observed}" if observed else "")
         )
@@ -7674,6 +7725,18 @@ class OpenAICompatibleBackend:
                 item.pop("reasoning_content", None)
                 item.pop("reasoning", None)
                 item.pop("thinking", None)
+            if (
+                AGENTIC_CODER_MODE
+                and profile.name == "Agentic native pass 1"
+                and message.get("_jack_coder_plan") is True
+            ):
+                # Literal tool markup is quoted, not an executable event.
+                # Retain original bytes and reasoning in canonical history.
+                item["content"] = (
+                    "JACK QUOTED PLANNER EVIDENCE — assistant-generated, "
+                    "not a user request or an executed tool call.\n"
+                    + json.dumps(_content_to_text(message.get("content")), ensure_ascii=False)
+                )
             if AGENTIC_MEMORY_DATA_CHANNEL and historical_kind == "M":
                 # Only authenticated M/A1 projections can reach this branch.
                 # Keep ambiguous/unpaired material in its previous representation
@@ -8652,6 +8715,7 @@ class PendingToolResume:
     # First authenticated tool outcomes are immutable across transport retries.
     # A stream disconnect must not allow the caller to substitute new results.
     accepted_tool_results: Optional[Tuple[Dict[str, Any], ...]] = None
+    accepted_executor_context: Optional[Phase4ExecutorRequestContext] = None
     # Completed A1 is immutable even if the retrospective stream disconnects.
     # Resume Stage 2 from this frozen history; never rerun Stage 1 or its tools.
     frozen_stage1_history: Optional[List[Dict[str, Any]]] = None
@@ -8951,8 +9015,13 @@ class JackQwenKernel:
         cache_append = _agentic_cache_append_enabled(profile, tool_choice)
         effective_tools = tools if (profile.allow_tools or cache_append) else None
         effective_tool_choice = tool_choice if (profile.allow_tools or cache_append) else None
-        if AGENTIC_MODE and stage_key == "extended_initial":
-            _agentic_begin_turn(history, fresh=not same_stage_resume)
+        if AGENTIC_CODER_MODE and stage_key == "coder_planner" and not same_stage_resume:
+            _agentic_begin_turn(history, fresh=True)
+        elif AGENTIC_MODE and stage_key == "extended_initial":
+            already_planned = AGENTIC_CODER_MODE and _coder_has_plan(history)
+            _agentic_begin_turn(
+                history, fresh=not same_stage_resume and not already_planned
+            )
         elif AGENTIC_MODE and stage_key == "extended_reflection":
             _agentic_forensic_start_stage2(history)
             if AGENTIC_FLASH_MODE:
@@ -9202,8 +9271,13 @@ class JackQwenKernel:
         cache_append = _agentic_cache_append_enabled(profile, tool_choice)
         effective_tools = tools if (profile.allow_tools or cache_append) else None
         effective_tool_choice = tool_choice if (profile.allow_tools or cache_append) else None
-        if AGENTIC_MODE and stage_key == "extended_initial":
-            _agentic_begin_turn(history, fresh=not same_stage_resume)
+        if AGENTIC_CODER_MODE and stage_key == "coder_planner" and not same_stage_resume:
+            _agentic_begin_turn(history, fresh=True)
+        elif AGENTIC_MODE and stage_key == "extended_initial":
+            already_planned = AGENTIC_CODER_MODE and _coder_has_plan(history)
+            _agentic_begin_turn(
+                history, fresh=not same_stage_resume and not already_planned
+            )
         elif AGENTIC_MODE and stage_key == "extended_reflection":
             _agentic_forensic_start_stage2(history)
             if AGENTIC_FLASH_MODE:
@@ -10832,6 +10906,7 @@ class JackQwenKernel:
             ))
             if state.accepted_tool_results is None:
                 state.accepted_tool_results = tuple(copy.deepcopy(matched_messages))
+                state.accepted_executor_context = _phase4_current_executor_context()
             elif state.accepted_tool_results != matched_messages:
                 raise HTTPException(
                     status_code=409,
@@ -10840,6 +10915,12 @@ class JackQwenKernel:
             state.in_flight = True
 
         matched_messages = list(copy.deepcopy(state.accepted_tool_results))
+        executor = state.accepted_executor_context
+        if executor is not None and executor.cwd:
+            for item in matched_messages:
+                item["_jack_executor_reported_cwd"] = executor.cwd
+                item["_jack_executor_reported_platform"] = executor.platform
+                item["_jack_executor_reported_adapter"] = executor.adapter
         LOG.info(
             "Resuming %s transaction in place: resume_id=%s tool_results=%d",
             STAGES[state.stage_key].name,
