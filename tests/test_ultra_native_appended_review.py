@@ -57,10 +57,16 @@ def test_mode_placement_and_reasoning_contract(monkeypatch, tmp_path):
         "not a report about re-verification. Preserve correct reasoning, "
         "established findings, completed work, and verified results. "
         "Correct identified errors, omissions, or misalignment without "
-        "discarding valid work. Do not repeat completed tool effects."
+        "discarding valid work. Do not repeat completed tool effects.\n\n"
+        "Files in the workspace are previous checkpoints, available to build upon."
     )
     assert "re-verify the latest reasoning" in k.ULTRA_REVIEW_TRIGGER
     assert "alignment with the instructions and user request" in k.ULTRA_REVIEW_TRIGGER
+    assert k.ULTRA_REVIEW_TRIGGER.endswith(
+        "Files in the workspace are previous checkpoints, available to build upon."
+    )
+    assert "Files in the workspace are previous checkpoints, available to build upon." not in k.AGENTIC_STAGE1_VERIFICATION_PROMPT
+
     assert not k.AGENTIC_SOURCE_ONLY_WORKING_STATE
 
 

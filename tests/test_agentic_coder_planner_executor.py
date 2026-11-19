@@ -51,6 +51,11 @@ def test_profile_isolated_and_reasoning_contract(monkeypatch, tmp_path):
     assert not k.STAGES["extended_reflection"].allow_tools
     assert k.CODER_PLANNER_PROMPT.startswith(PREFIX)
     assert k.CODER_EXECUTOR_PROMPT.startswith(PREFIX)
+    assert k.CODER_EXECUTOR_PROMPT.endswith(
+        "Files in the workspace are previous checkpoints, available to build upon."
+    )
+    assert "Files in the workspace are previous checkpoints, available to build upon." not in k.CODER_PLANNER_PROMPT
+    assert "Files in the workspace are previous checkpoints, available to build upon." not in k.AGENTIC_36_STAGE2_PROMPT
     assert "Who, What, Where, When, Why and How" in k.CODER_PLANNER_PROMPT
     assert k._runtime_identity_details()["flow"] == [
         "coder_planner", "extended_initial", "extended_reflection"
