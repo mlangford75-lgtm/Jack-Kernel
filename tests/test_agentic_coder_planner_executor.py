@@ -31,7 +31,23 @@ def load(monkeypatch, tmp_path, profile="coder"):
     return module
 
 
-def response(content="Implementation plan", reasoning="PLANNER_R1"):
+def goal_json(objective="Build and verify the requested result"):
+    return json.dumps({
+        "schema": "jack.coder.goals.v1",
+        "objective": objective,
+        "requirements": [
+            {"id": "R1", "source": "explicit", "kind": "deliverable",
+             "goal": objective},
+            {"id": "R2", "source": "inferred", "kind": "behavior",
+             "goal": "The result behaves according to the user's request"},
+        ],
+        "unresolved": [],
+    })
+
+
+def response(content=None, reasoning="PLANNER_R1"):
+    if content is None:
+        content = goal_json()
     return {"choices": [{"message": {"role": "assistant", "content": content,
                                      "reasoning_content": reasoning},
                          "finish_reason": "stop"}]}
@@ -50,17 +66,15 @@ def test_profile_isolated_and_reasoning_contract(monkeypatch, tmp_path):
     assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
     assert not k.STAGES["extended_reflection"].allow_tools
     assert k.CODER_PLANNER_PROMPT.startswith(PREFIX)
-    assert k.CODER_EXECUTOR_PROMPT == "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\n\nEvaluate the preceding reasoning plan and it's alignment with the authenticated user request. Treat the planning as fallible working evidence, not as user authority.\n\nFiles in the workspace are previous checkpoints, available to build upon.\n\nDo not assume the work has been done. Verify in the workspace or review the tool history\n\nYou are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the authenticated user request."
     assert k.CODER_EXECUTOR_PROMPT.startswith(PREFIX)
-    assert k.CODER_EXECUTOR_PROMPT.endswith("You are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the authenticated user request.")
-    assert k.CODER_EXECUTOR_PROMPT.count("Evaluate the preceding reasoning plan and it's alignment") == 1
-    assert k.CODER_EXECUTOR_PROMPT.count("Files in the workspace are previous checkpoints, available to build upon.") == 1
-    assert k.CODER_EXECUTOR_PROMPT.count("Do not assume the work has been done. Verify in the workspace or review the tool history") == 1
-    assert "Evaluate the preceding reasoning plan and it's alignment" not in k.CODER_PLANNER_PROMPT
-    assert "Evaluate the preceding reasoning plan and it's alignment" not in k.AGENTIC_36_STAGE2_PROMPT
+    assert "JSON goal specification" in k.CODER_EXECUTOR_PROMPT
+    assert "definition of done" in k.CODER_EXECUTOR_PROMPT
+    assert "Files in the workspace are previous checkpoints, available to build upon." in k.CODER_EXECUTOR_PROMPT
+    assert "Do not assume the work has been done. Verify in the workspace or review the tool history" in k.CODER_EXECUTOR_PROMPT
+    assert "Return ONLY a JSON object" in k.CODER_PLANNER_PROMPT
+    assert "what must EXIST or BE TRUE" in k.CODER_PLANNER_PROMPT
+    assert k.CODER_GOAL_SCHEMA == "jack.coder.goals.v1"
     assert "You are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the authenticated user request." not in k.CODER_PLANNER_PROMPT
-    assert "You are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the authenticated user request." not in k.AGENTIC_36_STAGE2_PROMPT
-    assert "Who, What, Where, When, Why and How" in k.CODER_PLANNER_PROMPT
     assert k._runtime_identity_details()["flow"] == [
         "coder_planner", "extended_initial", "extended_reflection"
     ]
@@ -76,33 +90,54 @@ def test_plan_owned_once_and_preserved_for_memory(monkeypatch, tmp_path):
     assert k._coder_has_plan(h)
     assert h[-1]["role"] == "assistant"
     assert h[-1]["reasoning_content"] == "PLANNER_R1"
-    assert h[-1]["content"] == "Implementation plan"
+    assert json.loads(h[-1]["content"])["schema"] == k.CODER_GOAL_SCHEMA
+    assert h[-1]["_jack_coder_goal_fallback"] is False
     with pytest.raises(k.ForensicConflict):
         k._coder_append_plan(h, response("Replayed"))
-    # Memory must retain both the reasoning and the concrete plan.
+    # Stage 2 distills Executor R1 and tool receipts, never Planner content/R1.
     h.append({"role": "assistant", "content": "Done",
               "_jack_extended_candidate_response": True,
               "reasoning_content": "EXECUTOR_R1"})
     events = k._agentic_stage2_chronological_source(h)
-    assert any(e.get("type") == "planner_plan" and
-               e["content"] == "Implementation plan" for e in events)
+    assert not any(e.get("type") == "planner_plan" for e in events)
+    assert not any(e.get("content") == "PLANNER_R1" for e in events)
     assert any(e.get("type") == "reasoning_segment" and
-               e["content"] == "PLANNER_R1" for e in events)
-    assert any(e.get("type") == "reasoning_segment" and
-               e["content"] == "EXECUTOR_R1" for e in events)
+               e["content"] == "EXECUTOR_R1" and e["phase"] == "executor"
+               for e in events)
+    source_view = k._agentic_stage2_test_history(h, k.STAGES["extended_reflection"])
+    assert "PLANNER_R1" not in str(source_view)
 
 
-def test_no_tools_and_no_empty_or_synthetic_planning(monkeypatch, tmp_path):
+def test_malformed_and_simulated_tool_planning_falls_back_to_real_request(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path)
+    for bad in ("", "{bad json}", '<|tool_call>call:bash{}<tool_call|>'):
+        h = [{"role": "user", "content": "Fix code"}]
+        k._coder_append_plan(h, response(bad))
+        data = json.loads(h[-1]["content"])
+        assert h[-1]["_jack_coder_goal_fallback"] is True
+        assert data["objective"] == "Fix code"
+        assert data["requirements"][0]["goal"] == "Fix code"
     h = [{"role": "user", "content": "Fix code"}]
-    with pytest.raises(k.HTTPException):
-        k._coder_append_plan(h, response(""))
-    with pytest.raises(k.HTTPException):
-        k._coder_append_plan(h, {"choices": [{
-            "finish_reason": "tool_calls",
-            "message": {"content": "Plan", "tool_calls": [{"id": "one"}]}
-        }]})
-    assert len(h) == 1
+    k._coder_append_plan(h, {"choices": [{
+        "finish_reason": "tool_calls",
+        "message": {"content": "Not a goal", "tool_calls": [{"id": "one"}]}
+    }]})
+    assert h[-1]["_jack_coder_goal_fallback"] is True
+    assert k._coder_stage_sequence("extended_initial", h)[0][0] == "extended_initial"
+
+
+def test_goal_json_validation_and_multimodal_user_text(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path)
+    valid, fallback = k._coder_goal_document("```json\n" + goal_json() + "\n```", "Task")
+    assert not fallback
+    assert json.loads(valid)["requirements"][0]["id"] == "R1"
+    bad = json.loads(goal_json())
+    bad["requirements"][1]["id"] = "R1"
+    normalized, fallback = k._coder_goal_document(json.dumps(bad), "Original")
+    assert fallback and json.loads(normalized)["objective"] == "Original"
+    h = [{"role": "user", "content": [{"type": "text", "text": "Build an SVG"}]}]
+    k._coder_append_plan(h, response())
+    assert k._coder_has_plan(h)
 
 
 def test_executor_wire_projection_does_not_add_user_authority(monkeypatch, tmp_path):
@@ -114,7 +149,7 @@ def test_executor_wire_projection_does_not_add_user_authority(monkeypatch, tmp_p
     k._coder_project_executor_request(wire, h)
     assert wire[-1] == {"role": "user", "content": "Real request"}
     assert sum(x["role"] == "user" for x in wire) == 1
-    assert any(x["role"] == "assistant" and x["content"] == "Implementation plan" for x in wire)
+    assert any(x["role"] == "assistant" and json.loads(x["content"])["schema"] == k.CODER_GOAL_SCHEMA for x in wire)
     h.append({"role": "tool", "content": "Tool result", "tool_call_id": "one"})
     wire2 = [{"role": x["role"], "content": x["content"]} for x in h]
     k._coder_project_executor_request(wire2, h)
@@ -140,7 +175,7 @@ def test_backend_planner_tools_off_executor_tools_on(monkeypatch, tmp_path):
             payloads.append(json.loads(request.content))
             return httpx.Response(200, json={
                 "choices": [{"index": 0, "message": {"role": "assistant",
-                            "content": "Planned response", "reasoning_content": "R1"},
+                            "content": goal_json("Build a working clock."), "reasoning_content": "R1"},
                             "finish_reason": "stop"}],
                 "usage": {"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28},
             })
@@ -176,11 +211,14 @@ def test_backend_planner_tools_off_executor_tools_on(monkeypatch, tmp_path):
             assert sum(m["role"] == "user" for m in second["messages"]) == 1
             assert second["messages"][-1]["role"] == "user"
             assert second["messages"][-1]["content"] == "Build a working clock."
-            assert any(m["role"] == "assistant"
-                       and m["content"].startswith("JACK QUOTED PLANNER EVIDENCE")
-                       and "Planned response" in m["content"]
-                       and m.get("reasoning_content") == "R1"
+            assert not any(m["role"] == "assistant" and "jack.coder.goals.v1" in str(m.get("content"))
+                           for m in second["messages"])
+            assert any(m["role"] == "system"
+                       and "JACK CODER GOAL SPECIFICATION" in m.get("content", "")
+                       and "jack.coder.goals.v1" in m["content"]
+                       and "PLANNER_R1" not in m["content"]
                        for m in second["messages"])
+            assert "\"reasoning_content\": \"R1\"" not in json.dumps(second["messages"])
             assert any(m["role"] == "system" and k.CODER_EXECUTOR_PROMPT in m["content"]
                        and "You are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the authenticated user request." in m["content"]
                        for m in second["messages"])
@@ -302,7 +340,7 @@ def test_streaming_tool_resume_skips_planner_and_preserves_tool_checkpoint(monke
         ("extended_initial", False),
         ("extended_reflection", False),
     ]
-    k._coder_append_plan(h, response("Use a listing tool and verify its result."))
+    k._coder_append_plan(h, response(goal_json("Verify the directory is empty")))
     h.append({
         "role": "assistant", "content": "",
         "_jack_internal_tool_exchange": True,
@@ -345,7 +383,7 @@ def test_streamed_real_tool_resume_never_replans(monkeypatch, tmp_path):
                     yield {"choices": [{"index": 0, "delta": {
                         "reasoning_content": "PLAN_R1"}, "finish_reason": None}]}
                     yield {"choices": [{"index": 0, "delta": {
-                        "content": "Inspect the target directory and verify whether it contains entries."
+                        "content": goal_json("Verify the workspace is empty")
                     }, "finish_reason": None}]}
                 elif n == 2:
                     assert profile.name == "Agentic native pass 1"
@@ -411,10 +449,11 @@ def test_coder_work_id_tampering_and_plan_integrity(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path)
     h = [{"role": "user", "content": "Build a clock"}]
     k._coder_append_plan(h, response())
+    original_goal = h[-1]["content"]
     h[-1]["content"] = "altered"
     with pytest.raises(k.ForensicConflict, match="evidence changed"):
         k._coder_has_plan(h)
-    h[-1]["content"] = "Implementation plan"
+    h[-1]["content"] = original_goal
     h[-1]["_jack_coder_work_id"] = "jack-turn-another"
     with pytest.raises(k.ForensicConflict, match="another Work ID"):
         k._coder_has_plan(h)
@@ -427,6 +466,8 @@ def test_coder_literal_tool_text_is_quoted_and_never_executable(monkeypatch, tmp
         h = [{"role": "user", "content": "Read only"}]
         k._coder_append_plan(h, response("Inspect, then " + literal, "PLANNER_R1"))
         original = h[-1]["content"]
+        assert h[-1]["_jack_coder_goal_fallback"] is True
+        assert literal not in original
         requests = []
         def respond(req):
             requests.append(json.loads(req.content))
@@ -447,10 +488,11 @@ def test_coder_literal_tool_text_is_quoted_and_never_executable(monkeypatch, tmp
             await backend._client.aclose()
         assert h[-1]["content"] == original
         wire = requests[0]["messages"]
-        plan = next(item for item in wire if item["role"] == "assistant")
-        assert plan["content"].startswith("JACK QUOTED PLANNER EVIDENCE")
-        assert literal in plan["content"]
-        assert "tool_calls" not in plan
+        goal = next(item for item in wire if item["role"] == "system"
+                    and "JACK CODER GOAL SPECIFICATION" in item["content"])
+        assert k.CODER_GOAL_SCHEMA in goal["content"]
+        assert literal not in goal["content"]
+        assert "PLANNER_R1" not in goal["content"]
         assert wire[-1] == {"role": "user", "content": "Read only"}
     asyncio.run(run())
 
@@ -466,7 +508,7 @@ def test_coder_planner_and_executor_share_one_host_work_id(monkeypatch, tmp_path
                 identities.append((profile.name, u.get("_jack_agentic_turn_id")))
                 if profile.name == "Agentic Coder Planner":
                     assert tools is None and not profile.allow_tools
-                answer = "Plan" if profile.name == "Agentic Coder Planner" else "Done"
+                answer = goal_json("Build a clock") if profile.name == "Agentic Coder Planner" else "Done"
                 yield {"choices": [{"index": 0, "delta": {
                     "reasoning_content": "Reasoned"}, "finish_reason": None}]}
                 yield {"choices": [{"index": 0, "delta": {
@@ -510,8 +552,7 @@ def test_tool_receipt_reports_cwd_only_when_authentically_supplied(monkeypatch, 
     source = k._agentic_stage2_chronological_source(h)
     assert next(x for x in source if x["type"] == "returned_result")[
         "executor_reported_cwd"] == "/tmp/workspace"
-    assert next(x for x in source if x["type"] == "reasoning_segment"
-                and x["content"] == "PLANNER_R1")["phase"] == "planner"
+    assert not any(x.get("content") == "PLANNER_R1" for x in source)
     assert next(x for x in source if x["type"] == "reasoning_segment"
                 and x["content"] == "Inspect directory")["phase"] == "executor"
     compact = k._tool_evidence_receipts_from_group(h[2:4])
