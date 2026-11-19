@@ -72,6 +72,7 @@ def test_profile_isolated_and_reasoning_contract(monkeypatch, tmp_path):
     assert "Files in the workspace are previous checkpoints, available to build upon." in k.CODER_EXECUTOR_PROMPT
     assert "Do not assume the work has been done. Verify in the workspace or review the tool history" in k.CODER_EXECUTOR_PROMPT
     assert "Return ONLY a JSON object" in k.CODER_PLANNER_PROMPT
+    assert "You are the only stage authorized to complete the authenticated user request." in k.CODER_EXECUTOR_PROMPT
     assert "what must EXIST or BE TRUE" in k.CODER_PLANNER_PROMPT
     assert k.CODER_GOAL_SCHEMA == "jack.coder.goals.v1"
     assert "You are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the authenticated user request." not in k.CODER_PLANNER_PROMPT
@@ -510,7 +511,10 @@ def test_coder_planner_and_executor_share_one_host_work_id(monkeypatch, tmp_path
                     assert tools is None and not profile.allow_tools
                 answer = goal_json("Build a clock") if profile.name == "Agentic Coder Planner" else "Done"
                 yield {"choices": [{"index": 0, "delta": {
-                    "reasoning_content": "Reasoned"}, "finish_reason": None}]}
+                    "reasoning_content": (
+                        "PRIVATE_PLANNER_THINKING" if profile.name == "Agentic Coder Planner"
+                        else "CODER_OR_MEMORY_THINKING"
+                    )}, "finish_reason": None}]}
                 yield {"choices": [{"index": 0, "delta": {
                     "content": answer}, "finish_reason": None}]}
                 yield {"choices": [{"index": 0, "delta": {},
@@ -521,6 +525,11 @@ def test_coder_planner_and_executor_share_one_host_work_id(monkeypatch, tmp_path
         frames = [x async for x in kernel.stream({
             "messages": [{"role": "user", "content": "Build a clock"}], "stream": True})]
         assert frames
+        wire = "".join(part.decode("utf-8") for part in frames)
+        assert "PRIVATE_PLANNER_THINKING" not in wire
+        assert "jack.coder.goals.v1" not in wire
+        assert "[CODER PLANNING]" not in wire
+        assert "CODER_OR_MEMORY_THINKING" in wire
         assert [n for n, _ in identities] == [
             "Agentic Coder Planner", "Agentic native pass 1",
             "Agentic native pass 2"]
