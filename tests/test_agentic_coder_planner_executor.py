@@ -217,8 +217,41 @@ def test_planner_isolation_keeps_user_context_but_no_external_system_authority(m
     assert caller[1]["role"] == "developer"
     assert k._coder_isolate_planner_request(caller, k.STAGES["extended_initial"]) is caller
     assert k._coder_isolate_planner_request(caller, k.STAGES["extended_reflection"]) is caller
-    with pytest.raises(k.ForensicConflict, match="dedicated system"):
-        k._coder_isolate_planner_request(caller, k.STAGES["coder_planner"])
+    # Rebuild from the untrusted, upstream-assembled request even when its
+    # leading system message is unrelated to Coder's dedicated prompt.
+    rebuilt = k._coder_isolate_planner_request(caller, k.STAGES["coder_planner"])
+    assert rebuilt == wire
+    assert rebuilt[0] is not caller[0]
+    assert json.dumps(caller) == original
+
+
+def test_planner_rebuilds_mismatched_upstream_system_without_mutating_source(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path)
+    source = [
+        {"role": "system", "content": "Jack prefix / Pi tools / provenance"},
+        {"role": "developer", "content": "Framework tool directive"},
+        {"role": "system", "content": k.CODER_PLANNER_PROMPT + "\\nEXTRA INSTRUCTIONS"},
+        {"role": "user", "content": "Previous request"},
+        {"role": "assistant", "content": "Previous verified working knowledge"},
+        {"role": "user", "content": "Verify workspace is empty"},
+    ]
+    frozen = json.dumps(source, sort_keys=True)
+    planned = k._coder_isolate_planner_request(source, k.STAGES["coder_planner"])
+    assert [m["role"] for m in planned] == ["system", "user", "assistant", "user"]
+    assert planned[0] == {"role": "system", "content": k.CODER_PLANNER_PROMPT}
+    assert planned[-1]["content"] == "Verify workspace is empty"
+    assert all("EXTRA INSTRUCTIONS" not in str(m) for m in planned)
+    assert all("Pi tools" not in str(m) for m in planned)
+    assert json.dumps(source, sort_keys=True) == frozen
+    # Rebuilding from its own output must be idempotent, without extra prompts.
+    assert k._coder_isolate_planner_request(planned, k.STAGES["coder_planner"]) == planned
+    with pytest.raises(k.ForensicConflict, match="missing authenticated user"):
+        k._coder_isolate_planner_request(
+            [{"role": "system", "content": "irrelevant"}], k.STAGES["coder_planner"]
+        )
+    with pytest.raises(k.ForensicConflict, match="invalid history message"):
+        k._coder_isolate_planner_request([None, {"role": "user", "content": "task"}],
+                                         k.STAGES["coder_planner"])
 
 
 def test_planner_stream_request_isolated_from_all_other_system_instructions(monkeypatch, tmp_path):
