@@ -221,9 +221,9 @@ def test_backend_planner_tools_off_executor_tools_on(monkeypatch, tmp_path):
                        for m in second["messages"])
             assert "\"reasoning_content\": \"R1\"" not in json.dumps(second["messages"])
             assert any(m["role"] == "system" and k.CODER_EXECUTOR_PROMPT in m["content"]
-                       and "You are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the authenticated user request." in m["content"]
+                       and "You are the only stage authorized to complete the authenticated user request." in m["content"]
                        for m in second["messages"])
-            assert not any("You are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the authenticated user request." in m.get("content", "")
+            assert not any("You are the only stage authorized to complete the authenticated user request." in m.get("content", "")
                            for m in first["messages"] if m["role"] == "system")
         finally:
             await backend._client.aclose()
