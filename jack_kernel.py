@@ -3301,7 +3301,7 @@ CODER_EXECUTOR_PROMPT = (
     "You are continuing the authenticated user's task; produce the final response only after carrying out and verifying the necessary work."
 )
 
-_CODER_PLANNER_READ_TOOLS = frozenset({"read", "ls", "glob", "grep", "find", "bash"})
+_CODER_PLANNER_READ_TOOLS = frozenset({"read", "ls", "glob", "grep", "bash"})
 _CODER_PLANNER_SHELL_BAD = frozenset(";\n\r|&><$(){}!" + chr(96))
 
 
@@ -9417,7 +9417,7 @@ class JackQwenKernel:
             defer_extended_context = bool(
                 ULTRA_REVIEW_MODE
                 or (ULTRA_MODE and stage_key in {"extended_initial", "extended_reflection", "extended_synthesis"})
-                or (AGENTIC_MODE and stage_key in {"extended_initial", "extended_reflection", "extended_synthesis"})
+                or (AGENTIC_MODE and stage_key in {"coder_planner", "extended_initial", "extended_reflection", "extended_synthesis"})
                 or (CODE_DEBUGGING_MODE and _debugging_pass_from_stage_key(stage_key) is not None)
             )
             if not defer_extended_context:
@@ -10119,7 +10119,7 @@ class JackQwenKernel:
             defer_extended_context = bool(
                 ULTRA_REVIEW_MODE
                 or (ULTRA_MODE and stage_key in {"extended_initial", "extended_reflection", "extended_synthesis"})
-                or (AGENTIC_MODE and stage_key in {"extended_initial", "extended_reflection", "extended_synthesis"})
+                or (AGENTIC_MODE and stage_key in {"coder_planner", "extended_initial", "extended_reflection", "extended_synthesis"})
                 or (CODE_DEBUGGING_MODE and _debugging_pass_from_stage_key(stage_key) is not None)
             )
             if not defer_extended_context:
@@ -10857,7 +10857,7 @@ class JackQwenKernel:
         # next pass receives exact user-origin Pass 0 plus only the host-derived confirmed prior-finding registry.
         if (
             ULTRA_REVIEW_MODE
-            or (SELF_ADVERSARIAL_MODE and stage_key in {"extended_initial", "extended_reflection", "extended_synthesis"})
+            or (SELF_ADVERSARIAL_MODE and stage_key in {"coder_planner", "extended_initial", "extended_reflection", "extended_synthesis"})
             or (CODE_DEBUGGING_MODE and _debugging_pass_from_stage_key(stage_key) is not None)
         ):
             resume_history = list(history)
