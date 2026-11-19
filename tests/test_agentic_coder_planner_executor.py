@@ -449,8 +449,8 @@ def test_streamed_real_tool_resume_never_replans(monkeypatch, tmp_path):
                 n = len(self.stages)
                 if n == 1:
                     assert profile.name == "Agentic Coder Planner"
-                    assert not profile.allow_tools
-                    assert tools is None
+                    assert profile.allow_tools
+                    assert [t["function"]["name"] for t in tools] == ["bash"]
                     yield {"choices": [{"index": 0, "delta": {
                         "reasoning_content": "PLAN_R1"}, "finish_reason": None}]}
                     yield {"choices": [{"index": 0, "delta": {
