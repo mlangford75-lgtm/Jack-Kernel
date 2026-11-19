@@ -702,6 +702,12 @@ def test_planner_tool_resume_routes_back_to_planner_without_coder_replay(monkeyp
     assert h[-1]["content"] == spec
     assert k._coder_stage_sequence("extended_initial", h)[0][0] == "extended_initial"
     assert sum(x.get("_jack_coder_plan") is True for x in h) == 1
+    backend = k.OpenAICompatibleBackend(k.CFG)
+    prepared = backend._stage_messages_for_profile(h, k.STAGES["extended_initial"])
+    assert any(x.get("role") == "tool" and "minute hand is static" in str(x.get("content"))
+               for x in prepared)
+    assert not any("PLANNER_INSPECT_REASON" in str(x) for x in prepared)
+    assert any("JACK CODER DEVELOPER SPEC SHEET" in str(x) for x in prepared)
     h.append({"role": "assistant", "content": "Verified fix",
               "_jack_extended_candidate_response": True,
               "reasoning_content": "CODER_NATIVE_REASON"})
