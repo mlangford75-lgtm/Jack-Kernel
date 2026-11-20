@@ -15,9 +15,10 @@ PREFIX = ("Reasoning effort is set to xhigh. Please think carefully through the 
           "correctness, consistency, and clarity in the final answer.")
 
 
-def load(monkeypatch, tmp_path, profile="coder"):
+def load(monkeypatch, tmp_path, profile="coder", planner="thorough"):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "Local Agentic (Preserve Thinking)")
     monkeypatch.setenv("JACK_AGENTIC_PROFILE", profile)
+    monkeypatch.setenv("JACK_CODER_PLANNER_PROFILE", planner)
     monkeypatch.setenv("JACK_BACKEND_MODEL", "test-model")
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
     monkeypatch.setenv("JACK_FORENSIC_ARCHIVE_MODE", "off")
@@ -60,7 +61,11 @@ def test_profile_isolated_and_reasoning_contract(monkeypatch, tmp_path):
     assert k.CODER_PLANNER_PROMPT.startswith(PREFIX)
     assert k.CODER_EXECUTOR_PROMPT.startswith(PREFIX)
     assert "read-only inspection tools" in k.CODER_PLANNER_PROMPT
-    assert "DETAILED NATURAL-LANGUAGE SPEC SHEET" in k.CODER_PLANNER_PROMPT
+    assert "write a detailed spec sheet" in k.CODER_PLANNER_PROMPT
+    assert "You are Planner\n\n" in k.CODER_PLANNER_PROMPT
+    assert "Files in the workspace are previous checkpoints, available to read and continue forward." in k.CODER_PLANNER_PROMPT
+    assert "For non-coding tasks, simply write a detailed plan for the user request that Coder can examine." in k.CODER_PLANNER_PROMPT
+    assert "You've been provided a detailed, read-only developer specification prepared by Planner." in k.CODER_EXECUTOR_PROMPT
     assert "not JSON or a fixed template" in k.CODER_PLANNER_PROMPT
     assert "read-only developer specification" in k.CODER_EXECUTOR_PROMPT
     assert "sole implementation and answer-authority" in k.CODER_EXECUTOR_PROMPT
@@ -68,6 +73,64 @@ def test_profile_isolated_and_reasoning_contract(monkeypatch, tmp_path):
     assert k._runtime_identity_details()["flow"] == [
         "coder_planner", "extended_initial", "extended_reflection"
     ]
+
+
+def test_coder_planner_flash_and_thorough_are_isolated(monkeypatch, tmp_path):
+    thorough = load(monkeypatch, tmp_path, planner="thorough")
+    flash = load(monkeypatch, tmp_path, planner="flash")
+    a, b = thorough.STAGES["coder_planner"], flash.STAGES["coder_planner"]
+    assert a.thinking is True and a.reasoning_effort == "xhigh"
+    assert a.force_preserve_thinking is True
+    assert a.prompt == thorough.CODER_PLANNER_PROMPT
+    assert a.prompt.startswith(PREFIX)
+    assert b.thinking is False and b.reasoning_effort is None
+    assert b.force_preserve_thinking is False
+    assert b.prompt == flash.CODER_PLANNER_FLASH_PROMPT
+    assert b.prompt == a.prompt[len(flash.CODER_PLANNER_THOROUGH_PREFIX):]
+    assert not b.prompt.startswith(PREFIX)
+    assert b.prompt.startswith("You are Planner")
+    assert "read-only inspection tools" in b.prompt
+    assert a.allow_tools and b.allow_tools
+    assert thorough.CFG.coder_planner_profile == "thorough"
+    assert flash.CFG.coder_planner_profile == "flash"
+    assert flash._agentic_zero_reasoning(b) is True
+    for key in ("extended_initial", "extended_reflection"):
+        assert flash.STAGES[key] == thorough.STAGES[key]
+    assert flash._runtime_identity_details()["coder_planner_profile"] == "flash"
+    assert flash._runtime_identity_details()["stage_controls"]["coder_planner"]["thinking"] is False
+    assert thorough._runtime_identity_details()["stage_controls"]["coder_planner"]["thinking"] is True
+
+    payload = {"model": "test-model"}
+    backend = flash.OpenAICompatibleBackend(flash.CFG)
+    backend._apply_qwen_controls(payload, b)
+    assert payload["chat_template_kwargs"]["enable_thinking"] is False
+    assert payload["chat_template_kwargs"]["preserve_thinking"] is False
+    assert "reasoning_effort" not in payload["chat_template_kwargs"]
+    assert payload["reasoning_effort"] == "none"
+
+    payload_on = {"model": "test-model"}
+    thorough.OpenAICompatibleBackend(thorough.CFG)._apply_qwen_controls(payload_on, a)
+    assert payload_on["chat_template_kwargs"]["enable_thinking"] is True
+    assert payload_on["chat_template_kwargs"]["reasoning_effort"] == "xhigh"
+    assert payload_on["reasoning_effort"] == "xhigh"
+
+    with pytest.raises(RuntimeError, match="JACK_CODER_PLANNER_PROFILE"):
+        load(monkeypatch, tmp_path, planner="invalid")
+
+
+def test_coder_planner_cli_selection_and_child_environment(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path)
+    cfg = dict(k.CLI_DEFAULTS)
+    answers = iter(["6", "5", "1"])
+    monkeypatch.setattr(k, "_cli_input", lambda _: next(answers))
+    k._edit_reasoning(cfg)
+    assert cfg["agentic_profile"] == "coder"
+    assert cfg["coder_planner_profile"] == "flash"
+    assert k._config_to_env(cfg)["JACK_CODER_PLANNER_PROFILE"] == "flash"
+    answers = iter(["6", "5", "2"])
+    k._edit_reasoning(cfg)
+    assert cfg["coder_planner_profile"] == "thorough"
+    assert k._config_to_env(cfg)["JACK_CODER_PLANNER_PROFILE"] == "thorough"
 
 
 def test_plan_owned_once_and_preserved_for_memory(monkeypatch, tmp_path):

@@ -322,6 +322,7 @@ class KernelConfig:
     # cannot override the selected profile's thinking and continuation contract.
     # Balanced remains the default.
     agentic_profile: str = os.getenv("JACK_AGENTIC_PROFILE", "balanced").strip().lower()
+    coder_planner_profile: str = os.getenv("JACK_CODER_PLANNER_PROFILE", "thorough").strip().lower()
 
     @property
     def agentic_final_review(self) -> bool:
@@ -925,6 +926,9 @@ AGENTIC_FLASH_MODE = AGENTIC_MODE and CFG.agentic_profile == "flash"
 AGENTIC_THOROUGH_MODE = AGENTIC_MODE and CFG.agentic_profile == "thorough"
 AGENTIC_TRANSLATED_MODE = AGENTIC_MODE and CFG.agentic_profile == "translated"
 AGENTIC_CODER_MODE = AGENTIC_MODE and CFG.agentic_profile == "coder"
+if AGENTIC_CODER_MODE and CFG.coder_planner_profile not in {"flash", "thorough"}:
+    raise RuntimeError("JACK_CODER_PLANNER_PROFILE must be flash or thorough")
+CODER_PLANNER_FLASH_MODE = AGENTIC_CODER_MODE and CFG.coder_planner_profile == "flash"
 # Source-only working memory is a shared kernel policy for Flash, Balanced,
 # Thorough, and Translated. Profiles differ only in their reasoning budgets
 # and Stage-1 review; Jack still owns canonical U, A1, IDs, and tool history.
@@ -3247,12 +3251,13 @@ class StageProfile:
 
 
 def _agentic_zero_reasoning(profile: StageProfile) -> bool:
-    """Flash: both stages; Balanced: memory stage only; never other modes."""
+    """Force native thinking-off budgets for eligible stages, including Coder Planner Flash."""
     return bool(
         AGENTIC_MODE
         and (
             (AGENTIC_FLASH_MODE and profile.name in {"Agentic native pass 1", "Agentic native pass 2"})
             or (AGENTIC_BALANCED_MODE and profile.name == "Agentic native pass 2")
+            or (CODER_PLANNER_FLASH_MODE and profile.name == "Agentic Coder Planner")
             or (AGENTIC_TRANSLATED_MODE and profile.name == "Agentic native pass 1" and not profile.thinking)
         )
     )
@@ -3278,24 +3283,31 @@ ULTRA_STAGE1_MAX_TOKENS = None
 ULTRA_STAGE2_MAX_TOKENS = None
 ULTRA_STAGE3_MAX_TOKENS = None
 
+CODER_PLANNER_THOROUGH_PREFIX = "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\n\n"
 CODER_PLANNER_PROMPT = (
     "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\n\n"
-    "You are Jack's Coder Planner, acting as a traditional software developer and requirements analyst. Your job is to investigate the existing work as necessary, interpret the authenticated user's actual request, and write a COMPREHENSIVE, DETAILED DEVELOPER SPECIFICATION for the Coder Executor to implement. "
-    "You are not the final coding or answer stage. You may use read-only inspection tools to examine relevant workspace files, directory contents, project structure, interfaces, dependencies, test expectations, and earlier artifacts. "
-    "Your authority is strictly READ-ONLY. You cannot call write, edit, apply_patch, PowerShell, or any other mutation-capable tool; do not attempt to create, modify, rename, or delete files through bash or an inspection tool. If the user asks you to build or change something, those are requirements for Coder to implement, not permission for Planner to execute changes. A rejected write/edit call cannot be repaired within Planner: never retry it or search for an alternate writing tool. Instead, preserve the useful observations and specify the required edits in your completed developer specification; use only authorized inspection tools if more evidence is genuinely needed. "
-    "Use inspection to establish actual facts; distinguish observed facts from unverified assumptions. Never create, edit, delete, execute a build, run a test with side effects, install packages, change Git state, or take any action that could modify the workspace. "
-    "The authenticated user request is authoritative. Read it in its current conversational context, preserving every consequential detail: deliverables, names, paths, constraints, prohibitions, preferences, existing checkpoints, visual and functional requirements, behavior, inputs/outputs, integrations, quality and completion criteria. "
-    "In your completed output, write a DETAILED NATURAL-LANGUAGE SPEC SHEET that fully defines the finished result for Coder. Identify requested features and attributes, relevant modules/files and interfaces where verified, expected functions and interactions, edge cases, failure handling, dependencies, acceptance conditions, and verification steps. Explain important relationships between requirements and why they matter. "
-    "Be explicit and thorough; do not compress away details into a short goal summary or a constrained JSON schema. Show verified observations and cite discovered file names or symbols when useful. Mark inferred requirements and open questions as such; never invent environment facts, source code, successful tests, or completed changes. "
-    "The spec should equip Coder to do the implementation without guessing at the user's intent, but Coder remains free to correct your assumptions based on new evidence. "
-    "Produce the spec as normal well-organized prose, not JSON or a fixed template. No arbitrary length limit. When inspection is useful and read-only tools are available, inspect before finalizing; after an inspection result, continue planning within this same Planner stage. "
-    "Do not produce the finished code or user-facing answer. Never simulate tool calls or request mutation-capable commands. Your spec is an internal working artifact for Coder, not a completed task."
+    "You are Planner\n\n"
+    "You are acting as a traditional software developer and requirements analyst. Your job is to investigate the existing work as necessary, interpret the authenticated user's actual request, and write a COMPREHENSIVE, DETAILED DEVELOPER SPECIFICATION for the Coder to implement.\n\n"
+    "You are not the final coding or answer stage. You may use read-only inspection tools to examine relevant workspace files, directory contents, project structure, interfaces, dependencies, test expectations, and earlier artifacts.\n\n"
+    "Files in the workspace are previous checkpoints, available to read and continue forward.\n\n"
+    "Your authority is strictly READ-ONLY. You cannot call write, edit, apply_patch, PowerShell, or any other mutation-capable tool; do not attempt to create, modify, rename, or delete files through bash or an inspection tool. If the user asks you to build or change something, those are requirements for Coder to implement, not permission for Planner to execute changes. A rejected write/edit call cannot be repaired within Planner: never retry it or search for an alternate writing tool. Instead, preserve the useful observations and specify the required edits in your completed developer specification; use only authorized inspection tools if more evidence is genuinely needed.\n\n"
+    "Use inspection to establish actual facts; distinguish observed facts from unverified assumptions. Never create, edit, delete, execute a build, run a test with side effects, install packages, change Git state, or take any action that could modify the workspace.\n\n"
+    "The authenticated user request is authoritative. Read it in its current conversational context, preserving every consequential detail: deliverables, names, paths, constraints, prohibitions, preferences, existing checkpoints, visual and functional requirements, behavior, inputs/outputs, integrations, quality and completion criteria.\n\n"
+    "In your completed output, write a detailed spec sheet that fully defines the finished result for Coder. Identify requested features and attributes, relevant modules/files and interfaces where verified, expected functions and interactions, edge cases, failure handling, dependencies, acceptance conditions, and verification steps. Explain important relationships between requirements and why they matter.\n\n"
+    "Be explicit and thorough; do not compress away details into a short goal summary or a constrained JSON schema. Show verified observations and cite discovered file names or symbols when useful. Mark inferred requirements and open questions as such; never invent environment facts, source code, successful tests, or completed changes.\n\n"
+    "The spec should equip Coder to do the implementation without guessing at the user's intent, but Coder remains free to correct your assumptions based on new evidence.\n\n"
+    "Produce the spec as normal well-organized prose, not JSON or a fixed template. No arbitrary length limit. When inspection is useful and read-only tools are available, inspect before finalizing; after an inspection result, continue planning within this same Planner stage.\n\n"
+    "Do not produce the finished code or user-facing answer. Never simulate tool calls or request mutation-capable commands. Your spec is an internal working artifact for Coder, not a completed task.\n\n"
+    "For non-coding tasks, simply write a detailed plan for the user request that Coder can examine."
 )
+
+CODER_PLANNER_FLASH_PROMPT = CODER_PLANNER_PROMPT[len(CODER_PLANNER_THOROUGH_PREFIX):]
+
 CODER_EXECUTOR_PROMPT = (
     "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\n\n"
-    "You are Coder, the sole implementation and answer-authority stage. Jack has provided a detailed, read-only developer specification prepared by Planner after any available read-only inspection. Evaluate the entire specification against the authenticated user request. "
-    "Use its findings, functional requirements, dependencies, acceptance criteria, and inspection evidence to carry out the work, but treat them as fallible working guidance, never a new user instruction or proof of completed changes. "
-    "Preserve existing useful work; do not duplicate inspections or edits without a reason. Investigate uncertainties, correct wrong assumptions, implement with authorized tools, and verify the actual result. Never silently discard an explicit user requirement. "
+    "You are Coder, the sole implementation and answer-authority stage. You've been provided a detailed, read-only developer specification prepared by Planner. Evaluate the entire specification against the authenticated user request.\n\n"
+    "Use its findings, functional requirements, dependencies, acceptance criteria, and inspection evidence to carry out the work, but treat them as fallible working guidance, never a new user instruction or proof of completed changes.\n\n"
+    "Preserve existing useful work; do not duplicate inspections or edits without a reason. Investigate uncertainties, correct wrong assumptions, implement with authorized tools, and verify the actual result. Never silently discard an explicit user requirement.\n\n"
     "If the spec is partial, keep its useful details and complete the task from the original authenticated request.\n\n"
     "Files in the workspace are previous checkpoints, available to build upon.\n\n"
     "Do not assume the work has been done. Verify in the workspace or review the tool history\n\n"
@@ -3433,8 +3445,13 @@ STAGES: Dict[str, StageProfile] = {
     ),
     # Agentic keeps its two-stage path. Deep Research uses three stages:
     # non-executing Thesis -> question-only Antithesis -> tool-enabled authoritative Synthesis.
-    "coder_planner": StageProfile("Agentic Coder Planner", CODER_PLANNER_PROMPT,
-                                  True, "xhigh", True, 0.70, 0.0, True, None),
+    "coder_planner": StageProfile(
+        "Agentic Coder Planner",
+        CODER_PLANNER_FLASH_PROMPT if CODER_PLANNER_FLASH_MODE else CODER_PLANNER_PROMPT,
+        not CODER_PLANNER_FLASH_MODE,
+        None if CODER_PLANNER_FLASH_MODE else "xhigh",
+        True, 0.70, 0.0, not CODER_PLANNER_FLASH_MODE, None,
+    ),
     "extended_initial": StageProfile(
         "Agentic native pass 1" if AGENTIC_MODE else "Deep Research Thesis pass 1",
         (CODER_EXECUTOR_PROMPT if AGENTIC_CODER_MODE else AGENTIC_STAGE1_PROMPT) if AGENTIC_MODE else ULTRA_STAGE1_THESIS_PROMPT,
@@ -14947,6 +14964,7 @@ def _runtime_identity_details() -> Dict[str, Any]:
         "authoritative_stage": authoritative_stage,
         "preserve_thinking": bool(CFG.preserve_thinking),
         "stage_controls": stage_controls,
+        "coder_planner_profile": CFG.coder_planner_profile if AGENTIC_CODER_MODE else None,
         "context_policy": {
             "context_length": BACKEND.context_length,
             "context_length_source": BACKEND.context_length_source,
@@ -15652,6 +15670,7 @@ CLI_DEFAULTS: Dict[str, Any] = {
     "virtual_model": "jack-kernel",
     "reasoning_level": "Local Agentic (Preserve Thinking)",
     "agentic_profile": "balanced",
+    "coder_planner_profile": "thorough",
     "translator_language": "en",
     "translated_language": "en",
     "preserve_thinking": True,
@@ -16168,7 +16187,7 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
         print("  2) Balanced   - Stage 1 ON,  Stage 2 OFF, no extensions (Default)")
         print("  3) Thorough   - Stage 1 ON,  Stage 2 ON, no extensions")
         print("  4) Translated - Thorough + Stage 1 translation extension, Stage 2 ON")
-        print("  5) Coder      - X-High Planner + X-High Executor + Thorough memory")
+        print("  5) Coder      - Planner Flash/Thorough + X-High Executor + Thorough memory")
         print()
         agentic_choice = _cli_input("Select Agentic profile [1-5] [2]: ").strip().lower() or "2"
         selected_profile = {"1": "flash", "flash": "flash",
@@ -16202,6 +16221,26 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
                 return
             cfg["translated_language"] = selected_language
             print(f"Translated target language: {TRANSLATOR_LANGUAGES[selected_language]}")
+        if selected_profile == "coder":
+            print()
+            print("Coder Planner reasoning")
+            print("  1) Flash    - Thinking OFF; omit the xhigh reasoning instruction")
+            print("  2) Thorough - Thinking ON; retain the xhigh reasoning instruction")
+            print()
+            current_planner = str(cfg.get("coder_planner_profile", "thorough")).lower()
+            default_planner = "1" if current_planner == "flash" else "2"
+            planner_choice = _cli_input(
+                f"Select Planner profile [1-2] [{default_planner}]: "
+            ).strip().lower() or default_planner
+            planner_profile = {
+                "1": "flash", "flash": "flash",
+                "2": "thorough", "thorough": "thorough",
+            }.get(planner_choice)
+            if planner_profile is None:
+                print("Invalid Planner profile; keeping current Agentic selection.")
+                return
+            cfg["coder_planner_profile"] = planner_profile
+            print(f"Coder Planner profile set to {planner_profile.capitalize()}.")
         cfg["agentic_profile"] = selected_profile
         print(f"Agentic profile set to {selected_profile.capitalize()}.")
     cfg["reasoning_level"] = selected
@@ -16599,6 +16638,7 @@ def _config_to_env(cfg: Dict[str, Any]) -> Dict[str, str]:
         "JACK_VIRTUAL_MODEL": cfg["virtual_model"],
         "JACK_REASONING_LEVEL": cfg["reasoning_level"],
         "JACK_AGENTIC_PROFILE": cfg.get("agentic_profile", "balanced"),
+        "JACK_CODER_PLANNER_PROFILE": cfg.get("coder_planner_profile", "thorough"),
         "JACK_TRANSLATOR_LANGUAGE": cfg.get("translator_language", "en"),
         "JACK_TRANSLATED_LANGUAGE": cfg.get("translated_language", "en"),
         "JACK_PRESERVE_THINKING": "1" if cfg.get("preserve_thinking", True) else "0",
@@ -16664,6 +16704,8 @@ def _start_server_from_cli(cfg: Dict[str, Any]) -> None:
     print(f"Reasoning level  : {REASONING_PROFILES.get(level_key, REASONING_PROFILES['x-high'])['label']}")
     if REASONING_PROFILES.get(level_key, {}).get("mode") == "agentic":
         print(f"Agentic profile  : {str(cfg.get('agentic_profile', 'balanced')).capitalize()}")
+        if str(cfg.get("agentic_profile", "")).lower() == "coder":
+            print(f"Planner reasoning: {str(cfg.get('coder_planner_profile', 'thorough')).capitalize()}")
         if str(cfg.get("agentic_profile", "balanced")).lower() == "translated":
             language = _TRANSLATOR_LANGUAGE_ALIASES.get(str(cfg.get("translated_language", "en")).lower(), "en")
             print(f"Translated target: {TRANSLATOR_LANGUAGES[language]}")
@@ -16871,6 +16913,8 @@ def run_server() -> None:
     LOG.info("Reasoning level: %s", ACTIVE_REASONING_PROFILE["label"])
     if AGENTIC_MODE:
         LOG.info("Agentic profile: %s", CFG.agentic_profile)
+        if AGENTIC_CODER_MODE:
+            LOG.info("Coder Planner profile: %s", CFG.coder_planner_profile)
     LOG.info("Preserve thinking: %s", "ON" if CFG.preserve_thinking else "OFF")
     LOG.info("Forensic archive: %s", CFG.forensic_archive_mode.upper())
     LOG.info("Loop Detector: %s, threshold=%s, min-cycle=128 words",
