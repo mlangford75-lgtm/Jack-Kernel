@@ -153,7 +153,10 @@ def test_coder_planner_actual_wire_prompt_and_memory_thinking(monkeypatch, tmp_p
                 )
                 assert len(payloads) == 1
                 wire = payloads[0]
-                assert wire["messages"][0] == {"role": "system", "content": k.STAGES["coder_planner"].prompt}
+                assert wire["messages"][0]["role"] == "system"
+                assert wire["messages"][0]["content"].startswith(k.STAGES["coder_planner"].prompt)
+                assert "You are Planner, not Coder" in wire["messages"][0]["content"]
+                assert "Inspection tools currently offered: read" in wire["messages"][0]["content"]
                 assert wire["messages"][-1]["content"] == "Verify workspace is empty"
                 assert sum(x["role"] == "user" for x in wire["messages"]) == 1
                 assert "External Pi instructions" not in str(wire["messages"])
@@ -629,7 +632,8 @@ def test_backend_planner_read_tools_executor_full_tools(monkeypatch, tmp_path):
             assert [x["function"]["name"] for x in first["tools"]] == ["read", "bash"]
             assert set(x["function"]["name"] for x in second["tools"]) == {"read", "bash", "write"}
             assert [m["role"] for m in first["messages"]] == ["system", "user"]
-            assert first["messages"][0]["content"] == k.CODER_PLANNER_PROMPT
+            assert first["messages"][0]["content"].startswith(k.CODER_PLANNER_PROMPT)
+            assert "Blocked in Planner: write, edit" in first["messages"][0]["content"]
             assert "User-defined stable system" not in first["messages"][0]["content"]
             assert "User-defined stable system" in second["messages"][0]["content"]
             assert sum(m["role"] == "user" for m in second["messages"]) == 1
@@ -749,7 +753,8 @@ def test_planner_stream_request_isolated_from_all_other_system_instructions(monk
         assert len(outbound) == 1
         wire = outbound[0]
         assert [m["role"] for m in wire["messages"]] == ["system", "user"]
-        assert wire["messages"][0]["content"] == k.CODER_PLANNER_PROMPT
+        assert wire["messages"][0]["content"].startswith(k.CODER_PLANNER_PROMPT)
+        assert "Inspection tools currently offered: bash" in wire["messages"][0]["content"]
         assert wire["messages"][1]["content"] == "Plan a code update."
         assert [x["function"]["name"] for x in wire["tools"]] == ["bash"]
         assert json.dumps(source) == original
