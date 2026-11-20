@@ -186,6 +186,84 @@ def test_coder_planner_actual_wire_prompt_and_memory_thinking(monkeypatch, tmp_p
     asyncio.run(run())
 
 
+
+def test_planner_rejected_template_artifacts_are_not_replayed(monkeypatch, tmp_path):
+    """Regression for the exact thinking-OFF checkpoint in LM Studio logs."""
+    k = load(monkeypatch, tmp_path, planner="flash")
+    original_text = "assistant\n\n<think>\n\n</think>"
+    helpful_text = original_text + "\nInspect the directory; do not modify it."
+    h = [{"role": "user", "content": "Verify the directory is empty"},
+         {"role": "assistant", "content": original_text,
+          "_jack_internal_tool_validation_checkpoint": True},
+         {"role": "assistant", "content": helpful_text,
+          "_jack_internal_tool_validation_checkpoint": True},
+         k._tool_rejection_notice(["Planner tool call 0: tool is not read-only"],
+                                  k.STAGES["coder_planner"].name)]
+    original = json.dumps(h, sort_keys=True)
+    backend = k.OpenAICompatibleBackend(k.CFG)
+    prepared = backend._stage_messages_for_profile(h, k.STAGES["coder_planner"])
+    request = k._coder_isolate_planner_request(prepared, k.STAGES["coder_planner"])
+    assert request[0] == {"role": "system", "content": k.CODER_PLANNER_FLASH_PROMPT}
+    assert sum(x["role"] == "system" for x in request) == 1
+    assert sum(x["role"] == "user" for x in request) == 1
+    assert request[-2]["content"] == "Inspect the directory; do not modify it."
+    assert request[-1]["role"] == "assistant"
+    assert all("<think>" not in str(m.get("content")) for m in request)
+    assert all(m.get("content") != "assistant" for m in request)
+    assert json.dumps(h, sort_keys=True) == original
+
+    # Sanitizing is deliberately scoped: do not rewrite quoted examples,
+    # substantive analysis, or the user-authorized developer memo.
+    memo = "To: Coder\nFrom: Planner\nSubject: Workspace Verification"
+    assert k._coder_planner_checkpoint_text(memo) == memo
+    assert k._coder_planner_checkpoint_text("assistant\nRelevant spec") == "assistant\nRelevant spec"
+    assert k._coder_planner_checkpoint_text("<think>real content</think>") == "<think>real content</think>"
+    assert k._coder_unverified_observations(helpful_text) == "Inspect the directory; do not modify it."
+    assert k._coder_unverified_observations(original_text) == ""
+    handoff = k._coder_planner_host_handoff_result(h)
+    assert "Inspect the directory; do not modify it." in handoff["choices"][0]["message"]["content"]
+    assert original_text not in handoff["choices"][0]["message"]["content"]
+
+
+def test_coder_force_preserve_thinking_with_global_setting_disabled(monkeypatch, tmp_path):
+    async def run():
+        monkeypatch.setenv("JACK_PRESERVE_THINKING", "0")
+        for selected in ("flash", "thorough"):
+            k = load(monkeypatch, tmp_path, planner=selected)
+            assert k.CFG.preserve_thinking is False
+            assert k.STAGES["extended_initial"].thinking is True
+            assert k.STAGES["extended_initial"].force_preserve_thinking is True
+            assert k.STAGES["coder_planner"].thinking is (selected == "thorough")
+            assert k.STAGES["extended_reflection"].thinking is (selected == "thorough")
+            payloads = []
+            def reply(request):
+                payloads.append(json.loads(request.content))
+                return httpx.Response(200, json=response("Coder completed task"))
+            backend = k.OpenAICompatibleBackend(k.CFG)
+            await backend._client.aclose()
+            backend._client = httpx.AsyncClient(transport=httpx.MockTransport(reply))
+            async def model():
+                return "test-model"
+            backend.resolve_model = model
+            try:
+                history = [{"role": "user", "content": "Verify the workspace is empty"}]
+                k._coder_append_plan(history, response("Verify without modifying the workspace"))
+                await backend.chat(
+                    messages=history, secondary_system="", profile=k.STAGES["extended_initial"],
+                    tools=[], tool_choice="none",
+                )
+                assert len(payloads) == 1
+                flags = payloads[0]["chat_template_kwargs"]
+                assert flags["enable_thinking"] is True
+                assert flags["preserve_thinking"] is True
+                assert flags["reasoning_effort"] == "xhigh"
+                assert payloads[0]["reasoning_effort"] == "xhigh"
+                assert any("JACK CODER DEVELOPER SPEC SHEET" in str(m.get("content"))
+                           for m in payloads[0]["messages"])
+            finally:
+                await backend._client.aclose()
+    asyncio.run(run())
+
 def test_planner_internal_rejections_cannot_compete_with_user(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path, planner="flash")
     internal = k._tool_rejection_notice(
@@ -207,7 +285,7 @@ def test_planner_internal_rejections_cannot_compete_with_user(monkeypatch, tmp_p
     projected = k._coder_isolate_planner_request(prepared, k.STAGES["coder_planner"])
     assert sum(item["role"] == "user" for item in projected) == 1
     assert projected[0]["content"] == k.CODER_PLANNER_FLASH_PROMPT
-    assert projected[-1]["role"] == "system"
+    assert projected[-1]["role"] == "assistant"
     assert "not a user request" in projected[-1]["content"]
     assert "single read-only inspection command" in projected[-1]["content"]
     assert "Pi caller system must be filtered" not in str(projected)
@@ -248,8 +326,8 @@ def test_planner_protocol_recovery_is_host_owned_with_single_user(monkeypatch, t
         assert [x["role"] for x in projected].count("tool") == 1
         assert "only . and .." in str(projected)
         assert any(
-            x["role"] == "system" and
-            "Jack internal recovery feedback (not a user request):" in str(x.get("content")) and
+            x["role"] == "assistant" and
+            "Jack internal recovery feedback (not a user request or Planner answer):" in str(x.get("content")) and
             "Jack protocol continuation:" in str(x.get("content"))
             for x in projected
         )
@@ -428,7 +506,7 @@ def test_planner_stable_prompt_and_preserved_flash_thorough_contract(monkeypatch
         prepared = backend._stage_messages_for_profile(source + [note], k.STAGES["coder_planner"])
         resumed = k._coder_isolate_planner_request(prepared, k.STAGES["coder_planner"])
         assert resumed[:len(first)] == first
-        assert resumed[-1]["role"] == "system"
+        assert resumed[-1]["role"] == "assistant"
 
 
 def test_planner_read_only_unchanged_evidence_cycle_detection(monkeypatch, tmp_path):
