@@ -215,6 +215,93 @@ def test_planner_internal_rejections_cannot_compete_with_user(monkeypatch, tmp_p
     assert not k._coder_planner_safe_inspection_command("pwd && ls -la")
 
 
+def test_planner_protocol_recovery_is_host_owned_with_single_user(monkeypatch, tmp_path):
+    for planner in ("flash", "thorough"):
+        k = load(monkeypatch, tmp_path, planner=planner)
+        note = {
+            "role": "user",
+            "content": (
+                "Jack protocol continuation: The prior backend generation "
+                "produced neither a final answer nor a structured executable "
+                "tool call. Continue from the completed tool results."
+            ),
+            "_jack_internal_protocol_recovery": True,
+        }
+        h = [
+            {"role": "system", "content": "External caller should be removed"},
+            {"role": "user", "content": "Verify that the workspace is empty"},
+            {"role": "assistant", "content": "", "_jack_internal_tool_validation_checkpoint": True},
+            {"role": "tool", "tool_call_id": "r1", "content": "only . and .."},
+            note,
+        ]
+        frozen = json.dumps(h, sort_keys=True)
+        backend = k.OpenAICompatibleBackend(k.CFG)
+        prepared = backend._stage_messages_for_profile(h, k.STAGES["coder_planner"])
+        projected = k._coder_isolate_planner_request(prepared, k.STAGES["coder_planner"])
+        assert projected[0]["content"] == k.STAGES["coder_planner"].prompt
+        assert [x["role"] for x in projected].count("user") == 1
+        assert [x["role"] for x in projected].count("tool") == 1
+        assert "only . and .." in str(projected)
+        assert any(
+            x["role"] == "system" and
+            "Jack internal recovery feedback (not a user request):" in str(x.get("content")) and
+            "Jack protocol continuation:" in str(x.get("content"))
+            for x in projected
+        )
+        assert "External caller should be removed" not in str(projected)
+        assert all(not (x["role"] == "user" and "Jack protocol continuation" in str(x.get("content"))) for x in projected)
+        assert json.dumps(h, sort_keys=True) == frozen
+
+
+def test_flash_planner_still_streams_a_spec_to_coder_without_native_thinking(monkeypatch, tmp_path):
+    async def run():
+        k = load(monkeypatch, tmp_path, planner="flash")
+        calls = []
+        spec = "Planner developer specification: verify the directory is empty by listing all entries."
+        class Backend:
+            async def chat_stream(self, *, messages, secondary_system, profile,
+                                  tools=None, tool_choice=None):
+                calls.append(profile.name)
+                if profile.name == "Agentic Coder Planner":
+                    assert profile.thinking is False
+                    assert profile.prompt.startswith("You are Planner")
+                    assert not profile.prompt.startswith(PREFIX)
+                    assert [t["function"]["name"] for t in tools] == ["read"]
+                    yield {"choices": [{"index": 0, "delta": {"content": spec}, "finish_reason": None}]}
+                elif profile.name == "Agentic native pass 1":
+                    assert profile.thinking is True
+                    assert any(m.get("_jack_coder_plan") for m in messages)
+                    yield {"choices": [{"index": 0, "delta": {"content": "Verified empty."}, "finish_reason": None}]}
+                elif profile.name == "Agentic native pass 2":
+                    assert profile.thinking is False
+                    assert profile.allow_tools is False
+                    yield {"choices": [{"index": 0, "delta": {"content": "Workspace check completed."}, "finish_reason": None}]}
+                else:
+                    raise AssertionError("Unexpected phase")
+                yield {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                       "usage": {"prompt_tokens": 20, "completion_tokens": 15, "total_tokens": 35}}
+        kernel = k.JackQwenKernel(Backend(), k.CFG)
+        available = [{"type": "function", "function": {"name": "read",
+                     "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}}]
+        frames = [b.decode("utf-8") async for b in kernel.stream({
+            "messages": [{"role": "user", "content": "Verify the workspace is empty"}],
+            "tools": available, "stream": True,
+        })]
+        output = "".join(frames)
+        assert spec in output
+        assert "[CODER PLANNER — SPEC SHEET]" in output
+        assert "[CODER PLANNER — SPEC CAPTURED AND DELIVERED TO CODER]" in output
+        assert "Verified empty." in output
+        assert calls == ["Agentic Coder Planner", "Agentic native pass 1", "Agentic native pass 2"]
+        for frame in frames:
+            for line in frame.splitlines():
+                if not line.startswith("data: ") or line == "data: [DONE]":
+                    continue
+                delta = (json.loads(line[6:]).get("choices") or [{}])[0].get("delta", {})
+                assert spec not in str(delta.get("content", ""))
+    asyncio.run(run())
+
+
 def test_coder_planner_cli_selection_and_child_environment(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path)
     cfg = dict(k.CLI_DEFAULTS)
@@ -828,13 +915,19 @@ def test_planner_read_tool_allowlist_and_shell_must_not_mutate(monkeypatch, tmp_
     ]
     assert [x["function"]["name"] for x in k._coder_planner_tools(offered)] == ["read", "bash"]
     for command in ("ls -a", "ls -la ./workspace", "cat src/main.py",
-                    "head -n 40 ./foo.py", "rg -n 'function' src", "pwd"):
+                    "head -n 40 ./foo.py", "rg -n 'function' src", "pwd",
+                    "pwd && ls -la", "ls -la ./workspace && pwd",
+                    "pwd && ls -la && cat README.md"):
         assert k._coder_planner_safe_inspection_command(command), command
     for command in ("rm -rf .", "ls -a; rm -rf .", "cat x | sh",
                     "python -c print(1)", "git checkout main",
                     "rg foo --pre=touch", "find . -exec rm {} \\;",
                     "ls . > output.txt", "cat $(touch pwned)",
-                    "ls\nrm -rf ."):
+                    "ls\nrm -rf .", "pwd && rm -rf .",
+                    "pwd && ls -la && touch new.txt",
+                    "pwd && cat x | sh", "ls -la &&", "ls -la && && pwd",
+                    "pwd && ls -la && pwd && ls -la",
+                    "ls -la & echo bad", "ls -la || pwd"):
         assert not k._coder_planner_safe_inspection_command(command), command
     def call(name, args):
         return {"id": "t", "type": "function",

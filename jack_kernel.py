@@ -3354,32 +3354,48 @@ def _coder_planner_tools_for_attempt(
 
 
 def _coder_planner_safe_inspection_command(command: Any) -> bool:
-    """Small, nonmutating shell grammar; prohibit operators and expansion."""
+    """Small, nonmutating shell grammar; each bounded && step is independently read-only."""
     if not isinstance(command, str) or not command.strip() or len(command) > 8192:
         return False
-    if any(char in command for char in _CODER_PLANNER_SHELL_BAD):
+    # Allow at most three separately validated inspections joined by &&
+    # (e.g. pwd && ls -la), but never pipes, redirection, semicolons, expansion,
+    # arbitrary executables, or mutations. Existing single commands are unchanged.
+    if any(char in command for char in _CODER_PLANNER_SHELL_BAD if char != "&"):
+        return False
+    if "&" in command.replace("&&", ""):
+        return False
+    commands = command.strip().split("&&")
+    if not 1 <= len(commands) <= 3 or any(not item.strip() for item in commands):
         return False
     import shlex
-    try:
-        args = shlex.split(command.strip(), posix=True)
-    except ValueError:
-        return False
-    if not args:
-        return False
-    name, rest = args[0], args[1:]
-    if name == "pwd":
-        return not rest
-    if name == "ls":
-        allowed = {"-a", "-A", "-l", "-la", "-al", "-lh", "-lah", "-h", "--all", "--almost-all", "--"}
-        return all(not token.startswith("-") or token in allowed for token in rest)
-    if name == "cat":
-        return bool(rest) and all(not token.startswith("-") or token == "--" for token in rest)
-    if name in {"head", "tail"}:
-        return bool(rest) and all(not token.startswith("-") or token in {"-n", "-c", "--"} for token in rest)
-    if name == "rg":
-        options = {"-n", "-i", "-F", "-l", "-L", "--files", "--no-heading", "--hidden", "--", "-S"}
-        return all(not token.startswith("-") or token in options for token in rest)
-    return False
+    for part in commands:
+        try:
+            args = shlex.split(part.strip(), posix=True)
+        except ValueError:
+            return False
+        if not args:
+            return False
+        name, rest = args[0], args[1:]
+        if name == "pwd":
+            if rest:
+                return False
+        elif name == "ls":
+            allowed = {"-a", "-A", "-l", "-la", "-al", "-lh", "-lah", "-h", "--all", "--almost-all", "--"}
+            if any(token.startswith("-") and token not in allowed for token in rest):
+                return False
+        elif name == "cat":
+            if not rest or any(token.startswith("-") and token != "--" for token in rest):
+                return False
+        elif name in {"head", "tail"}:
+            if not rest or any(token.startswith("-") and token not in {"-n", "-c", "--"} for token in rest):
+                return False
+        elif name == "rg":
+            options = {"-n", "-i", "-F", "-l", "-L", "--files", "--no-heading", "--hidden", "--", "-S"}
+            if any(token.startswith("-") and token not in options for token in rest):
+                return False
+        else:
+            return False
+    return True
 
 
 def _coder_planner_tool_errors(calls: Any) -> List[str]:
@@ -3436,7 +3452,7 @@ def _coder_isolate_planner_request(stage_messages, profile):
         # retains every rejection and all prior reasoning/tool evidence.
         isolated.insert(1, {
             "role": "system",
-            "content": "Jack tool validation feedback (not a user request):\n"
+            "content": "Jack internal recovery feedback (not a user request):\n"
                        + "\n".join(rejection_notes[-2:]),
         })
     if not any(item.get("role") == "user" for item in isolated[1:]):
@@ -8021,9 +8037,11 @@ class OpenAICompatibleBackend:
                     item.pop(key, None)
             if (AGENTIC_CODER_MODE
                     and profile.name == "Agentic Coder Planner"
-                    and message.get("_jack_internal_tool_validation_rejection") is True):
-                # Model-only provenance. The canonical notice stays host-owned;
-                # the Planner must not see it as a competing user turn.
+                    and (message.get("_jack_internal_tool_validation_rejection") is True
+                         or message.get("_jack_internal_protocol_recovery") is True)):
+                # Model-only provenance for both rejected-tool and empty-stream
+                # recovery. Never let a Jack continuation impersonate a user.
+                # Canonical history retains the flagged host-owned original.
                 item["role"] = "system"
                 item["_jack_planner_recovery_message"] = True
             if must_strip_reasoning:
