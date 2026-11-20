@@ -3282,6 +3282,7 @@ CODER_PLANNER_PROMPT = (
     "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\n\n"
     "You are Jack's Coder Planner, acting as a traditional software developer and requirements analyst. Your job is to investigate the existing work as necessary, interpret the authenticated user's actual request, and write a COMPREHENSIVE, DETAILED DEVELOPER SPECIFICATION for the Coder Executor to implement. "
     "You are not the final coding or answer stage. You may use read-only inspection tools to examine relevant workspace files, directory contents, project structure, interfaces, dependencies, test expectations, and earlier artifacts. "
+    "Your authority is strictly READ-ONLY. You cannot call write, edit, apply_patch, PowerShell, or any other mutation-capable tool; do not attempt to create, modify, rename, or delete files through bash or an inspection tool. If the user asks you to build or change something, those are requirements for Coder to implement, not permission for Planner to execute changes. A rejected write/edit call cannot be repaired within Planner: never retry it or search for an alternate writing tool. Instead, preserve the useful observations and specify the required edits in your completed developer specification; use only authorized inspection tools if more evidence is genuinely needed. "
     "Use inspection to establish actual facts; distinguish observed facts from unverified assumptions. Never create, edit, delete, execute a build, run a test with side effects, install packages, change Git state, or take any action that could modify the workspace. "
     "The authenticated user request is authoritative. Read it in its current conversational context, preserving every consequential detail: deliverables, names, paths, constraints, prohibitions, preferences, existing checkpoints, visual and functional requirements, behavior, inputs/outputs, integrations, quality and completion criteria. "
     "In your completed output, write a DETAILED NATURAL-LANGUAGE SPEC SHEET that fully defines the finished result for Coder. Identify requested features and attributes, relevant modules/files and interfaces where verified, expected functions and interactions, edge cases, failure handling, dependencies, acceptance conditions, and verification steps. Explain important relationships between requirements and why they matter. "
@@ -3316,6 +3317,28 @@ def _coder_planner_tools(tools: Optional[List[Dict[str, Any]]]) -> List[Dict[str
         and isinstance(t.get("function"), dict)
         and t["function"].get("name") in _CODER_PLANNER_READ_TOOLS
     ]
+
+
+def _coder_planner_tools_for_attempt(
+    history: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]]
+) -> List[Dict[str, Any]]:
+    """Preserve inspection after one rejected mutation; prevent repeated retries.
+
+    After two forbidden mutation proposals in the same authenticated user turn,
+    Planner must finish its specification without further tool calls. Its
+    accumulated observations remain available, and Coder retains full tools.
+    """
+    target = active_response_target(history)
+    if target is not None:
+        current_turn = history[int(target["history_index"]) + 1:]
+        rejected_mutations = sum(
+            1 for item in current_turn
+            if isinstance(item, dict)
+            and item.get("_jack_internal_coder_planner_mutation_rejected") is True
+        )
+        if rejected_mutations >= 2:
+            return []
+    return _coder_planner_tools(tools)
 
 
 def _coder_planner_safe_inspection_command(command: Any) -> bool:
@@ -4727,18 +4750,40 @@ def _tool_rejection_notice(
 ) -> Dict[str, Any]:
     """Build one host-owned same-stage rejection notice without leaking targets."""
     items = [str(item) for item in errors if str(item).strip()]
-    return {
+    is_planner = stage_name == "Agentic Coder Planner"
+    rejected_planner_mutation = is_planner and any(
+        "tool is not read-only" in item for item in items
+    )
+    if is_planner:
+        guidance = (
+            "Planner is strictly READ-ONLY. Write, edit, create, delete, "
+            "PowerShell, and mutation commands are not available here. "
+            "Do not retry a forbidden mutation or look for another tool to "
+            "perform it. Describe all requested changes in the detailed "
+            "developer specification for Coder. If further inspection is "
+            "needed, use an authorized read-only tool; otherwise finish the spec."
+        )
+    else:
+        guidance = (
+            "Preserve the useful analysis that led here. If this stage has tool "
+            "authority, correct the invocation if the tool is still needed; "
+            "otherwise continue the same stage without tools."
+        )
+    notice = {
         "role": "user",
         "content": (
             "[JACK INTERNAL TOOL REJECTION — SAME STAGE, NOT A NEW USER REQUEST]\n"
             + f"Stage: {stage_name}\n"
             + "\n".join(f"- {item}" for item in items)
-            + "\nThe proposed tool action was rejected before execution. Execution evidence: NONE. "
-              "Preserve the useful analysis that led here. If this stage has tool authority, correct the invocation "
-              "if the tool is still needed; otherwise continue the same stage without tools."
+            + "\nThe proposed tool action was rejected before execution. "
+              "Execution evidence: NONE. "
+            + guidance
         ),
         "_jack_internal_tool_validation_rejection": True,
     }
+    if rejected_planner_mutation:
+        notice["_jack_internal_coder_planner_mutation_rejected"] = True
+    return notice
 
 
 _TOOL_RECOVERY_STATE: contextvars.ContextVar[Optional[ToolRecoveryState]] = (
@@ -9246,7 +9291,7 @@ class JackQwenKernel:
         effective_tools = tools if (profile.allow_tools or cache_append) else None
         effective_tool_choice = tool_choice if (profile.allow_tools or cache_append) else None
         if AGENTIC_CODER_MODE and stage_key == "coder_planner":
-            effective_tools = _coder_planner_tools(tools)
+            effective_tools = _coder_planner_tools_for_attempt(history, tools)
             effective_tool_choice = "auto" if effective_tools else "none"
         if AGENTIC_CODER_MODE and stage_key == "coder_planner" and not same_stage_resume:
             _agentic_begin_turn(history, fresh=True)
@@ -9507,7 +9552,7 @@ class JackQwenKernel:
         effective_tools = tools if (profile.allow_tools or cache_append) else None
         effective_tool_choice = tool_choice if (profile.allow_tools or cache_append) else None
         if AGENTIC_CODER_MODE and stage_key == "coder_planner":
-            effective_tools = _coder_planner_tools(tools)
+            effective_tools = _coder_planner_tools_for_attempt(history, tools)
             effective_tool_choice = "auto" if effective_tools else "none"
         if AGENTIC_CODER_MODE and stage_key == "coder_planner" and not same_stage_resume:
             _agentic_begin_turn(history, fresh=True)

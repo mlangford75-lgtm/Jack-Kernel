@@ -679,6 +679,50 @@ def test_planner_read_tool_allowlist_and_shell_must_not_mutate(monkeypatch, tmp_
     assert k._coder_planner_tool_errors([call("bash", {"command": "touch a.py"})])
 
 
+def test_planner_forbidden_write_edit_feedback_prevents_retry_loop(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path)
+    name = k.STAGES["coder_planner"].name
+    assert "Your authority is strictly READ-ONLY" in k.CODER_PLANNER_PROMPT
+    assert "cannot be repaired within Planner" in k.CODER_PLANNER_PROMPT
+
+    offered = [
+        {"type": "function", "function": {"name": "read"}},
+        {"type": "function", "function": {"name": "write"}},
+        {"type": "function", "function": {"name": "edit"}},
+    ]
+    history = [{"role": "user", "content": "Build a web page."}]
+    assert [t["function"]["name"] for t in
+            k._coder_planner_tools_for_attempt(history, offered)] == ["read"]
+
+    for action in ("write", "edit"):
+        call = {"type": "function", "function": {
+            "name": action,
+            "arguments": '{"path":"index.html","content":"x"}',
+        }}
+        errors = k._coder_planner_tool_errors([call])
+        assert errors and "not read-only" in errors[0]
+        notice = k._tool_rejection_notice(errors, name)
+        assert notice["_jack_internal_tool_validation_rejection"] is True
+        assert notice["_jack_internal_coder_planner_mutation_rejected"] is True
+        assert "Do not retry a forbidden mutation" in notice["content"]
+        assert "for Coder" in notice["content"]
+        history.append(notice)
+
+    # Two ignored denials remove the Planner's tool surface on the next
+    # continuation, preserving the evidence and allowing the spec to finish.
+    assert k._coder_planner_tools_for_attempt(history, offered) == []
+    assert history[0]["content"] == "Build a web page."
+    assert len(history) == 3
+
+    # The restriction applies only to the Planner; Coder keeps its tools.
+    assert [t["function"]["name"] for t in
+            k._coder_planner_tools(offered)] == ["read"]
+
+    other = k._tool_rejection_notice(["bad arguments"], "Agentic native pass 1")
+    assert "_jack_internal_coder_planner_mutation_rejected" not in other
+    assert "correct the invocation" in other["content"]
+
+
 def test_planner_tool_resume_routes_back_to_planner_without_coder_replay(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path)
     user = {"role": "user", "content": "Inspect then repair the clock"}
