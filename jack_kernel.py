@@ -3581,11 +3581,13 @@ def _coder_isolate_planner_request(stage_messages, profile, tools=None):
             continue
         isolated.append(item)
     if rejection_notes:
-        # Host-authenticated feedback is not another user turn. Preserve the
-        # latest denials without turning old failed attempts into a role example.
+        # Keep Planner's only system prompt byte-identical across retries.
+        # Later dynamic system records would be folded into the stable prefix.
+        # Recovery is host-authored assistant context, never a user request
+        # or an additional system/developer instruction for Planner.
         isolated.append({
-            "role": "system",
-            "content": "Jack internal recovery feedback (not a user request):\n"
+            "role": "assistant",
+            "content": "Jack internal recovery feedback (not a user request or Planner answer):\n"
                        + "\n".join(rejection_notes[-2:]),
         })
     if not any(item.get("role") == "user" for item in isolated[1:]):
@@ -3622,7 +3624,7 @@ STAGES: Dict[str, StageProfile] = {
         True if AGENTIC_MODE else False,
         0.70 if AGENTIC_MODE else 0.85,
         0.0,
-        SELF_ADVERSARIAL_MODE,
+        SELF_ADVERSARIAL_MODE or AGENTIC_CODER_MODE,
         None if AGENTIC_MODE else ULTRA_STAGE1_MAX_TOKENS,
     ),
     "extended_reflection": StageProfile(
@@ -5580,6 +5582,32 @@ def _coder_has_plan(history: List[Dict[str, Any]]) -> bool:
         raise ForensicConflict("Coder Planner is bound to another Work ID")
     return True
 
+def _coder_planner_checkpoint_text(raw: str) -> str:
+    """Clean only recognizable empty Planner role/thinking template artifacts.
+
+    The raw checkpoint remains in canonical host evidence. This function only
+    produces a lower-trust model-facing or Coder-handoff text projection.
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        return ""
+    lines = raw.splitlines(keepends=True)
+    index = 0
+    had_role = bool(lines and lines[0].strip().casefold() == "assistant")
+    if had_role:
+        index += 1
+    while index < len(lines) and not lines[index].strip():
+        index += 1
+    if index < len(lines) and lines[index].strip() == "<think>":
+        closing = index + 1
+        while closing < len(lines) and not lines[closing].strip():
+            closing += 1
+        if closing < len(lines) and lines[closing].strip() == "</think>":
+            return "".join(lines[closing + 1:]).strip()
+    if had_role and index == len(lines):
+        return ""
+    return raw.strip()
+
+
 def _coder_unverified_observations(raw: str) -> str:
     """Preserve useful imperfect Planner text without propagating fake tool calls.
 
@@ -5587,13 +5615,14 @@ def _coder_unverified_observations(raw: str) -> str:
     surrounding text remains available as lower-trust data. The original
     bytes are separately retained in the current-turn host-owned record.
     """
-    if not isinstance(raw, str) or not raw.strip():
+    safe = _coder_planner_checkpoint_text(raw)
+    if not safe:
         return ""
-    if "<|tool_call" not in raw:
-        return raw.strip()
+    if "<|tool_call" not in safe:
+        return safe
     safe = re.sub(
         r"<\|tool_call\|?>.*?(?:<\|tool_call\|>|$)", "",
-        raw, flags=re.DOTALL,
+        safe, flags=re.DOTALL,
     )
     if "<|tool_call" in safe:
         safe = safe.split("<|tool_call", 1)[0]
@@ -8085,6 +8114,24 @@ class OpenAICompatibleBackend:
                 else:
                     historical_memory_view = None
 
+            # Preserve rejected text verbatim in canonical history while
+            # withholding only empty template artifacts from Planner retries.
+            planner_checkpoint = (
+                AGENTIC_CODER_MODE
+                and profile.name == "Agentic Coder Planner"
+                and message.get("_jack_internal_tool_validation_checkpoint") is True
+            )
+            checkpoint_text = (
+                _coder_planner_checkpoint_text(message.get("content"))
+                if planner_checkpoint else ""
+            )
+            if planner_checkpoint and not checkpoint_text and not (
+                profile.thinking and any(
+                    isinstance(message.get(key), str) and message[key].strip()
+                    for key in ("reasoning_content", "reasoning", "thinking")
+                )
+            ):
+                continue
             has_private = any(
                 isinstance(key, str) and key.startswith("_jack_")
                 for key in message.keys()
@@ -8111,6 +8158,8 @@ class OpenAICompatibleBackend:
                 continue
 
             item = dict(message)
+            if planner_checkpoint:
+                item["content"] = checkpoint_text
             if historical_memory_view is not None:
                 item["content"] = historical_memory_view
             elif obsolete_id_lines:
