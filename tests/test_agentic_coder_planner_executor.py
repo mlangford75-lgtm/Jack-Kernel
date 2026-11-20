@@ -304,6 +304,104 @@ def test_flash_planner_still_streams_a_spec_to_coder_without_native_thinking(mon
     asyncio.run(run())
 
 
+def test_planner_read_only_vision_and_explicit_actual_tool_contract(monkeypatch, tmp_path):
+    for setting in ("flash", "thorough"):
+        k = load(monkeypatch, tmp_path, planner=setting)
+        offered = [
+            {"type": "function", "function": {"name": "read"}},
+            {"type": "function", "function": {"name": "describe_image"}},
+            {"type": "function", "function": {"name": "pwsh-get-job"}},
+            {"type": "function", "function": {"name": "write"}},
+            {"type": "function", "function": {"name": "powershell"}},
+            {"type": "function", "function": {"name": "pwsh-start-job"}},
+        ]
+        allowed = k._coder_planner_tools(offered)
+        assert [x["function"]["name"] for x in allowed] == ["read", "describe_image", "pwsh-get-job"]
+        assert [x["function"]["name"] for x in offered] == [
+            "read", "describe_image", "pwsh-get-job", "write", "powershell", "pwsh-start-job"
+        ]
+        wire = k._coder_isolate_planner_request(
+            [{"role": "system", "content": "Caller must not alter Planner"},
+             {"role": "user", "content": "Create a text file about drifting"}],
+            k.STAGES["coder_planner"], tools=allowed,
+        )
+        assert wire[0]["content"] == k.STAGES["coder_planner"].prompt
+        assert wire[1]["role"] == "system"
+        assert "read, describe_image, pwsh-get-job" not in wire[1]["content"] or "describe_image" in wire[1]["content"]
+        assert "describe_image" in wire[1]["content"]
+        assert "Blocked in Planner: write, edit" in wire[1]["content"]
+        assert "You are Planner, not Coder" in wire[1]["content"]
+        assert "specify those operations for Coder" in wire[1]["content"]
+        assert "Caller must not alter Planner" not in str(wire)
+        assert sum(m["role"] == "user" for m in wire) == 1
+
+
+def test_repeated_planner_shell_denials_do_not_abort_or_discard_coder_task(monkeypatch, tmp_path):
+    async def run():
+        for mode in ("flash", "thorough"):
+            k = load(monkeypatch, tmp_path, planner=mode)
+            sequence = []
+            request = "Create drifting.txt describing the sport of drifting"
+            class Backend:
+                async def chat_stream(self, *, messages, secondary_system, profile,
+                                      tools=None, tool_choice=None):
+                    sequence.append(profile.name)
+                    if profile.name == "Agentic Coder Planner":
+                        n = sum(x == "Agentic Coder Planner" for x in sequence)
+                        assert n <= 3
+                        assert profile.thinking is (mode == "thorough")
+                        if n <= 2:
+                            assert [x["function"]["name"] for x in tools] == ["bash", "describe_image"]
+                        else:
+                            assert tools == []
+                            assert tool_choice == "none"
+                        yield {"choices": [{"index": 0, "delta": {
+                            "tool_calls": [{"index": 0, "id": f"forbidden-{n}",
+                                            "type": "function", "function": {
+                                                "name": "bash",
+                                                "arguments": '{"command":"cat > drifting.txt"}'}}]},
+                             "finish_reason": None}]}
+                        yield {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}
+                        return
+                    if profile.name == "Agentic native pass 1":
+                        assert profile.thinking is True
+                        assert any(m.get("_jack_coder_plan") for m in messages)
+                        plan = next(m for m in messages if m.get("_jack_coder_plan"))
+                        assert request in plan["content"]
+                        assert "Jack host recovery handoff to Coder" in plan["content"]
+                        assert plan["_jack_coder_goal_fallback"] is True
+                        assert [x["function"]["name"] for x in tools] == ["bash", "describe_image", "write"]
+                        yield {"choices": [{"index": 0, "delta": {"content": "Coder received the task."}, "finish_reason": None}]}
+                        yield {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+                        return
+                    if profile.name == "Agentic native pass 2":
+                        assert profile.thinking is (mode == "thorough")
+                        assert not profile.allow_tools
+                        yield {"choices": [{"index": 0, "delta": {"content": "Coder handoff preserved."}, "finish_reason": None}]}
+                        yield {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+                        return
+                    raise AssertionError("Unexpected stage: " + profile.name)
+            kernel = k.JackQwenKernel(Backend(), k.CFG)
+            offered = [{"type": "function", "function": {"name": name,
+                       "parameters": {"type": "object", "properties": {}}}}
+                       for name in ("bash", "describe_image", "write")]
+            frames = [x.decode("utf-8") async for x in kernel.stream({
+                "messages": [{"role": "user", "content": request}],
+                "tools": offered, "stream": True,
+            })]
+            output = "".join(frames)
+            assert "Jack host recovery handoff to Coder" in output
+            assert "Coder received the task." in output
+            assert "[CODER PLANNER — SPEC CAPTURED AND DELIVERED TO CODER]" in output
+            assert sequence == [
+                "Agentic Coder Planner", "Agentic Coder Planner",
+                "Agentic Coder Planner", "Agentic native pass 1",
+                "Agentic native pass 2"
+            ]
+            assert "forbidden-1" not in output and "forbidden-2" not in output
+    asyncio.run(run())
+
+
 def test_coder_planner_cli_selection_and_child_environment(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path)
     cfg = dict(k.CLI_DEFAULTS)
@@ -938,6 +1036,9 @@ def test_planner_read_tool_allowlist_and_shell_must_not_mutate(monkeypatch, tmp_
     assert not k._coder_planner_tool_errors([call("bash", {"command": "ls -la"})])
     assert k._coder_planner_tool_errors([call("write", {"path": "a.py", "content": "x"})])
     assert k._coder_planner_tool_errors([call("bash", {"command": "touch a.py"})])
+    assert not k._coder_planner_tool_errors([call("describe_image", {
+        "image_path": "screenshot.png", "prompt": "Describe visual layout", "compress": False
+    })])
 
 
 def test_planner_forbidden_write_edit_feedback_prevents_retry_loop(monkeypatch, tmp_path):
