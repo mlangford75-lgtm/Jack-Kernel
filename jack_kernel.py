@@ -3257,7 +3257,7 @@ def _agentic_zero_reasoning(profile: StageProfile) -> bool:
         and (
             (AGENTIC_FLASH_MODE and profile.name in {"Agentic native pass 1", "Agentic native pass 2"})
             or (AGENTIC_BALANCED_MODE and profile.name == "Agentic native pass 2")
-            or (CODER_PLANNER_FLASH_MODE and profile.name == "Agentic Coder Planner")
+            or (CODER_PLANNER_FLASH_MODE and profile.name in {"Agentic Coder Planner", "Agentic native pass 2"})
             or (AGENTIC_TRANSLATED_MODE and profile.name == "Agentic native pass 1" and not profile.thinking)
         )
     )
@@ -3404,7 +3404,7 @@ def _coder_planner_tool_errors(calls: Any) -> List[str]:
 
 
 def _coder_isolate_planner_request(stage_messages, profile):
-    """Give Coder Planner only its own system contract and task context.
+    """Give Coder Planner its SELECTED system contract and task context.
 
     The caller's system/developer instructions belong to the Executor, not to
     the tools-off Planner. This is a model-facing projection only: canonical
@@ -3419,13 +3419,26 @@ def _coder_isolate_planner_request(stage_messages, profile):
     # Executor; the canonical conversation and its history are not modified.
     if not isinstance(stage_messages, list):
         raise ForensicConflict("Coder Planner received invalid assembled messages")
-    isolated = [{"role": "system", "content": CODER_PLANNER_PROMPT}]
+    isolated = [{"role": "system", "content": profile.prompt}]
+    rejection_notes = []
     for item in stage_messages:
         if not isinstance(item, dict):
             raise ForensicConflict("Coder Planner received an invalid history message")
+        if item.get("_jack_planner_recovery_message") is True:
+            rejection_notes.append(_content_to_text(item.get("content")))
+            continue
         if item.get("role") in {"system", "developer"}:
             continue
         isolated.append(item)
+    if rejection_notes:
+        # Host-authenticated validation feedback is never another user request.
+        # Keep only recent notices in the model projection; canonical history
+        # retains every rejection and all prior reasoning/tool evidence.
+        isolated.insert(1, {
+            "role": "system",
+            "content": "Jack tool validation feedback (not a user request):\n"
+                       + "\n".join(rejection_notes[-2:]),
+        })
     if not any(item.get("role") == "user" for item in isolated[1:]):
         raise ForensicConflict("Coder Planner missing authenticated user context")
     return isolated
@@ -3466,7 +3479,7 @@ STAGES: Dict[str, StageProfile] = {
     "extended_reflection": StageProfile(
         "Agentic native pass 2" if AGENTIC_MODE else "Deep Research Antithesis pass 2",
         AGENTIC_36_STAGE2_PROMPT if AGENTIC_MODE else ULTRA_STAGE2_ANTITHESIS_PROMPT,
-        not AGENTIC_MODE or AGENTIC_THOROUGH_MODE or AGENTIC_TRANSLATED_MODE or AGENTIC_CODER_MODE,
+        not AGENTIC_MODE or AGENTIC_THOROUGH_MODE or AGENTIC_TRANSLATED_MODE or (AGENTIC_CODER_MODE and not CODER_PLANNER_FLASH_MODE),
         ACTIVE_REASONING_PROFILE.get("pass2", "xhigh"),
         False,
         0.50 if AGENTIC_MODE else 0.70,
@@ -4772,14 +4785,23 @@ def _tool_rejection_notice(
         "tool is not read-only" in item for item in items
     )
     if is_planner:
-        guidance = (
-            "Planner is strictly READ-ONLY. Write, edit, create, delete, "
-            "PowerShell, and mutation commands are not available here. "
-            "Do not retry a forbidden mutation or look for another tool to "
-            "perform it. Describe all requested changes in the detailed "
-            "developer specification for Coder. If further inspection is "
-            "needed, use an authorized read-only tool; otherwise finish the spec."
-        )
+        if any("shell command is outside the inspection-only grammar" in item for item in items):
+            guidance = (
+                "This shell command was rejected, not executed. Planner may run "
+                "a single read-only inspection command per bash call, such as "
+                "'ls -la' or 'pwd'. Do not chain commands with shell operators "
+                "or try mutation commands. Use permitted inspection commands "
+                "only if necessary, then finish the developer spec for Coder."
+            )
+        else:
+            guidance = (
+                "Planner is strictly READ-ONLY. Write, edit, create, delete, "
+                "PowerShell, and mutation commands are not available here. "
+                "Do not retry a forbidden mutation or look for another tool to "
+                "perform it. Describe all requested changes in the detailed "
+                "developer specification for Coder. If further inspection is "
+                "needed, use an authorized read-only tool; otherwise finish the spec."
+            )
     else:
         guidance = (
             "Preserve the useful analysis that led here. If this stage has tool "
@@ -7997,6 +8019,13 @@ class OpenAICompatibleBackend:
             for key in tuple(item.keys()):
                 if isinstance(key, str) and key.startswith("_jack_"):
                     item.pop(key, None)
+            if (AGENTIC_CODER_MODE
+                    and profile.name == "Agentic Coder Planner"
+                    and message.get("_jack_internal_tool_validation_rejection") is True):
+                # Model-only provenance. The canonical notice stays host-owned;
+                # the Planner must not see it as a competing user turn.
+                item["role"] = "system"
+                item["_jack_planner_recovery_message"] = True
             if must_strip_reasoning:
                 item.pop("reasoning_content", None)
                 item.pop("reasoning", None)
@@ -16187,7 +16216,7 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
         print("  2) Balanced   - Stage 1 ON,  Stage 2 OFF, no extensions (Default)")
         print("  3) Thorough   - Stage 1 ON,  Stage 2 ON, no extensions")
         print("  4) Translated - Thorough + Stage 1 translation extension, Stage 2 ON")
-        print("  5) Coder      - Planner Flash/Thorough + X-High Executor + Thorough memory")
+        print("  5) Coder      - Planner + Coder")
         print()
         agentic_choice = _cli_input("Select Agentic profile [1-5] [2]: ").strip().lower() or "2"
         selected_profile = {"1": "flash", "flash": "flash",
@@ -16223,9 +16252,9 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
             print(f"Translated target language: {TRANSLATOR_LANGUAGES[selected_language]}")
         if selected_profile == "coder":
             print()
-            print("Coder Planner reasoning")
-            print("  1) Flash    - Thinking OFF; omit the xhigh reasoning instruction")
-            print("  2) Thorough - Thinking ON; retain the xhigh reasoning instruction")
+            print("Planner")
+            print("  1) Flash")
+            print("  2) Thorough")
             print()
             current_planner = str(cfg.get("coder_planner_profile", "thorough")).lower()
             default_planner = "1" if current_planner == "flash" else "2"

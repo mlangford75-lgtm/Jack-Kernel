@@ -94,8 +94,14 @@ def test_coder_planner_flash_and_thorough_are_isolated(monkeypatch, tmp_path):
     assert thorough.CFG.coder_planner_profile == "thorough"
     assert flash.CFG.coder_planner_profile == "flash"
     assert flash._agentic_zero_reasoning(b) is True
-    for key in ("extended_initial", "extended_reflection"):
-        assert flash.STAGES[key] == thorough.STAGES[key]
+    assert flash.STAGES["extended_initial"] == thorough.STAGES["extended_initial"]
+    assert flash.STAGES["extended_reflection"].thinking is False
+    assert thorough.STAGES["extended_reflection"].thinking is True
+    assert flash.STAGES["extended_reflection"].allow_tools is False
+    assert flash._agentic_zero_reasoning(flash.STAGES["extended_reflection"]) is True
+    assert flash._coder_stage_sequence(None, [{"role": "user", "content": "Inspect workspace"}]) == [
+        ("coder_planner", False), ("extended_initial", False), ("extended_reflection", False)
+    ]
     assert flash._runtime_identity_details()["coder_planner_profile"] == "flash"
     assert flash._runtime_identity_details()["stage_controls"]["coder_planner"]["thinking"] is False
     assert thorough._runtime_identity_details()["stage_controls"]["coder_planner"]["thinking"] is True
@@ -118,12 +124,109 @@ def test_coder_planner_flash_and_thorough_are_isolated(monkeypatch, tmp_path):
         load(monkeypatch, tmp_path, planner="invalid")
 
 
+def test_coder_planner_actual_wire_prompt_and_memory_thinking(monkeypatch, tmp_path):
+    async def run():
+        for selected in ("flash", "thorough"):
+            k = load(monkeypatch, tmp_path, planner=selected)
+            payloads = []
+            def reply(request):
+                payloads.append(json.loads(request.content))
+                return httpx.Response(200, json=response("Planner delivered specification"))
+            backend = k.OpenAICompatibleBackend(k.CFG)
+            await backend._client.aclose()
+            backend._client = httpx.AsyncClient(transport=httpx.MockTransport(reply))
+            async def model():
+                return "test-model"
+            backend.resolve_model = model
+            try:
+                h = [{"role": "system", "content": "External Pi instructions"},
+                     {"role": "user", "content": "Verify workspace is empty"}]
+                await backend.chat(
+                    messages=h, secondary_system="", profile=k.STAGES["coder_planner"],
+                    tools=k._coder_planner_tools([
+                        {"type": "function", "function": {"name": "read", "parameters": {"type": "object"}}},
+                        {"type": "function", "function": {"name": "write", "parameters": {"type": "object"}}},
+                    ]),
+                    tool_choice="auto",
+                )
+                assert len(payloads) == 1
+                wire = payloads[0]
+                assert wire["messages"][0] == {"role": "system", "content": k.STAGES["coder_planner"].prompt}
+                assert wire["messages"][-1]["content"] == "Verify workspace is empty"
+                assert sum(x["role"] == "user" for x in wire["messages"]) == 1
+                assert "External Pi instructions" not in str(wire["messages"])
+                assert [t["function"]["name"] for t in wire["tools"]] == ["read"]
+                assert wire["chat_template_kwargs"]["enable_thinking"] is (selected == "thorough")
+                assert wire["reasoning_effort"] == ("none" if selected == "flash" else "xhigh")
+                if selected == "flash":
+                    assert wire["messages"][0]["content"].startswith("You are Planner")
+                    assert k.CODER_PLANNER_THOROUGH_PREFIX not in str(wire["messages"])
+                    assert wire["chat_template_kwargs"]["preserve_thinking"] is False
+                else:
+                    assert wire["messages"][0]["content"].startswith(PREFIX)
+                assert k.STAGES["extended_reflection"].thinking is (selected == "thorough")
+                assert not k.STAGES["extended_reflection"].allow_tools
+                assert k.STAGES["extended_initial"].thinking is True
+                assert k.STAGES["extended_initial"].reasoning_effort == "xhigh"
+                h2 = [{"role": "user", "content": "Verify workspace is empty"}]
+                k._coder_append_plan(h2, response("Check the directory without modifications"))
+                h2.append({"role": "assistant", "content": "Verified empty",
+                           "_jack_extended_candidate_response": True,
+                           "reasoning_content": "Executor confirmed the CWD via pwd and ls"})
+                assert any(e.get("type") == "reasoning_segment"
+                           and "Executor confirmed" in e.get("content", "")
+                           for e in k._agentic_stage2_chronological_source(h2))
+            finally:
+                await backend._client.aclose()
+    asyncio.run(run())
+
+
+def test_planner_internal_rejections_cannot_compete_with_user(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path, planner="flash")
+    internal = k._tool_rejection_notice(
+        ["Planner tool call 0: shell command is outside the inspection-only grammar"],
+        k.STAGES["coder_planner"].name,
+    )
+    assert "single read-only inspection command" in internal["content"]
+    assert "'ls -la' or 'pwd'" in internal["content"]
+    h = [
+        {"role": "system", "content": "Pi caller system must be filtered"},
+        {"role": "user", "content": "Verify the workspace is empty"},
+        {"role": "assistant", "content": "The directory needs inspection",
+         "_jack_internal_tool_validation_checkpoint": True},
+        internal,
+    ]
+    original = json.dumps(h, sort_keys=True)
+    backend = k.OpenAICompatibleBackend(k.CFG)
+    prepared = backend._stage_messages_for_profile(h, k.STAGES["coder_planner"])
+    projected = k._coder_isolate_planner_request(prepared, k.STAGES["coder_planner"])
+    assert sum(item["role"] == "user" for item in projected) == 1
+    assert projected[0]["content"] == k.CODER_PLANNER_FLASH_PROMPT
+    assert projected[1]["role"] == "system"
+    assert "not a user request" in projected[1]["content"]
+    assert "single read-only inspection command" in projected[1]["content"]
+    assert "Pi caller system must be filtered" not in str(projected)
+    assert projected[-1]["role"] == "assistant"
+    assert json.dumps(h, sort_keys=True) == original
+    # Model-visible validation instructions do not alter canonical role or evidence.
+    assert internal["role"] == "user"
+    assert k._coder_planner_safe_inspection_command("ls -la")
+    assert k._coder_planner_safe_inspection_command("pwd")
+    assert not k._coder_planner_safe_inspection_command("pwd && ls -la")
+
+
 def test_coder_planner_cli_selection_and_child_environment(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path)
     cfg = dict(k.CLI_DEFAULTS)
+    output = []
+    monkeypatch.setattr(k, "_ansi_rgb", lambda text, *args, **kwargs: text)
+    monkeypatch.setattr("builtins.print", lambda *args, **kwargs: output.append(" ".join(map(str, args))))
     answers = iter(["6", "5", "1"])
     monkeypatch.setattr(k, "_cli_input", lambda _: next(answers))
     k._edit_reasoning(cfg)
+    assert "  1) Flash" in output and "  2) Thorough" in output
+    assert not any("omit the xhigh reasoning instruction" in row for row in output)
+    assert not any("retain the xhigh reasoning instruction" in row for row in output)
     assert cfg["agentic_profile"] == "coder"
     assert cfg["coder_planner_profile"] == "flash"
     assert k._config_to_env(cfg)["JACK_CODER_PLANNER_PROFILE"] == "flash"
