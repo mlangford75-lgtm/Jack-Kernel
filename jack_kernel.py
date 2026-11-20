@@ -3487,6 +3487,58 @@ def _coder_planner_host_handoff_result(
     }
 
 
+def _coder_planner_log_rejection(
+    calls: Any, errors: Iterable[str], *, incomplete: bool = False,
+) -> None:
+    """Log rejected Planner actions without releasing them or echoing them to Pi.
+
+    Read-only inspection arguments are useful for diagnosing an over-restrictive
+    grammar; mutating proposals are identified without dumping file contents
+    or credentials into the operator's log.
+    """
+    actions: List[Dict[str, Any]] = []
+    for index, call in enumerate(calls if isinstance(calls, list) else []):
+        function = call.get("function") if isinstance(call, dict) else None
+        function = function if isinstance(function, dict) else {}
+        name = str(function.get("name") or "<missing>")
+        raw = function.get("arguments")
+        record: Dict[str, Any] = {"index": index, "tool": name}
+        if isinstance(call, dict) and call.get("id"):
+            record["tool_call_id"] = str(call["id"])[:128]
+        try:
+            args = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, ValueError):
+            args = None
+        if name in _CODER_PLANNER_READ_TOOLS and isinstance(args, dict):
+            if name == "bash":
+                # Include the attempted inspection command to distinguish a
+                # grammar rejection from an unavailable/malformed tool call.
+                command = args.get("command")
+                if isinstance(command, str):
+                    record["command"] = command[:1024]
+                    if len(command) > 1024:
+                        record["command_truncated"] = True
+                else:
+                    record["command"] = "<missing or non-text>"
+            else:
+                record["arguments"] = {
+                    key: value[:256] if isinstance(value, str) else value
+                    for key, value in args.items()
+                    if key in {"path", "offset", "limit", "name", "includeOutput"}
+                }
+        else:
+            record["arguments_sha256"] = _sha256_text(
+                raw if isinstance(raw, str) else repr(raw)
+            )
+            record["arguments_available"] = bool(raw)
+        actions.append(record)
+    LOG.warning(
+        "Planner proposed action rejected before execution; incomplete=%s; "
+        "reasons=%s; proposed_actions=%s",
+        incomplete, list(errors), json.dumps(actions, ensure_ascii=False),
+    )
+
+
 def _coder_planner_safe_inspection_command(command: Any) -> bool:
     """Small, nonmutating shell grammar; each bounded && step is independently read-only."""
     if not isinstance(command, str) or not command.strip() or len(command) > 8192:
@@ -9619,7 +9671,10 @@ class JackQwenKernel:
             if AGENTIC_CODER_MODE and stage_key == "coder_planner":
                 validation_errors += _coder_planner_tool_errors(msg["tool_calls"])
             if validation_errors:
-                LOG.warning("%s rejected tool action before execution: %s", STAGES[stage_key].name, "; ".join(validation_errors))
+                if AGENTIC_CODER_MODE and stage_key == "coder_planner":
+                    _coder_planner_log_rejection(msg.get("tool_calls"), validation_errors)
+                else:
+                    LOG.warning("%s rejected tool action before execution: %s", STAGES[stage_key].name, "; ".join(validation_errors))
                 if (AGENTIC_CODER_MODE and stage_key == "coder_planner"
                         and (_coder_planner_rejection_count(history) >= 2
                              or _coder_planner_repeated_inspection_pending(history))):
@@ -10088,7 +10143,10 @@ class JackQwenKernel:
                                     )
                                     break
                         if early_planner_denial is not None:
-                            LOG.warning("Planner early tool rejection before full argument generation")
+                            _coder_planner_log_rejection(
+                                list(tool_state.values()), [early_planner_denial],
+                                incomplete=True,
+                            )
                             break
 
                 # Observational only: <=1 update/second for a stable phase.
@@ -10199,8 +10257,6 @@ class JackQwenKernel:
                 history, partial, [early_planner_denial],
                 stage_key, secondary_system, usage,
             )
-            yield {"kind": "reasoning",
-                   "text": "\n[JACK PLANNER TOOL REJECTED EARLY — FINISH SPEC WITHOUT MUTATION]\n"}
             async with contextlib.aclosing(self._run_stage_streamed(
                 repair, secondary_system, stage_key, usage,
                 tools=tools, tool_choice=tool_choice,
@@ -10342,7 +10398,10 @@ class JackQwenKernel:
             if AGENTIC_CODER_MODE and stage_key == "coder_planner":
                 validation_errors += _coder_planner_tool_errors(message["tool_calls"])
             if validation_errors:
-                LOG.warning("%s rejected streamed tool action before execution: %s", STAGES[stage_key].name, "; ".join(validation_errors))
+                if AGENTIC_CODER_MODE and stage_key == "coder_planner":
+                    _coder_planner_log_rejection(message.get("tool_calls"), validation_errors)
+                else:
+                    LOG.warning("%s rejected streamed tool action before execution: %s", STAGES[stage_key].name, "; ".join(validation_errors))
                 if (AGENTIC_CODER_MODE and stage_key == "coder_planner"
                         and (_coder_planner_rejection_count(history) >= 2
                              or _coder_planner_repeated_inspection_pending(history))):
@@ -10352,7 +10411,8 @@ class JackQwenKernel:
                     yield {"kind": "result", "data": fallback}
                     return
                 repair_history = _tool_recovery_check(history, message, validation_errors, stage_key, secondary_system, usage)
-                yield {"kind": "reasoning", "text": "\n[JACK TOOL ACTION REJECTED BEFORE EXECUTION — CORRECTING IN SAME STAGE]\n"}
+                if stage_key != "coder_planner":
+                    yield {"kind": "reasoning", "text": "\n[JACK TOOL ACTION REJECTED BEFORE EXECUTION — CORRECTING IN SAME STAGE]\n"}
                 async for packet in self._run_stage_streamed(
                     repair_history, secondary_system, stage_key, usage, tools=tools, tool_choice=tool_choice,
                     append=append, same_stage_resume=True, tool_validation_repair_depth=tool_validation_repair_depth + 1,
@@ -10364,8 +10424,10 @@ class JackQwenKernel:
             span = _coder_planner_inspection_cycle(history, message["tool_calls"])
             if span is not None:
                 repair = _coder_planner_duplicate_inspection_history(history, message, span)
-                yield {"kind": "reasoning", "text":
-                       "\n[JACK REPEATED INSPECTION — USE EXISTING EVIDENCE AND FINISH SPEC]\n"}
+                LOG.warning(
+                    "Coder Planner duplicate read-only inspection suppressed; "
+                    "span=%d; original evidence remains in host history", span,
+                )
                 async with contextlib.aclosing(self._run_stage_streamed(
                     repair, secondary_system, stage_key, usage,
                     tools=tools, tool_choice=tool_choice,
@@ -13154,9 +13216,7 @@ class JackQwenKernel:
                     stage_reasoning_started = False
                     stage_content_started = False
 
-                    if stage_key == "coder_planner":
-                        yield event({"reasoning_content": "\n[CODER PLANNER — DEVELOPER SPECIFICATION" + (" CONTINUED" if same_stage_resume else "") + "]\n"})
-                    elif stage_key == "extended_initial" and not same_stage_resume:
+                    if stage_key == "extended_initial" and not same_stage_resume:
                         label = "DEEP RESEARCH STAGE 1 — THESIS" if ULTRA_MODE else "STAGE 1 PROPOSED RESPONSE"
                         yield event({"reasoning_content": f"\n[{label}]\n"})
                     elif stage_key in {"extended_reflection", "extended_synthesis"}:
@@ -13363,7 +13423,7 @@ class JackQwenKernel:
 
                     if stage_key == "coder_planner":
                         _coder_append_plan(history, stage_result)
-                        yield event({"reasoning_content": "\n[CODER PLANNER — SPEC CAPTURED AND DELIVERED TO CODER]\n"})
+                        LOG.debug("Coder Planner specification captured and delivered to Coder")
                     if stage_key == "extended_initial":
                         first_msg = ((stage_result.get("choices") or [{}])[0].get("message") or {})
                         if ULTRA_MODE:
