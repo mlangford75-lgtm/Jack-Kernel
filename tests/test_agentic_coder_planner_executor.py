@@ -60,13 +60,13 @@ def test_profile_isolated_and_reasoning_contract(monkeypatch, tmp_path):
     assert not k.STAGES["extended_reflection"].allow_tools
     assert k.CODER_PLANNER_PROMPT.startswith(PREFIX)
     assert k.CODER_EXECUTOR_PROMPT.startswith(PREFIX)
-    assert "read-only inspection tools" in k.CODER_PLANNER_PROMPT
-    assert "write a detailed spec sheet" in k.CODER_PLANNER_PROMPT
+    assert "read-only, non-mutating tools" in k.CODER_PLANNER_PROMPT
+    assert "generate a detailed message" in k.CODER_PLANNER_PROMPT
     assert "You are Planner\n\n" in k.CODER_PLANNER_PROMPT
-    assert "Files in the workspace are previous checkpoints, available to read and continue forward." in k.CODER_PLANNER_PROMPT
-    assert "For non-coding tasks, simply write a detailed plan for the user request that Coder can examine." in k.CODER_PLANNER_PROMPT
+    assert "files in the workspace are checkpoints" in k.CODER_PLANNER_PROMPT
+    assert "For non-coding tasks, simply generate a brief summary" in k.CODER_PLANNER_PROMPT
     assert "You've been provided a detailed, read-only developer specification prepared by Planner." in k.CODER_EXECUTOR_PROMPT
-    assert "not JSON or a fixed template" in k.CODER_PLANNER_PROMPT
+    assert "Do not perform Coder's implementation work" in k.CODER_PLANNER_PROMPT
     assert "read-only developer specification" in k.CODER_EXECUTOR_PROMPT
     assert "sole implementation and answer-authority" in k.CODER_EXECUTOR_PROMPT
     assert "Files in the workspace are previous checkpoints" in k.CODER_EXECUTOR_PROMPT
@@ -89,7 +89,7 @@ def test_coder_planner_flash_and_thorough_are_isolated(monkeypatch, tmp_path):
     assert b.prompt == a.prompt[len(flash.CODER_PLANNER_THOROUGH_PREFIX):]
     assert not b.prompt.startswith(PREFIX)
     assert b.prompt.startswith("You are Planner")
-    assert "read-only inspection tools" in b.prompt
+    assert "read-only, non-mutating tools" in b.prompt
     assert a.allow_tools and b.allow_tools
     assert thorough.CFG.coder_planner_profile == "thorough"
     assert flash.CFG.coder_planner_profile == "flash"
@@ -155,8 +155,8 @@ def test_coder_planner_actual_wire_prompt_and_memory_thinking(monkeypatch, tmp_p
                 wire = payloads[0]
                 assert wire["messages"][0]["role"] == "system"
                 assert wire["messages"][0]["content"].startswith(k.STAGES["coder_planner"].prompt)
-                assert "You are Planner, not Coder" in wire["messages"][0]["content"]
-                assert "Inspection tools currently offered: read" in wire["messages"][0]["content"]
+                assert wire["messages"][0]["content"] == k.STAGES["coder_planner"].prompt
+                assert "read-only, non-mutating tools" in wire["messages"][0]["content"]
                 assert wire["messages"][-1]["content"] == "Verify workspace is empty"
                 assert sum(x["role"] == "user" for x in wire["messages"]) == 1
                 assert "External Pi instructions" not in str(wire["messages"])
@@ -207,11 +207,11 @@ def test_planner_internal_rejections_cannot_compete_with_user(monkeypatch, tmp_p
     projected = k._coder_isolate_planner_request(prepared, k.STAGES["coder_planner"])
     assert sum(item["role"] == "user" for item in projected) == 1
     assert projected[0]["content"] == k.CODER_PLANNER_FLASH_PROMPT
-    assert projected[1]["role"] == "system"
-    assert "not a user request" in projected[1]["content"]
-    assert "single read-only inspection command" in projected[1]["content"]
+    assert projected[-1]["role"] == "system"
+    assert "not a user request" in projected[-1]["content"]
+    assert "single read-only inspection command" in projected[-1]["content"]
     assert "Pi caller system must be filtered" not in str(projected)
-    assert projected[-1]["role"] == "assistant"
+    assert projected[-2]["role"] == "assistant"
     assert json.dumps(h, sort_keys=True) == original
     # Model-visible validation instructions do not alter canonical role or evidence.
     assert internal["role"] == "user"
@@ -329,12 +329,9 @@ def test_planner_read_only_vision_and_explicit_actual_tool_contract(monkeypatch,
             k.STAGES["coder_planner"], tools=allowed,
         )
         assert wire[0]["content"] == k.STAGES["coder_planner"].prompt
-        assert wire[1]["role"] == "system"
-        assert "read, describe_image, pwsh-get-job" not in wire[1]["content"] or "describe_image" in wire[1]["content"]
-        assert "describe_image" in wire[1]["content"]
-        assert "Blocked in Planner: write, edit" in wire[1]["content"]
-        assert "You are Planner, not Coder" in wire[1]["content"]
-        assert "specify those operations for Coder" in wire[1]["content"]
+        assert [msg["role"] for msg in wire] == ["system", "user"]
+        assert "read-only, non-mutating tools" in wire[0]["content"]
+        assert "Do not perform Coder's implementation work" in wire[0]["content"]
         assert "Caller must not alter Planner" not in str(wire)
         assert sum(m["role"] == "user" for m in wire) == 1
 
@@ -402,6 +399,129 @@ def test_repeated_planner_shell_denials_do_not_abort_or_discard_coder_task(monke
                 "Agentic native pass 2"
             ]
             assert "forbidden-1" not in output and "forbidden-2" not in output
+    asyncio.run(run())
+
+
+def test_planner_stable_prompt_and_preserved_flash_thorough_contract(monkeypatch, tmp_path):
+    for selected in ("flash", "thorough"):
+        k = load(monkeypatch, tmp_path, planner=selected)
+        base = k.CODER_PLANNER_PROMPT[len(k.CODER_PLANNER_THOROUGH_PREFIX):]
+        assert k.CODER_PLANNER_FLASH_PROMPT == base
+        assert base.startswith("You are Planner.\n")
+        assert len(base) < 1200
+        assert "Past chat history and files in the workspace" in base
+        assert "read-only, non-mutating tools" in base
+        assert k.STAGES["coder_planner"].thinking is (selected == "thorough")
+        assert k.STAGES["extended_initial"].thinking is True
+        assert k.STAGES["extended_reflection"].thinking is (selected == "thorough")
+        source = [{"role": "user", "content": "Make a cuckoo SVG"}]
+        first = k._coder_isolate_planner_request(source, k.STAGES["coder_planner"],
+                    tools=[{"type":"function","function":{"name":"read"}}])
+        second = k._coder_isolate_planner_request(source, k.STAGES["coder_planner"],
+                    tools=[{"type":"function","function":{"name":"read"}},
+                           {"type":"function","function":{"name":"describe_image"}}])
+        assert first == second == [{"role":"system","content":k.STAGES["coder_planner"].prompt},
+                                    {"role":"user","content":"Make a cuckoo SVG"}]
+        note = k._tool_rejection_notice(
+            ["Planner tool call 0: tool is not read-only"], k.STAGES["coder_planner"].name)
+        backend = k.OpenAICompatibleBackend(k.CFG)
+        prepared = backend._stage_messages_for_profile(source + [note], k.STAGES["coder_planner"])
+        resumed = k._coder_isolate_planner_request(prepared, k.STAGES["coder_planner"])
+        assert resumed[:len(first)] == first
+        assert resumed[-1]["role"] == "system"
+
+
+def test_planner_read_only_unchanged_evidence_cycle_detection(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path)
+    h = [{"role":"user","content":"Create SVG cuckoo clock"}]
+    read = {"id":"new","type":"function","function":{
+        "name":"read","arguments":'{"path":"cuckoo_clock.svg"}'}}
+    listing = {"id":"new","type":"function","function":{
+        "name":"bash","arguments":'{"command":"ls -la"}'}}
+    def record(tool, ident, result, outcome):
+        call = json.loads(json.dumps(tool))
+        call["id"] = ident
+        h.append({"role":"assistant","content":"","_jack_stage_key":"coder_planner",
+                  "_jack_internal_tool_exchange":True,"tool_calls":[call]})
+        h.append({"role":"tool","tool_call_id":ident,"content":result,
+                  "_jack_tool_outcome":outcome,"_jack_stage_key":"coder_planner",
+                  "_jack_internal_tool_exchange":True})
+    # A single observation is not enough; repeated read and ls must return
+    # *identical* evidence before the next repeat can be suppressed.
+    record(read,"r1","ENOENT","FAILED")
+    record(listing,"l1","only . and ..","SUCCESS")
+    assert k._coder_planner_inspection_cycle(h,[read]) is None
+    record(read,"r2","ENOENT","FAILED")
+    record(listing,"l2","only . and ..","SUCCESS")
+    assert k._coder_planner_inspection_cycle(h,[read]) == 2
+    assert k._coder_planner_inspection_cycle(h,[listing]) is None
+    assert k._coder_planner_inspection_cycle(h,[{"id":"x","type":"function",
+        "function":{"name":"read","arguments":'{"path":"other.svg"}'}}]) is None
+    record(read,"r3","FILE EXISTS","SUCCESS")
+    assert k._coder_planner_inspection_cycle(h,[listing]) is None
+    assert k._coder_planner_inspection_cycle(h,[{"id":"w","type":"function",
+        "function":{"name":"write","arguments":'{"path":"x"}'}}]) is None
+    duplicate = k._coder_planner_duplicate_inspection_history(h,{},2)
+    assert duplicate[-1]["_jack_internal_coder_planner_repeated_inspection"]
+    assert k._coder_planner_tools_for_attempt(duplicate,[{"type":"function",
+        "function":{"name":"read"}}]) == []
+    assert h[0]["content"] == "Create SVG cuckoo clock"
+
+
+def test_planner_partial_output_survives_fallback(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path)
+    h = [{"role":"user","content":"Build nice cuckoo clock SVG"},
+         {"role":"assistant","content":"Use an alpine roof and hanging weights",
+          "_jack_internal_tool_validation_checkpoint":True},
+         {"role":"assistant","content":"Use intricate wood grain",
+          "_jack_internal_tool_validation_checkpoint":True}]
+    result = k._coder_planner_host_handoff_result(h, "Include a carved bird and Roman numerals")
+    text = result["choices"][0]["message"]["content"]
+    assert "Build nice cuckoo clock SVG" in text
+    assert "Use an alpine roof and hanging weights" in text
+    assert "Use intricate wood grain" in text
+    assert "Include a carved bird and Roman numerals" in text
+    assert result["choices"][0]["message"]["_jack_coder_planner_host_fallback"]
+    assert h[1]["content"] == "Use an alpine roof and hanging weights"
+
+
+def test_early_planner_mutation_abort_preserves_partial_spec(monkeypatch, tmp_path):
+    async def run():
+        k=load(monkeypatch,tmp_path,planner="flash")
+        calls=[]
+        class Backend:
+            async def chat_stream(self, *,messages,secondary_system,profile,tools=None,tool_choice=None):
+                calls.append(profile.name)
+                if profile.name == "Agentic Coder Planner":
+                    n=calls.count(profile.name)
+                    if n==1:
+                        yield {"choices":[{"index":0,"delta":{"content":"Beautiful wooden roof"},"finish_reason":None}]}
+                        yield {"choices":[{"index":0,"delta":{"tool_calls":[{
+                            "index":0,"id":"blocked-write","type":"function",
+                            "function":{"name":"write","arguments":'{"path":"cuckoo.svg","content":"'}}]},
+                            "finish_reason":None}]}
+                        raise AssertionError("Streaming must stop before more write content")
+                    assert n==2
+                    assert any(m.get("_jack_internal_tool_validation_rejection") for m in messages)
+                    yield {"choices":[{"index":0,"delta":{"content":"Plan the SVG in Coder"},"finish_reason":None}]}
+                elif profile.name == "Agentic native pass 1":
+                    assert any(m.get("_jack_coder_plan") for m in messages)
+                    yield {"choices":[{"index":0,"delta":{"content":"Created file"},"finish_reason":None}]}
+                elif profile.name == "Agentic native pass 2":
+                    yield {"choices":[{"index":0,"delta":{"content":"SVG created"},"finish_reason":None}]}
+                else:
+                    raise AssertionError(profile.name)
+                yield {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+        kernel=k.JackQwenKernel(Backend(),k.CFG)
+        frames=[x.decode() async for x in kernel.stream({
+            "messages":[{"role":"user","content":"Create cuckoo clock SVG"}],
+            "tools":[{"type":"function","function":{"name":"read"}},
+                     {"type":"function","function":{"name":"write"}}],"stream":True})]
+        output="".join(frames)
+        assert "Plan the SVG in Coder" in output
+        assert "Created file" in output
+        assert calls==["Agentic Coder Planner","Agentic Coder Planner",
+                       "Agentic native pass 1","Agentic native pass 2"]
     asyncio.run(run())
 
 
@@ -633,7 +753,7 @@ def test_backend_planner_read_tools_executor_full_tools(monkeypatch, tmp_path):
             assert set(x["function"]["name"] for x in second["tools"]) == {"read", "bash", "write"}
             assert [m["role"] for m in first["messages"]] == ["system", "user"]
             assert first["messages"][0]["content"].startswith(k.CODER_PLANNER_PROMPT)
-            assert "Blocked in Planner: write, edit" in first["messages"][0]["content"]
+            assert "Your stateful, mutating, or destructive tools have been removed." in first["messages"][0]["content"]
             assert "User-defined stable system" not in first["messages"][0]["content"]
             assert "User-defined stable system" in second["messages"][0]["content"]
             assert sum(m["role"] == "user" for m in second["messages"]) == 1
@@ -754,7 +874,7 @@ def test_planner_stream_request_isolated_from_all_other_system_instructions(monk
         wire = outbound[0]
         assert [m["role"] for m in wire["messages"]] == ["system", "user"]
         assert wire["messages"][0]["content"].startswith(k.CODER_PLANNER_PROMPT)
-        assert "Inspection tools currently offered: bash" in wire["messages"][0]["content"]
+        assert "read-only, non-mutating tools" in wire["messages"][0]["content"]
         assert wire["messages"][1]["content"] == "Plan a code update."
         assert [x["function"]["name"] for x in wire["tools"]] == ["bash"]
         assert json.dumps(source) == original
@@ -1049,8 +1169,8 @@ def test_planner_read_tool_allowlist_and_shell_must_not_mutate(monkeypatch, tmp_
 def test_planner_forbidden_write_edit_feedback_prevents_retry_loop(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path)
     name = k.STAGES["coder_planner"].name
-    assert "Your authority is strictly READ-ONLY" in k.CODER_PLANNER_PROMPT
-    assert "cannot be repaired within Planner" in k.CODER_PLANNER_PROMPT
+    assert "Your stateful, mutating, or destructive tools have been removed." in k.CODER_PLANNER_PROMPT
+    assert "Do not perform Coder\'s implementation work" in k.CODER_PLANNER_PROMPT
 
     offered = [
         {"type": "function", "function": {"name": "read"}},

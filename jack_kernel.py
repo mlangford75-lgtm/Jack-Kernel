@@ -3285,20 +3285,18 @@ ULTRA_STAGE3_MAX_TOKENS = None
 
 CODER_PLANNER_THOROUGH_PREFIX = "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\n\n"
 CODER_PLANNER_PROMPT = (
-    "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\n\n"
-    "You are Planner\n\n"
-    "You are acting as a traditional software developer and requirements analyst. Your job is to investigate the existing work as necessary, interpret the authenticated user's actual request, and write a COMPREHENSIVE, DETAILED DEVELOPER SPECIFICATION for the Coder to implement.\n\n"
-    "You are not the final coding or answer stage. You may use read-only inspection tools to examine relevant workspace files, directory contents, project structure, interfaces, dependencies, test expectations, and earlier artifacts.\n\n"
-    "Files in the workspace are previous checkpoints, available to read and continue forward.\n\n"
-    "Your authority is strictly READ-ONLY. You cannot call write, edit, apply_patch, PowerShell, or any other mutation-capable tool; do not attempt to create, modify, rename, or delete files through bash or an inspection tool. If the user asks you to build or change something, those are requirements for Coder to implement, not permission for Planner to execute changes. A rejected write/edit call cannot be repaired within Planner: never retry it or search for an alternate writing tool. Instead, preserve the useful observations and specify the required edits in your completed developer specification; use only authorized inspection tools if more evidence is genuinely needed.\n\n"
-    "Use inspection to establish actual facts; distinguish observed facts from unverified assumptions. Never create, edit, delete, execute a build, run a test with side effects, install packages, change Git state, or take any action that could modify the workspace.\n\n"
-    "The authenticated user request is authoritative. Read it in its current conversational context, preserving every consequential detail: deliverables, names, paths, constraints, prohibitions, preferences, existing checkpoints, visual and functional requirements, behavior, inputs/outputs, integrations, quality and completion criteria.\n\n"
-    "In your completed output, write a detailed spec sheet that fully defines the finished result for Coder. Identify requested features and attributes, relevant modules/files and interfaces where verified, expected functions and interactions, edge cases, failure handling, dependencies, acceptance conditions, and verification steps. Explain important relationships between requirements and why they matter.\n\n"
-    "Be explicit and thorough; do not compress away details into a short goal summary or a constrained JSON schema. Show verified observations and cite discovered file names or symbols when useful. Mark inferred requirements and open questions as such; never invent environment facts, source code, successful tests, or completed changes.\n\n"
-    "The spec should equip Coder to do the implementation without guessing at the user's intent, but Coder remains free to correct your assumptions based on new evidence.\n\n"
-    "Produce the spec as normal well-organized prose, not JSON or a fixed template. No arbitrary length limit. When inspection is useful and read-only tools are available, inspect before finalizing; after an inspection result, continue planning within this same Planner stage.\n\n"
-    "Do not produce the finished code or user-facing answer. Never simulate tool calls or request mutation-capable commands. Your spec is an internal working artifact for Coder, not a completed task.\n\n"
-    "For non-coding tasks, simply write a detailed plan for the user request that Coder can examine."
+    CODER_PLANNER_THOROUGH_PREFIX
+    + "You are Planner.\n\n"
+      "Your task is to generate a detailed message that will be delivered to a senior coder. "
+      "Help them fulfill the authorized user request. Jack will deliver your response to Coder.\n\n"
+      "For non-coding tasks, simply generate a brief summary of the user request and "
+      "what needs to be delivered to fulfill it.\n\n"
+      "Past chat history and files in the workspace are checkpoints to consider when relevant. "
+      "Preserve useful existing work. Do not repeat inspections when the available evidence is sufficient.\n\n"
+      "Your stateful, mutating, or destructive tools have been removed. "
+      "You operate with read-only, non-mutating tools. Use them when inspection is necessary.\n\n"
+      "Do not perform Coder's implementation work. Describe what needs to be accomplished, "
+      "then deliver your message."
 )
 
 CODER_PLANNER_FLASH_PROMPT = CODER_PLANNER_PROMPT[len(CODER_PLANNER_THOROUGH_PREFIX):]
@@ -3344,6 +3342,87 @@ def _coder_planner_rejection_count(history: List[Dict[str, Any]]) -> int:
     )
 
 
+def _coder_planner_inspection_cycle(
+    history: List[Dict[str, Any]], candidate_calls: Any
+) -> Optional[int]:
+    """Repeat of a completed read-only inspection cycle with identical evidence.
+
+    Only the current authenticated Planner turn counts. Two fully completed
+    cycles with identical action arguments, outcomes and result bytes are
+    necessary. Any missing result, changed evidence or operation aborts detection.
+    This never affects Coder's tool authority or checks a model's prose.
+    """
+    if not isinstance(candidate_calls, list) or len(candidate_calls) != 1:
+        return None
+    candidate = _agentic_tool_action_signature(candidate_calls[0])
+    if candidate is None or candidate[2] or candidate[0] not in _CODER_PLANNER_READ_TOOLS:
+        return None
+    target = active_response_target(history)
+    if target is None:
+        return None
+    pending: Dict[str, Tuple[str, str, bool]] = {}
+    completed: List[Tuple[Tuple[str, str, bool], Tuple[str, str]]] = []
+    for item in history[int(target["history_index"]) + 1:]:
+        if not isinstance(item, dict):
+            return None
+        if not item.get("_jack_internal_tool_exchange"):
+            continue
+        if item.get("_jack_stage_key") not in {None, "coder_planner"}:
+            return None
+        if item.get("role") == "assistant":
+            calls = item.get("tool_calls")
+            if not isinstance(calls, list) or len(calls) != 1:
+                return None
+            call = calls[0]
+            signature = _agentic_tool_action_signature(call)
+            call_id = call.get("id") if isinstance(call, dict) else None
+            if (signature is None or signature[2]
+                    or signature[0] not in _CODER_PLANNER_READ_TOOLS
+                    or not isinstance(call_id, str) or not call_id):
+                return None
+            pending[call_id] = signature
+        elif item.get("role") == "tool":
+            call_id = item.get("tool_call_id")
+            if not isinstance(call_id, str) or call_id not in pending:
+                return None
+            outcome = str(item.get("_jack_tool_outcome") or reported_tool_outcome(item))
+            evidence = (outcome, _sha256_text(_content_to_text(item.get("content"))))
+            completed.append((pending.pop(call_id), evidence))
+        else:
+            return None
+    if pending:
+        return None
+    for span in range(1, min(4, len(completed) // 2) + 1):
+        prior = completed[-2 * span:-span]
+        latest = completed[-span:]
+        if prior == latest and candidate == prior[0][0]:
+            return span
+    return None
+
+
+def _coder_planner_repeated_inspection_pending(history: List[Dict[str, Any]]) -> bool:
+    target = active_response_target(history)
+    return bool(target is not None and any(
+        isinstance(item, dict)
+        and item.get("_jack_internal_coder_planner_repeated_inspection") is True
+        for item in history[int(target["history_index"]) + 1:]
+    ))
+
+
+def _coder_planner_duplicate_inspection_history(
+    history: List[Dict[str, Any]], message: Dict[str, Any], span: int
+) -> List[Dict[str, Any]]:
+    """Record a non-executed duplicate without dropping earlier tool evidence."""
+    repaired = _tool_rejection_history(
+        history, message,
+        [f"Planner inspection repeated an unchanged {span}-action read-only cycle. "
+         "No duplicate call was executed; finish the spec from existing evidence."],
+        "Agentic Coder Planner",
+    )
+    repaired[-1]["_jack_internal_coder_planner_repeated_inspection"] = True
+    return repaired
+
+
 def _coder_planner_tools_for_attempt(
     history: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]]
 ) -> List[Dict[str, Any]]:
@@ -3352,12 +3431,15 @@ def _coder_planner_tools_for_attempt(
     All completed inspection evidence stays in history. Coder is unaffected.
     A further prohibited attempt deterministically hands the user task to Coder.
     """
-    if _coder_planner_rejection_count(history) >= 2:
+    if (_coder_planner_rejection_count(history) >= 2
+            or _coder_planner_repeated_inspection_pending(history)):
         return []
     return _coder_planner_tools(tools)
 
 
-def _coder_planner_host_handoff_result(history: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _coder_planner_host_handoff_result(
+    history: List[Dict[str, Any]], last_content: str = ""
+) -> Dict[str, Any]:
     """Recover from a repeatedly denied Planner without losing the user task.
 
     This is explicitly Jack-authored fallback, not a model-produced spec,
@@ -3368,6 +3450,22 @@ def _coder_planner_host_handoff_result(history: List[Dict[str, Any]]) -> Dict[st
     if target is None or not str(target.get("content") or "").strip():
         raise ForensicConflict("Coder Planner fallback missing authenticated user request")
     requested = str(target["content"]).strip()
+    partials: List[str] = []
+    seen_partials: set[str] = set()
+    for checkpoint in history[int(target["history_index"]) + 1:]:
+        if (isinstance(checkpoint, dict)
+                and checkpoint.get("_jack_internal_tool_validation_checkpoint") is True):
+            original = _coder_unverified_observations(str(checkpoint.get("content") or ""))
+            if original and original not in seen_partials:
+                partials.append(original)
+                seen_partials.add(original)
+    trailing = _coder_unverified_observations(str(last_content or ""))
+    if trailing and trailing not in seen_partials:
+        partials.append(trailing)
+    preserved = (
+        "\n\nUnfinished Planner observations or requirements (unverified; use critically):\n"
+        + "\n\n".join(partials)
+    ) if partials else ""
     specification = (
         "Jack host recovery handoff to Coder (Planner could not finish its specification).\n"
         "Authenticated user request:\n" + requested + "\n\n"
@@ -3377,6 +3475,7 @@ def _coder_planner_host_handoff_result(history: List[Dict[str, Any]]) -> Dict[st
         "Preserve existing successful tool observations and checkpoints; "
         "do not treat rejected Planner tool proposals as completed actions. "
         "No mutation was executed by the rejected Planner calls."
+        + preserved
     )
     return {
         "choices": [{
@@ -3481,35 +3580,10 @@ def _coder_isolate_planner_request(stage_messages, profile, tools=None):
         if item.get("role") in {"system", "developer"}:
             continue
         isolated.append(item)
-    if tools is not None:
-        visible_names = sorted({
-            str(item.get("function", {}).get("name"))
-            for item in tools if isinstance(item, dict)
-            and isinstance(item.get("function"), dict)
-            and isinstance(item["function"].get("name"), str)
-            and re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", item["function"]["name"])
-        })
-        inventory = ", ".join(visible_names) if visible_names else "none (finish the spec without tools)"
-        isolated.insert(1, {
-            "role": "system",
-            "content": (
-                "Jack Planner tool authority (host enforced, applies equally to Flash and Thorough). "
-                "You are Planner, not Coder. Earlier assistant answers may have been produced "
-                "by Coder and do not change your current role. "
-                "Inspection tools currently offered: " + inventory + ". "
-                "Blocked in Planner: write, edit, apply_patch, powershell, "
-                "background execution, environment/Git changes, and all file-mutating "
-                "shell commands. Bash, when offered, is for read-only inspection only. "
-                "describe_image, when offered, is for read-only vision inspection. "
-                "Never try to perform the user's requested file creation or edits in "
-                "Planner: specify those operations for Coder, then finish your full "
-                "developer specification. Tool-denial feedback is not a user request."
-            ),
-        })
     if rejection_notes:
         # Host-authenticated feedback is not another user turn. Preserve the
         # latest denials without turning old failed attempts into a role example.
-        isolated.insert(1, {
+        isolated.append({
             "role": "system",
             "content": "Jack internal recovery feedback (not a user request):\n"
                        + "\n".join(rejection_notes[-2:]),
@@ -9497,13 +9571,27 @@ class JackQwenKernel:
                 validation_errors += _coder_planner_tool_errors(msg["tool_calls"])
             if validation_errors:
                 LOG.warning("%s rejected tool action before execution: %s", STAGES[stage_key].name, "; ".join(validation_errors))
-                if AGENTIC_CODER_MODE and stage_key == "coder_planner" and _coder_planner_rejection_count(history) >= 2:
-                    LOG.warning("Planner third rejected tool action: handing the authenticated task to Coder")
-                    return _coder_planner_host_handoff_result(history)
+                if (AGENTIC_CODER_MODE and stage_key == "coder_planner"
+                        and (_coder_planner_rejection_count(history) >= 2
+                             or _coder_planner_repeated_inspection_pending(history))):
+                    LOG.warning("Planner repeated a denied operation; handing task to Coder")
+                    return _coder_planner_host_handoff_result(history, str(msg.get("content") or ""))
                 repair_history = _tool_recovery_check(history, msg, validation_errors, stage_key, secondary_system, usage)
                 return await self._run_stage(
                     repair_history, secondary_system, stage_key, usage, tools=tools, tool_choice=tool_choice,
                     append=append, same_stage_resume=True, tool_validation_repair_depth=tool_validation_repair_depth + 1,
+                )
+
+        if AGENTIC_CODER_MODE and stage_key == "coder_planner" and msg.get("tool_calls"):
+            span = _coder_planner_inspection_cycle(history, msg["tool_calls"])
+            if span is not None:
+                repair = _coder_planner_duplicate_inspection_history(history, msg, span)
+                LOG.warning("Planner repeated an unchanged read-only cycle length %d; tools-off spec continuation", span)
+                return await self._run_stage(
+                    repair, secondary_system, stage_key, usage,
+                    tools=tools, tool_choice=tool_choice,
+                    append=append, same_stage_resume=True,
+                    tool_validation_repair_depth=tool_validation_repair_depth,
                 )
 
         # Withheld-call provenance is host-owned. Never trust a backend/model-supplied
@@ -9778,6 +9866,7 @@ class JackQwenKernel:
         reasoning_parts: List[str] = []
         tool_state: Dict[int, Dict[str, Any]] = {}
         tool_call_fragments_streamed = False
+        early_planner_denial: Optional[str] = None
         stage_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         observed_stream_bytes = {"reasoning": 0, "content": 0, "tool_arguments": 0}
         last_telemetry_write = time.monotonic()
@@ -9915,6 +10004,43 @@ class JackQwenKernel:
                         and isinstance(part.get("function"), dict) for key in ("name", "arguments")
                     )
                     observed_phase = "tool_arguments"
+                    if AGENTIC_CODER_MODE and stage_key == "coder_planner":
+                        for proposed in tool_state.values():
+                            fn = proposed.get("function") or {}
+                            name = str(fn.get("name") or "").strip()
+                            arguments = str(fn.get("arguments") or "")
+                            if not arguments:
+                                continue
+                            # Once arguments start for an explicitly prohibited
+                            # tool, no later argument fragment can authorize it.
+                            if name in {
+                                "write", "edit", "apply_patch", "powershell",
+                                "pwsh-start-job", "pwsh-stop-job", "pwsh-remove-job",
+                                "pwsh-create-session", "pwsh-close-session",
+                            }:
+                                early_planner_denial = (
+                                    "Planner tool call: tool is not read-only (" + name + ")"
+                                )
+                                break
+                            if name == "bash":
+                                # These symbols are unconditionally forbidden
+                                # by the existing read-only shell grammar. Wait
+                                # for the actual command string, never guess a
+                                # command from a partial tool-name fragment.
+                                command_start = re.search(
+                                    r'"command"\s*:\s*"((?:[^"\\]|\\.)*)', arguments
+                                )
+                                if command_start and any(
+                                    c in command_start.group(1) for c in ";|><`"
+                                ):
+                                    early_planner_denial = (
+                                        "Planner tool call: shell command is outside "
+                                        "the inspection-only grammar"
+                                    )
+                                    break
+                        if early_planner_denial is not None:
+                            LOG.warning("Planner early tool rejection before full argument generation")
+                            break
 
                 # Observational only: <=1 update/second for a stable phase.
                 # Never expose tool arguments or raw model text in telemetry.
@@ -10010,6 +10136,32 @@ class JackQwenKernel:
                 yield retry_packet
             return
 
+        if early_planner_denial is not None:
+            partial = {"role": "assistant", "content": "".join(content_parts)}
+            if reasoning_content_parts:
+                partial["reasoning_content"] = "".join(reasoning_content_parts)
+            if (_coder_planner_rejection_count(history) >= 2
+                    or _coder_planner_repeated_inspection_pending(history)):
+                fallback = _coder_planner_host_handoff_result(history, partial["content"])
+                yield {"kind": "content", "text": fallback["choices"][0]["message"]["content"]}
+                yield {"kind": "result", "data": fallback}
+                return
+            repair = _tool_recovery_check(
+                history, partial, [early_planner_denial],
+                stage_key, secondary_system, usage,
+            )
+            yield {"kind": "reasoning",
+                   "text": "\n[JACK PLANNER TOOL REJECTED EARLY — FINISH SPEC WITHOUT MUTATION]\n"}
+            async with contextlib.aclosing(self._run_stage_streamed(
+                repair, secondary_system, stage_key, usage,
+                tools=tools, tool_choice=tool_choice,
+                append=append, same_stage_resume=True,
+                tool_validation_repair_depth=tool_validation_repair_depth + 1,
+            )) as retry_packets:
+                async for packet in retry_packets:
+                    yield packet
+            return
+
         message: Dict[str, Any] = {
             "role": "assistant",
             "content": "".join(content_parts),
@@ -10069,8 +10221,10 @@ class JackQwenKernel:
         # text without a final answer or structured call is NOT completed work.
         # Never interpret raw tool-shaped text as executor authority.
         if not message["content"].strip() and not tool_state:
-            if AGENTIC_CODER_MODE and stage_key == "coder_planner" and _coder_planner_rejection_count(history) >= 2:
-                fallback = _coder_planner_host_handoff_result(history)
+            if (AGENTIC_CODER_MODE and stage_key == "coder_planner"
+                    and (_coder_planner_rejection_count(history) >= 2
+                         or _coder_planner_repeated_inspection_pending(history))):
+                fallback = _coder_planner_host_handoff_result(history, message["content"])
                 yield {"kind": "content", "text": fallback["choices"][0]["message"]["content"]}
                 yield {"kind": "result", "data": fallback}
                 return
@@ -10140,9 +10294,11 @@ class JackQwenKernel:
                 validation_errors += _coder_planner_tool_errors(message["tool_calls"])
             if validation_errors:
                 LOG.warning("%s rejected streamed tool action before execution: %s", STAGES[stage_key].name, "; ".join(validation_errors))
-                if AGENTIC_CODER_MODE and stage_key == "coder_planner" and _coder_planner_rejection_count(history) >= 2:
-                    LOG.warning("Planner third rejected tool action: handing the authenticated task to Coder")
-                    fallback = _coder_planner_host_handoff_result(history)
+                if (AGENTIC_CODER_MODE and stage_key == "coder_planner"
+                        and (_coder_planner_rejection_count(history) >= 2
+                             or _coder_planner_repeated_inspection_pending(history))):
+                    LOG.warning("Planner denied another action; handing authenticated task to Coder")
+                    fallback = _coder_planner_host_handoff_result(history, message["content"])
                     yield {"kind": "content", "text": fallback["choices"][0]["message"]["content"]}
                     yield {"kind": "result", "data": fallback}
                     return
@@ -10153,6 +10309,23 @@ class JackQwenKernel:
                     append=append, same_stage_resume=True, tool_validation_repair_depth=tool_validation_repair_depth + 1,
                 ):
                     yield packet
+                return
+
+        if AGENTIC_CODER_MODE and stage_key == "coder_planner" and message.get("tool_calls"):
+            span = _coder_planner_inspection_cycle(history, message["tool_calls"])
+            if span is not None:
+                repair = _coder_planner_duplicate_inspection_history(history, message, span)
+                yield {"kind": "reasoning", "text":
+                       "\n[JACK REPEATED INSPECTION — USE EXISTING EVIDENCE AND FINISH SPEC]\n"}
+                async with contextlib.aclosing(self._run_stage_streamed(
+                    repair, secondary_system, stage_key, usage,
+                    tools=tools, tool_choice=tool_choice,
+                    append=append, same_stage_resume=True,
+                    tool_validation_repair_depth=tool_validation_repair_depth,
+                    loop_retry_depth=loop_retry_depth,
+                )) as retry_packets:
+                    async for packet in retry_packets:
+                        yield packet
                 return
 
         # The empty-stream retry may propose tools, but must not replay an
