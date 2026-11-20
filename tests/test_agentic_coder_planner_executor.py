@@ -372,8 +372,9 @@ def test_flash_planner_still_streams_a_spec_to_coder_without_native_thinking(mon
         })]
         output = "".join(frames)
         assert spec in output
-        assert "[CODER PLANNER — SPEC SHEET]" in output
-        assert "[CODER PLANNER — SPEC CAPTURED AND DELIVERED TO CODER]" in output
+        assert output.count("[CODER PLANNER — SPEC SHEET]") == 1
+        assert "[CODER PLANNER — DEVELOPER SPECIFICATION]" not in output
+        assert "[CODER PLANNER — SPEC CAPTURED AND DELIVERED TO CODER]" not in output
         assert "Verified empty." in output
         assert calls == ["Agentic Coder Planner", "Agentic native pass 1", "Agentic native pass 2"]
         for frame in frames:
@@ -470,7 +471,10 @@ def test_repeated_planner_shell_denials_do_not_abort_or_discard_coder_task(monke
             output = "".join(frames)
             assert "Jack host recovery handoff to Coder" in output
             assert "Coder received the task." in output
-            assert "[CODER PLANNER — SPEC CAPTURED AND DELIVERED TO CODER]" in output
+            assert "[CODER PLANNER — SPEC CAPTURED AND DELIVERED TO CODER]" not in output
+            assert "[CODER PLANNER — DEVELOPER SPECIFICATION]" not in output
+            assert "[JACK TOOL ACTION REJECTED BEFORE EXECUTION" not in output
+            assert "[JACK PLANNER TOOL REJECTED EARLY" not in output
             assert sequence == [
                 "Agentic Coder Planner", "Agentic Coder Planner",
                 "Agentic Coder Planner", "Agentic native pass 1",
@@ -598,6 +602,8 @@ def test_early_planner_mutation_abort_preserves_partial_spec(monkeypatch, tmp_pa
         output="".join(frames)
         assert "Plan the SVG in Coder" in output
         assert "Created file" in output
+        assert "[JACK PLANNER TOOL REJECTED EARLY" not in output
+        assert "[JACK TOOL ACTION REJECTED BEFORE EXECUTION" not in output
         assert calls==["Agentic Coder Planner","Agentic Coder Planner",
                        "Agentic native pass 1","Agentic native pass 2"]
     asyncio.run(run())
@@ -1217,7 +1223,9 @@ def test_planner_read_tool_allowlist_and_shell_must_not_mutate(monkeypatch, tmp_
         {"type": "function", "function": {"name": "edit", "parameters": {"type": "object"}}},
     ]
     assert [x["function"]["name"] for x in k._coder_planner_tools(offered)] == ["read", "bash"]
-    for command in ("ls -a", "ls -la ./workspace", "cat src/main.py",
+    for command in ("ls -a", "ls -la ./workspace",
+                    'ls -la "C:\\Users\\default.DESKTOP-M8143Q1\\Desktop\\clock\\Agentic_Testing"',
+                    "cat src/main.py",
                     "head -n 40 ./foo.py", "rg -n 'function' src", "pwd",
                     "pwd && ls -la", "ls -la ./workspace && pwd",
                     "pwd && ls -la && cat README.md"):
@@ -1242,6 +1250,39 @@ def test_planner_read_tool_allowlist_and_shell_must_not_mutate(monkeypatch, tmp_
     assert not k._coder_planner_tool_errors([call("describe_image", {
         "image_path": "screenshot.png", "prompt": "Describe visual layout", "compress": False
     })])
+
+
+def test_planner_rejection_logs_cause_without_releasing_unsafe_tool(monkeypatch, tmp_path, caplog):
+    k = load(monkeypatch, tmp_path, planner="flash")
+    import logging
+
+    def call(name, arguments, call_id="inspector"):
+        return {"id": call_id, "type": "function",
+                "function": {"name": name, "arguments": json.dumps(arguments)}}
+
+    readonly = call("bash", {
+        "command": 'ls -la "C:\\Users\\default.DESKTOP-M8143Q1\\Desktop\\clock\\Agentic_Testing"'
+    })
+    assert k._coder_planner_tool_errors([readonly]) == []
+    k._coder_planner_log_rejection(
+        [readonly], ["test-only: inspection transport rejected"]
+    )
+    assert "test-only: inspection transport rejected" in caplog.text
+    assert "inspector" in caplog.text
+    assert "ls -la" in caplog.text
+    assert "Agentic_Testing" in caplog.text
+
+    caplog.clear()
+    blocked = call("write", {"path": "private.txt", "content": "SECRET_CONTENT"})
+    assert k._coder_planner_tool_errors([blocked])
+    k._coder_planner_log_rejection(
+        [blocked], ["Planner tool call 0: tool is not read-only"], incomplete=True
+    )
+    assert "not read-only" in caplog.text
+    assert "write" in caplog.text
+    assert "SECRET_CONTENT" not in caplog.text
+    assert "private.txt" not in caplog.text
+    assert "arguments_sha256" in caplog.text
 
 
 def test_planner_forbidden_write_edit_feedback_prevents_retry_loop(monkeypatch, tmp_path):
