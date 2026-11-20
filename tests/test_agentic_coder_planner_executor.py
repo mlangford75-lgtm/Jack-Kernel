@@ -62,7 +62,7 @@ def test_profile_isolated_and_reasoning_contract(monkeypatch, tmp_path):
     assert k.CODER_EXECUTOR_PROMPT.startswith(PREFIX)
     assert "read-only, non-mutating tools" in k.CODER_PLANNER_PROMPT
     assert "generate a detailed message" in k.CODER_PLANNER_PROMPT
-    assert "You are Planner\n\n" in k.CODER_PLANNER_PROMPT
+    assert "You are Planner.\n\n" in k.CODER_PLANNER_PROMPT
     assert "files in the workspace are checkpoints" in k.CODER_PLANNER_PROMPT
     assert "For non-coding tasks, simply generate a brief summary" in k.CODER_PLANNER_PROMPT
     assert "You've been provided a detailed, read-only developer specification prepared by Planner." in k.CODER_EXECUTOR_PROMPT
