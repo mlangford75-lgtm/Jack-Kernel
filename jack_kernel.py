@@ -16611,7 +16611,7 @@ def _print_header(
     print(_status_value("Output budget", f"{int(cfg.get('output_budget_tokens', 100000)):,} estimated tokens" if cfg.get("output_budget_tokens", 100000) else "OFF"))
     level_key = _REASONING_LEVEL_ALIASES.get(str(cfg.get("reasoning_level", "x-high")).lower(), str(cfg.get("reasoning_level", "x-high")).lower())
     level_profile = REASONING_PROFILES.get(level_key, REASONING_PROFILES["x-high"])
-    print(_status_value("Reasoning level", level_profile["label"]))
+    print(_status_value("Reasoning level", "Coder (Qwen 3.6-4.0)" if level_profile["mode"] == "agentic" and str(cfg.get("agentic_profile", "balanced")).lower() == "coder" else level_profile["label"]))
     if level_profile["mode"] == "agentic":
         print(_status_value("Agentic profile", str(cfg.get("agentic_profile", "balanced")).capitalize()))
         if str(cfg.get("agentic_profile", "balanced")).lower() == "translated":
@@ -16635,39 +16635,73 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
     print(_ansi_rgb("  2) Low (Disabled)", _JACK_MUTED))
     print("  3) Medium")
     print("  4) X-High (Default)")
-    print("  5) Ultra")
-    print("  6) Agentic")
-    print(_ansi_rgb("  7) Translator (Coming Soon)", _JACK_MUTED))
-    print("  8) Code Debugging")
-    print("  9) Code Debugging (Deep)")
+    print("  5) Coder (Qwen 3.6-4.0)")
+    print(_ansi_rgb("  6) Coder Hybrid (Coming Soon)", _JACK_MUTED))
+    print("  7) Agentic")
+    print(_ansi_rgb("  8) Translator (Coming Soon)", _JACK_MUTED))
+    print("  9) Code Debugging")
+    print(" 10) Code Debugging (Deep)")
 
     print()
     current = str(cfg.get("reasoning_level", "x-high")).lower()
     current = _REASONING_LEVEL_ALIASES.get(current, current)
     if current == "low" or current not in REASONING_PROFILES or REASONING_PROFILES[current].get("disabled"):
         current = "x-high"
-    choice = _cli_input(f"Select level [1-9] [{REASONING_PROFILES[current]['label']}]: ").strip().lower()
+    current_label = (
+        "Coder (Qwen 3.6-4.0)"
+        if current == "Local Agentic (Preserve Thinking)"
+        and str(cfg.get("agentic_profile", "balanced")).lower() == "coder"
+        else REASONING_PROFILES[current]["label"]
+    )
+    choice = _cli_input(f"Select level [1-10] [{current_label}]: ").strip().lower()
     if not choice:
         return
     if choice in {"2", "low"}:
         print(_ansi_rgb("Low is disabled in Jack Kernel v0.1.1 and cannot be selected.", _JACK_MUTED))
         return
-    if choice in {"7", "translator", "translate", "translation"}:
+    if choice in {"6", "coder hybrid", "coder-hybrid", "hybrid"}:
+        print(_ansi_rgb("Coder Hybrid (Coming Soon) cannot be selected.", _JACK_MUTED))
+        return
+    if choice in {"8", "translator", "translate", "translation"}:
         print(_ansi_rgb("Translator (Coming Soon) cannot be selected.", _JACK_MUTED))
         return
     mapping = {
         "1": "off", "off": "off", "flash": "off",
         "3": "medium", "medium": "medium", "standard": "medium",
         "4": "x-high", "x-high": "x-high", "xhigh": "x-high", "high": "x-high", "default": "x-high", "recommended": "x-high",
-        "5": "ultra", "ultra": "ultra",
-        "6": "Local Agentic (Preserve Thinking)", "agentic": "Local Agentic (Preserve Thinking)",
-        "7": "translator", "translator": "translator", "translate": "translator", "translation": "translator",
-        "8": "code-debugging", "code-debugging": "code-debugging", "debug": "code-debugging", "debugging": "code-debugging",
-        "9": "code-debugging-deep", "code-debugging-deep": "code-debugging-deep", "code debugging deep": "code-debugging-deep", "debugging deep": "code-debugging-deep", "deep debugging": "code-debugging-deep",
+        "5": "coder", "coder": "coder",
+        "7": "Local Agentic (Preserve Thinking)", "agentic": "Local Agentic (Preserve Thinking)",
+        "9": "code-debugging", "code-debugging": "code-debugging", "debug": "code-debugging", "debugging": "code-debugging",
+        "10": "code-debugging-deep", "code-debugging-deep": "code-debugging-deep", "code debugging deep": "code-debugging-deep", "debugging deep": "code-debugging-deep", "deep debugging": "code-debugging-deep",
     }
     selected = mapping.get(choice)
     if selected is None:
         print("Invalid selection; keeping current reasoning level.")
+        return
+    if selected == "coder":
+        # Coder is a standalone launcher choice but deliberately retains the
+        # proven Agentic-Coder runtime/Stage-2 implementation underneath.
+        print()
+        print("Planner")
+        print("  1) Flash")
+        print("  2) Thorough")
+        print()
+        current_planner = str(cfg.get("coder_planner_profile", "thorough")).lower()
+        default_planner = "1" if current_planner == "flash" else "2"
+        planner_choice = _cli_input(
+            f"Select Planner profile [1-2] [{default_planner}]: "
+        ).strip().lower() or default_planner
+        planner_profile = {
+            "1": "flash", "flash": "flash",
+            "2": "thorough", "thorough": "thorough",
+        }.get(planner_choice)
+        if planner_profile is None:
+            print("Invalid Planner profile; keeping current selection.")
+            return
+        cfg["coder_planner_profile"] = planner_profile
+        cfg["agentic_profile"] = "coder"
+        cfg["reasoning_level"] = "Local Agentic (Preserve Thinking)"
+        print(f"Coder (Qwen 3.6-4.0) selected; Planner: {planner_profile.capitalize()}.")
         return
     if selected == "Local Agentic (Preserve Thinking)":
         print()
@@ -16676,14 +16710,12 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
         print("  2) Balanced   - Stage 1 ON,  Stage 2 OFF, no extensions (Default)")
         print("  3) Thorough   - Stage 1 ON,  Stage 2 ON, no extensions")
         print("  4) Translated - Thorough + Stage 1 translation extension, Stage 2 ON")
-        print("  5) Coder      - Planner + Coder")
         print()
-        agentic_choice = _cli_input("Select Agentic profile [1-5] [2]: ").strip().lower() or "2"
+        agentic_choice = _cli_input("Select Agentic profile [1-4] [2]: ").strip().lower() or "2"
         selected_profile = {"1": "flash", "flash": "flash",
                             "2": "balanced", "balanced": "balanced",
                             "3": "thorough", "thorough": "thorough",
-                            "4": "translated", "translated": "translated",
-                            "5": "coder", "coder": "coder"}.get(agentic_choice)
+                            "4": "translated", "translated": "translated"}.get(agentic_choice)
         if selected_profile is None:
             print("Invalid Agentic profile; keeping current reasoning level.")
             return
@@ -16710,31 +16742,10 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
                 return
             cfg["translated_language"] = selected_language
             print(f"Translated target language: {TRANSLATOR_LANGUAGES[selected_language]}")
-        if selected_profile == "coder":
-            print()
-            print("Planner")
-            print("  1) Flash")
-            print("  2) Thorough")
-            print()
-            current_planner = str(cfg.get("coder_planner_profile", "thorough")).lower()
-            default_planner = "1" if current_planner == "flash" else "2"
-            planner_choice = _cli_input(
-                f"Select Planner profile [1-2] [{default_planner}]: "
-            ).strip().lower() or default_planner
-            planner_profile = {
-                "1": "flash", "flash": "flash",
-                "2": "thorough", "thorough": "thorough",
-            }.get(planner_choice)
-            if planner_profile is None:
-                print("Invalid Planner profile; keeping current Agentic selection.")
-                return
-            cfg["coder_planner_profile"] = planner_profile
-            print(f"Coder Planner profile set to {planner_profile.capitalize()}.")
         cfg["agentic_profile"] = selected_profile
         print(f"Agentic profile set to {selected_profile.capitalize()}.")
     cfg["reasoning_level"] = selected
     print(f"Reasoning level set to {REASONING_PROFILES[selected]['label']}.")
-
 
 def _edit_preserve_thinking(cfg: Dict[str, Any]) -> None:
     _print_back_hint()
@@ -17190,7 +17201,7 @@ def _start_server_from_cli(cfg: Dict[str, Any]) -> None:
     print(f"Virtual model  : {cfg['virtual_model']}")
     print(f"Context monitor: {'ON (separate Windows window)' if cfg.get('context_monitor_enabled', True) else 'OFF'}")
     level_key = _REASONING_LEVEL_ALIASES.get(str(cfg.get("reasoning_level", "x-high")).lower(), str(cfg.get("reasoning_level", "x-high")).lower())
-    print(f"Reasoning level  : {REASONING_PROFILES.get(level_key, REASONING_PROFILES['x-high'])['label']}")
+    print(f"Reasoning level  : {'Coder (Qwen 3.6-4.0)' if level_key == 'Local Agentic (Preserve Thinking)' and str(cfg.get('agentic_profile', 'balanced')).lower() == 'coder' else REASONING_PROFILES.get(level_key, REASONING_PROFILES['x-high'])['label']}")
     if REASONING_PROFILES.get(level_key, {}).get("mode") == "agentic":
         print(f"Agentic profile  : {str(cfg.get('agentic_profile', 'balanced')).capitalize()}")
         if str(cfg.get("agentic_profile", "")).lower() == "coder":
