@@ -5123,11 +5123,12 @@ def _tool_rejection_notice(
             guidance = (
                 "This shell command was rejected, not executed. Any file creation, "
                 "change, or deletion must be specified for Coder, never retried in "
-                "Planner through bash or another tool. Planner may run "
-                "a single read-only inspection command per bash call, such as "
-                "'ls -la' or 'pwd'. Do not chain commands with shell operators "
-                "or try mutation commands. Use permitted inspection commands "
-                "only if necessary, then finish the developer spec for Coder."
+                "Planner through bash or another tool. Planner may inspect "
+                "using permitted read-only commands such as 'ls -la', 'find', "
+                "'rg', 'git status', and 'wc -l'. Safe inspection pipelines "
+                "are allowed, but scripts, mutations, and output redirection "
+                "remain prohibited. Finish the developer spec for Coder "
+                "once the available evidence is sufficient."
             )
         else:
             guidance = (
