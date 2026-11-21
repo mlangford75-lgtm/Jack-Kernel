@@ -6,15 +6,15 @@ from jack_loop_detector import (
 
 
 def test_public_defaults():
-    assert LOOP_THRESHOLDS == (16, 32, 48, 64, 128)
-    assert DEFAULT_LOOP_THRESHOLD == 32
+    assert LOOP_THRESHOLDS == (12, 16, 24, 32, 48, 64, 128)
+    assert DEFAULT_LOOP_THRESHOLD == 24
     assert MIN_CYCLE_WORDS == 128
 
 
-def test_no_early_detection_for_31_copies():
+def test_no_early_detection_for_23_copies():
     detector = ReasoningLoopDetector()
     cycle = [f"step_{i:03d}" for i in range(128)]
-    assert detector.feed(" ".join(cycle * 31) + " ") is False
+    assert detector.feed(" ".join(cycle * 23) + " ") is False
     assert detector.detected_cycle_words is None
     assert detector.feed(" ".join(cycle) + " ") is True
     assert detector.detected_cycle_words == 128
@@ -25,14 +25,14 @@ def test_detects_shorter_base_cycle_via_128_word_supercycle():
     # exact repeated cycle without relaxing the 128-word minimum.
     cycle = [f"reason_{i:02d}" for i in range(66)]
     detector = ReasoningLoopDetector()
-    assert detector.feed(" ".join(cycle * 63) + " ") is False
+    assert detector.feed(" ".join(cycle * 47) + " ") is False
     assert detector.feed(" ".join(cycle) + " ") is True
     assert detector.detected_cycle_words == 132
 
 
 def test_chunk_invariance_and_whitespace_normalization():
     cycle = [f"token{i}" for i in range(128)]
-    text = "\n \t".join(cycle * 32) + " "
+    text = "\n \t".join(cycle * 24) + " "
     detector = ReasoningLoopDetector()
     detected = False
     for index in range(0, len(text), 7):
@@ -56,7 +56,7 @@ def test_reconsideration_and_similar_prose_not_matched():
 
 def test_repeated_short_phrase_is_not_enough():
     detector = ReasoningLoopDetector()
-    assert detector.feed("apply the fix " * 32 + " ") is False
+    assert detector.feed("apply the fix " * 24 + " ") is False
 
 
 def test_threshold_choices():
