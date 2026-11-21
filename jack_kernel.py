@@ -16639,11 +16639,10 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
     print("  3) Medium")
     print("  4) X-High (Default)")
     print("  5) Coder (Qwen 3.6-4.0)")
-    print(_ansi_rgb("  6) Coder Hybrid (Coming Soon)", _JACK_MUTED))
-    print("  7) Agentic")
-    print(_ansi_rgb("  8) Translator (Coming Soon)", _JACK_MUTED))
-    print("  9) Code Debugging")
-    print(" 10) Code Debugging (Deep)")
+    print("  6) Agentic")
+    print(_ansi_rgb("  7) Translator (Coming Soon)", _JACK_MUTED))
+    print("  8) Code Debugging")
+    print("  9) Code Debugging (Deep)")
 
     print()
     current = str(cfg.get("reasoning_level", "x-high")).lower()
@@ -16656,16 +16655,13 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
         and str(cfg.get("agentic_profile", "balanced")).lower() == "coder"
         else REASONING_PROFILES[current]["label"]
     )
-    choice = _cli_input(f"Select level [1-10] [{current_label}]: ").strip().lower()
+    choice = _cli_input(f"Select level [1-9] [{current_label}]: ").strip().lower()
     if not choice:
         return
     if choice in {"2", "low"}:
         print(_ansi_rgb("Low is disabled in Jack Kernel v0.1.1 and cannot be selected.", _JACK_MUTED))
         return
-    if choice in {"6", "coder hybrid", "coder-hybrid", "hybrid"}:
-        print(_ansi_rgb("Coder Hybrid (Coming Soon) cannot be selected.", _JACK_MUTED))
-        return
-    if choice in {"8", "translator", "translate", "translation"}:
+    if choice in {"7", "translator", "translate", "translation"}:
         print(_ansi_rgb("Translator (Coming Soon) cannot be selected.", _JACK_MUTED))
         return
     mapping = {
@@ -16673,9 +16669,9 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
         "3": "medium", "medium": "medium", "standard": "medium",
         "4": "x-high", "x-high": "x-high", "xhigh": "x-high", "high": "x-high", "default": "x-high", "recommended": "x-high",
         "5": "coder", "coder": "coder",
-        "7": "Local Agentic (Preserve Thinking)", "agentic": "Local Agentic (Preserve Thinking)",
-        "9": "code-debugging", "code-debugging": "code-debugging", "debug": "code-debugging", "debugging": "code-debugging",
-        "10": "code-debugging-deep", "code-debugging-deep": "code-debugging-deep", "code debugging deep": "code-debugging-deep", "debugging deep": "code-debugging-deep", "deep debugging": "code-debugging-deep",
+        "6": "Local Agentic (Preserve Thinking)", "agentic": "Local Agentic (Preserve Thinking)",
+        "8": "code-debugging", "code-debugging": "code-debugging", "debug": "code-debugging", "debugging": "code-debugging",
+        "9": "code-debugging-deep", "code-debugging-deep": "code-debugging-deep", "code debugging deep": "code-debugging-deep", "debugging deep": "code-debugging-deep", "deep debugging": "code-debugging-deep",
     }
     selected = mapping.get(choice)
     if selected is None:
@@ -16688,12 +16684,16 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
         print("Planner")
         print("  1) Flash")
         print("  2) Thorough")
+        print(_ansi_rgb("  3) Hybrid (Local+Cloud) (Coming Soon)", _JACK_MUTED))
         print()
         current_planner = str(cfg.get("coder_planner_profile", "thorough")).lower()
         default_planner = "1" if current_planner == "flash" else "2"
         planner_choice = _cli_input(
-            f"Select Planner profile [1-2] [{default_planner}]: "
+            f"Select Planner profile [1-3] [{default_planner}]: "
         ).strip().lower() or default_planner
+        if planner_choice in {"3", "hybrid", "local+cloud", "hybrid (local+cloud)"}:
+            print(_ansi_rgb("Hybrid (Local+Cloud) (Coming Soon) cannot be selected.", _JACK_MUTED))
+            return
         planner_profile = {
             "1": "flash", "flash": "flash",
             "2": "thorough", "thorough": "thorough",
