@@ -3487,6 +3487,25 @@ def _coder_planner_tools_for_attempt(
     return _coder_planner_tools(tools)
 
 
+def _coder_authenticated_request_text(content: Any) -> str:
+    """Render the user's authenticated text without JSON-wrapping text blocks.
+
+    Preserve non-text blocks as explicit serialized evidence rather than
+    silently dropping attachments or multimodal requirements.
+    """
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        pieces = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
+                pieces.append(item["text"])
+            elif item is not None:
+                pieces.append(json.dumps(item, ensure_ascii=False))
+        return "\n".join(piece for piece in pieces if piece.strip()).strip()
+    return _content_to_text(content).strip()
+
+
 def _coder_planner_is_host_continuation(text: str) -> bool:
     """Host recovery directions are never Planner findings or Coder requirements."""
     value = text.strip()
@@ -3516,7 +3535,7 @@ def _coder_planner_host_handoff_result(
     target = active_response_target(history)
     if target is None or not str(target.get("content") or "").strip():
         raise ForensicConflict("Coder Planner fallback missing authenticated user request")
-    requested = _content_to_text(target["content"]).strip()
+    requested = _coder_authenticated_request_text(target["content"])
     if not requested:
         raise ForensicConflict("Coder Planner fallback missing authenticated request text")
     partials: List[str] = []
