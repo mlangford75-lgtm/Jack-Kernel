@@ -56,6 +56,42 @@ def test_planner_fallback_extracts_plain_authenticated_request_and_retains_findi
     assert "If the task is complete" not in output
 
 
+def test_planner_fallback_decodes_active_response_target_serialized_text_blocks():
+    """Regression: active_response_target returns JSON for structured user text."""
+    functions = _load_isolated(
+        "_coder_authenticated_request_text", "_coder_planner_is_host_continuation",
+        "_coder_planner_host_handoff_result"
+    )
+    functions.update({
+        "ForensicConflict": RuntimeError,
+        "_content_to_text": lambda content: (
+            json.dumps(content, ensure_ascii=False, separators=(",", ":"))
+            if isinstance(content, list) else str(content or "")
+        ),
+        "_coder_unverified_observations": lambda value: value.strip(),
+        "active_response_target": lambda h: {
+            "history_index": 0,
+            "content": json.dumps(h[0]["content"], ensure_ascii=False, separators=(",", ":"))
+        },
+    })
+    user_text = '"C:\\\\Users\\\\example\\\\Desktop\\\\clock\\\\Agentic_Testing" is the workspace. verify its empty'
+    history = [{"role": "user", "content": [{"type": "text", "text": user_text}]}]
+    result = functions["_coder_planner_host_handoff_result"](history)
+    spec = result["choices"][0]["message"]["content"]
+    assert user_text in spec
+    assert '[{"type":"text"' not in spec
+    assert "Jack host recovery handoff" in spec
+
+
+def test_planner_helper_leaves_literal_json_and_nontext_unchanged():
+    fn = _load_isolated("_coder_authenticated_request_text")["_coder_authenticated_request_text"]
+    assert fn("literal [1, 2]") == "literal [1, 2]"
+    assert fn('[{"foo":"bar"}]') == '[{"foo":"bar"}]'
+    visual = fn([{"type": "text", "text": "Describe image"}, {"type": "image_url", "image_url": {"url": "data:image/jpeg;..."}}])
+    assert visual.startswith("Describe image")
+    assert '"type": "image_url"' in visual
+
+
 def test_planner_recovery_isolated_without_promoting_host_message_to_user():
     functions = _load_isolated("_coder_isolate_planner_request")
     functions.update({
