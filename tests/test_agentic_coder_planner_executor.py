@@ -691,7 +691,7 @@ def test_plan_owned_once_and_preserved_for_memory(monkeypatch, tmp_path):
     assert k.active_response_target(h)["content"] == "Build and test a website."
     assert k._coder_has_plan(h)
     assert h[-1]["role"] == "assistant"
-    assert h[-1]["reasoning_content"] == "PLANNER_R1"
+    assert "reasoning_content" not in h[-1]  # Planner R1 retired after capture
     assert h[-1]["content"] == spec_text()
     assert h[-1]["_jack_coder_goal_fallback"] is False
     with pytest.raises(k.ForensicConflict):
