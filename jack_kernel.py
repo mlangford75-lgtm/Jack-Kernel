@@ -3294,6 +3294,7 @@ CODER_PLANNER_PROMPT = (
       "what needs to be delivered to fulfill it.\n\n"
       "Past chat history and files in the workspace are checkpoints to consider when relevant. "
       "Preserve useful existing work. Do not repeat inspections when the available evidence is sufficient.\n\n"
+      "The Coder has access to the tool history. Do not repeat tool history to the Coder.\n\n"
       "Your stateful, mutating, or destructive tools have been removed. "
       "You operate with read-only, non-mutating tools. Use them when inspection is necessary.\n\n"
       "Do not perform Coder's implementation work. Describe what needs to be accomplished, "
