@@ -151,3 +151,26 @@ def test_host_instruction_is_not_accepted_as_planner_spec():
     )
     assert fallback is False
     assert "Inspect" in spec
+
+
+def test_flash_stage_runtime_zero_reasoning_without_output_limit():
+    functions = _load_isolated("_agentic_zero_reasoning")
+    from types import SimpleNamespace
+    functions.update({
+        "AGENTIC_MODE": True,
+        "AGENTIC_FLASH_MODE": False,
+        "AGENTIC_BALANCED_MODE": False,
+        "AGENTIC_TRANSLATED_MODE": False,
+        "CODER_PLANNER_FLASH_MODE": True,
+    })
+    planner = SimpleNamespace(name="Agentic Coder Planner", thinking=False)
+    memory = SimpleNamespace(name="Agentic native pass 2", thinking=False)
+    coder = SimpleNamespace(name="Agentic native pass 1", thinking=True)
+    assert functions["_agentic_zero_reasoning"](planner) is True
+    assert functions["_agentic_zero_reasoning"](memory) is True
+    assert functions["_agentic_zero_reasoning"](coder) is False
+    # Output is intentionally controlled independently of backend thinking.
+    assert "max_tokens=0" not in SOURCE.read_text(encoding="utf-8")[
+        SOURCE.read_text(encoding="utf-8").index("def _agentic_zero_reasoning"):
+        SOURCE.read_text(encoding="utf-8").index("def _agentic_translated_generation_profile")
+    ]
