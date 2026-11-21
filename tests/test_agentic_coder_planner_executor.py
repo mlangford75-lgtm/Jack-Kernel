@@ -768,6 +768,55 @@ def test_incomplete_planner_preserves_partial_work_as_unverified_data(monkeypatc
     assert k._coder_has_plan(h)
 
 
+
+@pytest.mark.parametrize("planner_profile", ["flash", "thorough"])
+def test_planner_reasoning_retired_immediately_but_spec_and_tool_evidence_survive(monkeypatch, tmp_path, planner_profile):
+    k = load(monkeypatch, tmp_path, planner=planner_profile)
+    h = [{"role": "user", "content": "Inspect and implement"}]
+    h.extend([
+        {"role": "assistant", "content": "", "_jack_internal_tool_exchange": True,
+         "_jack_stage_key": "coder_planner",
+         "reasoning_content": "PLANNER_TOOL_R1",
+         "tool_calls": [{"id": "plan-read", "type": "function",
+                         "function": {"name": "read", "arguments": '{"path":"clock.html"}'}}]},
+        {"role": "tool", "tool_call_id": "plan-read", "name": "read",
+         "content": "original workspace evidence", "_jack_internal_tool_exchange": True},
+    ])
+    k._coder_append_plan(h, response("Implement a working clock.", "PLANNER_FINAL_R1"))
+    plan = h[-1]
+    assert plan["content"] == "Implement a working clock."
+    assert plan["_jack_coder_original_planner_output"] == plan["content"]
+    assert all("PLANNER_TOOL_R1" not in str(item) and "PLANNER_FINAL_R1" not in str(item)
+               for item in h)
+    assert h[1]["tool_calls"][0]["id"] == "plan-read"
+    assert h[2]["content"] == "original workspace evidence"
+    assert k._coder_has_plan(h)
+    assert k._coder_retire_planner_reasoning(h) == 0  # idempotent
+    backend = k.OpenAICompatibleBackend(k.CFG)
+    wire = backend._stage_messages_for_profile(h, k.STAGES["extended_initial"])
+    assert any("Implement a working clock." in str(item) for item in wire)
+    assert all("PLANNER_TOOL_R1" not in str(item) for item in wire)
+
+
+@pytest.mark.parametrize("planner_profile", ["flash", "thorough"])
+def test_coder_stage2_spec_is_unverified_once_without_planner_reasoning(monkeypatch, tmp_path, planner_profile):
+    k = load(monkeypatch, tmp_path, planner=planner_profile)
+    h = [{"role": "user", "content": "Build clock"}]
+    k._coder_append_plan(h, response("SPEC_UNIQUE: verify saved clock.", "PLANNER_R1_UNIQUE"))
+    assert k._coder_stage2_spec_source(h) == "SPEC_UNIQUE: verify saved clock."
+    assert "reasoning_content" not in h[-1]
+    assert "reasoning" not in h[-1]
+    h.append({"role": "assistant", "content": "CODER_COMPLETED",
+              "reasoning_content": "CODER_R1_UNIQUE",
+              "_jack_extended_candidate_response": True})
+    events = k._agentic_stage2_chronological_source(h)
+    assert any(e.get("content") == "CODER_R1_UNIQUE" for e in events)
+    assert all("PLANNER_R1_UNIQUE" not in str(e) for e in events)
+    assert k._coder_stage2_spec_source(h) == "SPEC_UNIQUE: verify saved clock."
+    # The source is read-only; no spec duplication into the canonical history.
+    assert sum(bool(item.get("_jack_coder_plan")) for item in h) == 1
+
+
 def test_goal_checkpoint_persists_after_commit_without_becoming_memory(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path)
     monkeypatch.setattr(k, "_config_dir", lambda: tmp_path)
