@@ -108,6 +108,90 @@ def test_different_tool_results_break_cycle(monkeypatch, tmp_path):
     assert k._agentic_exact_tool_cycle(h, [run_call(3)]) is None
 
 
+def test_repeated_file_read_with_unchanged_evidence_blocks_third_call(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path)
+    h = [{"role": "user", "content": "Fix the analog clock"}]
+    k._agentic_begin_turn(h, fresh=True)
+    for i in range(2):
+        push(h, call("read", {"path": "index.html"}, f"read-{i}"), "<html>clock</html>")
+    assert k._agentic_exact_tool_cycle(
+        h, [call("read", {"path": "index.html"}, "read-3")]
+    ) == (1, 3)
+    assert k._agentic_exact_tool_cycle(
+        h, [call("read", {"path": "other.html"}, "other")]
+    ) is None
+
+
+def test_read_cycle_requires_two_completed_same_results(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path)
+    h = [{"role": "user", "content": "Inspect changes"}]
+    k._agentic_begin_turn(h, fresh=True)
+    push(h, call("read", {"path": "index.html"}, "one"), "version 1")
+    assert k._agentic_exact_tool_cycle(
+        h, [call("read", {"path": "index.html"}, "two")]
+    ) is None
+    push(h, call("read", {"path": "index.html"}, "two"), "version 2")
+    assert k._agentic_exact_tool_cycle(
+        h, [call("read", {"path": "index.html"}, "three")]
+    ) is None
+    push(h, call("read", {"path": "index.html"}, "three"), "version 2")
+    assert k._agentic_exact_tool_cycle(
+        h, [call("read", {"path": "index.html"}, "four")]
+    ) == (1, 3)
+
+
+def test_read_cycle_fails_open_on_error_or_incomplete_result(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path)
+    h = [{"role": "user", "content": "Inspect the file"}]
+    k._agentic_begin_turn(h, fresh=True)
+    push(h, call("read", {"path": "index.html"}, "one"), "missing",
+         outcome=k.TOOL_FAILED)
+    push(h, call("read", {"path": "index.html"}, "two"), "missing",
+         outcome=k.TOOL_FAILED)
+    assert k._agentic_exact_tool_cycle(
+        h, [call("read", {"path": "index.html"}, "three")]
+    ) is None
+    h = [{"role": "user", "content": "Inspect the file"}]
+    k._agentic_begin_turn(h, fresh=True)
+    push(h, call("read", {"path": "index.html"}, "one"), "read content")
+    h.append({"role": "assistant", "content": "",
+              "tool_calls": [call("read", {"path": "index.html"}, "pending")],
+              "_jack_internal_tool_exchange": True})
+    assert k._agentic_exact_tool_cycle(
+        h, [call("read", {"path": "index.html"}, "three")]
+    ) is None
+
+
+def test_repeated_nonfile_observations_remain_allowed(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path)
+    h = [{"role": "user", "content": "Monitor a running job"}]
+    k._agentic_begin_turn(h, fresh=True)
+    for i in range(5):
+        push(h, call("bash", {"command": "ls -la"}, f"ls-{i}"), "total 0")
+    assert k._agentic_exact_tool_cycle(
+        h, [call("bash", {"command": "ls -la"}, "ls-6")]
+    ) is None
+
+
+def test_stage_tool_resume_rejects_stable_read_before_checkpoint(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path)
+    h = [{"role": "user", "content": "Fix analog clock"}]
+    k._agentic_begin_turn(h, fresh=True)
+    for i in range(2):
+        push(h, call("read", {"path": "index.html"}, f"old-{i}"), "<html>clock</html>")
+    candidate = call("read", {"path": "index.html"}, "new-read")
+    result = {"choices": [{"message": {"role": "assistant", "tool_calls": [candidate]},
+                           "finish_reason": "tool_calls"}]}
+    async def scenario():
+        with pytest.raises(k.RepeatedToolCycleInterrupt):
+            await k.KERNEL._register_stage_tool_resume(
+                stage_key="extended_initial", history=h, secondary_system="",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                tools=[], tool_choice="auto", data=result)
+        assert candidate["id"] not in k.KERNEL._pending_tool_resumes
+    asyncio.run(scenario())
+
+
 def test_no_guard_for_nonmutating_polling_or_confirmed_failure(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path)
     h = [{"role": "user", "content": "Monitor until a process completes"}]
