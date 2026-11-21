@@ -376,7 +376,7 @@ class KernelConfig:
     log_level: str = os.getenv("JACK_LOG_LEVEL", "INFO").upper()
     log_reasoning: bool = os.getenv("JACK_LOG_REASONING", "0") == "1"
     loop_detector_enabled: bool = os.getenv("JACK_LOOP_DETECTOR", "1").strip().lower() not in {"0", "false", "no", "off"}
-    loop_detector_repetitions: int = int(os.getenv("JACK_LOOP_REPETITIONS", "32"))
+    loop_detector_repetitions: int = int(os.getenv("JACK_LOOP_REPETITIONS", "24"))
     # Deterministic, host-only Agentic tool-cycle gate. Unlike the native
     # reasoning loop detector, this compares consecutive completed tool
     # transactions across backend generations. No model-facing prompt changes.
@@ -4146,12 +4146,14 @@ def _agentic_exact_tool_cycle(
     max_cycle: int = 4,
     stage_key: Optional[str] = None,
 ) -> Optional[Tuple[int, int]]:
-    """Detect an exactly repeated, completed, mutation-bearing tool cycle.
+    """Detect repeated completed tool cycles without discarding useful work.
 
-    Bounded suffix of the current tool-owning stage. A pending/missing result,
-    malformed call, changed arguments, changed returned evidence, or a
-    non-mutating cycle never authorizes an interruption. Never use names/IDs
-    alone: tool-call IDs are expected to change every generation.
+    Mutation-bearing cycles retain their established threshold (3 repetitions).
+    Pure file inspection cycles are eligible after two identical completed
+    inspections, immediately before the third identical call is released.
+    Polling commands and other non-mutating tools remain unaffected.
+    A failed result, incomplete exchange, changed args, or changed evidence
+    never authorizes an interrupt. Tool IDs are intentionally ignored.
     """
     if len(candidate_calls) != 1:
         return None
@@ -4229,13 +4231,20 @@ def _agentic_exact_tool_cycle(
     actions = [x[0] for x in previous] + [proposed]
     evidences: List[Optional[Tuple[str, str]]] = [x[1] for x in previous] + [None]
     for cycle_length in range(1, maximum + 1):
-        required = repeats * cycle_length
+        pattern = actions[-cycle_length:]
+        mutation_cycle = any(x[2] for x in pattern)
+        # Restrict early read-only detection to the pure file-read tool.
+        # Listing/polling, searches and other observation tools may legitimately
+        # repeat while awaiting changes. The tool name, exact arguments, and
+        # returned evidence must all match; changed file bytes reset detection.
+        stable_file_inspection = all(x[0] == "read" and not x[2] for x in pattern)
+        if not (mutation_cycle or stable_file_inspection):
+            continue
+        cycle_repetitions = repeats if mutation_cycle else 3
+        required = cycle_repetitions * cycle_length
         if len(actions) < required:
             continue
         tail = actions[-required:]
-        pattern = tail[-cycle_length:]
-        if not any(x[2] for x in pattern):
-            continue
         if any(tail[i:i + cycle_length] != pattern for i in range(0, required, cycle_length)):
             continue
         evidence_tail = evidences[-required:]
@@ -4247,7 +4256,7 @@ def _agentic_exact_tool_cycle(
                 stable = False
                 break
         if stable:
-            return cycle_length, repeats
+            return cycle_length, cycle_repetitions
     return None
 
 
@@ -9912,7 +9921,7 @@ class JackQwenKernel:
         # inference retry and never prevent the exact A1 from being delivered.
         # A shorter Stage-2 repetition threshold limits wasted native tokens.
         loop_repetitions = (
-            min(self.cfg.loop_detector_repetitions, 16)
+            min(self.cfg.loop_detector_repetitions, 12)
             if AGENTIC_MODE and stage_key == "extended_reflection"
             else self.cfg.loop_detector_repetitions
         )
@@ -16100,7 +16109,7 @@ CLI_DEFAULTS: Dict[str, Any] = {
     "log_level": "INFO",
     "log_reasoning": False,
     "loop_detector_enabled": True,
-    "loop_detector_repetitions": 32,
+    "loop_detector_repetitions": 24,
     "forensic_archive_mode": "stage",
     "forensic_archive_dir": "",
     "thinking_temperature": 1.0,
@@ -16529,7 +16538,7 @@ def _print_header(
     print(_status_value("Virtual model", cfg['virtual_model']))
     print(_status_value("Preserve thinking", "ON" if cfg.get("preserve_thinking", True) else "OFF"))
     print(_status_value("Forensic archive", str(cfg.get("forensic_archive_mode", "stage")).upper()))
-    loop_n = cfg.get("loop_detector_repetitions", 32)
+    loop_n = cfg.get("loop_detector_repetitions", 24)
     print(_status_value("Loop Detector", f"ON / {loop_n} repetitions" if cfg.get("loop_detector_enabled", True) else "OFF"))
     active_mode = _REASONING_LEVEL_ALIASES.get(str(cfg.get("reasoning_level", "x-high")).lower(), str(cfg.get("reasoning_level", "x-high")).lower())
     print(_status_value("Live stage streaming", "BUFFERED  [stream=true; Pi-compatible]" if active_mode == "deep-reasoning" else "ON  [stream=true]"))
@@ -16684,8 +16693,8 @@ def _edit_preserve_thinking(cfg: Dict[str, Any]) -> None:
 
 def _edit_loop_detector(cfg: Dict[str, Any]) -> None:
     _print_back_hint()
-    print("Loop Detector - exact native reasoning repetition")
-    print("Minimum exact cycle: 128 words. Only generated native reasoning is checked.")
+    print("Loop Detector - native reasoning and completed tool-cycle repetition")
+    print("Native reasoning: exact cycles of at least 128 words. Tool cycles: identical calls and evidence.")
     current_enabled = bool(cfg.get("loop_detector_enabled", True))
     enabled = _cli_input(f"Enable Loop Detector? [Y/n] [{'Y' if current_enabled else 'N'}]: ").strip().lower()
     if enabled in {"y", "yes"}:
@@ -16698,8 +16707,8 @@ def _edit_loop_detector(cfg: Dict[str, Any]) -> None:
     if not cfg.get("loop_detector_enabled", True):
         print("Loop Detector disabled; backend limits and agent cancellation unchanged.")
         return
-    print("Repetitions: 16, 32 (Default), 48, 64, 128")
-    current = int(cfg.get("loop_detector_repetitions", 32))
+    print("Native reasoning repetitions: 12, 16, 24 (Default), 32, 48, 64, 128")
+    current = int(cfg.get("loop_detector_repetitions", 24))
     selected = _cli_input(f"Select repetition threshold [{current}]: ").strip()
     if selected:
         try:
@@ -17068,7 +17077,7 @@ def _config_to_env(cfg: Dict[str, Any]) -> Dict[str, str]:
         "JACK_LOG_LEVEL": cfg["log_level"],
         "JACK_LOG_REASONING": "1" if cfg["log_reasoning"] else "0",
         "JACK_LOOP_DETECTOR": "1" if cfg.get("loop_detector_enabled", True) else "0",
-        "JACK_LOOP_REPETITIONS": cfg.get("loop_detector_repetitions", 32),
+        "JACK_LOOP_REPETITIONS": cfg.get("loop_detector_repetitions", 24),
         "JACK_FORENSIC_ARCHIVE_MODE": cfg.get("forensic_archive_mode", "stage"),
         "JACK_FORENSIC_ARCHIVE_DIR": cfg.get("forensic_archive_dir", ""),
         "JACK_THINKING_TEMPERATURE": cfg["thinking_temperature"],
