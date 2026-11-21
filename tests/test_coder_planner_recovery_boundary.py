@@ -105,15 +105,22 @@ def test_planner_recovery_isolated_without_promoting_host_message_to_user():
     entries = [
         {"role": "system", "content": "Caller-owned system"},
         {"role": "user", "content": "Inspect a workspace"},
+        {"role": "assistant", "content": "Valid observation"},
+        {"role": "assistant", "content": "Planner invalid tool proposal",
+         "_jack_internal_tool_validation_checkpoint": True},
+        {"role": "user", "content": "Rejected tool; try again",
+         "_jack_internal_tool_validation_rejection": True},
+        {"role": "user", "content": "Jack empty stream recovery",
+         "_jack_internal_protocol_recovery": True},
         {"role": "system", "content": "Tool rejected",
          "_jack_planner_recovery_message": True},
-        {"role": "assistant", "content": "Valid observation"},
     ]
     isolated = functions["_coder_isolate_planner_request"](entries, Profile())
     assert isolated[0] == {"role": "system", "content": "You are Planner."}
-    assert sum(x["role"] == "user" for x in isolated) == 1
-    assert len([x for x in isolated if "Tool rejected" in x["content"]]) == 1
-    assert all(x["role"] != "system" for x in isolated[1:])
+    assert isolated[1:] == [
+        {"role": "user", "content": "Inspect a workspace"},
+        {"role": "assistant", "content": "Valid observation"},
+    ]
 
 
 def test_flash_disables_thinking_without_forcing_zero_budget_or_output_limit():
@@ -151,7 +158,7 @@ def test_rejected_mutation_gets_one_tools_off_spec_chance():
     )
 
 
-def test_rejected_read_only_inspection_remains_correctable():
+def test_rejected_inspection_stops_tool_retries_but_preserves_evidence():
     functions = _load_isolated(
         "_coder_planner_mutation_rejected", "_coder_planner_tools_for_attempt"
     )
@@ -167,7 +174,11 @@ def test_rejected_read_only_inspection_remains_correctable():
         {"role": "user", "content": "Inspection rejected",
          "_jack_internal_coder_planner_rejection": True},
     ]
-    assert functions["_coder_planner_tools_for_attempt"](history, offered) == offered
+    assert functions["_coder_planner_tools_for_attempt"](history, offered) == []
+    # Unrejected first attempts retain read-only inspection tools.
+    assert functions["_coder_planner_tools_for_attempt"](
+        [{"role": "user", "content": "Inspect"}], offered
+    ) == offered
 
 
 def test_host_instruction_is_not_accepted_as_planner_spec():
