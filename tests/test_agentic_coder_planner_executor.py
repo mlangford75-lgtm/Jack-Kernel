@@ -115,12 +115,29 @@ def test_coder_planner_flash_and_thorough_are_isolated(monkeypatch, tmp_path):
     assert payload["chat_template_kwargs"]["preserve_thinking"] is False
     assert "reasoning_effort" not in payload["chat_template_kwargs"]
     assert payload["reasoning_effort"] == "none"
+    assert payload["chat_template_kwargs"]["thinking_budget"] == 0
+    assert "thinking_budget_tokens" not in payload
+
+    # Coder Flash Stage 2 is also thinking-off; it must receive the same
+    # generation budget while retaining its preserved R1 input.
+    memory_payload = {"model": "test-model"}
+    backend._apply_qwen_controls(memory_payload, flash.STAGES["extended_reflection"])
+    assert memory_payload["chat_template_kwargs"]["thinking_budget"] == 0
+    assert memory_payload["chat_template_kwargs"]["enable_thinking"] is False
+    assert memory_payload["chat_template_kwargs"]["preserve_thinking"] is True
 
     payload_on = {"model": "test-model"}
     thorough.OpenAICompatibleBackend(thorough.CFG)._apply_qwen_controls(payload_on, a)
     assert payload_on["chat_template_kwargs"]["enable_thinking"] is True
     assert payload_on["chat_template_kwargs"]["reasoning_effort"] == "xhigh"
     assert payload_on["reasoning_effort"] == "xhigh"
+    assert "thinking_budget" not in payload_on["chat_template_kwargs"]
+    coder_payload = {"model": "test-model"}
+    flash.OpenAICompatibleBackend(flash.CFG)._apply_qwen_controls(
+        coder_payload, flash.STAGES["extended_initial"]
+    )
+    assert coder_payload["chat_template_kwargs"]["enable_thinking"] is True
+    assert "thinking_budget" not in coder_payload["chat_template_kwargs"]
 
     with pytest.raises(RuntimeError, match="JACK_CODER_PLANNER_PROFILE"):
         load(monkeypatch, tmp_path, planner="invalid")
@@ -163,6 +180,10 @@ def test_coder_planner_actual_wire_prompt_and_memory_thinking(monkeypatch, tmp_p
                 assert [t["function"]["name"] for t in wire["tools"]] == ["read"]
                 assert wire["chat_template_kwargs"]["enable_thinking"] is (selected == "thorough")
                 assert wire["reasoning_effort"] == ("none" if selected == "flash" else "xhigh")
+                if selected == "flash":
+                    assert wire["chat_template_kwargs"]["thinking_budget"] == 0
+                else:
+                    assert "thinking_budget" not in wire["chat_template_kwargs"]
                 if selected == "flash":
                     assert wire["messages"][0]["content"].startswith("You are Planner")
                     assert k.CODER_PLANNER_THOROUGH_PREFIX not in str(wire["messages"])
@@ -263,6 +284,37 @@ def test_coder_force_preserve_thinking_with_global_setting_disabled(monkeypatch,
             finally:
                 await backend._client.aclose()
     asyncio.run(run())
+
+def test_zero_reasoning_budget_llamacpp_and_nonflash_profiles(monkeypatch, tmp_path):
+    from dataclasses import replace
+
+    for chosen, selected_stages in (
+        ("flash", ("coder_planner", "extended_reflection")),
+        ("thorough", ()),
+    ):
+        k = load(monkeypatch, tmp_path, planner=chosen)
+        backend = k.OpenAICompatibleBackend(replace(k.CFG, backend_profile="llamacpp"))
+        for key in ("coder_planner", "extended_initial", "extended_reflection"):
+            p = {"model": "gpt-oss-20b"}
+            profile = k.STAGES[key]
+            backend._apply_qwen_controls(p, profile)
+            if key in selected_stages:
+                assert p["thinking_budget_tokens"] == 0
+                assert p.get("chat_template_kwargs", {}).get("thinking_budget") == 0
+                assert p["chat_template_kwargs"]["enable_thinking"] is False
+            else:
+                assert "thinking_budget_tokens" not in p
+                assert "thinking_budget" not in p.get("chat_template_kwargs", {})
+
+    # A stage which enables thinking is never assigned a zero budget,
+    # even if its display name is a flash-stage name.
+    k = load(monkeypatch, tmp_path, planner="flash")
+    p = {"model": "gpt-oss-20b"}
+    k.OpenAICompatibleBackend(k.CFG)._apply_qwen_controls(
+        p, replace(k.STAGES["coder_planner"], thinking=True)
+    )
+    assert "thinking_budget" not in p["chat_template_kwargs"]
+
 
 def test_planner_internal_rejections_cannot_compete_with_user(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path, planner="flash")
