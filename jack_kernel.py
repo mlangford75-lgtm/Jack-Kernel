@@ -3474,17 +3474,32 @@ def _coder_planner_tools_for_attempt(
 
 
 def _coder_authenticated_request_text(content: Any) -> str:
-    """Render the user's authenticated text without JSON-wrapping text blocks.
+    """Project authenticated user text without exposing encoded text blocks.
 
-    Preserve non-text blocks as explicit serialized evidence rather than
-    silently dropping attachments or multimodal requirements.
+    active_response_target returns a rendered string, including JSON when the
+    source user message was multimodal. Decode ONLY recognized serialized
+    content-block lists; keep any other literal string unchanged.
     """
     if isinstance(content, str):
-        return content.strip()
+        stripped = content.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            try:
+                decoded = json.loads(stripped)
+            except (ValueError, TypeError):
+                decoded = None
+            if (isinstance(decoded, list) and decoded
+                    and all(isinstance(item, dict) and isinstance(item.get("type"), str)
+                            for item in decoded)):
+                content = decoded
+            else:
+                return stripped
+        else:
+            return stripped
     if isinstance(content, list):
         pieces = []
         for item in content:
-            if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
+            if (isinstance(item, dict) and item.get("type") == "text"
+                    and isinstance(item.get("text"), str)):
                 pieces.append(item["text"])
             elif item is not None:
                 pieces.append(json.dumps(item, ensure_ascii=False))
@@ -5866,7 +5881,7 @@ def _coder_append_plan(history: List[Dict[str, Any]], result: Dict[str, Any]) ->
     choice = (result.get("choices") or [{}])[0] or {}
     msg = choice.get("message") or {}
     target = active_response_target(history)
-    request_text = _content_to_text(target.get("content")) if target is not None else ""
+    request_text = _coder_authenticated_request_text(target.get("content")) if target is not None else ""
     if not request_text.strip():
         raise ForensicConflict("Coder Planner missing authenticated request")
     owner = _agentic_forensic_turn(history)
