@@ -1,5 +1,6 @@
 """Regressions for Coder Planner host recovery and Flash reasoning controls."""
 import ast
+import json
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -14,7 +15,7 @@ def _load_isolated(*names):
     selected = [node for node in tree.body
                 if isinstance(node, ast.FunctionDef) and node.name in names]
     assert {node.name for node in selected} == set(names)
-    namespace = {"Any": Any, "Dict": Dict, "List": List}
+    namespace = {"Any": Any, "Dict": Dict, "List": List, "json": json}
     exec(compile(ast.fix_missing_locations(ast.Module(
         body=selected, type_ignores=[])), str(SOURCE), "exec"), namespace)
     return namespace
@@ -22,7 +23,8 @@ def _load_isolated(*names):
 
 def test_planner_fallback_extracts_plain_authenticated_request_and_retains_findings():
     functions = _load_isolated(
-        "_coder_planner_is_host_continuation", "_coder_planner_host_handoff_result"
+        "_coder_authenticated_request_text", "_coder_planner_is_host_continuation",
+        "_coder_planner_host_handoff_result"
     )
     functions.update({
         "ForensicConflict": RuntimeError,
