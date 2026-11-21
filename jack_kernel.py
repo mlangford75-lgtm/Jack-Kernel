@@ -16613,7 +16613,10 @@ def _print_header(
     level_profile = REASONING_PROFILES.get(level_key, REASONING_PROFILES["x-high"])
     print(_status_value("Reasoning level", "Coder (Qwen 3.6-4.0)" if level_profile["mode"] == "agentic" and str(cfg.get("agentic_profile", "balanced")).lower() == "coder" else level_profile["label"]))
     if level_profile["mode"] == "agentic":
-        print(_status_value("Agentic profile", str(cfg.get("agentic_profile", "balanced")).capitalize()))
+        if str(cfg.get("agentic_profile", "balanced")).lower() == "coder":
+            print(_status_value("Planner profile", str(cfg.get("coder_planner_profile", "thorough")).capitalize()))
+        else:
+            print(_status_value("Agentic profile", str(cfg.get("agentic_profile", "balanced")).capitalize()))
         if str(cfg.get("agentic_profile", "balanced")).lower() == "translated":
             language = _TRANSLATOR_LANGUAGE_ALIASES.get(str(cfg.get("translated_language", "en")).lower(), "en")
             print(_status_value("Translated target", TRANSLATOR_LANGUAGES[language]))
@@ -17203,7 +17206,8 @@ def _start_server_from_cli(cfg: Dict[str, Any]) -> None:
     level_key = _REASONING_LEVEL_ALIASES.get(str(cfg.get("reasoning_level", "x-high")).lower(), str(cfg.get("reasoning_level", "x-high")).lower())
     print(f"Reasoning level  : {'Coder (Qwen 3.6-4.0)' if level_key == 'Local Agentic (Preserve Thinking)' and str(cfg.get('agentic_profile', 'balanced')).lower() == 'coder' else REASONING_PROFILES.get(level_key, REASONING_PROFILES['x-high'])['label']}")
     if REASONING_PROFILES.get(level_key, {}).get("mode") == "agentic":
-        print(f"Agentic profile  : {str(cfg.get('agentic_profile', 'balanced')).capitalize()}")
+        if str(cfg.get("agentic_profile", "balanced")).lower() != "coder":
+            print(f"Agentic profile  : {str(cfg.get('agentic_profile', 'balanced')).capitalize()}")
         if str(cfg.get("agentic_profile", "")).lower() == "coder":
             print(f"Planner reasoning: {str(cfg.get('coder_planner_profile', 'thorough')).capitalize()}")
         if str(cfg.get("agentic_profile", "balanced")).lower() == "translated":
