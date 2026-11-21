@@ -1533,6 +1533,25 @@ def _agentic_stage2_chronological_source(history: List[Dict[str, Any]]) -> List[
             })
     return events
 
+
+def _coder_stage2_spec_source(history: List[Dict[str, Any]]) -> Optional[str]:
+    """Validated Planner output as lower-authority Stage-2 source, never R1.
+
+    Planner's spec is the one already handed to Coder; no tool transcript is
+    duplicated here. This is read-only and does not change canonical history.
+    """
+    if not AGENTIC_CODER_MODE:
+        return None
+    target = active_response_target(history)
+    if target is None or not _coder_has_plan(history):
+        raise ForensicConflict("Coder Stage 2 missing authenticated Planner spec")
+    plans = [item for item in history[int(target["history_index"]) + 1:]
+             if isinstance(item, dict) and item.get("_jack_coder_plan") is True]
+    if len(plans) != 1:
+        raise ForensicConflict("Coder Stage 2 requires exactly one Planner spec")
+    return _content_to_text(plans[0].get("content"))
+
+
 def _agentic_stage2_project_historical_evidence(
     stage_messages: List[Dict[str, Any]],
     source_view: List[Dict[str, Any]],
@@ -1591,6 +1610,10 @@ def _agentic_stage2_project_historical_evidence(
             "scope": "authenticated_current_turn_only",
             "events": observed_events,
         }
+        if AGENTIC_CODER_MODE:
+            # Intent/specification only; Coder reasoning and authenticated tool
+            # evidence determine which requirements were actually fulfilled.
+            source_capsule["planner_specification_unverified"] = _coder_stage2_spec_source(canonical_history)
         stage_messages[-1] = {
             **source_request,
             "content": (
@@ -1657,6 +1680,16 @@ def _agentic_stage2_project_historical_evidence(
             "\nSTAGE 1 NATIVE REASONING (quoted historical evidence; do not continue):\n"
             + (json.dumps(native_reasoning, ensure_ascii=False)
                if native_reasoning else "[unavailable]")
+        )
+    if AGENTIC_CODER_MODE:
+        # Alternate legacy Stage-2 layouts receive the same single, validated
+        # lower-authority source without Planner's native reasoning.
+        if canonical_history is None:
+            raise ForensicConflict("Coder memory requires owned Planner history")
+        reasoning_record += (
+            "\nPLANNER SPECIFICATION (intent only; not verified implementation):\n"
+            + json.dumps(_coder_stage2_spec_source(canonical_history), ensure_ascii=False)
+            + "\nEND PLANNER SPECIFICATION"
         )
     extraction_task = (
         "\n\nJACK MEMORY EXTRACTION TASK: Following the system Prime Directive, "
@@ -5738,6 +5771,36 @@ def _coder_append_plan(history: List[Dict[str, Any]], result: Dict[str, Any]) ->
     # Preserve goals at the earliest authenticated boundary, even if the
     # Executor later fails, stalls, or the Stage-2 memory commit is interrupted.
     _coder_preserve_goal_artifact(history)
+    _coder_retire_planner_reasoning(history)
+
+
+def _coder_retire_planner_reasoning(history: List[Dict[str, Any]]) -> int:
+    """Retire Planner R1 at the captured-spec boundary, once, before Coder.
+
+    Planner tool calls and returned evidence remain untouched. The captured
+    spec, original output, Work ID and hashes remain available to Coder,
+    Stage 2 and the durable goal checkpoint. This also removes R1 from earlier
+    Planner tool-call messages, not just the final spec entry.
+    """
+    if not AGENTIC_CODER_MODE or not _coder_has_plan(history):
+        return 0
+    target = active_response_target(history)
+    start = int(target["history_index"]) + 1
+    plan_index = next(i for i in range(start, len(history))
+                      if isinstance(history[i], dict)
+                      and history[i].get("_jack_coder_plan") is True)
+    retired = 0
+    for item in history[start:plan_index + 1]:
+        if not isinstance(item, dict) or item.get("role") != "assistant":
+            continue
+        # No Executor generation has occurred before the one Planner plan.
+        for key in ("reasoning_content", "reasoning", "thinking"):
+            value = item.pop(key, None)
+            if isinstance(value, str):
+                retired += len(value)
+    LOG.info("Coder Planner R1 retired after specification capture: chars=%d", retired)
+    return retired
+
 
 def _coder_preserve_goal_artifact(history: List[Dict[str, Any]]) -> Optional[Path]:
     """Best-effort local, atomic retention of the actual Coder goal checkpoint.
