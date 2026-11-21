@@ -3462,15 +3462,26 @@ def _coder_planner_duplicate_inspection_history(
     return repaired
 
 
+def _coder_planner_mutation_rejected(history: List[Dict[str, Any]]) -> bool:
+    """Read back a host-authenticated denial, never model-authored prose."""
+    target = active_response_target(history)
+    return bool(target is not None and any(
+        isinstance(item, dict)
+        and item.get("_jack_internal_coder_planner_mutation_rejected") is True
+        for item in history[int(target["history_index"]) + 1:]
+    ))
+
+
 def _coder_planner_tools_for_attempt(
     history: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]]
 ) -> List[Dict[str, Any]]:
-    """After two rejected actions, give Planner a tools-off chance to finish.
+    """After a denied mutation, finish the spec without another tool gamble.
 
-    All completed inspection evidence stays in history. Coder is unaffected.
-    A further prohibited attempt deterministically hands the user task to Coder.
+    A rejected inspection may be corrected, but after two denials Planner
+    produces its remaining specification tools-off. Coder retains full tools.
     """
-    if (_coder_planner_rejection_count(history) >= 2
+    if (_coder_planner_mutation_rejected(history)
+            or _coder_planner_rejection_count(history) >= 2
             or _coder_planner_repeated_inspection_pending(history)):
         return []
     return _coder_planner_tools(tools)
@@ -5837,7 +5848,7 @@ def _coder_unverified_observations(raw: str) -> str:
 def _coder_spec_text(raw: str, request: str) -> Tuple[str, bool]:
     """Preserve useful developer-spec prose without forcing a JSON schema."""
     safe = _coder_unverified_observations(raw)
-    if safe:
+    if safe and not _coder_planner_is_host_continuation(safe):
         return safe, False
     LOG.warning("Coder Planner produced no usable spec; continuing from authenticated request")
     return request, True
@@ -10505,8 +10516,12 @@ class JackQwenKernel:
         # Never interpret raw tool-shaped text as executor authority.
         if not message["content"].strip() and not tool_state:
             if (AGENTIC_CODER_MODE and stage_key == "coder_planner"
-                    and (_coder_planner_rejection_count(history) >= 2
+                    and (_coder_planner_mutation_rejected(history)
+                         or _coder_planner_rejection_count(history) >= 2
                          or _coder_planner_repeated_inspection_pending(history))):
+                # No more wasted empty-stream retries after Jack has already
+                # removed Planner's unsafe tools. Preserve prior observations
+                # in a clearly marked host fallback for the independent Coder.
                 fallback = _coder_planner_host_handoff_result(history, message["content"])
                 yield {"kind": "content", "text": fallback["choices"][0]["message"]["content"]}
                 yield {"kind": "result", "data": fallback}
