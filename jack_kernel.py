@@ -3461,13 +3461,13 @@ def _coder_planner_mutation_rejected(history: List[Dict[str, Any]]) -> bool:
 def _coder_planner_tools_for_attempt(
     history: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]]
 ) -> List[Dict[str, Any]]:
-    """After a denied mutation, finish the spec without another tool gamble.
+    """After one denied Planner action, finish the specification tools-off.
 
-    A rejected inspection may be corrected, but after two denials Planner
-    produces its remaining specification tools-off. Coder retains full tools.
+    Successful read-only inspection evidence stays in canonical history.
+    The first rejection must not initiate a second tool gamble or a synthetic
+    assistant-message recovery loop. Coder's full tool access is unchanged.
     """
-    if (_coder_planner_mutation_rejected(history)
-            or _coder_planner_rejection_count(history) >= 2
+    if (_coder_planner_rejection_count(history) >= 1
             or _coder_planner_repeated_inspection_pending(history)):
         return []
     return _coder_planner_tools(tools)
@@ -3778,48 +3778,33 @@ def _coder_planner_tool_errors(calls: Any) -> List[str]:
 
 
 def _coder_isolate_planner_request(stage_messages, profile, tools=None):
-    """Give Coder Planner its SELECTED system contract and task context.
+    """Project the authentic Planner task and completed work, not host retries.
 
-    The caller's system/developer instructions belong to the Executor, not to
-    the tools-off Planner. This is a model-facing projection only: canonical
-    conversation history is unchanged, including authenticated user requests,
-    prior working knowledge, and the source material required by the Executor.
+    Host tool rejections, empty-stream continuations, and checkpoints are
+    canonical audit records, not model-authored assistant completions. Sending
+    synthetic assistant text as the final chat turn can make a thinking-off
+    backend immediately emit EOS instead of a new specification. Keep that
+    evidence host-side; run the Planner correction from its authentic task.
     """
     if not AGENTIC_CODER_MODE or profile.name != "Agentic Coder Planner":
         return stage_messages
-    # Construct a new model-only Planner request instead of assuming an
-    # upstream stage builder supplied our exact prompt at index zero.
-    # Caller and framework system/developer authority is reserved for the
-    # Executor; the canonical conversation and its history are not modified.
     if not isinstance(stage_messages, list):
         raise ForensicConflict("Coder Planner received invalid assembled messages")
     isolated = [{"role": "system", "content": profile.prompt}]
-    rejection_notes = []
     for item in stage_messages:
         if not isinstance(item, dict):
             raise ForensicConflict("Coder Planner received an invalid history message")
-        if item.get("_jack_planner_recovery_message") is True:
-            note = _content_to_text(item.get("content")).strip()
-            if note and note not in rejection_notes:
-                rejection_notes.append(note)
+        if (item.get("_jack_planner_recovery_message") is True
+                or item.get("_jack_internal_tool_validation_checkpoint") is True
+                or item.get("_jack_internal_tool_validation_rejection") is True
+                or item.get("_jack_internal_protocol_recovery") is True):
             continue
         if item.get("role") in {"system", "developer"}:
             continue
-        # Recovery instructions have no conversational authority. Exclude
-        # their model-facing copies; the host reconstructs one bounded note.
         isolated.append(item)
-    if rejection_notes:
-        # Maintain the stable Planner system prompt and avoid repeating host
-        # recovery instructions as assistant-authored answer examples.
-        isolated.append({
-            "role": "assistant",
-            "content": "[Jack host tool feedback; not Planner's output]\n"
-                       + rejection_notes[-1],
-        })
     if not any(item.get("role") == "user" for item in isolated[1:]):
         raise ForensicConflict("Coder Planner missing authenticated user context")
     return isolated
-
 
 STAGES: Dict[str, StageProfile] = {
     "thesis": StageProfile(
