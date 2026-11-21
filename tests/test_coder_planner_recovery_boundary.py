@@ -80,12 +80,13 @@ def test_planner_recovery_isolated_without_promoting_host_message_to_user():
     assert all(x["role"] != "system" for x in isolated[1:])
 
 
-def test_flash_budget_is_zero_reasoning_not_zero_output():
+def test_flash_disables_thinking_without_forcing_zero_budget_or_output_limit():
     source = SOURCE.read_text(encoding="utf-8")
-    assert 'kwargs["thinking_budget"] = 0' in source
-    assert 'payload["thinking_budget_tokens"] = 0' in source
+    assert 'kwargs["thinking_budget"] = 0' not in source
+    assert 'payload["thinking_budget_tokens"] = 0' not in source
     assert 'payload["reasoning_effort"] = "none"' in source
-    assert "CODER_PLANNER_FLASH_MODE and profile.name" in source
+    assert '"enable_thinking": profile.thinking' in source
+    assert '"preserve_thinking": effective_preserve' in source
     assert 'None if CODER_PLANNER_FLASH_MODE else "xhigh"' in source
     assert '"output_budget_tokens": 100000' in source
     assert 'output_budget_tokens: int = max(0' in source
@@ -153,24 +154,20 @@ def test_host_instruction_is_not_accepted_as_planner_spec():
     assert "Inspect" in spec
 
 
-def test_flash_stage_runtime_zero_reasoning_without_output_limit():
-    functions = _load_isolated("_agentic_zero_reasoning")
-    from types import SimpleNamespace
-    functions.update({
-        "AGENTIC_MODE": True,
-        "AGENTIC_FLASH_MODE": False,
-        "AGENTIC_BALANCED_MODE": False,
-        "AGENTIC_TRANSLATED_MODE": False,
-        "CODER_PLANNER_FLASH_MODE": True,
-    })
-    planner = SimpleNamespace(name="Agentic Coder Planner", thinking=False)
-    memory = SimpleNamespace(name="Agentic native pass 2", thinking=False)
-    coder = SimpleNamespace(name="Agentic native pass 1", thinking=True)
-    assert functions["_agentic_zero_reasoning"](planner) is True
-    assert functions["_agentic_zero_reasoning"](memory) is True
-    assert functions["_agentic_zero_reasoning"](coder) is False
-    # Output is intentionally controlled independently of backend thinking.
-    assert "max_tokens=0" not in SOURCE.read_text(encoding="utf-8")[
-        SOURCE.read_text(encoding="utf-8").index("def _agentic_zero_reasoning"):
-        SOURCE.read_text(encoding="utf-8").index("def _agentic_translated_generation_profile")
-    ]
+def test_flash_and_thorough_planner_profiles_keep_independent_output():
+    source = SOURCE.read_text(encoding="utf-8")
+    assert 'not CODER_PLANNER_FLASH_MODE,' in source
+    assert 'None if CODER_PLANNER_FLASH_MODE else "xhigh"' in source
+    assert 'output_budget_tokens: int = max(0' in source
+    assert 'kwargs["thinking_budget"] = 0' not in source
+    assert 'payload["thinking_budget_tokens"] = 0' not in source
+
+
+def test_empty_planner_recovery_hands_off_instead_of_terminal_failure():
+    source = SOURCE.read_text(encoding="utf-8")
+    marker = 'detail=(f"Stage {profile.name} produced neither a final answer nor a "'
+    index = source.index(marker)
+    prior = source[index - 1000:index]
+    assert 'if AGENTIC_CODER_MODE and stage_key == "coder_planner":' in prior
+    assert '_coder_planner_host_handoff_result(history, message["content"])' in prior
+    assert 'yield {"kind": "result", "data": fallback}' in prior
