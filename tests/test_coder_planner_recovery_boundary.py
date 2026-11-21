@@ -87,3 +87,65 @@ def test_flash_budget_is_zero_reasoning_not_zero_output():
     assert 'None if CODER_PLANNER_FLASH_MODE else "xhigh"' in source
     assert '"output_budget_tokens": 100000' in source
     assert 'output_budget_tokens: int = max(0' in source
+
+
+def test_rejected_mutation_gets_one_tools_off_spec_chance():
+    functions = _load_isolated(
+        "_coder_planner_mutation_rejected", "_coder_planner_tools_for_attempt"
+    )
+    functions.update({
+        "_coder_planner_rejection_count": lambda h: 1,
+        "_coder_planner_repeated_inspection_pending": lambda h: False,
+        "_coder_planner_tools": lambda available: available,
+        "active_response_target": lambda h: {"history_index": 0},
+    })
+    history = [
+        {"role": "user", "content": "Make an SVG"},
+        {"role": "user", "content": "Planner write rejected",
+         "_jack_internal_coder_planner_mutation_rejected": True},
+    ]
+    assert functions["_coder_planner_tools_for_attempt"](
+        history, [{"type": "function", "function": {"name": "bash"}}]
+    ) == []
+    assert not functions["_coder_planner_mutation_rejected"](
+        [{"role": "user", "content": "Make an SVG"}]
+    )
+
+
+def test_rejected_read_only_inspection_remains_correctable():
+    functions = _load_isolated(
+        "_coder_planner_mutation_rejected", "_coder_planner_tools_for_attempt"
+    )
+    functions.update({
+        "_coder_planner_rejection_count": lambda h: 1,
+        "_coder_planner_repeated_inspection_pending": lambda h: False,
+        "_coder_planner_tools": lambda available: available,
+        "active_response_target": lambda h: {"history_index": 0},
+    })
+    offered = [{"type": "function", "function": {"name": "bash"}}]
+    history = [
+        {"role": "user", "content": "Inspect"},
+        {"role": "user", "content": "Inspection rejected",
+         "_jack_internal_coder_planner_rejection": True},
+    ]
+    assert functions["_coder_planner_tools_for_attempt"](history, offered) == offered
+
+
+def test_host_instruction_is_not_accepted_as_planner_spec():
+    functions = _load_isolated(
+        "_coder_planner_is_host_continuation", "_coder_spec_text"
+    )
+    functions.update({
+        "_coder_unverified_observations": lambda text: text.strip(),
+        "LOG": type("Quiet", (), {"warning": lambda *args: None})(),
+    })
+    spec, fallback = functions["_coder_spec_text"](
+        "If the task is complete, output the final answer.", "Real user task"
+    )
+    assert fallback is True
+    assert spec == "Real user task"
+    spec, fallback = functions["_coder_spec_text"](
+        "Inspect the project directory and deliver a report.", "Real user task"
+    )
+    assert fallback is False
+    assert "Inspect" in spec
