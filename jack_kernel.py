@@ -3329,7 +3329,10 @@ CODER_PLANNER_PROMPT = (
       "Preserve useful existing work. Do not repeat inspections when the available evidence is sufficient.\n\n"
       "The Coder has access to the tool history. Do not repeat tool history to the Coder.\n\n"
       "Your stateful, mutating, or destructive tools have been removed. "
-      "You operate with read-only, non-mutating tools. Use them when inspection is necessary.\n\n"
+      "You operate with read-only, non-mutating tools. Use them when inspection is necessary. "
+      "Shell inspection supports directory listing, file discovery, file reading, searching, "
+      "counting, and Git status/history inspection; use dedicated read-only tools where available. "
+      "Do not propose writes, arbitrary scripts, or commands that modify the workspace.\n\n"
       "Do not perform Coder's implementation work. Describe what needs to be accomplished, "
       "then deliver your message."
 )
@@ -3576,21 +3579,31 @@ def _coder_planner_log_rejection(
 
 
 def _coder_planner_safe_inspection_command(command: Any) -> bool:
-    """Small, nonmutating shell grammar; each bounded && step is independently read-only."""
+    """Validate a useful, bounded, read-only shell vocabulary before execution.
+
+    The shell is still not a sandbox: only explicitly inspected commands and
+    options are admitted. Pipelines combine individually validated read-only
+    programs; arbitrary scripts, shell expansion and output redirection are
+    never authorized through Planner.
+    """
     if not isinstance(command, str) or not command.strip() or len(command) > 8192:
         return False
-    # Allow at most three separately validated inspections joined by &&
-    # (e.g. pwd && ls -la), but never pipes, redirection, semicolons, expansion,
-    # arbitrary executables, or mutations. Existing single commands are unchanged.
-    if any(char in command for char in _CODER_PLANNER_SHELL_BAD if char != "&"):
+    # Preserve the mutation/expansion boundary, but permit read-only pipelines.
+    if any(char in command for char in _CODER_PLANNER_SHELL_BAD if char not in {"&", "|"}):
         return False
-    if "&" in command.replace("&&", ""):
-        return False
-    commands = command.strip().split("&&")
-    if not 1 <= len(commands) <= 3 or any(not item.strip() for item in commands):
+    if "&" in command.replace("&&", "") or "||" in command:
         return False
     import shlex
-    for part in commands:
+    # Shell operators are intentionally limited to && and |. Validate every
+    # component, including the right-hand side of a counting pipeline.
+    segments = re.split(r"(&&|\|)", command.strip())
+    if not 1 <= (len(segments) + 1) // 2 <= 4:
+        return False
+    if any(not segments[i].strip() for i in range(0, len(segments), 2)):
+        return False
+    if any(segments[i] not in {"&&", "|"} for i in range(1, len(segments), 2)):
+        return False
+    for part in segments[::2]:
         try:
             args = shlex.split(part.strip(), posix=True)
         except ValueError:
@@ -3602,18 +3615,91 @@ def _coder_planner_safe_inspection_command(command: Any) -> bool:
             if rest:
                 return False
         elif name == "ls":
-            allowed = {"-a", "-A", "-l", "-la", "-al", "-lh", "-lah", "-h", "--all", "--almost-all", "--"}
+            allowed = {"-a", "-A", "-l", "-la", "-al", "-lh", "-lah", "-h",
+                       "-1", "-R", "-d", "-ld", "--all", "--almost-all", "--"}
             if any(token.startswith("-") and token not in allowed for token in rest):
                 return False
-        elif name == "cat":
+        elif name in {"cat", "type"}:
             if not rest or any(token.startswith("-") and token != "--" for token in rest):
                 return False
         elif name in {"head", "tail"}:
             if not rest or any(token.startswith("-") and token not in {"-n", "-c", "--"} for token in rest):
                 return False
-        elif name == "rg":
-            options = {"-n", "-i", "-F", "-l", "-L", "--files", "--no-heading", "--hidden", "--", "-S"}
+        elif name in {"rg", "grep"}:
+            options = {"-n", "-i", "-F", "-l", "-L", "--files", "--no-heading",
+                       "--hidden", "--", "-S", "-r", "-R", "-E", "-v", "-c",
+                       "-w", "-x", "-s", "-H", "-h", "--line-number", "--recursive"}
+            if not rest or any(token.startswith("-") and token not in options
+                               and not token.startswith(("--glob=", "--include=", "--exclude="))
+                               for token in rest):
+                return False
+        elif name == "find":
+            # Permit file discovery and counting, never -delete/-exec/-ok or
+            # writing actions such as -fprint/-fprintf/-fls.
+            value_ops = {"-name", "-iname", "-path", "-ipath", "-type",
+                         "-mindepth", "-maxdepth", "-size", "-mtime"}
+            flag_ops = {"-print", "-print0", "-empty"}
+            index = 0
+            while index < len(rest):
+                token = rest[index]
+                if token in value_ops:
+                    if index + 1 >= len(rest) or rest[index + 1].startswith("-"):
+                        return False
+                    if token in {"-mindepth", "-maxdepth"} and not rest[index + 1].isdigit():
+                        return False
+                    if token == "-type" and rest[index + 1] not in {"f", "d", "l"}:
+                        return False
+                    index += 2
+                elif token in flag_ops or not token.startswith("-"):
+                    index += 1
+                else:
+                    return False
+        elif name == "wc":
+            if any(token.startswith("-") and token not in
+                   {"-l", "-w", "-c", "-m", "-L", "--lines", "--words",
+                    "--bytes", "--chars", "--max-line-length", "--"}
+                   for token in rest):
+                return False
+        elif name == "git":
+            # Read-only Git inspection; reject all arbitrary Git options,
+            # config overrides, aliases, hooks and external diff drivers.
+            if not rest:
+                return False
+            git_options = {"--no-optional-locks"}
+            if rest[0] in git_options:
+                rest = rest[1:]
+            if not rest:
+                return False
+            action, arguments = rest[0], rest[1:]
+            allowed = {
+                "status": {"--short", "-s", "--branch", "-b", "--porcelain", "-uno", "-uall"},
+                "diff": {"--stat", "--name-only", "--name-status", "--no-ext-diff",
+                         "--no-textconv", "--cached", "--staged", "--", "-U0", "-U3"},
+                "log": {"--oneline", "--decorate", "--no-decorate", "--all",
+                        "--max-count=1", "--max-count=5", "--max-count=10", "-1", "-5", "-10"},
+                "ls-files": {"--cached", "--others", "--exclude-standard", "--stage", "--"},
+                "rev-parse": {"--show-toplevel", "--show-prefix", "--is-inside-work-tree",
+                              "--abbrev-ref", "HEAD", "--short"},
+            }
+            if action not in allowed or any(
+                item.startswith("-") and item not in allowed[action]
+                for item in arguments
+            ):
+                return False
+            # Never allow command-specific positional options that dispatch
+            # external helpers or trigger arbitrary subcommands.
+            if action in {"status", "log", "rev-parse"} and any(
+                item != "HEAD" and not item.startswith("-") for item in arguments
+            ):
+                return False
+        elif name in {"stat", "file", "du"}:
+            options = {"-c", "-h", "-s", "-a", "-b", "--", "--brief"}
             if any(token.startswith("-") and token not in options for token in rest):
+                return False
+        elif name == "command":
+            if not rest or rest[0] != "-v" or len(rest) < 2 or any(
+                token.startswith("-") for token in rest[1:]
+            ):
                 return False
         else:
             return False
@@ -10208,22 +10294,10 @@ class JackQwenKernel:
                                     "Planner tool call: tool is not read-only (" + name + ")"
                                 )
                                 break
-                            if name == "bash":
-                                # These symbols are unconditionally forbidden
-                                # by the existing read-only shell grammar. Wait
-                                # for the actual command string, never guess a
-                                # command from a partial tool-name fragment.
-                                command_start = re.search(
-                                    r'"command"\s*:\s*"((?:[^"\\]|\\.)*)', arguments
-                                )
-                                if command_start and any(
-                                    c in command_start.group(1) for c in ";|><`"
-                                ):
-                                    early_planner_denial = (
-                                        "Planner tool call: shell command is outside "
-                                        "the inspection-only grammar"
-                                    )
-                                    break
+                            # A shell command must be fully reconstructed before
+                            # judging its read-only grammar. Prefix fragments can
+                            # contain harmless pipeline separators and quoted
+                            # data; authorization still happens before release.
                         if early_planner_denial is not None:
                             _coder_planner_log_rejection(
                                 list(tool_state.values()), [early_planner_denial],
