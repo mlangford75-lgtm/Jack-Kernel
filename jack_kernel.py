@@ -3254,6 +3254,7 @@ def _agentic_zero_reasoning(profile: StageProfile) -> bool:
     """Force native thinking-off budgets for eligible stages, including Coder Planner Flash."""
     return bool(
         AGENTIC_MODE
+        and not profile.thinking
         and (
             (AGENTIC_FLASH_MODE and profile.name in {"Agentic native pass 1", "Agentic native pass 2"})
             or (AGENTIC_BALANCED_MODE and profile.name == "Agentic native pass 2")
@@ -8438,15 +8439,16 @@ class OpenAICompatibleBackend:
     def _apply_qwen_controls(
         self, payload: Dict[str, Any], profile: StageProfile
     ) -> None:
-        # Raw llama.cpp accepts thinking_budget_tokens per chat request when its
-        # server-side --reasoning-budget is unset. This is a backend generation
-        # control, NOT Jack's generation-budget failure monitor: a backend that
-        # ignores thinking-off requests must not cause an immediate Jack failure.
-        # LM Studio and other OpenAI-compatible endpoints have no confirmed
-        # equivalent numeric request parameter; retain thinking-off controls.
-        if self.cfg.backend_profile == "llamacpp" and AGENTIC_MODE:
-            if _agentic_zero_reasoning(profile):
-                payload["thinking_budget_tokens"] = 0
+        # A generation-stage reasoning budget is distinct from Jack's
+        # output/repetition safety budgets. Never impose a completion-token
+        # ceiling on the answer in order to suppress native reasoning.
+        # llama.cpp documents thinking_budget_tokens on chat completions.
+        # For LM Studio, we additionally pass thinking_budget=0 through the
+        # model chat template (best effort; an always-thinking template such
+        # as GPT-OSS may ignore it).
+        zero_reasoning_budget = _agentic_zero_reasoning(profile)
+        if self.cfg.backend_profile == "llamacpp" and zero_reasoning_budget:
+            payload["thinking_budget_tokens"] = 0
 
         # Ollama's OpenAI-compatible API maps reasoning_effort onto its native
         # thinking control. xhigh maps to Ollama's current "max" level.
@@ -8483,6 +8485,10 @@ class OpenAICompatibleBackend:
             "enable_thinking": profile.thinking,
             "preserve_thinking": effective_preserve,
         }
+        if zero_reasoning_budget and self.cfg.backend_profile in {"lmstudio", "llamacpp"}:
+            # This is per-stage template data, not an appended instruction.
+            # Keep the system prompt and tool/continuation context unchanged.
+            kwargs["thinking_budget"] = 0
         if profile.force_preserve_thinking:
             LOG.debug(
                 "same-stage reasoning preservation forced for %s tool continuation",
@@ -8506,6 +8512,8 @@ class OpenAICompatibleBackend:
         shape = self.cfg.qwen_control_shape
         if shape in {"template_kwargs", "hybrid"} or (
             native_control is not None and self.cfg.backend_profile == "lmstudio"
+        ) or (
+            zero_reasoning_budget and self.cfg.backend_profile == "lmstudio"
         ):
             payload["chat_template_kwargs"] = kwargs
         if shape in {"top_level", "hybrid"}:
