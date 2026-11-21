@@ -3283,20 +3283,6 @@ class StageProfile:
     max_tokens: Optional[int] = None
 
 
-def _agentic_zero_reasoning(profile: StageProfile) -> bool:
-    """Force native thinking-off budgets for eligible stages, including Coder Planner Flash."""
-    return bool(
-        AGENTIC_MODE
-        and not profile.thinking
-        and (
-            (AGENTIC_FLASH_MODE and profile.name in {"Agentic native pass 1", "Agentic native pass 2"})
-            or (AGENTIC_BALANCED_MODE and profile.name == "Agentic native pass 2")
-            or (CODER_PLANNER_FLASH_MODE and profile.name in {"Agentic Coder Planner", "Agentic native pass 2"})
-            or (AGENTIC_TRANSLATED_MODE and profile.name == "Agentic native pass 1" and not profile.thinking)
-        )
-    )
-
-
 def _agentic_translated_generation_profile(
     profile: StageProfile, history: List[Dict[str, Any]]
 ) -> StageProfile:
@@ -8651,16 +8637,10 @@ class OpenAICompatibleBackend:
     def _apply_qwen_controls(
         self, payload: Dict[str, Any], profile: StageProfile
     ) -> None:
-        # A generation-stage reasoning budget is distinct from Jack's
-        # output/repetition safety budgets. Never impose a completion-token
-        # ceiling on the answer in order to suppress native reasoning.
-        # llama.cpp documents thinking_budget_tokens on chat completions.
-        # For LM Studio, we additionally pass thinking_budget=0 through the
-        # model chat template (best effort; an always-thinking template such
-        # as GPT-OSS may ignore it).
-        zero_reasoning_budget = _agentic_zero_reasoning(profile)
-        if self.cfg.backend_profile == "llamacpp" and zero_reasoning_budget:
-            payload["thinking_budget_tokens"] = 0
+        # Thinking-disabled stages request the backend's normal thinking-off
+        # mode. Never inject a numeric zero reasoning budget: some backends
+        # terminate before producing useful output. This is independent of
+        # Jack's reasoning/output safety monitors and generation limits.
 
         # Ollama's OpenAI-compatible API maps reasoning_effort onto its native
         # thinking control. xhigh maps to Ollama's current "max" level.
@@ -8697,10 +8677,6 @@ class OpenAICompatibleBackend:
             "enable_thinking": profile.thinking,
             "preserve_thinking": effective_preserve,
         }
-        if zero_reasoning_budget and self.cfg.backend_profile in {"lmstudio", "llamacpp"}:
-            # This is per-stage template data, not an appended instruction.
-            # Keep the system prompt and tool/continuation context unchanged.
-            kwargs["thinking_budget"] = 0
         if profile.force_preserve_thinking:
             LOG.debug(
                 "same-stage reasoning preservation forced for %s tool continuation",
@@ -10571,6 +10547,19 @@ class JackQwenKernel:
                 )) as retry_packets:
                     async for packet in retry_packets:
                         yield packet
+                return
+            if AGENTIC_CODER_MODE and stage_key == "coder_planner":
+                # The Planner is advisory. If its bounded empty-generation
+                # recovery also returns nothing, do not abort the user's task.
+                # Preserve authenticated request and completed read-only
+                # evidence in an explicitly host-owned fallback to Coder.
+                LOG.warning(
+                    "Coder Planner produced no answer or tool call after "
+                    "one same-stage recovery; handing task to Coder"
+                )
+                fallback = _coder_planner_host_handoff_result(history, message["content"])
+                yield {"kind": "content", "text": fallback["choices"][0]["message"]["content"]}
+                yield {"kind": "result", "data": fallback}
                 return
             raise HTTPException(
                 status_code=502,
