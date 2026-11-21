@@ -3476,6 +3476,23 @@ def _coder_planner_tools_for_attempt(
     return _coder_planner_tools(tools)
 
 
+def _coder_planner_is_host_continuation(text: str) -> bool:
+    """Host recovery directions are never Planner findings or Coder requirements."""
+    value = text.strip()
+    return (
+        not value or value in {
+            "If the task is complete, output the final answer.",
+            "Continue the existing task.",
+        }
+        or value.startswith((
+            "[JACK INTERNAL TOOL REJECTION",
+            "[JACK INTERNAL TOOL RECOVERY",
+            "Jack internal recovery feedback",
+            "Jack protocol continuation:",
+        ))
+    )
+
+
 def _coder_planner_host_handoff_result(
     history: List[Dict[str, Any]], last_content: str = ""
 ) -> Dict[str, Any]:
@@ -3488,18 +3505,20 @@ def _coder_planner_host_handoff_result(
     target = active_response_target(history)
     if target is None or not str(target.get("content") or "").strip():
         raise ForensicConflict("Coder Planner fallback missing authenticated user request")
-    requested = str(target["content"]).strip()
+    requested = _content_to_text(target["content"]).strip()
+    if not requested:
+        raise ForensicConflict("Coder Planner fallback missing authenticated request text")
     partials: List[str] = []
     seen_partials: set[str] = set()
     for checkpoint in history[int(target["history_index"]) + 1:]:
         if (isinstance(checkpoint, dict)
                 and checkpoint.get("_jack_internal_tool_validation_checkpoint") is True):
-            original = _coder_unverified_observations(str(checkpoint.get("content") or ""))
-            if original and original not in seen_partials:
+            original = _coder_unverified_observations(_content_to_text(checkpoint.get("content")))
+            if original and not _coder_planner_is_host_continuation(original) and original not in seen_partials:
                 partials.append(original)
                 seen_partials.add(original)
-    trailing = _coder_unverified_observations(str(last_content or ""))
-    if trailing and trailing not in seen_partials:
+    trailing = _coder_unverified_observations(_content_to_text(last_content))
+    if trailing and not _coder_planner_is_host_continuation(trailing) and trailing not in seen_partials:
         partials.append(trailing)
     preserved = (
         "\n\nUnfinished Planner observations or requirements (unverified; use critically):\n"
@@ -3749,20 +3768,22 @@ def _coder_isolate_planner_request(stage_messages, profile, tools=None):
         if not isinstance(item, dict):
             raise ForensicConflict("Coder Planner received an invalid history message")
         if item.get("_jack_planner_recovery_message") is True:
-            rejection_notes.append(_content_to_text(item.get("content")))
+            note = _content_to_text(item.get("content")).strip()
+            if note and note not in rejection_notes:
+                rejection_notes.append(note)
             continue
         if item.get("role") in {"system", "developer"}:
             continue
+        # Recovery instructions have no conversational authority. Exclude
+        # their model-facing copies; the host reconstructs one bounded note.
         isolated.append(item)
     if rejection_notes:
-        # Keep Planner's only system prompt byte-identical across retries.
-        # Later dynamic system records would be folded into the stable prefix.
-        # Recovery is host-authored assistant context, never a user request
-        # or an additional system/developer instruction for Planner.
+        # Maintain the stable Planner system prompt and avoid repeating host
+        # recovery instructions as assistant-authored answer examples.
         isolated.append({
             "role": "assistant",
-            "content": "Jack internal recovery feedback (not a user request or Planner answer):\n"
-                       + "\n".join(rejection_notes[-2:]),
+            "content": "[Jack host tool feedback; not Planner's output]\n"
+                       + rejection_notes[-1],
         })
     if not any(item.get("role") == "user" for item in isolated[1:]):
         raise ForensicConflict("Coder Planner missing authenticated user context")
