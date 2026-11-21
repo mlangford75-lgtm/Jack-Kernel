@@ -27,7 +27,7 @@ def _guard():
     scope = {
         "Any": Any,
         "re": re,
-        "_CODER_PLANNER_SHELL_BAD": frozenset(";\\n\\r|&><$(){}!" + chr(96)),
+        "_CODER_PLANNER_SHELL_BAD": frozenset(";" + chr(10) + chr(13) + "|&><$(){}!" + chr(96)),
     }
     exec(compile(module, str(SOURCE), "exec"), scope)
     return scope[node.name]
