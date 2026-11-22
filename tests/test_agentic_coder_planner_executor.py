@@ -389,7 +389,7 @@ def test_planner_protocol_recovery_is_host_owned_with_single_user(monkeypatch, t
 
 
 @pytest.mark.parametrize("planner", ["flash", "thorough"])
-def test_planner_spec_streams_live_before_coder_and_thorough_reasoning_stays_separate(monkeypatch, tmp_path, planner):
+def test_planner_spec_streams_as_advisory_reasoning_without_answer_contamination(monkeypatch, tmp_path, planner):
     async def run():
         k = load(monkeypatch, tmp_path, planner=planner)
         calls = []
@@ -429,17 +429,18 @@ def test_planner_spec_streams_live_before_coder_and_thorough_reasoning_stays_sep
             for line in frame.splitlines():
                 if line.startswith("data: ") and line != "data: [DONE]":
                     deltas.append((json.loads(line[6:]).get("choices") or [{}])[0].get("delta", {}))
-        assert sum("[CODER PLANNER — SPEC SHEET]" in d.get("content", "") for d in deltas) == 1
-        assert all(any(part == d.get("content") for d in deltas) for part in parts)
-        assert all(not any(part in d.get("reasoning_content", "") for part in parts) for d in deltas)
+        assert sum("[CODER PLANNER — SPEC SHEET]" in d.get("reasoning_content", "") for d in deltas) == 1
+        assert all(any(part == d.get("reasoning_content") for d in deltas) for part in parts)
+        assert all(not any(part in d.get("content", "") for part in parts) for d in deltas)
         if planner == "thorough":
             assert any(d.get("reasoning_content") == "PLANNER_NATIVE_REASONING_MARKER" for d in deltas)
             assert not any("PLANNER_NATIVE_REASONING_MARKER" in d.get("content", "") for d in deltas)
         else:
             assert not any("PLANNER_NATIVE_REASONING_MARKER" in str(d) for d in deltas)
-        content_chunks = [d.get("content", "") for d in deltas]
-        plan_idx = content_chunks.index(parts[0])
-        assert content_chunks[plan_idx:plan_idx + len(parts)] == parts
+        reasoning_chunks = [d.get("reasoning_content", "") for d in deltas]
+        plan_idx = reasoning_chunks.index(parts[0])
+        assert reasoning_chunks[plan_idx:plan_idx + len(parts)] == parts
+        assert not any("Planner developer specification:" in d.get("content", "") for d in deltas)
         assert plan_idx < next(i for i, d in enumerate(deltas) if "Verified empty." in str(d))
         assert "Workspace check completed." in "".join(str(d) for d in deltas)
         assert calls == ["Agentic Coder Planner", "Agentic native pass 1", "Agentic native pass 2"]
