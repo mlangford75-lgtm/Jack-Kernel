@@ -174,7 +174,7 @@ def test_coder_planner_actual_wire_prompt_and_memory_thinking(monkeypatch, tmp_p
                 assert wire["messages"][0]["content"].startswith(k.STAGES["coder_planner"].prompt)
                 assert wire["messages"][0]["content"] == k.STAGES["coder_planner"].prompt
                 assert "read-only, non-mutating tools" in wire["messages"][0]["content"]
-                assert wire["messages"][-1]["content"] == k._CODER_PLANNER_DELEGATION_HEADER + "Verify workspace is empty"
+                assert wire["messages"][-1]["content"] == "Verify workspace is empty"
                 assert sum(x["role"] == "user" for x in wire["messages"]) == 1
                 assert "External Pi instructions" not in str(wire["messages"])
                 assert [t["function"]["name"] for t in wire["tools"]] == ["read"]
@@ -809,7 +809,7 @@ def test_planner_reasoning_retired_immediately_but_spec_and_tool_evidence_surviv
 
 
 @pytest.mark.parametrize("planner_profile", ["flash", "thorough"])
-def test_coder_stage2_spec_is_unverified_once_without_planner_reasoning(monkeypatch, tmp_path, planner_profile):
+def test_coder_stage2_uses_coder_outcome_without_planner_reasoning(monkeypatch, tmp_path, planner_profile):
     k = load(monkeypatch, tmp_path, planner=planner_profile)
     h = [{"role": "user", "content": "Build clock"}]
     k._coder_append_plan(h, response("SPEC_UNIQUE: verify saved clock.", "PLANNER_R1_UNIQUE"))
@@ -984,7 +984,7 @@ def test_planner_isolation_keeps_user_context_but_no_external_system_authority(m
     )
     assert [m["role"] for m in wire] == ["system", "user"]
     assert wire[0]["content"] == k.CODER_PLANNER_PROMPT
-    assert wire[-1]["content"] == k._CODER_PLANNER_DELEGATION_HEADER + "Build a cuckoo clock SVG"
+    assert wire[-1]["content"] == "Build a cuckoo clock SVG"
     assert json.dumps(caller) == original
     assert not any("Pi instructions" in m["content"] or "Other agent" in m["content"]
                    for m in wire)
@@ -1015,7 +1015,7 @@ def test_planner_rebuilds_mismatched_upstream_system_without_mutating_source(mon
     planned = k._coder_isolate_planner_request(source, k.STAGES["coder_planner"])
     assert [m["role"] for m in planned] == ["system", "user"]
     assert planned[0] == {"role": "system", "content": k.CODER_PLANNER_PROMPT}
-    assert planned[-1]["content"] == k._CODER_PLANNER_DELEGATION_HEADER + "Verify workspace is empty"
+    assert planned[-1]["content"] == "Verify workspace is empty"
     assert all("EXTRA INSTRUCTIONS" not in str(m) for m in planned)
     assert all("Pi tools" not in str(m) for m in planned)
     assert json.dumps(source, sort_keys=True) == frozen
@@ -1070,7 +1070,7 @@ def test_planner_stream_request_isolated_from_all_other_system_instructions(monk
         assert [m["role"] for m in wire["messages"]] == ["system", "user"]
         assert wire["messages"][0]["content"].startswith(k.CODER_PLANNER_PROMPT)
         assert "read-only, non-mutating tools" in wire["messages"][0]["content"]
-        assert wire["messages"][1]["content"] == k._CODER_PLANNER_DELEGATION_HEADER + "Plan a code update."
+        assert wire["messages"][1]["content"] == "Plan a code update."
         assert [x["function"]["name"] for x in wire["tools"]] == ["bash"]
         assert json.dumps(source) == original
     asyncio.run(run())
