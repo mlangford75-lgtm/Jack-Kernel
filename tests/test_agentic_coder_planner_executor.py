@@ -827,7 +827,8 @@ def test_coder_stage2_uses_coder_outcome_without_planner_reasoning(monkeypatch, 
     if k.AGENTIC_SOURCE_ONLY_WORKING_STATE:
         user_wire = {"role": "user", "content": "Build clock"}
         frozen_wire = {"role": "assistant", "content":
-                       "[Jack: completed response withheld from memory pass]"}
+                       ("CODER_COMPLETED" if k.AGENTIC_STAGE2_FROZEN_CONVERSATION
+                        else "[Jack: completed response withheld from memory pass]")}
         wire = [{"role": "system", "content": "Stage 2"}, user_wire, frozen_wire]
         k._agentic_stage2_project_historical_evidence(
             wire,
