@@ -68,7 +68,7 @@ def test_delegation_preserves_read_only_current_turn_tool_continuation(monkeypat
         {"role": "assistant", "content": "", "tool_calls": [
             {"id": "inspect-1", "type": "function", "function": {
                 "name": "bash", "arguments": '{"command":"ls -la"}'}}]},
-        {"role": "tool", "tool_call_id": "inspect-1", "content": "total 8\\ndrwxr-x .\\ndrwxr-x .."},
+        {"role": "tool", "tool_call_id": "inspect-1", "content": "total 8\ndrwxr-x .\ndrwxr-x .."},
     ]
     wire = k._coder_isolate_planner_request(history, k.STAGES["coder_planner"], source_history=history)
     assert [m["role"] for m in wire] == ["system", "user", "assistant", "tool"]
@@ -87,7 +87,7 @@ def test_backend_wire_delegates_without_changing_coder_and_has_stable_prefix(mon
             delta = {"choices": [{"index": 0, "delta": {"content": "Coder should create an SVG and verify it."},
                                   "finish_reason": "stop"}]}
             return httpx.Response(200, headers={"content-type": "text/event-stream"},
-                                  text="data: " + json.dumps(delta) + "\\n\\ndata: [DONE]\\n\\n")
+                                  text="data: " + json.dumps(delta) + "\n\ndata: [DONE]\n\n")
         backend = k.OpenAICompatibleBackend(k.CFG)
         await backend._client.aclose()
         backend._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
