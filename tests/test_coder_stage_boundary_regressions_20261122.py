@@ -68,6 +68,15 @@ def test_xml_tool_markup_is_removed_but_real_prose_survives():
     assert "Coder must verify" in filtered
 
 
+def test_orphan_function_markup_is_not_forwarded():
+    ns = helpers("_coder_unverified_observations")
+    output = "Architect notes.\n<function=write>\nfile\n</function>\nCoder requirements."
+    filtered = ns["_coder_unverified_observations"](output)
+    assert "<function=" not in filtered
+    assert "Architect notes." in filtered
+    assert "Coder requirements." in filtered
+
+
 def test_shell_inspect_markup_is_not_forwarded():
     ns = helpers("_coder_unverified_observations")
     output = "Inspect project.\n[shell_inspect]\nls -la\nCoder must verify."
