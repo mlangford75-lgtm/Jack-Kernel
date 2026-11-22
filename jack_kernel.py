@@ -6024,6 +6024,7 @@ def _coder_unverified_observations(raw: str) -> str:
     # observations, and retain the original bytes in the host-owned checkpoint.
     safe = re.sub(r"(?is)<tool_call(?:\s[^>]*)?>.*?</tool_call>", "", safe)
     safe = re.sub(r"(?is)<tool_call(?:\s[^>]*)?>.*$", "", safe)
+    safe = re.sub(r"(?is)<function\s*=[^>]+>.*?(?:</function>|$)", "", safe)
     safe = re.sub(r"(?im)^\s*\[shell_inspect\]\s*\n[^\n]*(?:\n|$)", "", safe)
     safe = re.sub(
         r"<\|tool_call\|?>.*?(?:<\|tool_call\|>|$)", "",
