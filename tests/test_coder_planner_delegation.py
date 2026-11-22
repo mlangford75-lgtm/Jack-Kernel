@@ -20,19 +20,19 @@ from test_agentic_coder_planner_executor import load
     "Make the clock luxurious. Use black, gold and diamonds.",
     "Investigate the failed read-only tool call and complete the work.",
 ))
-def test_planner_receives_delegated_task_not_direct_execution_assignment(monkeypatch, tmp_path, planner, task):
+def test_planner_receives_original_task_with_separate_planning_system_contract(monkeypatch, tmp_path, planner, task):
     k = load(monkeypatch, tmp_path, planner=planner)
     history = [{"role": "user", "content": task}]
     saved = json.dumps(history, sort_keys=True)
     wire = k._coder_isolate_planner_request(history, k.STAGES["coder_planner"], source_history=history)
     assert [m["role"] for m in wire] == ["system", "user"]
     assert wire[0]["content"] == k.STAGES["coder_planner"].prompt
-    assert "developer specification" in wire[0]["content"]
-    assert "not to fulfill it yourself" in wire[0]["content"]
-    assert wire[1]["content"].startswith(k._CODER_PLANNER_DELEGATION_HEADER)
+    assert "detailed message" in wire[0]["content"]
+    assert "plan the user" in wire[0]["content"]
+    assert wire[1]["content"] == task
     assert wire[1]["content"].endswith(task)
     assert wire[1]["content"].count(task) == 1
-    assert "Prepare a detailed developer specification for Coder" in wire[1]["content"]
+    assert "Prepare Coder to complete the request." in wire[0]["content"]
     assert k._coder_isolate_planner_request(wire, k.STAGES["coder_planner"]) == wire
     assert json.dumps(history, sort_keys=True) == saved
     assert k.STAGES["coder_planner"].thinking is (planner == "thorough")
@@ -53,9 +53,8 @@ def test_multimodal_original_request_preserves_every_block(monkeypatch, tmp_path
     wire = k._coder_isolate_planner_request(history, k.STAGES["coder_planner"])
     assert [m["role"] for m in wire] == ["system", "user"]
     delegated = wire[1]["content"]
-    assert delegated[0] == {"type": "text", "text": k._CODER_PLANNER_DELEGATION_HEADER}
-    assert delegated[1:] == blocks
-    assert delegated[1] is blocks[0]
+    assert delegated == blocks
+    assert delegated[0] is blocks[0]
     assert k._coder_isolate_planner_request(wire, k.STAGES["coder_planner"]) == wire
     assert json.dumps(history, sort_keys=True) == frozen
 
@@ -78,7 +77,7 @@ def test_delegation_preserves_read_only_current_turn_tool_continuation(monkeypat
 
 
 @pytest.mark.parametrize("planner", ("flash", "thorough"))
-def test_backend_wire_delegates_without_changing_coder_and_has_stable_prefix(monkeypatch, tmp_path, planner):
+def test_backend_wire_preserves_original_request_without_changing_coder_and_has_stable_prefix(monkeypatch, tmp_path, planner):
     async def run():
         k = load(monkeypatch, tmp_path, planner=planner)
         requests = []
@@ -108,8 +107,8 @@ def test_backend_wire_delegates_without_changing_coder_and_has_stable_prefix(mon
         first, second = requests
         assert first["messages"][0] == second["messages"][0]
         assert first["messages"][0]["content"] == k.STAGES["coder_planner"].prompt
-        assert first["messages"][1]["content"].startswith(k._CODER_PLANNER_DELEGATION_HEADER)
-        assert second["messages"][1]["content"].startswith(k._CODER_PLANNER_DELEGATION_HEADER)
+        assert first["messages"][1]["content"] == "Create a cuckoo clock SVG"
+        assert second["messages"][1]["content"] == "Create a black and gold clock SVG"
         assert first["chat_template_kwargs"]["enable_thinking"] is (planner == "thorough")
         assert first["chat_template_kwargs"]["preserve_thinking"] is (planner == "thorough")
         assert first["reasoning_effort"] == ("none" if planner == "flash" else "xhigh")
