@@ -9944,6 +9944,12 @@ class JackQwenKernel:
                     append=append, same_stage_resume=True, tool_validation_repair_depth=tool_validation_repair_depth + 1,
                 )
 
+        if (AGENTIC_CODER_MODE and stage_key == "coder_planner"
+                and msg.get("tool_calls")
+                and _coder_planner_repeated_failed_inspection(history, msg["tool_calls"])):
+            LOG.warning("Planner repeated a failed read-only inspection; handing authenticated task to Coder")
+            return _coder_planner_host_handoff_result(history, str(msg.get("content") or ""))
+
         if AGENTIC_CODER_MODE and stage_key == "coder_planner" and msg.get("tool_calls"):
             span = _coder_planner_inspection_cycle(history, msg["tool_calls"])
             if span is not None:
@@ -10682,6 +10688,15 @@ class JackQwenKernel:
                 ):
                     yield packet
                 return
+
+        if (AGENTIC_CODER_MODE and stage_key == "coder_planner"
+                and message.get("tool_calls")
+                and _coder_planner_repeated_failed_inspection(history, message["tool_calls"])):
+            LOG.warning("Planner repeated a failed read-only inspection; handing authenticated task to Coder")
+            fallback = _coder_planner_host_handoff_result(history, message["content"])
+            yield {"kind": "content", "text": fallback["choices"][0]["message"]["content"]}
+            yield {"kind": "result", "data": fallback}
+            return
 
         if AGENTIC_CODER_MODE and stage_key == "coder_planner" and message.get("tool_calls"):
             span = _coder_planner_inspection_cycle(history, message["tool_calls"])
