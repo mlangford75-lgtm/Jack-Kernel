@@ -8477,6 +8477,20 @@ class OpenAICompatibleBackend:
             if not isinstance(message, dict):
                 prepared.append(message)
                 continue
+            # Planner is disposable work preparation. In a later authenticated
+            # turn, never replay its stage transcript or spec to the model.
+            # During the current Coder turn, retain the ENTIRE unchanged prefix
+            # (including plan and read-only evidence) for cache and recovery.
+            # Canonical history and the durable goal checkpoint are untouched.
+            if (
+                AGENTIC_CODER_MODE
+                and message_index < active_user_index
+                and (
+                    message.get("_jack_stage_key") == "coder_planner"
+                    or message.get("_jack_coder_plan") is True
+                )
+            ):
+                continue
             if (message_index < active_user_index
                     and _jack_is_authentic_user_message(message)):
                 previous_user_number += 1
