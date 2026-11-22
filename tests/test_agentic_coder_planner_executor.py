@@ -874,6 +874,37 @@ def test_stage2_deduplicates_matching_host_receipt_but_keeps_orphan(monkeypatch,
     assert h[4]["content"] == "redundant read receipt"
 
 
+
+def test_planner_is_retired_from_later_model_views_without_changing_active_coder_prefix(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path)
+    h = [{"role": "user", "content": "Inspect and build clock"}]
+    planner_call = {"id": "planning-read", "type": "function",
+                    "function": {"name": "read", "arguments": '{"path":"index.html"}'}}
+    h.append({"role": "assistant", "content": "",
+              "tool_calls": [planner_call], "_jack_internal_tool_exchange": True,
+              "_jack_stage_key": "coder_planner",
+              "reasoning_content": "PLANNER_TEMPORARY_THOUGHT"})
+    h.append({"role": "tool", "tool_call_id": "planning-read",
+              "content": "PLANNER_TEMPORARY_READ_EVIDENCE",
+              "_jack_internal_tool_exchange": True, "_jack_stage_key": "coder_planner"})
+    k._coder_append_plan(h, response("PLANNER_TEMPORARY_SPEC"))
+    h.append({"role": "assistant", "content": "CODER_RESULT",
+              "_jack_extended_candidate_response": True,
+              "reasoning_content": "CODER_REASONING"})
+    backend = k.OpenAICompatibleBackend(k.CFG)
+    active = backend._stage_messages_for_profile(h, k.STAGES["extended_initial"])
+    assert any("PLANNER_TEMPORARY_SPEC" in str(msg) for msg in active)
+    assert any("PLANNER_TEMPORARY_READ_EVIDENCE" in str(msg) for msg in active)
+    original = json.dumps(h, sort_keys=True)
+    h.append({"role": "user", "content": "Improve the clock"})
+    projected = backend._stage_messages_for_profile(h, k.STAGES["extended_initial"])
+    assert all("PLANNER_TEMPORARY_SPEC" not in str(msg) for msg in projected)
+    assert all("PLANNER_TEMPORARY_READ_EVIDENCE" not in str(msg) for msg in projected)
+    assert all("PLANNER_TEMPORARY_THOUGHT" not in str(msg) for msg in projected)
+    assert any("CODER_RESULT" in str(msg) for msg in projected)
+    assert json.dumps(h[:-1], sort_keys=True) == original
+
+
 def test_goal_checkpoint_persists_after_commit_without_becoming_memory(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path)
     monkeypatch.setattr(k, "_config_dir", lambda: tmp_path)
