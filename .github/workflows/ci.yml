@@ -77,6 +77,10 @@ jobs:
         shell: pwsh
         run: python -m pytest -q tests/test_ultra_native_appended_review.py
 
+      - name: Verify Planner history isolation and failed-inspection handoff
+        shell: pwsh
+        run: python -m pytest -q tests/test_coder_planner_history_isolation.py tests/test_coder_planner_failed_inspection_handoff.py
+
       - name: Verify Coder private JSON goals and tool-resume contract
         shell: pwsh
         run: python -m pytest -q tests/test_agentic_coder_planner_executor.py
