@@ -41,7 +41,7 @@ def test_prior_coder_transcript_is_not_replayed_as_planner_dialogue(monkeypatch,
     assert "OLD_CODER_FINAL_ANSWER" not in str(wire)
     assert not any(m.get("tool_calls") for m in wire)
     assert wire[-1]["role"] == current["role"]
-    assert wire[-1]["content"] == k._CODER_PLANNER_DELEGATION_HEADER + current["content"]
+    assert wire[-1]["content"] == current["content"]
     assert json.dumps(h, sort_keys=True) == frozen
 
 
@@ -64,7 +64,7 @@ def test_authenticated_memory_survives_without_executor_examples(monkeypatch, tm
     assert memory in wire[1]["content"]
     assert "OLD_EXECUTOR_CODE" not in str(wire)
     assert "jack-turn-abc" in wire[1]["content"]
-    assert wire[-1]["content"] == k._CODER_PLANNER_DELEGATION_HEADER + "Make it luxury black, gold, and diamonds"
+    assert wire[-1]["content"] == "Make it luxury black, gold, and diamonds"
 
 
 @pytest.mark.parametrize("planner", ["flash", "thorough"])
@@ -130,7 +130,7 @@ def test_planner_stream_transport_sees_only_current_turn_and_prior_memory(monkey
         assert [item["role"] for item in wire] == ["system", "user"]
         assert k.STAGES["coder_planner"].prompt in wire[0]["content"]
         assert "Clock built in index.html" in wire[0]["content"]
-        assert wire[1] == {"role": "user", "content": k._CODER_PLANNER_DELEGATION_HEADER + "Make it luxurious"}
+        assert wire[1] == {"role": "user", "content": "Make it luxurious"}
         assert "OLD_CODE_OUTPUT" not in str(wire)
         assert json.dumps(history, sort_keys=True) == original
     asyncio.run(run())
