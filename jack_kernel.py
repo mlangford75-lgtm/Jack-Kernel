@@ -1287,9 +1287,24 @@ def _agentic_memory_is_instruction_echo(memory: str) -> bool:
         return False
     candidate = " ".join(memory.split()).casefold()
     trigger = " ".join(_AGENTIC_SOURCE_ONLY_WORKING_STATE_TRIGGER.split()).casefold()
-    return candidate == trigger or (
+    if candidate == trigger or (
         candidate.startswith(trigger) and len(candidate) <= len(trigger) + 80
-    )
+    ):
+        return True
+    # The exact extraction directive varies by Agentic profile, but the
+    # memory-commit boundary is shared. Reject standalone substantial spans
+    # copied from either live directive, not legitimate working-state notes
+    # that merely mention one of its instructions. This remains deliberately
+    # fail-open on ambiguous or partially useful outputs.
+    if len(candidate) < 80:
+        return False
+    for directive in (
+        _AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE,
+        _AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE,
+    ):
+        if candidate in " ".join(directive.split()).casefold():
+            return True
+    return False
 
 def _stage_continuation(
     profile: "StageProfile", messages: Optional[Iterable[Dict[str, Any]]] = None
