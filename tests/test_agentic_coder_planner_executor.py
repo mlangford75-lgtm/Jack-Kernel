@@ -62,11 +62,11 @@ def test_profile_isolated_and_reasoning_contract(monkeypatch, tmp_path):
     assert k.CODER_EXECUTOR_PROMPT.startswith(PREFIX)
     assert "read-only, non-mutating tools" in k.CODER_PLANNER_PROMPT
     assert "detailed natural-language developer specification" in k.CODER_PLANNER_PROMPT
-    assert "You are Planner.\n\n" in k.CODER_PLANNER_PROMPT
+    assert "You are Planner, the planning agent" in k.CODER_PLANNER_PROMPT
     assert "The workspace can be inspected when necessary" in k.CODER_PLANNER_PROMPT
     assert "for agentic work describe actions" in k.CODER_PLANNER_PROMPT
     assert "You've been provided a detailed, read-only developer specification prepared by Planner." in k.CODER_EXECUTOR_PROMPT
-    assert "Do not perform Coder's implementation work" in k.CODER_PLANNER_PROMPT
+    assert "Do not implement artifacts" in k.CODER_PLANNER_PROMPT
     assert "read-only developer specification" in k.CODER_EXECUTOR_PROMPT
     assert "sole implementation and answer-authority" in k.CODER_EXECUTOR_PROMPT
     assert "Files in the workspace are previous checkpoints" in k.CODER_EXECUTOR_PROMPT
@@ -472,7 +472,7 @@ def test_planner_read_only_vision_and_explicit_actual_tool_contract(monkeypatch,
         assert wire[0]["content"] == k.STAGES["coder_planner"].prompt
         assert [msg["role"] for msg in wire] == ["system", "user"]
         assert "read-only, non-mutating tools" in wire[0]["content"]
-        assert "Do not perform Coder's implementation work" in wire[0]["content"]
+        assert "Do not implement artifacts" in wire[0]["content"]
         assert "Caller must not alter Planner" not in str(wire)
         assert sum(m["role"] == "user" for m in wire) == 1
 
@@ -551,7 +551,7 @@ def test_planner_stable_prompt_and_preserved_flash_thorough_contract(monkeypatch
         k = load(monkeypatch, tmp_path, planner=selected)
         base = k.CODER_PLANNER_PROMPT[len(k.CODER_PLANNER_THOROUGH_PREFIX):]
         assert k.CODER_PLANNER_FLASH_PROMPT == base
-        assert base.startswith("You are Planner.\n")
+        assert base.startswith("You are Planner, the planning agent")
         assert len(base) < 2400
         assert "Prior working knowledge" in base
         assert "read-only, non-mutating tools" in base
