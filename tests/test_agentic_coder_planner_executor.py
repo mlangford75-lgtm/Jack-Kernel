@@ -553,7 +553,7 @@ def test_planner_stable_prompt_and_preserved_flash_thorough_contract(monkeypatch
         assert k.CODER_PLANNER_FLASH_PROMPT == base
         assert base.startswith("You are Planner.")
         assert len(base) < 2400
-        assert "Prior working knowledge" in base
+        assert "Past chat history" in base
         assert "read-only, non-mutating tools" in base
         assert k.STAGES["coder_planner"].thinking is (selected == "thorough")
         assert k.STAGES["extended_initial"].thinking is True
