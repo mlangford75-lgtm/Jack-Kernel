@@ -982,7 +982,7 @@ def test_planner_isolation_keeps_user_context_but_no_external_system_authority(m
         [{"role": "system", "content": k.CODER_PLANNER_PROMPT}] + caller,
         k.STAGES["coder_planner"],
     )
-    assert [m["role"] for m in wire] == ["system", "user", "assistant", "user"]
+    assert [m["role"] for m in wire] == ["system", "user"]
     assert wire[0]["content"] == k.CODER_PLANNER_PROMPT
     assert wire[-1]["content"] == "Build a cuckoo clock SVG"
     assert json.dumps(caller) == original
@@ -1013,7 +1013,7 @@ def test_planner_rebuilds_mismatched_upstream_system_without_mutating_source(mon
     ]
     frozen = json.dumps(source, sort_keys=True)
     planned = k._coder_isolate_planner_request(source, k.STAGES["coder_planner"])
-    assert [m["role"] for m in planned] == ["system", "user", "assistant", "user"]
+    assert [m["role"] for m in planned] == ["system", "user"]
     assert planned[0] == {"role": "system", "content": k.CODER_PLANNER_PROMPT}
     assert planned[-1]["content"] == "Verify workspace is empty"
     assert all("EXTRA INSTRUCTIONS" not in str(m) for m in planned)
