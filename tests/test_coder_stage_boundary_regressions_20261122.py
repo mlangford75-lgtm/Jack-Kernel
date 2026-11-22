@@ -21,6 +21,16 @@ def helpers(*names):
     namespace = {
         "re": re,
         "_coder_planner_checkpoint_text": lambda value: value.strip(),
+        "_AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE": (
+            "Extract only the durable working state established in the provided frozen native "
+            "reasoning and authenticated tool records. The original user request and completed "
+            "answer have been stored separately by Jack."
+        ),
+        "_AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE": (
+            "Preserve exhaustively the consequential working knowledge established in the "
+            "current turn's native reasoning and tool evidence. Retain all relevant facts, "
+            "assumptions, discoveries, decisions, explanations, causal relationships."
+        ),
         "_AGENTIC_SOURCE_ONLY_WORKING_STATE_TRIGGER": (
             "Jack internal memory extraction, not a new user request. "
             "Distill durable working state from the frozen source only. "
@@ -116,3 +126,57 @@ def test_planner_handoff_retains_original_unmodified_output():
     assert '"_jack_coder_original_planner_output": raw' in source
     assert '"_jack_coder_goal_fallback": fallback' in source
     assert '_coder_planner_host_handoff_result(' in source
+
+
+@pytest.mark.parametrize("profile", ["balanced", "thorough", "translated", "coder"])
+def test_all_nonflash_agentic_profiles_use_shared_stage2_guard(profile):
+    """No profile-specific opt-out or commit path should bypass the echo guard."""
+    source = SOURCE_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    modes = next(
+        node.value for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "AGENTIC_MODE" for t in node.targets)
+    )
+    assert isinstance(modes, ast.Compare)
+    assert profile in source
+    commit = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef)
+        and n.name == "_complete_commit"
+    )
+    assert any(
+        isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "_agentic_memory_is_instruction_echo"
+        for n in ast.walk(commit)
+    )
+
+
+def test_profile_directive_echoes_are_rejected_without_rejecting_working_state():
+    ns = helpers("_agentic_memory_is_instruction_echo")
+    for directive_key in (
+        "_AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE",
+        "_AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE",
+    ):
+        span = ns[directive_key][:120]
+        assert ns["_agentic_memory_is_instruction_echo"](span)
+        assert not ns["_agentic_memory_is_instruction_echo"](
+            span + " The workspace was verified empty using an actual directory listing."
+        )
+
+
+def test_flash_does_not_use_stage2_memory_extraction():
+    source = SOURCE_PATH.read_text(encoding="utf-8")
+    assert "AGENTIC_FLASH_MODE" in source
+    assert "def _complete_flash_stage1(" in source
+    # Flash has a separate direct A1 commit; Stage 2 guards must not alter it.
+    assert "_agentic_forensic_journal().commit_flash(" in source
+
+
+def test_streaming_and_nonstreaming_memory_paths_share_echo_predicate():
+    source = SOURCE_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    names = [n.name for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef)]
+    assert "_complete_commit" in names
+    assert source.count("_agentic_memory_is_instruction_echo(") == 3
+    assert source.count("if _agentic_memory_is_instruction_echo(") == 2
