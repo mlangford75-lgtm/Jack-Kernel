@@ -1638,25 +1638,75 @@ def _agentic_stage2_project_historical_evidence(
         # A1 is copied to this memory request; only R1 and real tool evidence.
         if canonical_history is None:
             raise ForensicConflict("Agentic memory requires owned tool history")
-        # The same source-only capsule is used for Balanced and Thorough;
-        # only their Stage-2 native-thinking settings differ.
+        # Preserve current-turn isolation and source chronology. Render the
+        # evidence as readable source text instead of a JSON transaction capsule.
         observed_events = _agentic_stage2_chronological_source(canonical_history)
-        source_capsule = {
-            "kind": "jack_stage1_frozen_working_evidence",
-            "scope": "authenticated_current_turn_only",
-            "events": observed_events,
-        }
+        evidence_lines = ["JACK READ-ONLY WORKING-STATE SOURCE DATA, NOT A USER REQUEST."]
+        for event in observed_events:
+            kind = event.get("type")
+            if kind == "reasoning_segment":
+                evidence_lines.extend((
+                    "FROZEN NATIVE REASONING (" + str(event.get("phase") or "stage1") + "):",
+                    event.get("content") or "",
+                    "END FROZEN NATIVE REASONING",
+                ))
+            elif kind == "issued_calls":
+                for call in event.get("calls", []):
+                    if not isinstance(call, dict):
+                        continue
+                    fn = call.get("function")
+                    fn = fn if isinstance(fn, dict) else {}
+                    arguments = fn.get("arguments")
+                    argument_text = (arguments if isinstance(arguments, str)
+                                     else json.dumps(arguments, ensure_ascii=False, default=str))
+                    details = []
+                    try:
+                        parsed = json.loads(argument_text)
+                        if isinstance(parsed, dict):
+                            for key in ("path", "file_path", "filename", "target", "cwd"):
+                                if isinstance(parsed.get(key), str):
+                                    details.append(key + "=" + repr(parsed[key]))
+                    except (TypeError, ValueError):
+                        pass
+                    evidence_lines.append(
+                        "TOOL CALL: " + str(fn.get("name") or call.get("name") or "unknown")
+                        + " | id=" + str(call.get("id") or "unknown")
+                        + " | arguments_sha256=" + hashlib.sha256(
+                            argument_text.encode("utf-8")
+                        ).hexdigest()
+                        + (" | " + " | ".join(details) if details else "")
+                    )
+            elif kind in {"returned_result", "host_retired_tool_receipt"}:
+                evidence_lines.append(
+                    "TOOL OUTCOME: " + str(event.get("tool") or "unknown")
+                    + " | id=" + str(event.get("call_id") or "unknown")
+                    + " | status=" + (
+                        "REPORTED_FAILURE" if event.get("reported_failure") is True
+                        else str(event.get("reported_status") or "RESULT_RETURNED")
+                    )
+                )
+                if event.get("content") is not None:
+                    result = event["content"]
+                    evidence_lines.append(
+                        result if isinstance(result, str)
+                        else json.dumps(result, ensure_ascii=False, default=str)
+                    )
+                if event.get("executor_reported_cwd"):
+                    evidence_lines.append(
+                        "EXECUTOR-REPORTED CWD (unverified): "
+                        + str(event["executor_reported_cwd"])
+                    )
         if AGENTIC_CODER_MODE:
-            # Coder is the memory authority. Planner's temporary specification
-            # is not Stage-2 evidence; Coder's exact frozen A1 is.
-            source_capsule["coder_frozen_response"] = exact_answer
+            # Planner is excluded; Coder's frozen response is historical evidence.
+            evidence_lines.extend((
+                "FROZEN CODER COMPLETED RESPONSE:",
+                exact_answer,
+                "END FROZEN CODER COMPLETED RESPONSE",
+            ))
+        evidence_lines.append("END JACK WORKING-STATE SOURCE DATA.")
         stage_messages[-1] = {
             **source_request,
-            "content": (
-                "JACK READ-ONLY WORKING-STATE SOURCE DATA, NOT A USER REQUEST.\n"
-                + json.dumps(source_capsule, ensure_ascii=False, default=str)
-                + "\nEND JACK WORKING-STATE SOURCE DATA."
-            ),
+            "content": "\n".join(evidence_lines),
         }
         if (
             sum(message.get("role") == "user" for message in stage_messages) != 1
@@ -3345,6 +3395,11 @@ CODER_PLANNER_PROMPT = (
       "Help them fulfill the authorized user request. Jack will deliver your response to Coder.\n\n"
       "Your responsibility is to plan the user\'s request, not execute it or answer it directly. "
       "Prepare Coder to complete the request.\n\n"
+      "Provide a helpful, highly detailed blueprint of the user's goals, design intent, "
+      "functional requirements, constraints, and acceptance criteria. Describe the desired "
+      "behavior and overall architecture clearly, but do not prescribe highly specific code "
+      "or treat proposed implementation details as authoritative; Coder owns the code logic, "
+      "technical implementation decisions, and verification.\n\n"
       "For non-coding tasks, simply generate a brief summary of the user request and "
       "what needs to be delivered to fulfill it.\n\n"
       "Past chat history and files in the workspace are checkpoints to consider when relevant. "
