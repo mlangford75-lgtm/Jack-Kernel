@@ -472,7 +472,7 @@ def test_planner_read_only_vision_and_explicit_actual_tool_contract(monkeypatch,
         assert wire[0]["content"] == k.STAGES["coder_planner"].prompt
         assert [msg["role"] for msg in wire] == ["system", "user"]
         assert "read-only, non-mutating tools" in wire[0]["content"]
-        assert "Do not implement artifacts" in wire[0]["content"]
+        assert "Do not perform Coder's implementation work" in wire[0]["content"]
         assert "Caller must not alter Planner" not in str(wire)
         assert sum(m["role"] == "user" for m in wire) == 1
 
@@ -551,7 +551,7 @@ def test_planner_stable_prompt_and_preserved_flash_thorough_contract(monkeypatch
         k = load(monkeypatch, tmp_path, planner=selected)
         base = k.CODER_PLANNER_PROMPT[len(k.CODER_PLANNER_THOROUGH_PREFIX):]
         assert k.CODER_PLANNER_FLASH_PROMPT == base
-        assert base.startswith("You are Planner, the planning agent")
+        assert base.startswith("You are Planner.")
         assert len(base) < 2400
         assert "Prior working knowledge" in base
         assert "read-only, non-mutating tools" in base
@@ -1478,7 +1478,7 @@ def test_planner_forbidden_write_edit_feedback_prevents_retry_loop(monkeypatch, 
     k = load(monkeypatch, tmp_path)
     name = k.STAGES["coder_planner"].name
     assert "Your stateful, mutating, or destructive tools have been removed." in k.CODER_PLANNER_PROMPT
-    assert "Do not implement artifacts" in k.CODER_PLANNER_PROMPT
+    assert "Do not perform Coder's implementation work" in k.CODER_PLANNER_PROMPT
 
     offered = [
         {"type": "function", "function": {"name": "read"}},
