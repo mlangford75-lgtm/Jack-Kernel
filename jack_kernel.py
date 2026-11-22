@@ -1471,8 +1471,19 @@ def _agentic_stage2_chronological_source(history: List[Dict[str, Any]]) -> List[
         raise ForensicConflict("Agentic memory source missing frozen A1")
     events: List[Dict[str, Any]] = []
     in_review = False
-    for item in history[start + 1:frozen + 1]:
+    # The Planner's read-only inspection belongs to its temporary planning
+    # stage, not Coder's retrospective. Keep it intact in canonical history
+    # for Coder continuations and deterministic recovery.
+    planner_end = next(
+        (i for i in range(start + 1, frozen + 1)
+         if AGENTIC_CODER_MODE and isinstance(history[i], dict)
+         and history[i].get("_jack_coder_plan") is True),
+        start,
+    )
+    for position, item in enumerate(history[start + 1:frozen + 1], start + 1):
         if not isinstance(item, dict):
+            continue
+        if AGENTIC_CODER_MODE and position <= planner_end:
             continue
         # Exclude the host's extension instruction and trigger. Translated
         # adds a translation continuation to the normal Thorough Stage 1.
@@ -1531,6 +1542,19 @@ def _agentic_stage2_chronological_source(history: List[Dict[str, Any]]) -> List[
                 "reported_status": item.get("_jack_tool_status"),
                 "content": copy.deepcopy(item.get("content")),
             })
+    # A returned tool result already supplies the observation to Stage 2.
+    # Do not also prefill a host receipt for the same call ID. Retain orphan
+    # receipts, including retired tool events, and all canonical evidence.
+    returned_ids = {
+        e.get("call_id") for e in events
+        if e.get("type") == "returned_result" and e.get("call_id")
+    }
+    if returned_ids:
+        events = [
+            e for e in events
+            if not (e.get("type") == "host_retired_tool_receipt"
+                    and e.get("call_id") in returned_ids)
+        ]
     return events
 
 
