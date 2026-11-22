@@ -1638,25 +1638,73 @@ def _agentic_stage2_project_historical_evidence(
         # A1 is copied to this memory request; only R1 and real tool evidence.
         if canonical_history is None:
             raise ForensicConflict("Agentic memory requires owned tool history")
-        # The same source-only capsule is used for Balanced and Thorough;
-        # only their Stage-2 native-thinking settings differ.
+        # The already-frozen source contains exact native reasoning from every
+        # Stage-1 tool continuation. Do not reconstruct it from event objects or
+        # serialize the forensic ledger into the model's cognitive input.
         observed_events = _agentic_stage2_chronological_source(canonical_history)
-        source_capsule = {
-            "kind": "jack_stage1_frozen_working_evidence",
-            "scope": "authenticated_current_turn_only",
-            "events": observed_events,
-        }
+        evidence_lines: List[str] = []
+        for event in observed_events:
+            kind = event.get("type")
+            if kind == "reasoning_segment":
+                # The frozen wire already carries the same assembled reasoning.
+                continue
+            if kind == "issued_calls":
+                for call in event.get("calls", []):
+                    if not isinstance(call, dict):
+                        continue
+                    fn = call.get("function")
+                    name = (fn.get("name") if isinstance(fn, dict) else
+                            call.get("name"))
+                    evidence_lines.append(
+                        "Tool issued: " + str(name or "unknown") +
+                        " (call ID: " + str(call.get("id") or "unavailable") + ")"
+                    )
+                # Call arguments, including file-write source, remain complete
+                # in canonical history; they are not memory source text.
+            elif kind in ("returned_result", "host_retired_tool_receipt"):
+                evidence_lines.append(
+                    "Tool outcome: " + str(event.get("tool") or "unknown") +
+                    " (call ID: " + str(event.get("call_id") or "unavailable") +
+                    "; " + (
+                        "reported failure" if event.get("reported_failure")
+                        else str(event.get("reported_status") or "result returned")
+                    ) + ")"
+                )
+                content = event.get("content")
+                if content is not None:
+                    evidence_lines.append(
+                        content if isinstance(content, str)
+                        else json.dumps(content, ensure_ascii=False, default=str)
+                    )
+                if event.get("executor_reported_cwd"):
+                    evidence_lines.append(
+                        "Executor-reported working directory (unverified): " +
+                        str(event["executor_reported_cwd"])
+                    )
+        source_parts = [
+            "JACK READ-ONLY WORKING-STATE SOURCE DATA, NOT A USER REQUEST.",
+            "FROZEN STAGE-1 NATIVE REASONING:",
+            native_reasoning if native_reasoning else "[unavailable]",
+            "END FROZEN STAGE-1 NATIVE REASONING",
+        ]
+        if evidence_lines:
+            source_parts.extend([
+                "AUTHENTICATED TOOL EVENTS AND REPORTED OUTCOMES:",
+                "\n".join(evidence_lines),
+                "END AUTHENTICATED TOOL EVENTS",
+            ])
         if AGENTIC_CODER_MODE:
-            # Coder is the memory authority. Planner's temporary specification
-            # is not Stage-2 evidence; Coder's exact frozen A1 is.
-            source_capsule["coder_frozen_response"] = exact_answer
+            # Coder owns the final answer. Planner's temporary specification
+            # and reasoning are excluded from this source.
+            source_parts.extend([
+                "FROZEN CODER COMPLETED RESPONSE:",
+                exact_answer,
+                "END FROZEN CODER COMPLETED RESPONSE",
+            ])
+        source_parts.append("END JACK WORKING-STATE SOURCE DATA.")
         stage_messages[-1] = {
             **source_request,
-            "content": (
-                "JACK READ-ONLY WORKING-STATE SOURCE DATA, NOT A USER REQUEST.\n"
-                + json.dumps(source_capsule, ensure_ascii=False, default=str)
-                + "\nEND JACK WORKING-STATE SOURCE DATA."
-            ),
+            "content": "\n".join(source_parts),
         }
         if (
             sum(message.get("role") == "user" for message in stage_messages) != 1
