@@ -1275,6 +1275,22 @@ _AGENTIC_SOURCE_ONLY_WORKING_STATE_TRIGGER = (
     "Do not answer, resume reasoning, or describe the original task."
 )
 
+
+def _agentic_memory_is_instruction_echo(memory: str) -> bool:
+    """Reject unmistakable echoes of Jack's own Stage-2 trigger, not normal text.
+
+    Do not grade the semantics, length or style of authentic working knowledge.
+    The original frozen A1 and authenticated tool evidence survive a failed
+    memory commit through the established degraded-commit path.
+    """
+    if not isinstance(memory, str):
+        return False
+    candidate = " ".join(memory.split()).casefold()
+    trigger = " ".join(_AGENTIC_SOURCE_ONLY_WORKING_STATE_TRIGGER.split()).casefold()
+    return candidate == trigger or (
+        candidate.startswith(trigger) and len(candidate) <= len(trigger) + 80
+    )
+
 def _stage_continuation(
     profile: "StageProfile", messages: Optional[Iterable[Dict[str, Any]]] = None
 ) -> str:
@@ -5978,6 +5994,21 @@ def _coder_planner_checkpoint_text(raw: str) -> str:
     return raw.strip()
 
 
+def _coder_planner_has_simulated_tool_markup(raw: str) -> bool:
+    """Detect text pretending to be a tool invocation, never authenticated calls.
+
+    This is deliberately narrow: ordinary plans can mention commands and tools.
+    Only standalone tool-call syntax is treated as a failed Planner handoff.
+    """
+    if not isinstance(raw, str):
+        return False
+    return bool(re.search(
+        r"(?im)^\s*<tool_call(?:\s|>)|^\s*<function\s*=|"
+        r"<\|tool_call|^\s*\[shell_inspect\]\s*$",
+        raw,
+    ))
+
+
 def _coder_unverified_observations(raw: str) -> str:
     """Preserve useful imperfect Planner text without propagating fake tool calls.
 
@@ -5988,8 +6019,12 @@ def _coder_unverified_observations(raw: str) -> str:
     safe = _coder_planner_checkpoint_text(raw)
     if not safe:
         return ""
-    if "<|tool_call" not in safe:
-        return safe
+    # XML-like tool calls and legacy shell_inspect annotations are model text,
+    # never authenticated Pi tool calls. Keep prose outside them as unverified
+    # observations, and retain the original bytes in the host-owned checkpoint.
+    safe = re.sub(r"(?is)<tool_call(?:\s[^>]*)?>.*?</tool_call>", "", safe)
+    safe = re.sub(r"(?is)<tool_call(?:\s[^>]*)?>.*$", "", safe)
+    safe = re.sub(r"(?im)^\s*\[shell_inspect\]\s*\n[^\n]*(?:\n|$)", "", safe)
     safe = re.sub(
         r"<\|tool_call\|?>.*?(?:<\|tool_call\|>|$)", "",
         safe, flags=re.DOTALL,
@@ -6026,8 +6061,20 @@ def _coder_append_plan(history: List[Dict[str, Any]], result: Dict[str, Any]) ->
         raise ForensicConflict("Coder Planner has no matching authenticated Work ID")
     raw = _content_to_text(msg.get("content"))
     incomplete = choice.get("finish_reason") != "stop" or bool(msg.get("tool_calls"))
-    spec, fallback = _coder_spec_text(raw, request_text)
-    fallback = fallback or bool(msg.get("_jack_coder_planner_host_fallback"))
+    if _coder_planner_has_simulated_tool_markup(raw):
+        # Never promote fake tool syntax to the Coder developer-spec surface.
+        # Preserve the actual user request and the Planner's useful prose as
+        # lower-trust observations. The unmodified raw output remains below.
+        LOG.warning("Coder Planner simulated a tool call in text; host recovery handoff")
+        recovered = _coder_planner_host_handoff_result(
+            history, _coder_unverified_observations(raw)
+        )
+        spec = _content_to_text(recovered["choices"][0]["message"]["content"])
+        fallback = True
+        incomplete = True
+    else:
+        spec, fallback = _coder_spec_text(raw, request_text)
+        fallback = fallback or bool(msg.get("_jack_coder_planner_host_fallback"))
     entry = {"role": "assistant", "content": spec,
              "_jack_coder_plan": True, "_jack_stage_key": "coder_planner",
              "_jack_coder_goal_fallback": fallback,
@@ -12144,6 +12191,8 @@ class JackQwenKernel:
         memory = freeze_xml_stage_output(frozen_jack_xml)
         if not memory:
             raise HTTPException(status_code=502, detail="Agentic Stage 2 produced no distilled memory.")
+        if _agentic_memory_is_instruction_echo(memory):
+            raise HTTPException(status_code=502, detail="Agentic Stage 2 echoed its host instruction instead of producing working memory.")
         # Preserve the actual Stage-2 memory as its own shadow artifact.
         # Existing outward formatting still includes the host receipt until Phase 3.
         unadorned_memory = memory
@@ -12215,7 +12264,12 @@ class JackQwenKernel:
         _agentic_forensic_fail_memory(history, reason)
         _coder_preserve_goal_artifact(history)
         try:
-            _agentic_shadow_record_commit(frozen_stage1_answer, None, history=history)
+            # Preserve host-authenticated tool evidence even when the model's
+            # memory is rejected. No invented replacement memory is committed.
+            receipt = "" if AGENTIC_FLASH_MODE else _agentic_tool_history_note(history)
+            _agentic_shadow_record_commit(
+                frozen_stage1_answer, None, receipt, history=history
+            )
         except Exception:
             LOG.exception("Agentic optional shadow record failed during A1-only degraded result")
         _agentic_finish_delayed_one_hop(history)
@@ -13890,6 +13944,8 @@ class JackQwenKernel:
                     distilled_memory = freeze_xml_stage_output(frozen_jack_xml)
                     if not distilled_memory:
                         raise HTTPException(status_code=502, detail="Agentic Stage 2 produced no distilled memory.")
+                    if _agentic_memory_is_instruction_echo(distilled_memory):
+                        raise HTTPException(status_code=502, detail="Agentic Stage 2 echoed its host instruction instead of producing working memory.")
                     # Keep model memory and host receipts independently in the shadow record.
                     unadorned_memory = distilled_memory
                     # Flash Stage-2 memory is exactly "Turn N"; historical
