@@ -47,20 +47,15 @@ def test_mode_placement_and_reasoning_contract(monkeypatch, tmp_path):
     assert k.STAGES["thesis"].force_preserve_thinking
     assert k._runtime_identity_details()["mode"] == "ultra"
     assert k._runtime_identity_details()["flow"] == ["thesis", "thesis"]
-    assert k.AGENTIC_STAGE1_VERIFICATION_PROMPT in k.ULTRA_REVIEW_TRIGGER
-    assert k.ULTRA_REVIEW_TRIGGER == (
-        "Ultra Reasoning: [Not a new user request. Continued Reasoning]\n\n"
-        "Wait, re-verify the latest reasoning and chain-of-thought. "
-        "Test for errors, mistakes, or poor quality. Make changes, if necessary, "
-        "to ensure alignment with the instructions and user request before responding"
-        "\n\nReturn the new, complete answer to the current user request, "
-        "not a report about re-verification. Preserve correct reasoning, "
-        "established findings, completed work, and verified results. "
-        "Correct identified errors, omissions, or misalignment without "
-        "discarding valid work. Do not repeat completed tool effects."
+    expected_review_prompt = "Ultra Reasoning: [Not a new user request. Continued Reasoning]\n\nTest for errors, mistakes, or poor quality. Make changes, if necessary, to ensure alignment with the instructions and user request before responding\n\nReturn the new, complete answer to the current user request, not a report about re-verification. Preserve correct reasoning, established findings, completed work, and verified results. Correct identified errors, omissions, or misalignment without discarding valid work. Do not repeat completed tool effects.\n\nFiles in the workspace are previous checkpoints, available to build upon.\n\nDo not assume the work has been done. \nThe workspace and the tool history may be used to verify the previous work.\n\nYou are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the current user request."
+    assert k.ULTRA_REVIEW_TRIGGER == expected_review_prompt
+    assert k.ULTRA_REVIEW_TRIGGER.endswith(
+        "You are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the current user request."
     )
-    assert "re-verify the latest reasoning" in k.ULTRA_REVIEW_TRIGGER
-    assert "alignment with the instructions and user request" in k.ULTRA_REVIEW_TRIGGER
+    assert k.AGENTIC_STAGE1_VERIFICATION_PROMPT not in k.ULTRA_REVIEW_TRIGGER
+    assert "The workspace and the tool history may be used to verify the previous work." in k.ULTRA_REVIEW_TRIGGER
+    assert "Do not assume the work has been done. Verify in the workspace or review the tool history" not in k.ULTRA_REVIEW_TRIGGER
+    assert k.ULTRA_REVIEW_TRIGGER.count("You are continuing the work of a previous reasoning stage.") == 1
     assert not k.AGENTIC_SOURCE_ONLY_WORKING_STATE
 
 
@@ -169,7 +164,12 @@ def test_same_system_prefix_xhigh_and_final_only(monkeypatch, tmp_path, streamin
             assert any(
                 m.get("role") == "system"
                 and k.ULTRA_REVIEW_TRIGGER in m.get("content", "")
+                and m.get("content", "").endswith("You are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the current user request.")
                 for m in second["messages"]
+            )
+            assert not any(
+                "You are continuing the work of a previous reasoning stage. Produce the response that serves as the original response to the current user request." in m.get("content", "")
+                for m in first["messages"] if m.get("role") == "system"
             )
             assert first["messages"][0]["content"] == second["messages"][0]["content"]
         finally:

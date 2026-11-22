@@ -9,8 +9,8 @@ from __future__ import annotations
 import hashlib
 import re
 
-LOOP_THRESHOLDS = (16, 32, 48, 64, 128)
-DEFAULT_LOOP_THRESHOLD = 32
+LOOP_THRESHOLDS = (12, 16, 24, 32, 48, 64, 128)
+DEFAULT_LOOP_THRESHOLD = 24
 MIN_CYCLE_WORDS = 128
 MAX_CYCLE_WORDS = 2048
 _MASK = (1 << 64) - 1
@@ -65,7 +65,7 @@ class ReasoningLoopDetector:
         max_cycle_words: int = MAX_CYCLE_WORDS,
     ) -> None:
         if repetitions not in LOOP_THRESHOLDS:
-            raise ValueError("loop repetitions must be one of 16, 32, 48, 64, 128")
+            raise ValueError("loop repetitions must be one of 12, 16, 24, 32, 48, 64, 128")
         if min_cycle_words < MIN_CYCLE_WORDS:
             raise ValueError("minimum cycle must be at least 128 words")
         if max_cycle_words < min_cycle_words:
