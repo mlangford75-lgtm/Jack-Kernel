@@ -3425,6 +3425,68 @@ def _coder_planner_inspection_cycle(
     return None
 
 
+def _coder_planner_repeated_failed_inspection(
+    history: List[Dict[str, Any]], candidate_calls: Any
+) -> bool:
+    """Stop an identical failed Planner inspection before its second execution.
+
+    An exact action signature, not model text or tool-call ID, establishes
+    identity. Only failures returned by a tool in this authenticated Planner
+    turn count. No other tool, Coder stage, successful inspection, or new
+    argument set is restricted. Recognize both full tool exchanges and compact
+    host receipts so pruning cannot reset the failure boundary.
+    """
+    if not isinstance(candidate_calls, list) or len(candidate_calls) != 1:
+        return False
+    signature = _agentic_tool_action_signature(candidate_calls[0])
+    if (signature is None or signature[2]
+            or signature[0] not in _CODER_PLANNER_READ_TOOLS):
+        return False
+    target = active_response_target(history)
+    if target is None:
+        return False
+    pending: Dict[str, Tuple[str, str, bool]] = {}
+    for item in history[int(target["history_index"]) + 1:]:
+        if not isinstance(item, dict):
+            continue
+        if item.get("_jack_stage_key") not in {None, "coder_planner"}:
+            continue
+        if item.get("_jack_tool_evidence_receipt"):
+            previous = item.get("_jack_tool_action_signature")
+            if previous is None or tuple(previous) != signature:
+                continue
+            if (item.get("_jack_tool_outcome") == TOOL_FAILED
+                    or item.get("_jack_tool_status") == "FAILED"):
+                return True
+            continue
+        if not item.get("_jack_internal_tool_exchange"):
+            continue
+        if item.get("role") == "assistant":
+            for call in item.get("tool_calls") or []:
+                if not isinstance(call, dict):
+                    continue
+                call_id = call.get("id")
+                previous = _agentic_tool_action_signature(call)
+                if isinstance(call_id, str) and previous is not None:
+                    pending[call_id] = previous
+        elif item.get("role") == "tool":
+            previous = pending.pop(item.get("tool_call_id"), None)
+            if previous != signature:
+                continue
+            outcome = item.get("_jack_tool_outcome") or reported_tool_outcome(item)
+            # Pi sometimes returns bare ENOENT text without structured
+            # status. Treat only an unambiguous read error as a failed read,
+            # never an arbitrary tool output containing the word ENOENT.
+            content = _content_to_text(item.get("content")).lstrip()
+            missing_read = signature[0] == "read" and content.startswith(
+                ("ENOENT:", "EISDIR:", "ENOTDIR:")
+            )
+            if (outcome == TOOL_FAILED or item.get("_jack_internal_tool_failed")
+                    or missing_read):
+                return True
+    return False
+
+
 def _coder_planner_repeated_inspection_pending(history: List[Dict[str, Any]]) -> bool:
     target = active_response_target(history)
     return bool(target is not None and any(
