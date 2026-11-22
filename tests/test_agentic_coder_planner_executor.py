@@ -809,7 +809,6 @@ def test_planner_reasoning_retired_immediately_but_spec_and_tool_evidence_surviv
 
 
 @pytest.mark.parametrize("planner_profile", ["flash", "thorough"])
-@pytest.mark.parametrize("planner_profile", ["flash", "thorough"])
 def test_coder_stage2_uses_coder_outcome_without_planner_reasoning(monkeypatch, tmp_path, planner_profile):
     k = load(monkeypatch, tmp_path, planner=planner_profile)
     h = [{"role": "user", "content": "Build clock"}]
