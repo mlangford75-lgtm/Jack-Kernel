@@ -13443,10 +13443,17 @@ class JackQwenKernel:
                                 yield event({"reasoning_content": packet["text"]})
                             elif kind == "content":
                                 if stage_key == "coder_planner":
+                                    # The specification is Planner's generated output, not
+                                    # native reasoning. Pi may suppress reasoning_content
+                                    # while Flash is producing valid answer-channel tokens.
+                                    # Stream the advisory specification through content in
+                                    # both profiles; native Thorough R1 remains on the
+                                    # separate reasoning_content channel above. Coder still
+                                    # owns the authoritative answer and tool execution.
                                     if not stage_content_started:
                                         stage_content_started = True
-                                        yield event({"reasoning_content": "\n[CODER PLANNER — SPEC SHEET]\n"})
-                                    yield event({"reasoning_content": packet["text"]})
+                                        yield event({"content": "\n[CODER PLANNER — SPEC SHEET]\n"})
+                                    yield event({"content": packet["text"]})
                                 elif stage_key == "extended_initial":
                                     if AGENTIC_MODE:
                                         # Agentic exposes the provisional answer on reasoning while
