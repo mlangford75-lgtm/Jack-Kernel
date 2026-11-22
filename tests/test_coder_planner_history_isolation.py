@@ -124,11 +124,12 @@ def test_planner_stream_transport_sees_only_current_turn_and_prior_memory(monkey
         finally:
             await backend._client.aclose()
         wire = payloads[0]["messages"]
-        assert len(wire) == 3
-        assert wire[0]["role"] == "system"
-        assert wire[1]["role"] == "system"
-        assert "Clock built in index.html" in wire[1]["content"]
-        assert wire[2] == {"role": "user", "content": "Make it luxurious"}
+        # The backend folds Jack-owned system records into the single leading
+        # system message required by some OpenAI-compatible chat templates.
+        assert [item["role"] for item in wire] == ["system", "user"]
+        assert k.STAGES["coder_planner"].prompt in wire[0]["content"]
+        assert "Clock built in index.html" in wire[0]["content"]
+        assert wire[1] == {"role": "user", "content": "Make it luxurious"}
         assert "OLD_CODE_OUTPUT" not in str(wire)
         assert json.dumps(history, sort_keys=True) == original
     asyncio.run(run())
