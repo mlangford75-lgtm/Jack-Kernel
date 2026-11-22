@@ -61,12 +61,12 @@ def test_profile_isolated_and_reasoning_contract(monkeypatch, tmp_path):
     assert k.CODER_PLANNER_PROMPT.startswith(PREFIX)
     assert k.CODER_EXECUTOR_PROMPT.startswith(PREFIX)
     assert "read-only, non-mutating tools" in k.CODER_PLANNER_PROMPT
-    assert "detailed natural-language developer specification" in k.CODER_PLANNER_PROMPT
-    assert "You are Planner, the planning agent" in k.CODER_PLANNER_PROMPT
-    assert "The workspace can be inspected when necessary" in k.CODER_PLANNER_PROMPT
-    assert "for agentic work describe actions" in k.CODER_PLANNER_PROMPT
+    assert "detailed message" in k.CODER_PLANNER_PROMPT
+    assert "You are Planner." in k.CODER_PLANNER_PROMPT
+    assert "Use them when inspection is necessary" in k.CODER_PLANNER_PROMPT
+    assert "Your responsibility is to plan the user" in k.CODER_PLANNER_PROMPT
     assert "You've been provided a detailed, read-only developer specification prepared by Planner." in k.CODER_EXECUTOR_PROMPT
-    assert "Do not implement artifacts" in k.CODER_PLANNER_PROMPT
+    assert "Do not perform Coder\'s implementation work" in k.CODER_PLANNER_PROMPT
     assert "read-only developer specification" in k.CODER_EXECUTOR_PROMPT
     assert "sole implementation and answer-authority" in k.CODER_EXECUTOR_PROMPT
     assert "Files in the workspace are previous checkpoints" in k.CODER_EXECUTOR_PROMPT
@@ -809,22 +809,69 @@ def test_planner_reasoning_retired_immediately_but_spec_and_tool_evidence_surviv
 
 
 @pytest.mark.parametrize("planner_profile", ["flash", "thorough"])
+@pytest.mark.parametrize("planner_profile", ["flash", "thorough"])
 def test_coder_stage2_uses_coder_outcome_without_planner_reasoning(monkeypatch, tmp_path, planner_profile):
     k = load(monkeypatch, tmp_path, planner=planner_profile)
     h = [{"role": "user", "content": "Build clock"}]
     k._coder_append_plan(h, response("SPEC_UNIQUE: verify saved clock.", "PLANNER_R1_UNIQUE"))
-    assert k._coder_stage2_spec_source(h) == "SPEC_UNIQUE: verify saved clock."
     assert "reasoning_content" not in h[-1]
-    assert "reasoning" not in h[-1]
     h.append({"role": "assistant", "content": "CODER_COMPLETED",
               "reasoning_content": "CODER_R1_UNIQUE",
               "_jack_extended_candidate_response": True})
     events = k._agentic_stage2_chronological_source(h)
     assert any(e.get("content") == "CODER_R1_UNIQUE" for e in events)
     assert all("PLANNER_R1_UNIQUE" not in str(e) for e in events)
-    assert k._coder_stage2_spec_source(h) == "SPEC_UNIQUE: verify saved clock."
-    # The source is read-only; no spec duplication into the canonical history.
     assert sum(bool(item.get("_jack_coder_plan")) for item in h) == 1
+
+    # Test the source-only wire projection directly. Coder's final result
+    # replaces Planner's temporary specification without modifying canon.
+    if k.AGENTIC_SOURCE_ONLY_WORKING_STATE:
+        user_wire = {"role": "user", "content": "Build clock"}
+        frozen_wire = {"role": "assistant", "content":
+                       "[Jack: completed response withheld from memory pass]"}
+        wire = [{"role": "system", "content": "Stage 2"}, user_wire, frozen_wire]
+        k._agentic_stage2_project_historical_evidence(
+            wire,
+            [{"role": "user", "content": "Build clock"},
+             {"role": "assistant", "content": "CODER_COMPLETED",
+              "_jack_extended_candidate_response": True}],
+            [user_wire, frozen_wire],
+            canonical_history=h,
+        )
+        text = wire[-1]["content"]
+        assert "CODER_COMPLETED" in text
+        assert "CODER_R1_UNIQUE" in text
+        assert "SPEC_UNIQUE" not in text
+        assert "PLANNER_R1_UNIQUE" not in text
+    assert h[1]["content"] == "SPEC_UNIQUE: verify saved clock."
+
+
+def test_stage2_deduplicates_matching_host_receipt_but_keeps_orphan(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path)
+    h = [{"role": "user", "content": "Inspect the workspace"}]
+    k._coder_append_plan(h, response("Inspect the workspace"))
+    h.extend([
+        {"role": "assistant", "content": "", "_jack_internal_tool_exchange": True,
+         "tool_calls": [{"id": "a", "type": "function", "function": {
+             "name": "read", "arguments": '{"path":"clock.html"}'}}]},
+        {"role": "tool", "tool_call_id": "a", "name": "read",
+         "_jack_internal_tool_exchange": True, "content": "verified clock source"},
+        {"role": "system", "_jack_tool_evidence_receipt": True,
+         "_jack_tool_call_id": "a", "_jack_tool_name": "read",
+         "content": "redundant read receipt"},
+        {"role": "system", "_jack_tool_evidence_receipt": True,
+         "_jack_tool_call_id": "orphan", "_jack_tool_name": "write",
+         "content": "retired tool result"},
+        {"role": "assistant", "content": "Read verified clock source",
+         "_jack_extended_candidate_response": True,
+         "reasoning_content": "Coder reviewed result"},
+    ])
+    events = k._agentic_stage2_chronological_source(h)
+    assert any(e["type"] == "returned_result" and e["call_id"] == "a" for e in events)
+    receipts = [e for e in events if e["type"] == "host_retired_tool_receipt"]
+    assert [e["call_id"] for e in receipts] == ["orphan"]
+    assert any(e.get("content") == "Coder reviewed result" for e in events)
+    assert h[4]["content"] == "redundant read receipt"
 
 
 def test_goal_checkpoint_persists_after_commit_without_becoming_memory(monkeypatch, tmp_path):
