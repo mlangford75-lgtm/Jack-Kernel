@@ -1283,9 +1283,21 @@ def _stage_continuation(
         if AGENTIC_SOURCE_ONLY_WORKING_STATE:
             # Balanced uses its established, task-anchored memory directive.
             # Thinking-OFF Stage 2 consumes historical R1 as ordinary source text.
+            if AGENTIC_CODER_MODE:
+                # Coder memory includes the actual completed outcome; Planner
+                # output has been retired from its model-facing source.
+                return _AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE.replace(
+                    "The original user request and completed\n"
+                    "answer have been stored separately by Jack. They are not part of this extraction\n"
+                    "task and must not be reconstructed, retold, or answered.",
+                    "The original user request is stored separately by Jack. The completed\n"
+                    "Coder response is supplied as historical evidence. Use it to preserve\n"
+                    "consequential working knowledge without repeating the final answer.",
+                    1,
+                )
             return (_AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
                     if (AGENTIC_BALANCED_MODE or AGENTIC_THOROUGH_MODE
-                        or AGENTIC_TRANSLATED_MODE or AGENTIC_CODER_MODE) else
+                        or AGENTIC_TRANSLATED_MODE) else
                     _AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE)
         return (
             _AGENTIC_STAGE2_WITHHELD_A1_CONTINUATION
