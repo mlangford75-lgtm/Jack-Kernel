@@ -35,9 +35,9 @@ def test_architect_request_exposes_no_tool_schema_or_external_system(monkeypatch
         if stream:
             return httpx.Response(
                 200,
-                text='data: {"choices":[{"index":0,"delta":{"content":"Coder must inspect prior work."},"finish_reason":null}]}\\n\\n'
-                     'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\\n\\n'
-                     'data: [DONE]\\n\\n',
+                text='data: {"choices":[{"index":0,"delta":{"content":"Coder must inspect prior work."},"finish_reason":null}]}\n\n'
+                     'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+                     'data: [DONE]\n\n',
                 headers={"content-type": "text/event-stream"},
             )
         return httpx.Response(200, json={
