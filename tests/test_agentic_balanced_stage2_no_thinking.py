@@ -118,7 +118,8 @@ def test_balanced_preserves_stage1_reasoning_in_stage2_request(monkeypatch, tmp_
     assert "Clock is gold." not in source
     assert "CUSTOM CALLER SYSTEM" not in str(p2["messages"])
     if not cache_enabled:
-        assert p2["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
+        assert p2["messages"][0]["content"].startswith(k.AGENTIC_36_STAGE2_PROMPT)
+        assert p2["messages"][0]["content"].count("Jack internal memory extraction, not a new user request.") == 1
 
 
 @pytest.mark.parametrize("stream", [False, True])
