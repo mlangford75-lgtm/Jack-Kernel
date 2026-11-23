@@ -201,7 +201,7 @@ async def agentic_nonstream_tests():
 
 
 async def deep_research_nonstream_tests():
-    m = load("ultra")
+    m = load("deep-research")
 
     # Thesis has no tool authority: reject only the action, preserve/retry cognition, continue full program.
     b = FakeBackend([
@@ -288,7 +288,7 @@ async def streaming_tests():
     assert "internal stage failure" not in wire
 
     # Deep Research buffers malformed Synthesis tool calls until corrected and only exposes the valid call.
-    m = load("ultra")
+    m = load("deep-research")
     b = FakeStreamBackend([
         response(content="Thesis", reasoning="t"),
         response(content="Antithesis", reasoning="a"),

@@ -433,7 +433,7 @@ def test_translator_coming_soon_and_exhaustive_rejected(monkeypatch, tmp_path):
     assert k.REASONING_PROFILES["translator"]["disabled"] is True
     assert "Coming Soon" in k.REASONING_PROFILES["translator"]["label"]
     monkeypatch.setenv("JACK_AGENTIC_PROFILE", "exhaustive")
-    with pytest.raises(RuntimeError, match="flash, balanced, thorough, or translated"):
+    with pytest.raises(RuntimeError, match="flash, balanced, thorough, translated, or coder"):
         load(monkeypatch, tmp_path, profile="exhaustive")
 
 

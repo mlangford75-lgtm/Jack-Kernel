@@ -73,6 +73,22 @@ jobs:
         shell: pwsh
         run: python -m pytest -q tests/test_phase8_source_baseline.py tests/test_phase8_runtime_enforcement.py tests/test_phase8_ledger_observation.py tests/test_phase8_adversarial_preservation.py
 
+      - name: Verify Ultra native review and prefix-preservation contract
+        shell: pwsh
+        run: python -m pytest -q tests/test_ultra_native_appended_review.py
+
+      - name: Verify delegated Planner task and cache-stable prompt boundary
+        shell: pwsh
+        run: python -m pytest -q tests/test_coder_planner_delegation.py
+
+      - name: Verify Planner history isolation and failed-inspection handoff
+        shell: pwsh
+        run: python -m pytest -q tests/test_coder_planner_history_isolation.py tests/test_coder_planner_failed_inspection_handoff.py
+
+      - name: Verify Coder private JSON goals and tool-resume contract
+        shell: pwsh
+        run: python -m pytest -q tests/test_agentic_coder_planner_executor.py
+
       - name: Run Python regression suite
         shell: pwsh
         run: python -m pytest -q
