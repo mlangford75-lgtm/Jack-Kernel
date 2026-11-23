@@ -105,14 +105,14 @@ def test_coder_planner_flash_and_thorough_are_isolated(monkeypatch, tmp_path):
     assert a.allow_tools and b.allow_tools
     assert thorough.CFG.coder_planner_profile == "thorough"
     assert flash.CFG.coder_planner_profile == "flash"
-    assert flash._agentic_zero_reasoning(b) is True
+    assert b.thinking is False and b.reasoning_effort is None
     # Separate module loads create different StageProfile dataclass types.
     # Compare the actual stage configuration rather than Python type identity.
     assert vars(flash.STAGES["extended_initial"]) == vars(thorough.STAGES["extended_initial"])
     assert flash.STAGES["extended_reflection"].thinking is False
     assert thorough.STAGES["extended_reflection"].thinking is True
     assert flash.STAGES["extended_reflection"].allow_tools is False
-    assert flash._agentic_zero_reasoning(flash.STAGES["extended_reflection"]) is True
+    assert flash.STAGES["extended_reflection"].thinking is False
     assert flash._coder_stage_sequence(None, [{"role": "user", "content": "Inspect workspace"}]) == [
         ("coder_planner", False), ("extended_initial", False), ("extended_reflection", False)
     ]
@@ -239,8 +239,9 @@ def test_planner_rejected_template_artifacts_are_not_replayed(monkeypatch, tmp_p
     assert request[0] == {"role": "system", "content": k.CODER_PLANNER_FLASH_PROMPT}
     assert sum(x["role"] == "system" for x in request) == 1
     assert sum(x["role"] == "user" for x in request) == 1
-    assert request[-1]["content"] == "Verify the directory is empty"
-    assert request[-1]["role"] == "user"
+    assert request[-2]["content"] == "Verify the directory is empty"
+    assert request[-1]["content"] == "Inspect the directory; do not modify it."
+    assert request[-1]["role"] == "assistant"
     assert all("<think>" not in str(m.get("content")) for m in request)
     assert all(m.get("content") != "assistant" for m in request)
     assert json.dumps(h, sort_keys=True) == original
@@ -349,9 +350,10 @@ def test_planner_internal_rejections_cannot_compete_with_user(monkeypatch, tmp_p
     projected = k._coder_isolate_planner_request(prepared, k.STAGES["coder_planner"])
     assert sum(item["role"] == "user" for item in projected) == 1
     assert projected[0]["content"] == k.CODER_PLANNER_FLASH_PROMPT
-    assert [item["role"] for item in projected] == ["system", "user"]
-    assert projected[-1]["content"] == "Verify the workspace is empty"
-    assert "JACK INTERNAL TOOL REJECTION" not in str(projected)
+    assert [item["role"] for item in projected] == ["system", "user", "assistant"]
+    assert projected[1]["content"] == "Verify the workspace is empty"
+    assert "not a user request" in projected[-1]["content"].lower()
+    assert "rejected before execution" in projected[-1]["content"]
     assert "Pi caller system must be filtered" not in str(projected)
     assert json.dumps(h, sort_keys=True) == original
     # Model-visible validation instructions do not alter canonical role or evidence.
@@ -479,7 +481,7 @@ def test_planner_read_only_vision_and_explicit_actual_tool_contract(monkeypatch,
         assert wire[0]["content"] == k.STAGES["coder_planner"].prompt
         assert [msg["role"] for msg in wire] == ["system", "user"]
         assert "read-only, non-mutating tools" in wire[0]["content"]
-        assert "Do not perform Coder's implementation work" in wire[0]["content"]
+        assert "You are not Coder. Do not write source code" in wire[0]["content"]
         assert "Caller must not alter Planner" not in str(wire)
         assert sum(m["role"] == "user" for m in wire) == 1
 
@@ -579,7 +581,7 @@ def test_planner_stable_prompt_and_preserved_flash_thorough_contract(monkeypatch
         prepared = backend._stage_messages_for_profile(source + [note], k.STAGES["coder_planner"])
         resumed = k._coder_isolate_planner_request(prepared, k.STAGES["coder_planner"])
         assert resumed[:len(first)] == first
-        assert resumed[-1]["role"] == "assistant"
+        assert resumed == first
 
 
 def test_planner_read_only_unchanged_evidence_cycle_detection(monkeypatch, tmp_path):
@@ -1485,7 +1487,7 @@ def test_planner_forbidden_write_edit_feedback_prevents_retry_loop(monkeypatch, 
     k = load(monkeypatch, tmp_path)
     name = k.STAGES["coder_planner"].name
     assert "Your stateful, mutating, and destructive tools have been removed." in k.CODER_PLANNER_PROMPT
-    assert "Do not perform Coder's implementation work" in k.CODER_PLANNER_PROMPT
+    assert "You are not Coder. Do not write source code" in k.CODER_PLANNER_PROMPT
 
     offered = [
         {"type": "function", "function": {"name": "read"}},
