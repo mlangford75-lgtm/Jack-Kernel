@@ -110,10 +110,13 @@ def test_balanced_preserves_stage1_reasoning_in_stage2_request(monkeypatch, tmp_
     assert p2["reasoning_effort"] == "none"
     assert "tools" not in p2 and "tool_choice" not in p2
     assert "CUSTOM CALLER SYSTEM" not in json.dumps(p2)
-    assistant = [m for m in p2["messages"] if m.get("role")=="assistant"]
-    assert len(assistant) == 1
-    assert assistant[0]["content"] == "Clock is gold."
-    assert assistant[0]["reasoning_content"] == "R1: inspect source then change hand color to gold."
+    # The current Stage 2 uses a fresh, quoted historical source; no assistant
+    # role or completed answer is replayed as live conversation authority.
+    assert [m["role"] for m in p2["messages"]] == ["system", "user"]
+    source = p2["messages"][-1]["content"]
+    assert "R1: inspect source then change hand color to gold." in source
+    assert "Clock is gold." not in source
+    assert "CUSTOM CALLER SYSTEM" not in str(p2["messages"])
     if not cache_enabled:
         assert p2["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
 
@@ -127,7 +130,9 @@ def test_thorough_uses_thinking_on_memory_and_preserves_stage1_reasoning(monkeyp
     assert p2["chat_template_kwargs"]["enable_thinking"] is True
     assert p2["chat_template_kwargs"]["preserve_thinking"] is True
     assert p2["reasoning_effort"] == "xhigh"
-    assert p2["messages"][-2]["reasoning_content"] == "R1: inspect source then change hand color to gold."
+    assert [m["role"] for m in p2["messages"]] == ["system", "user"]
+    assert "R1: inspect source then change hand color to gold." in p2["messages"][-1]["content"]
+    assert "Clock is gold." not in p2["messages"][-1]["content"]
 
 
 def test_default_is_balanced(monkeypatch, tmp_path):
@@ -179,12 +184,12 @@ def test_four_agentic_profiles_share_sampler_without_mutating_stage_temperatures
     if profile == "flash":
         # The test fixture includes an artificial R1; Flash must not leak it
         # into the isolated retrospective without native thinking.
-        assistant = [m for m in p2["messages"] if m.get("role") == "assistant"]
-        assert len(assistant) == 1
-        assert "reasoning_content" not in assistant[0]
+        assert not any(m["role"] == "assistant" for m in p2["messages"])
+        assert "R1: inspect source" not in p2["messages"][-1]["content"]
         assert p2["reasoning_effort"] == "none"
     elif profile in {"balanced", "thorough", "translated"}:
-        assert p2["messages"][-2]["reasoning_content"].startswith("R1:")
+        assert [m["role"] for m in p2["messages"]] == ["system", "user"]
+        assert "R1: inspect source" in p2["messages"][-1]["content"]
 
 
 @pytest.mark.parametrize("choice,profile", [
