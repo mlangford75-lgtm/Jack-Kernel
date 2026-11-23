@@ -1,4 +1,4 @@
-"""Four Agentic profiles: Stage 2 is single-pass, including Thorough and Exhaustive.
+"""Four Agentic profiles: Stage 2 is single-pass, including Thorough and Translated.
 
 Check actual backend payloads across streaming/cache layouts, preserving the
 exact current-turn U/R1/A1 and tools-off authority.
