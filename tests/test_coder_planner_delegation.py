@@ -27,12 +27,12 @@ def test_planner_receives_original_task_with_separate_planning_system_contract(m
     wire = k._coder_isolate_planner_request(history, k.STAGES["coder_planner"], source_history=history)
     assert [m["role"] for m in wire] == ["system", "user"]
     assert wire[0]["content"] == k.STAGES["coder_planner"].prompt
-    assert "detailed message" in wire[0]["content"]
-    assert "plan the user" in wire[0]["content"]
+    assert "highly detailed architectural blueprint" in wire[0]["content"]
+    assert "Interpret the authenticated user request" in wire[0]["content"]
     assert wire[1]["content"] == task
     assert wire[1]["content"].endswith(task)
     assert wire[1]["content"].count(task) == 1
-    assert "Prepare Coder to complete the request." in wire[0]["content"]
+    assert "Deliver the architectural blueprint to Coder." in wire[0]["content"]
     assert k._coder_isolate_planner_request(wire, k.STAGES["coder_planner"]) == wire
     assert json.dumps(history, sort_keys=True) == saved
     assert k.STAGES["coder_planner"].thinking is (planner == "thorough")

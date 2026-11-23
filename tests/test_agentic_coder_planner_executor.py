@@ -18,7 +18,10 @@ PREFIX = ("Reasoning effort is set to xhigh. Please think carefully through the 
 def load(monkeypatch, tmp_path, profile="coder", planner="thorough"):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "Local Agentic (Preserve Thinking)")
     monkeypatch.setenv("JACK_AGENTIC_PROFILE", profile)
-    monkeypatch.setenv("JACK_CODER_PLANNER_PROFILE", planner)
+    if planner is None:
+        monkeypatch.delenv("JACK_CODER_PLANNER_PROFILE", raising=False)
+    else:
+        monkeypatch.setenv("JACK_CODER_PLANNER_PROFILE", planner)
     monkeypatch.setenv("JACK_BACKEND_MODEL", "test-model")
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
     monkeypatch.setenv("JACK_FORENSIC_ARCHIVE_MODE", "off")
@@ -47,6 +50,15 @@ def response(content=None, reasoning="PLANNER_R1"):
                          "finish_reason": "stop"}]}
 
 
+def test_coder_flash_default_is_consistent_across_runtime_and_launcher(monkeypatch, tmp_path):
+    """Default Coder Planner must not silently revert to Thorough."""
+    k = load(monkeypatch, tmp_path, planner=None)
+    assert k.CLI_DEFAULTS["coder_planner_profile"] == "flash"
+    assert k.CFG.coder_planner_profile == "flash"
+    assert k.STAGES["coder_planner"].thinking is False
+    assert k._config_to_env(dict(k.CLI_DEFAULTS))["JACK_CODER_PLANNER_PROFILE"] == "flash"
+
+
 def test_profile_isolated_and_reasoning_contract(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path)
     assert k.AGENTIC_CODER_MODE and k.AGENTIC_MODE and not k.AGENTIC_THOROUGH_MODE
@@ -61,12 +73,12 @@ def test_profile_isolated_and_reasoning_contract(monkeypatch, tmp_path):
     assert k.CODER_PLANNER_PROMPT.startswith(PREFIX)
     assert k.CODER_EXECUTOR_PROMPT.startswith(PREFIX)
     assert "read-only, non-mutating tools" in k.CODER_PLANNER_PROMPT
-    assert "detailed message" in k.CODER_PLANNER_PROMPT
-    assert "You are Planner." in k.CODER_PLANNER_PROMPT
+    assert "highly detailed architectural blueprint" in k.CODER_PLANNER_PROMPT
+    assert "You are Architect." in k.CODER_PLANNER_PROMPT
     assert "Use them when inspection is necessary" in k.CODER_PLANNER_PROMPT
-    assert "Your responsibility is to plan the user" in k.CODER_PLANNER_PROMPT
+    assert "Interpret the authenticated user request" in k.CODER_PLANNER_PROMPT
     assert "You've been provided a detailed, read-only developer specification prepared by Planner." in k.CODER_EXECUTOR_PROMPT
-    assert "Do not perform Coder\'s implementation work" in k.CODER_PLANNER_PROMPT
+    assert "You are not Coder. Do not write source code" in k.CODER_PLANNER_PROMPT
     assert "read-only developer specification" in k.CODER_EXECUTOR_PROMPT
     assert "sole implementation and answer-authority" in k.CODER_EXECUTOR_PROMPT
     assert "Files in the workspace are previous checkpoints" in k.CODER_EXECUTOR_PROMPT
@@ -88,19 +100,19 @@ def test_coder_planner_flash_and_thorough_are_isolated(monkeypatch, tmp_path):
     assert b.prompt == flash.CODER_PLANNER_FLASH_PROMPT
     assert b.prompt == a.prompt[len(flash.CODER_PLANNER_THOROUGH_PREFIX):]
     assert not b.prompt.startswith(PREFIX)
-    assert b.prompt.startswith("You are Planner")
+    assert b.prompt.startswith("You are Architect")
     assert "read-only, non-mutating tools" in b.prompt
     assert a.allow_tools and b.allow_tools
     assert thorough.CFG.coder_planner_profile == "thorough"
     assert flash.CFG.coder_planner_profile == "flash"
-    assert flash._agentic_zero_reasoning(b) is True
+    assert b.thinking is False and b.reasoning_effort is None
     # Separate module loads create different StageProfile dataclass types.
     # Compare the actual stage configuration rather than Python type identity.
     assert vars(flash.STAGES["extended_initial"]) == vars(thorough.STAGES["extended_initial"])
     assert flash.STAGES["extended_reflection"].thinking is False
     assert thorough.STAGES["extended_reflection"].thinking is True
     assert flash.STAGES["extended_reflection"].allow_tools is False
-    assert flash._agentic_zero_reasoning(flash.STAGES["extended_reflection"]) is True
+    assert flash.STAGES["extended_reflection"].thinking is False
     assert flash._coder_stage_sequence(None, [{"role": "user", "content": "Inspect workspace"}]) == [
         ("coder_planner", False), ("extended_initial", False), ("extended_reflection", False)
     ]
@@ -115,14 +127,14 @@ def test_coder_planner_flash_and_thorough_are_isolated(monkeypatch, tmp_path):
     assert payload["chat_template_kwargs"]["preserve_thinking"] is False
     assert "reasoning_effort" not in payload["chat_template_kwargs"]
     assert payload["reasoning_effort"] == "none"
-    assert payload["chat_template_kwargs"]["thinking_budget"] == 0
+    assert "thinking_budget" not in payload["chat_template_kwargs"]
     assert "thinking_budget_tokens" not in payload
 
     # Coder Flash Stage 2 is also thinking-off; it must receive the same
     # generation budget while retaining its preserved R1 input.
     memory_payload = {"model": "test-model"}
     backend._apply_qwen_controls(memory_payload, flash.STAGES["extended_reflection"])
-    assert memory_payload["chat_template_kwargs"]["thinking_budget"] == 0
+    assert "thinking_budget" not in memory_payload["chat_template_kwargs"]
     assert memory_payload["chat_template_kwargs"]["enable_thinking"] is False
     assert memory_payload["chat_template_kwargs"]["preserve_thinking"] is True
 
@@ -181,11 +193,11 @@ def test_coder_planner_actual_wire_prompt_and_memory_thinking(monkeypatch, tmp_p
                 assert wire["chat_template_kwargs"]["enable_thinking"] is (selected == "thorough")
                 assert wire["reasoning_effort"] == ("none" if selected == "flash" else "xhigh")
                 if selected == "flash":
-                    assert wire["chat_template_kwargs"]["thinking_budget"] == 0
+                    assert "thinking_budget" not in wire["chat_template_kwargs"]
                 else:
                     assert "thinking_budget" not in wire["chat_template_kwargs"]
                 if selected == "flash":
-                    assert wire["messages"][0]["content"].startswith("You are Planner")
+                    assert wire["messages"][0]["content"].startswith("You are Architect")
                     assert k.CODER_PLANNER_THOROUGH_PREFIX not in str(wire["messages"])
                     assert wire["chat_template_kwargs"]["preserve_thinking"] is False
                 else:
@@ -227,7 +239,8 @@ def test_planner_rejected_template_artifacts_are_not_replayed(monkeypatch, tmp_p
     assert request[0] == {"role": "system", "content": k.CODER_PLANNER_FLASH_PROMPT}
     assert sum(x["role"] == "system" for x in request) == 1
     assert sum(x["role"] == "user" for x in request) == 1
-    assert request[-2]["content"] == "Inspect the directory; do not modify it."
+    assert request[-2]["content"] == "Verify the directory is empty"
+    assert request[-1]["content"] == "Inspect the directory; do not modify it."
     assert request[-1]["role"] == "assistant"
     assert all("<think>" not in str(m.get("content")) for m in request)
     assert all(m.get("content") != "assistant" for m in request)
@@ -285,7 +298,7 @@ def test_coder_force_preserve_thinking_with_global_setting_disabled(monkeypatch,
                 await backend._client.aclose()
     asyncio.run(run())
 
-def test_zero_reasoning_budget_llamacpp_and_nonflash_profiles(monkeypatch, tmp_path):
+def test_thinking_off_does_not_inject_numeric_zero_budget(monkeypatch, tmp_path):
     from dataclasses import replace
 
     for chosen, selected_stages in (
@@ -299,8 +312,8 @@ def test_zero_reasoning_budget_llamacpp_and_nonflash_profiles(monkeypatch, tmp_p
             profile = k.STAGES[key]
             backend._apply_qwen_controls(p, profile)
             if key in selected_stages:
-                assert p["thinking_budget_tokens"] == 0
-                assert p.get("chat_template_kwargs", {}).get("thinking_budget") == 0
+                assert "thinking_budget_tokens" not in p
+                assert "thinking_budget" not in p.get("chat_template_kwargs", {})
                 assert p["chat_template_kwargs"]["enable_thinking"] is False
             else:
                 assert "thinking_budget_tokens" not in p
@@ -322,8 +335,8 @@ def test_planner_internal_rejections_cannot_compete_with_user(monkeypatch, tmp_p
         ["Planner tool call 0: shell command is outside the inspection-only grammar"],
         k.STAGES["coder_planner"].name,
     )
-    assert "single read-only inspection command" in internal["content"]
-    assert "'ls -la' or 'pwd'" in internal["content"]
+    assert "read-only" in internal["content"].lower()
+    assert "rejected before execution" in internal["content"]
     h = [
         {"role": "system", "content": "Pi caller system must be filtered"},
         {"role": "user", "content": "Verify the workspace is empty"},
@@ -337,11 +350,11 @@ def test_planner_internal_rejections_cannot_compete_with_user(monkeypatch, tmp_p
     projected = k._coder_isolate_planner_request(prepared, k.STAGES["coder_planner"])
     assert sum(item["role"] == "user" for item in projected) == 1
     assert projected[0]["content"] == k.CODER_PLANNER_FLASH_PROMPT
-    assert projected[-1]["role"] == "assistant"
-    assert "not a user request" in projected[-1]["content"]
-    assert "single read-only inspection command" in projected[-1]["content"]
+    assert [item["role"] for item in projected] == ["system", "user", "assistant"]
+    assert projected[1]["content"] == "Verify the workspace is empty"
+    assert projected[-1]["content"] == "The directory needs inspection"
+    assert "JACK INTERNAL TOOL REJECTION" not in str(projected)
     assert "Pi caller system must be filtered" not in str(projected)
-    assert projected[-2]["role"] == "assistant"
     assert json.dumps(h, sort_keys=True) == original
     # Model-visible validation instructions do not alter canonical role or evidence.
     assert internal["role"] == "user"
@@ -377,12 +390,8 @@ def test_planner_protocol_recovery_is_host_owned_with_single_user(monkeypatch, t
         assert [x["role"] for x in projected].count("user") == 1
         assert [x["role"] for x in projected].count("tool") == 1
         assert "only . and .." in str(projected)
-        assert any(
-            x["role"] == "assistant" and
-            "Jack internal recovery feedback (not a user request or Planner answer):" in str(x.get("content")) and
-            "Jack protocol continuation:" in str(x.get("content"))
-            for x in projected
-        )
+        assert not any("Jack protocol continuation:" in str(x.get("content", "")) for x in projected)
+        assert projected[1]["content"] == "Verify that the workspace is empty"
         assert "External caller should be removed" not in str(projected)
         assert all(not (x["role"] == "user" and "Jack protocol continuation" in str(x.get("content"))) for x in projected)
         assert json.dumps(h, sort_keys=True) == frozen
@@ -400,7 +409,7 @@ def test_planner_spec_streams_as_advisory_reasoning_without_answer_contamination
                 calls.append(profile.name)
                 if profile.name == "Agentic Coder Planner":
                     assert profile.thinking is (planner == "thorough")
-                    assert profile.prompt.startswith("You are Planner") if planner == "flash" else True
+                    assert profile.prompt.startswith("You are Architect") if planner == "flash" else True
                     assert [t["function"]["name"] for t in tools] == ["read"]
                     if planner == "thorough":
                         yield {"choices": [{"index": 0, "delta": {
@@ -472,7 +481,7 @@ def test_planner_read_only_vision_and_explicit_actual_tool_contract(monkeypatch,
         assert wire[0]["content"] == k.STAGES["coder_planner"].prompt
         assert [msg["role"] for msg in wire] == ["system", "user"]
         assert "read-only, non-mutating tools" in wire[0]["content"]
-        assert "Do not perform Coder's implementation work" in wire[0]["content"]
+        assert "You are not Coder. Do not write source code" in wire[0]["content"]
         assert "Caller must not alter Planner" not in str(wire)
         assert sum(m["role"] == "user" for m in wire) == 1
 
@@ -491,7 +500,7 @@ def test_repeated_planner_shell_denials_do_not_abort_or_discard_coder_task(monke
                         n = sum(x == "Agentic Coder Planner" for x in sequence)
                         assert n <= 3
                         assert profile.thinking is (mode == "thorough")
-                        if n <= 2:
+                        if n == 1:
                             assert [x["function"]["name"] for x in tools] == ["bash", "describe_image"]
                         else:
                             assert tools == []
@@ -551,9 +560,9 @@ def test_planner_stable_prompt_and_preserved_flash_thorough_contract(monkeypatch
         k = load(monkeypatch, tmp_path, planner=selected)
         base = k.CODER_PLANNER_PROMPT[len(k.CODER_PLANNER_THOROUGH_PREFIX):]
         assert k.CODER_PLANNER_FLASH_PROMPT == base
-        assert base.startswith("You are Planner.")
-        assert len(base) < 2400
-        assert "Past chat history" in base
+        assert base.startswith("You are Architect.")
+        assert all(f"Example {i} —" in base for i in range(1, 5))
+        assert "Treat past conversation history and workspace files as checkpoints" in base
         assert "read-only, non-mutating tools" in base
         assert k.STAGES["coder_planner"].thinking is (selected == "thorough")
         assert k.STAGES["extended_initial"].thinking is True
@@ -572,7 +581,7 @@ def test_planner_stable_prompt_and_preserved_flash_thorough_contract(monkeypatch
         prepared = backend._stage_messages_for_profile(source + [note], k.STAGES["coder_planner"])
         resumed = k._coder_isolate_planner_request(prepared, k.STAGES["coder_planner"])
         assert resumed[:len(first)] == first
-        assert resumed[-1]["role"] == "assistant"
+        assert resumed == first
 
 
 def test_planner_read_only_unchanged_evidence_cycle_detection(monkeypatch, tmp_path):
@@ -677,16 +686,16 @@ def test_coder_planner_cli_selection_and_child_environment(monkeypatch, tmp_path
     output = []
     monkeypatch.setattr(k, "_ansi_rgb", lambda text, *args, **kwargs: text)
     monkeypatch.setattr("builtins.print", lambda *args, **kwargs: output.append(" ".join(map(str, args))))
-    answers = iter(["6", "5", "1"])
+    answers = iter(["5", "1"])
     monkeypatch.setattr(k, "_cli_input", lambda _: next(answers))
     k._edit_reasoning(cfg)
-    assert "  1) Flash" in output and "  2) Thorough" in output
+    assert any("1) Flash (Default)" in line for line in output) and any("2) Thorough" in line for line in output)
     assert not any("omit the xhigh reasoning instruction" in row for row in output)
     assert not any("retain the xhigh reasoning instruction" in row for row in output)
     assert cfg["agentic_profile"] == "coder"
     assert cfg["coder_planner_profile"] == "flash"
     assert k._config_to_env(cfg)["JACK_CODER_PLANNER_PROFILE"] == "flash"
-    answers = iter(["6", "5", "2"])
+    answers = iter(["5", "2"])
     k._edit_reasoning(cfg)
     assert cfg["coder_planner_profile"] == "thorough"
     assert k._config_to_env(cfg)["JACK_CODER_PLANNER_PROFILE"] == "thorough"
@@ -1026,7 +1035,7 @@ def test_backend_planner_read_tools_executor_full_tools(monkeypatch, tmp_path):
             assert set(x["function"]["name"] for x in second["tools"]) == {"read", "bash", "write"}
             assert [m["role"] for m in first["messages"]] == ["system", "user"]
             assert first["messages"][0]["content"].startswith(k.CODER_PLANNER_PROMPT)
-            assert "Your stateful, mutating, or destructive tools have been removed." in first["messages"][0]["content"]
+            assert "Your stateful, mutating, and destructive tools have been removed." in first["messages"][0]["content"]
             assert "User-defined stable system" not in first["messages"][0]["content"]
             assert "User-defined stable system" in second["messages"][0]["content"]
             assert sum(m["role"] == "user" for m in second["messages"]) == 1
@@ -1426,7 +1435,7 @@ def test_planner_read_tool_allowlist_and_shell_must_not_mutate(monkeypatch, tmp_
                     "ls\nrm -rf .", "pwd && rm -rf .",
                     "pwd && ls -la && touch new.txt",
                     "pwd && cat x | sh", "ls -la &&", "ls -la && && pwd",
-                    "pwd && ls -la && pwd && ls -la",
+                    "pwd && ls -la && pwd && ls -la && pwd",
                     "ls -la & echo bad", "ls -la || pwd"):
         assert not k._coder_planner_safe_inspection_command(command), command
     def call(name, args):
@@ -1477,8 +1486,8 @@ def test_planner_rejection_logs_cause_without_releasing_unsafe_tool(monkeypatch,
 def test_planner_forbidden_write_edit_feedback_prevents_retry_loop(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path)
     name = k.STAGES["coder_planner"].name
-    assert "Your stateful, mutating, or destructive tools have been removed." in k.CODER_PLANNER_PROMPT
-    assert "Do not perform Coder's implementation work" in k.CODER_PLANNER_PROMPT
+    assert "Your stateful, mutating, and destructive tools have been removed." in k.CODER_PLANNER_PROMPT
+    assert "You are not Coder. Do not write source code" in k.CODER_PLANNER_PROMPT
 
     offered = [
         {"type": "function", "function": {"name": "read"}},

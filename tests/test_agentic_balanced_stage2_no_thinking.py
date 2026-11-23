@@ -110,12 +110,16 @@ def test_balanced_preserves_stage1_reasoning_in_stage2_request(monkeypatch, tmp_
     assert p2["reasoning_effort"] == "none"
     assert "tools" not in p2 and "tool_choice" not in p2
     assert "CUSTOM CALLER SYSTEM" not in json.dumps(p2)
-    assistant = [m for m in p2["messages"] if m.get("role")=="assistant"]
-    assert len(assistant) == 1
-    assert assistant[0]["content"] == "Clock is gold."
-    assert assistant[0]["reasoning_content"] == "R1: inspect source then change hand color to gold."
+    # The current Stage 2 uses a fresh, quoted historical source; no assistant
+    # role or completed answer is replayed as live conversation authority.
+    assert [m["role"] for m in p2["messages"]] == ["system", "user"]
+    source = p2["messages"][-1]["content"]
+    assert "R1: inspect source then change hand color to gold." in source
+    assert "Clock is gold." not in source
+    assert "CUSTOM CALLER SYSTEM" not in str(p2["messages"])
     if not cache_enabled:
-        assert p2["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
+        assert p2["messages"][0]["content"].startswith(k.AGENTIC_36_STAGE2_PROMPT)
+        assert p2["messages"][0]["content"].count("Jack internal memory extraction, not a new user request.") == 1
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -127,7 +131,9 @@ def test_thorough_uses_thinking_on_memory_and_preserves_stage1_reasoning(monkeyp
     assert p2["chat_template_kwargs"]["enable_thinking"] is True
     assert p2["chat_template_kwargs"]["preserve_thinking"] is True
     assert p2["reasoning_effort"] == "xhigh"
-    assert p2["messages"][-2]["reasoning_content"] == "R1: inspect source then change hand color to gold."
+    assert [m["role"] for m in p2["messages"]] == ["system", "user"]
+    assert "R1: inspect source then change hand color to gold." in p2["messages"][-1]["content"]
+    assert "Clock is gold." not in p2["messages"][-1]["content"]
 
 
 def test_default_is_balanced(monkeypatch, tmp_path):
@@ -152,7 +158,7 @@ def test_invalid_experimental_profile_fails_closed(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("profile,initial_thinking,reflection_thinking", [
     ("thorough", True, True),
-    ("exhaustive", True, True),
+    ("translated", True, True),
     ("balanced", True, False),
     ("flash", False, False),
 ])
@@ -179,26 +185,26 @@ def test_four_agentic_profiles_share_sampler_without_mutating_stage_temperatures
     if profile == "flash":
         # The test fixture includes an artificial R1; Flash must not leak it
         # into the isolated retrospective without native thinking.
-        assistant = [m for m in p2["messages"] if m.get("role") == "assistant"]
-        assert len(assistant) == 1
-        assert "reasoning_content" not in assistant[0]
+        assert not any(m["role"] == "assistant" for m in p2["messages"])
+        assert "R1: inspect source" not in p2["messages"][-1]["content"]
         assert p2["reasoning_effort"] == "none"
-    elif profile in {"balanced", "thorough", "exhaustive"}:
-        assert p2["messages"][-2]["reasoning_content"].startswith("R1:")
+    elif profile in {"balanced", "thorough", "translated"}:
+        assert [m["role"] for m in p2["messages"]] == ["system", "user"]
+        assert "R1: inspect source" in p2["messages"][-1]["content"]
 
 
 @pytest.mark.parametrize("choice,profile", [
     ("1", "flash"),
     ("2", "balanced"),
     ("3", "thorough"),
-    ("4", "exhaustive"),
+    ("4", "translated"),
     ("", "balanced"),
 ])
 def test_agentic_submenu_selects_and_persists_profile(monkeypatch, tmp_path, choice, profile):
     k = load(monkeypatch, tmp_path, profile=None)
     cfg = dict(k.CLI_DEFAULTS)
     assert cfg["agentic_profile"] == "balanced"
-    answers = iter(["6", choice])
+    answers = iter(["6", choice] + (["1"] if choice == "4" else []))
     monkeypatch.setattr(k, "_cli_input", lambda *_a, **_kw: next(answers))
     k._run_transactional_editor(k._edit_reasoning, cfg)
     assert cfg["reasoning_level"] == "Local Agentic (Preserve Thinking)"
@@ -209,13 +215,13 @@ def test_agentic_submenu_selects_and_persists_profile(monkeypatch, tmp_path, cho
     from contextlib import redirect_stdout
     output = StringIO()
     with redirect_stdout(output):
-        answers_again = iter(["6", choice])
+        answers_again = iter(["6", choice] + (["1"] if choice == "4" else []))
         monkeypatch.setattr(k, "_cli_input", lambda *_a, **_kw: next(answers_again))
         k._run_transactional_editor(k._edit_reasoning, dict(k.CLI_DEFAULTS))
     menu = output.getvalue()
     assert "Stage 1 ON,  Stage 2 ON, no extensions" in menu
-    assert "Stage 1 ON + review ON, Stage 2 ON" in menu
-    assert "4) Exhaustive" in menu
+    assert "Thorough + Stage 1 translation extension, Stage 2 ON" in menu
+    assert "4) Translated" in menu
     assert "Stage 2 extension" not in menu
     assert "Stage 2 ON + review ON" not in menu
     assert "Stage 2 OFF, no extensions (Default)" in menu

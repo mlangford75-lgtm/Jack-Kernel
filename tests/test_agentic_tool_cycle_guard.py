@@ -64,7 +64,7 @@ def incident(history, *, runs=2, content="print(1)"):
     push(history, write_call(runs + 1, content), "wrote 9 bytes")
 
 
-@pytest.mark.parametrize("profile", ["flash", "balanced", "thorough", "exhaustive"])
+@pytest.mark.parametrize("profile", ["flash", "balanced", "thorough", "translated", "coder"])
 def test_exact_stable_write_run_cycle_is_detected_without_ids(monkeypatch, tmp_path, profile):
     k = load(monkeypatch, tmp_path, profile=profile)
     h = [{"role": "user", "content": "Build and verify a model"}]
@@ -72,6 +72,19 @@ def test_exact_stable_write_run_cycle_is_detected_without_ids(monkeypatch, tmp_p
     incident(h, runs=4)
     assert k._agentic_exact_tool_cycle(h, [run_call(5)]) == (2, 5)
     assert k._agentic_exact_tool_cycle(h, [write_call(6)]) is None
+
+
+@pytest.mark.parametrize("repetitions,expected", [(3, (2, 3)), (5, None), (6, None)])
+def test_explicit_legacy_override_is_not_the_default(monkeypatch, tmp_path, repetitions, expected):
+    """Custom thresholds remain configurable; the default must not regress."""
+    k = load(monkeypatch, tmp_path)
+    h = [{"role": "user", "content": "Build a model"}]
+    k._agentic_begin_turn(h, fresh=True)
+    incident(h, runs=2)
+    proposed = run_call(3)
+    assert k._agentic_exact_tool_cycle(
+        h, [proposed], repetitions=repetitions
+    ) == expected
 
 
 def test_no_detection_before_repetitions(monkeypatch, tmp_path):

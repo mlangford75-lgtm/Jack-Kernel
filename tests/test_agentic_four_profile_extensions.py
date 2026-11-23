@@ -44,12 +44,12 @@ def test_profile_matrix(monkeypatch, tmp_path, profile, stage1_thinking, extensi
     assert k.STAGES["extended_reflection"].thinking is stage2_thinking
     assert not k.STAGES["extended_reflection"].allow_tools
     assert k.CFG.agentic_final_review is extension
-    assert k._agentic_zero_reasoning(k.STAGES["extended_reflection"]) is (profile in {"flash", "balanced"})
+    assert (not k.STAGES["extended_reflection"].thinking) is (profile in {"flash", "balanced"})
     if profile in {"thorough", "translated"}:
         assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
     if profile == "translated":
         assert "Spanish" in k.AGENTIC_FINAL_REVIEW_TRIGGER
-        assert "Translate the completed Stage 1 response" in k.AGENTIC_FINAL_REVIEW_TRIGGER
+        assert "same-turn translation continuation, not a new user request" in k.AGENTIC_FINAL_REVIEW_TRIGGER
         assert k._runtime_identity_details()["agentic_translation_target_language"] == "Spanish"
     else:
         assert "Spanish" not in k.AGENTIC_FINAL_REVIEW_TRIGGER
@@ -212,7 +212,7 @@ def test_translated_memory_is_english_only_and_thorough_unchanged(monkeypatch, t
     translated = load(monkeypatch, tmp_path, "translated", "fr")
     assert "Write the retained working knowledge in English" in translated.AGENTIC_36_STAGE2_PROMPT
     assert translated.STAGES["extended_reflection"].thinking is True
-    assert translated._agentic_zero_reasoning(translated.STAGES["extended_initial"]) is False
+    assert translated.STAGES["extended_initial"].thinking is True
     thorough = load(monkeypatch, tmp_path, "thorough", "fr")
     assert "Write the retained working knowledge in English" not in thorough.AGENTIC_36_STAGE2_PROMPT
     assert thorough.STAGES["extended_reflection"].thinking is True

@@ -30,7 +30,7 @@ def load(monkeypatch, tmp_path, profile="thorough"):
     return k
 
 
-@pytest.mark.parametrize("profile", ["flash", "balanced", "thorough", "exhaustive"])
+@pytest.mark.parametrize("profile", ["flash", "balanced", "thorough", "translated", "coder"])
 def test_stage1_hides_only_historical_id_lines_and_preserves_everything_else(monkeypatch, tmp_path, profile):
     k = load(monkeypatch, tmp_path, profile)
     original_memory = (
