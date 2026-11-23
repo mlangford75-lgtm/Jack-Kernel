@@ -111,7 +111,7 @@ def test_default_baseline_retains_original_assistant_memory_presentation(monkeyp
 
 
 def test_memory_payload_is_quoted_and_does_not_break_transport_delimiters(monkeypatch, tmp_path):
-    k = load(monkeypatch, tmp_path, "exhaustive", True)
+    k = load(monkeypatch, tmp_path, "translated", True)
     h = history()
     p = k.OpenAICompatibleBackend(k.CFG)._stage_messages_for_profile(
         h, k.STAGES["extended_initial"])
@@ -183,8 +183,8 @@ def test_data_channel_is_used_by_same_transport_for_stream_and_nonstream(monkeyp
 
 
 @pytest.mark.parametrize("stream", (False, True))
-def test_final_review_keeps_authenticated_request_last_with_memory_capsule(monkeypatch, tmp_path, stream):
-    k = load(monkeypatch, tmp_path, "exhaustive", True)
+def test_translated_continuation_keeps_authenticated_request_last_with_memory_capsule(monkeypatch, tmp_path, stream):
+    k = load(monkeypatch, tmp_path, "translated", True)
     h = history()
     h.append({"role": "assistant", "content": "Draft answer to current request",
               "_jack_internal_agentic_final_review_draft": True,
