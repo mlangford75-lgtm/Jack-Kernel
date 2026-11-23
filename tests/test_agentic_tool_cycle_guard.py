@@ -69,9 +69,9 @@ def test_exact_stable_write_run_cycle_is_detected_without_ids(monkeypatch, tmp_p
     k = load(monkeypatch, tmp_path, profile=profile)
     h = [{"role": "user", "content": "Build and verify a model"}]
     k._agentic_begin_turn(h, fresh=True)
-    incident(h)
-    assert k._agentic_exact_tool_cycle(h, [run_call(3)]) == (2, 3)
-    assert k._agentic_exact_tool_cycle(h, [write_call(4)]) is None
+    incident(h, runs=4)
+    assert k._agentic_exact_tool_cycle(h, [run_call(5)]) == (2, 5)
+    assert k._agentic_exact_tool_cycle(h, [write_call(6)]) is None
 
 
 def test_no_detection_before_repetitions(monkeypatch, tmp_path):
@@ -222,16 +222,16 @@ def test_canonical_json_key_order(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path)
     h = [{"role": "user", "content": "Build a model"}]
     k._agentic_begin_turn(h, fresh=True)
-    incident(h)
-    assert k._agentic_exact_tool_cycle(h, [{"id": "new", "function": {"name": "bash", "arguments": '{"command":"python resort_model.py"}'}}]) == (2, 3)
+    incident(h, runs=4)
+    assert k._agentic_exact_tool_cycle(h, [{"id": "new", "function": {"name": "bash", "arguments": '{"command":"python resort_model.py"}'}}]) == (2, 5)
 
 
 def test_gate_prevents_checkpoint_and_executable_release(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path)
     h = [{"role": "user", "content": "Build and verify the model"}]
     k._agentic_begin_turn(h, fresh=True)
-    incident(h)
-    candidate = run_call(3)
+    incident(h, runs=4)
+    candidate = run_call(5)
     result = {"choices": [{"message": {"role": "assistant", "tool_calls": [candidate]}, "finish_reason": "tool_calls"}]}
 
     async def scenario():
@@ -251,8 +251,8 @@ def test_mode_switch(monkeypatch, tmp_path, mode, blocked):
     k = load(monkeypatch, tmp_path, mode=mode)
     h = [{"role": "user", "content": "Build and verify the model"}]
     k._agentic_begin_turn(h, fresh=True)
-    incident(h)
-    candidate = run_call(3)
+    incident(h, runs=4)
+    candidate = run_call(5)
     result = {"choices": [{"message": {"role": "assistant", "tool_calls": [candidate]}, "finish_reason": "tool_calls"}]}
 
     async def scenario():
@@ -276,8 +276,8 @@ def test_disabling_parent_loop_detector_disables_tool_cycle_guard(monkeypatch, t
     k = load(monkeypatch, tmp_path, mode="enforce")
     h = [{"role": "user", "content": "Build and verify the model"}]
     k._agentic_begin_turn(h, fresh=True)
-    incident(h)
-    candidate = run_call(3)
+    incident(h, runs=4)
+    candidate = run_call(5)
     data = {"choices": [{"message": {"role": "assistant", "tool_calls": [candidate]}, "finish_reason": "tool_calls"}]}
 
     async def scenario():
@@ -299,10 +299,10 @@ def test_streamed_authenticated_tool_resume_is_terminal_only_on_enforced_cycle(
         k = load(monkeypatch, tmp_path, mode=mode)
         h = [{"role": "user", "content": "Build and verify the financial model"}]
         k._agentic_begin_turn(h, fresh=True)
-        for i in (1, 2):
+        for i in range(1, 5):
             push(h, write_call(i), "wrote 9 bytes")
             push(h, run_call(i), "(no output)")
-        last = write_call(3)
+        last = write_call(5)
         h.append({"role": "assistant", "content": "", "tool_calls": [last],
                   "_jack_internal_tool_exchange": True,
                   "_jack_stage_key": "extended_initial"})
@@ -313,10 +313,10 @@ def test_streamed_authenticated_tool_resume_is_terminal_only_on_enforced_cycle(
             tools=[{"type": "function", "function": {"name": "bash", "parameters": {
                 "type": "object", "properties": {"command": {"type": "string"}}
             }}}],
-            tool_choice="auto", expected_tool_call_ids=("write-3",),
+            tool_choice="auto", expected_tool_call_ids=("write-5",),
             created_at=time.time(),
         )
-        k.KERNEL._pending_tool_resumes["write-3"] = state
+        k.KERNEL._pending_tool_resumes["write-5"] = state
 
         class StreamedBackend:
             def __init__(self):
@@ -324,7 +324,7 @@ def test_streamed_authenticated_tool_resume_is_terminal_only_on_enforced_cycle(
 
             async def chat_stream(self, **kwargs):
                 self.calls += 1
-                proposed = run_call(3)
+                proposed = run_call(5)
                 yield {"choices": [{"index": 0, "delta": {
                     "tool_calls": [dict(proposed, index=0)]
                 }, "finish_reason": None}], "usage": {}}
@@ -335,23 +335,23 @@ def test_streamed_authenticated_tool_resume_is_terminal_only_on_enforced_cycle(
         k.KERNEL.backend = backend
         body = {"messages": [
             {"role": "user", "content": "Build and verify the financial model"},
-            {"role": "tool", "tool_call_id": "write-3", "content": "wrote 9 bytes"},
+            {"role": "tool", "tool_call_id": "write-5", "content": "wrote 9 bytes"},
         ], "stream": True, "tools": state.tools, "tool_choice": "auto"}
         wire = b"".join([frame async for frame in k._safe_public_stream(body)]).decode("utf-8")
         record = k._agentic_forensic_turn(state.history)
         # Enforced cycles get one same-stage correction; observe releases directly.
         assert backend.calls == (2 if should_interrupt else 1)
-        assert "write-3" not in k.KERNEL._pending_tool_resumes
+        assert "write-5" not in k.KERNEL._pending_tool_resumes
         if should_interrupt:
             assert "Repeated Tool Cycle Failure" in wire
             assert '"tool_calls"' not in wire
-            assert "run-3" not in k.KERNEL._pending_tool_resumes
+            assert "run-5" not in k.KERNEL._pending_tool_resumes
             assert record.status == "stage1_failed"
             assert not record.frozen_a1_sha256
         else:
             assert "Repeated Tool Cycle Failure" not in wire
             assert '"tool_calls"' in wire
-            assert "run-3" in k.KERNEL._pending_tool_resumes
+            assert "run-5" in k.KERNEL._pending_tool_resumes
             assert record.status == "awaiting_tool"
 
     asyncio.run(scenario())
