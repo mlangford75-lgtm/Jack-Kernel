@@ -15,10 +15,10 @@ def test_architect_has_no_tools_and_delegates_repository_review(monkeypatch, tmp
     p = k.STAGES["coder_planner"]
     assert p.allow_tools is False
     assert p.thinking is (planner == "thorough")
-    assert "You have no tool interface of any kind" in p.prompt
-    assert "Instruct Coder to use its authorized tools to review existing work" in p.prompt
-    assert "Never claim to have reviewed previous work" in p.prompt
-    assert "Coder must use its authorized tools to inspect the actual directory contents" in p.prompt
+    assert "You have no tools and no execution authority" in p.prompt
+    assert "instruct Coder to use its authorized tools as needed to review the relevant workspace" in p.prompt
+    assert "Never simulate these actions" in p.prompt
+    assert "Coder should use its authorized tools to examine the actual directory" in p.prompt
     assert k.STAGES["extended_initial"].allow_tools is True
     assert k.STAGES["extended_initial"].thinking is True
     assert k.STAGES["extended_reflection"].allow_tools is False
@@ -168,3 +168,19 @@ def test_streamed_unadvertised_tool_proposal_never_reaches_caller(monkeypatch, t
         assert "Jack host recovery handoff to Coder" in reply["content"]
         assert "Review the existing repository" in reply["content"]
     asyncio.run(run())
+
+@pytest.mark.parametrize("planner", ("flash", "thorough"))
+def test_architect_design_guidance_remains_substantive(monkeypatch, tmp_path, planner):
+    k = load(monkeypatch, tmp_path, planner=planner)
+    prompt = k.STAGES["coder_planner"].prompt
+    assert "recommend a concrete technical design" in prompt
+    assert "important data flows" in prompt
+    assert "high-level algorithms, interface contracts, and architectural tradeoffs" in prompt
+    assert "Reuse trustworthy evidence when sufficient" in prompt
+    assert "Do not produce implementation-ready source code" in prompt
+    assert "Do not impose a mandatory template" in prompt
+    assert prompt.count("Example 1") == 1
+    assert prompt.count("Example 2") == 1
+    assert prompt.count("Example 3") == 1
+    assert prompt.count("Example 4") == 1
+
