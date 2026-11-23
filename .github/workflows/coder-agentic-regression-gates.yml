@@ -35,8 +35,8 @@ jobs:
       - name: Compile kernel and focused regressions
         shell: pwsh
         run: |
-          python -m py_compile jack_kernel.py tests/test_agentic_tool_cycle_guard.py tests/test_universal_tool_recovery.py tests/test_agentic_coder_planner_executor.py tests/test_coder_planner_delegation.py tests/test_agentic_balanced_stage2_no_thinking.py tests/test_agentic_four_profile_extensions.py
+          python -m py_compile jack_kernel.py tests/test_agentic_tool_cycle_guard.py tests/test_universal_tool_recovery.py tests/test_agentic_coder_planner_executor.py tests/test_coder_planner_delegation.py tests/test_agentic_balanced_stage2_no_thinking.py tests/test_agentic_four_profile_extensions.py tests/test_phase4_nonstream_authorization.py tests/test_agentic_memory_data_channel_ab.py tests/test_agentic_historical_memory_presentation_recovery_ab.py
       - name: Validate current Coder defaults and universal tool-cycle boundaries
         shell: pwsh
         run: |
-          python -m pytest -q tests/test_agentic_tool_cycle_guard.py tests/test_universal_tool_recovery.py tests/test_agentic_coder_planner_executor.py tests/test_coder_planner_delegation.py tests/test_agentic_balanced_stage2_no_thinking.py tests/test_agentic_four_profile_extensions.py
+          python -m pytest -q tests/test_agentic_tool_cycle_guard.py tests/test_universal_tool_recovery.py tests/test_agentic_coder_planner_executor.py tests/test_coder_planner_delegation.py tests/test_agentic_balanced_stage2_no_thinking.py tests/test_agentic_four_profile_extensions.py tests/test_phase4_nonstream_authorization.py tests/test_agentic_memory_data_channel_ab.py tests/test_agentic_historical_memory_presentation_recovery_ab.py
