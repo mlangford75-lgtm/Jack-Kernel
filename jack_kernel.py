@@ -3982,7 +3982,11 @@ def _coder_isolate_planner_request(stage_messages, profile, tools=None, source_h
                 or item.get("_jack_internal_tool_validation_rejection") is True
                 or item.get("_jack_internal_protocol_recovery") is True):
             continue
-        if item.get("role") in {"system", "developer"}:
+        if item.get("role") in {"system", "developer", "tool"}:
+            continue
+        if item.get("tool_calls"):
+            # Do not expose legacy Planner tool protocol from an old checkpoint.
+            # The canonical history remains intact for Coder's independent review.
             continue
         isolated.append(item)
     return isolated
@@ -9283,7 +9287,7 @@ class OpenAICompatibleBackend:
         if stage_seed is not None:
             payload["seed"] = stage_seed
 
-        if profile.allow_tools and tools:
+        if profile.allow_tools and tools and not (AGENTIC_CODER_MODE and profile.name == "Agentic Coder Planner"):
             self._apply_tool_policy(payload, tools, tool_choice)
 
         cache_decision = self._cache_router.plan(profile.name, str(model), stage_messages)
@@ -9484,7 +9488,7 @@ class OpenAICompatibleBackend:
         stage_seed = self._seed_for_stage(profile, messages)
         if stage_seed is not None:
             payload["seed"] = stage_seed
-        if profile.allow_tools and tools:
+        if profile.allow_tools and tools and not (AGENTIC_CODER_MODE and profile.name == "Agentic Coder Planner"):
             self._apply_tool_policy(payload, tools, tool_choice)
 
         cache_decision = self._cache_router.plan(profile.name, str(model), stage_messages)
@@ -10545,34 +10549,6 @@ class JackQwenKernel:
                         early_planner_denial = "Tool-free Architect has no tool authority"
                         LOG.warning("Tool-free Architect emitted a streamed tool proposal; no call released")
                         break
-                    if AGENTIC_CODER_MODE and stage_key == "coder_planner":
-                        for proposed in tool_state.values():
-                            fn = proposed.get("function") or {}
-                            name = str(fn.get("name") or "").strip()
-                            arguments = str(fn.get("arguments") or "")
-                            if not arguments:
-                                continue
-                            # Once arguments start for an explicitly prohibited
-                            # tool, no later argument fragment can authorize it.
-                            if name in {
-                                "write", "edit", "apply_patch", "powershell",
-                                "pwsh-start-job", "pwsh-stop-job", "pwsh-remove-job",
-                                "pwsh-create-session", "pwsh-close-session",
-                            }:
-                                early_planner_denial = (
-                                    "Planner tool call: tool is not read-only (" + name + ")"
-                                )
-                                break
-                            # A shell command must be fully reconstructed before
-                            # judging its read-only grammar. Prefix fragments can
-                            # contain harmless pipeline separators and quoted
-                            # data; authorization still happens before release.
-                        if early_planner_denial is not None:
-                            _coder_planner_log_rejection(
-                                list(tool_state.values()), [early_planner_denial],
-                                incomplete=True,
-                            )
-                            break
 
                 # Observational only: <=1 update/second for a stable phase.
                 # Never expose tool arguments or raw model text in telemetry.
