@@ -35,13 +35,13 @@ def call(i, name, args):
             "function": {"name": name, "arguments": json.dumps(args)}}
 
 
-def history(k, stage, compact):
+def history(k, stage, compact, *, repetitions=5):
     h = [{"role": "user", "content": "Build a model and verify it."}]
-    for i in range(1, 4):
+    for i in range(1, repetitions + 1):
         for j, (name, args, result) in enumerate([
             ("write", {"path": "resort_model.py", "content": "print(1)"}, "wrote bytes"),
             ("bash", {"command": "python resort_model.py"}, "(no output)")], start=1):
-            if i == 3 and j == 2:
+            if i == repetitions and j == 2:
                 break
             item = call(i * 2 + j, name, args)
             h.append({"role": "assistant", "content": "", "tool_calls": [item],
@@ -68,10 +68,23 @@ def test_cycle_spans_compacted_and_native_tool_evidence(monkeypatch, tmp_path, m
     k = load(monkeypatch, tmp_path, mode)
     h = history(k, stage, compact)
     proposed = call(90, "bash", {"command": "python resort_model.py"})
-    assert k._agentic_exact_tool_cycle(h, [proposed], stage_key=stage) == (2, 3)
+    assert k._agentic_exact_tool_cycle(h, [proposed], stage_key=stage) == (2, 5)
     assert k._agentic_exact_tool_cycle(h, [proposed], stage_key="different-stage") is None
     changed = call(91, "bash", {"command": "python verify_model.py"})
     assert k._agentic_exact_tool_cycle(h, [changed], stage_key=stage) is None
+
+
+@pytest.mark.parametrize("mode,stage", STAGES)
+@pytest.mark.parametrize("compact", [False, True])
+def test_four_identical_mutation_cycles_do_not_interrupt(monkeypatch, tmp_path, mode, stage, compact):
+    """The fifth repetition is the default boundary, not the fourth."""
+    k = load(monkeypatch, tmp_path, mode)
+    h = history(k, stage, compact, repetitions=4)
+    proposed = call(90, "bash", {"command": "python resort_model.py"})
+    assert k.CFG.tool_cycle_repetitions == 5
+    assert k._agentic_exact_tool_cycle(
+        h, [proposed], stage_key=stage, repetitions=k.CFG.tool_cycle_repetitions
+    ) is None
 
 
 @pytest.mark.parametrize("mode,stage", STAGES)
