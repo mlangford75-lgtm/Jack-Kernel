@@ -44,7 +44,7 @@ def load(monkeypatch, tmp_path, profile):
     return k
 
 
-@pytest.mark.parametrize("profile", ["balanced", "thorough", "exhaustive"])
+@pytest.mark.parametrize("profile", ["balanced", "thorough", "translated", "coder"])
 def test_historical_working_knowledge_moves_out_of_assistant_answer(monkeypatch, tmp_path, profile):
     k = load(monkeypatch, tmp_path, profile)
     h = [
