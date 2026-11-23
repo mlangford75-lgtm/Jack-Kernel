@@ -389,12 +389,8 @@ def test_planner_protocol_recovery_is_host_owned_with_single_user(monkeypatch, t
         assert [x["role"] for x in projected].count("user") == 1
         assert [x["role"] for x in projected].count("tool") == 1
         assert "only . and .." in str(projected)
-        assert any(
-            x["role"] == "assistant" and
-            "Jack internal recovery feedback (not a user request or Planner answer):" in str(x.get("content")) and
-            "Jack protocol continuation:" in str(x.get("content"))
-            for x in projected
-        )
+        assert not any("Jack protocol continuation:" in str(x.get("content", "")) for x in projected)
+        assert projected[1]["content"] == "Verify that the workspace is empty"
         assert "External caller should be removed" not in str(projected)
         assert all(not (x["role"] == "user" and "Jack protocol continuation" in str(x.get("content"))) for x in projected)
         assert json.dumps(h, sort_keys=True) == frozen
@@ -412,7 +408,7 @@ def test_planner_spec_streams_as_advisory_reasoning_without_answer_contamination
                 calls.append(profile.name)
                 if profile.name == "Agentic Coder Planner":
                     assert profile.thinking is (planner == "thorough")
-                    assert profile.prompt.startswith("You are Planner") if planner == "flash" else True
+                    assert profile.prompt.startswith("You are Architect") if planner == "flash" else True
                     assert [t["function"]["name"] for t in tools] == ["read"]
                     if planner == "thorough":
                         yield {"choices": [{"index": 0, "delta": {
@@ -503,7 +499,7 @@ def test_repeated_planner_shell_denials_do_not_abort_or_discard_coder_task(monke
                         n = sum(x == "Agentic Coder Planner" for x in sequence)
                         assert n <= 3
                         assert profile.thinking is (mode == "thorough")
-                        if n <= 2:
+                        if n == 1:
                             assert [x["function"]["name"] for x in tools] == ["bash", "describe_image"]
                         else:
                             assert tools == []
