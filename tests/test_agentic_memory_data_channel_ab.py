@@ -73,7 +73,7 @@ def unpack(wire):
     return capsules[0], json.loads(body)
 
 
-@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "exhaustive"))
+@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "translated", "coder"))
 @pytest.mark.parametrize("label", (False, True))
 def test_enabled_moves_only_authenticated_memory_out_of_assistant_dialogue(monkeypatch, tmp_path, profile, label):
     k = load(monkeypatch, tmp_path, profile, True, label=label)
@@ -98,7 +98,7 @@ def test_enabled_moves_only_authenticated_memory_out_of_assistant_dialogue(monke
     assert all(not key.startswith("_jack_") for m in p for key in m)
 
 
-@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "exhaustive"))
+@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "translated", "coder"))
 def test_default_baseline_retains_original_assistant_memory_presentation(monkeypatch, tmp_path, profile):
     k = load(monkeypatch, tmp_path, profile, False)
     h = history()
