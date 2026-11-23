@@ -381,10 +381,10 @@ class KernelConfig:
     # reasoning loop detector, this compares consecutive completed tool
     # transactions across backend generations. No model-facing prompt changes.
     agentic_tool_cycle_mode: str = os.getenv("JACK_AGENTIC_TOOL_CYCLE_MODE", "enforce").strip().lower()
-    agentic_tool_cycle_repetitions: int = max(3, int(os.getenv("JACK_AGENTIC_TOOL_CYCLE_REPETITIONS", "3")))
+    agentic_tool_cycle_repetitions: int = max(3, int(os.getenv("JACK_AGENTIC_TOOL_CYCLE_REPETITIONS", "5")))
     # Shared kernel policy, preserving the original environment names.
     tool_cycle_mode: str = os.getenv("JACK_TOOL_CYCLE_MODE", os.getenv("JACK_AGENTIC_TOOL_CYCLE_MODE", "enforce")).strip().lower()
-    tool_cycle_repetitions: int = max(3, int(os.getenv("JACK_TOOL_CYCLE_REPETITIONS", os.getenv("JACK_AGENTIC_TOOL_CYCLE_REPETITIONS", "3"))))
+    tool_cycle_repetitions: int = max(3, int(os.getenv("JACK_TOOL_CYCLE_REPETITIONS", os.getenv("JACK_AGENTIC_TOOL_CYCLE_REPETITIONS", "5"))))
 
     # Optional local forensic checkpointing is host-owned and never model context.
     # ``stage`` archives the completed Agentic Stage-1 trajectory only after Stage 2
@@ -4481,13 +4481,13 @@ def _agentic_exact_tool_cycle(
     history: List[Dict[str, Any]],
     candidate_calls: List[Dict[str, Any]],
     *,
-    repetitions: int = 3,
+    repetitions: int = 5,
     max_cycle: int = 4,
     stage_key: Optional[str] = None,
 ) -> Optional[Tuple[int, int]]:
     """Detect repeated completed tool cycles without discarding useful work.
 
-    Mutation-bearing cycles retain their established threshold (3 repetitions).
+    Mutation-bearing cycles use the configured threshold (5 repetitions by default).
     Pure file inspection cycles are eligible after two identical completed
     inspections, immediately before the third identical call is released.
     Polling commands and other non-mutating tools remain unaffected.
