@@ -183,4 +183,3 @@ def test_architect_design_guidance_remains_substantive(monkeypatch, tmp_path, pl
     assert prompt.count("Example 2") == 1
     assert prompt.count("Example 3") == 1
     assert prompt.count("Example 4") == 1
-
