@@ -18,7 +18,10 @@ PREFIX = ("Reasoning effort is set to xhigh. Please think carefully through the 
 def load(monkeypatch, tmp_path, profile="coder", planner="thorough"):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "Local Agentic (Preserve Thinking)")
     monkeypatch.setenv("JACK_AGENTIC_PROFILE", profile)
-    monkeypatch.setenv("JACK_CODER_PLANNER_PROFILE", planner)
+    if planner is None:
+        monkeypatch.delenv("JACK_CODER_PLANNER_PROFILE", raising=False)
+    else:
+        monkeypatch.setenv("JACK_CODER_PLANNER_PROFILE", planner)
     monkeypatch.setenv("JACK_BACKEND_MODEL", "test-model")
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
     monkeypatch.setenv("JACK_FORENSIC_ARCHIVE_MODE", "off")
@@ -45,6 +48,15 @@ def response(content=None, reasoning="PLANNER_R1"):
     return {"choices": [{"message": {"role": "assistant", "content": content,
                                      "reasoning_content": reasoning},
                          "finish_reason": "stop"}]}
+
+
+def test_coder_flash_default_is_consistent_across_runtime_and_launcher(monkeypatch, tmp_path):
+    """Default Coder Planner must not silently revert to Thorough."""
+    k = load(monkeypatch, tmp_path, planner=None)
+    assert k.CLI_DEFAULTS["coder_planner_profile"] == "flash"
+    assert k.CFG.coder_planner_profile == "flash"
+    assert k.STAGES["coder_planner"].thinking is False
+    assert k._config_to_env(dict(k.CLI_DEFAULTS))["JACK_CODER_PLANNER_PROFILE"] == "flash"
 
 
 def test_profile_isolated_and_reasoning_contract(monkeypatch, tmp_path):
@@ -680,7 +692,7 @@ def test_coder_planner_cli_selection_and_child_environment(monkeypatch, tmp_path
     answers = iter(["6", "5", "1"])
     monkeypatch.setattr(k, "_cli_input", lambda _: next(answers))
     k._edit_reasoning(cfg)
-    assert "  1) Flash" in output and "  2) Thorough" in output
+    assert "  1) Flash (Default)" in output and "  2) Thorough" in output
     assert not any("omit the xhigh reasoning instruction" in row for row in output)
     assert not any("retain the xhigh reasoning instruction" in row for row in output)
     assert cfg["agentic_profile"] == "coder"
