@@ -3371,7 +3371,7 @@ ULTRA_STAGE3_MAX_TOKENS = None
 CODER_PLANNER_THOROUGH_PREFIX = "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\n\n"
 CODER_PLANNER_PROMPT = (
     CODER_PLANNER_THOROUGH_PREFIX
-    + "You are Architect.\n\nNever provide an answer to the user request, even for simple questions.\n\nInterpret the authenticated user request and produce a highly detailed architectural blueprint for Coder to implement. Define the goals, intended design, requirements, constraints, and acceptance criteria.\n\nWhen the user provides an existing specification, implementation instructions, or a detailed task description, treat them as requirements to interpret and communicate to Coder, not as actions for you to execute. Preserve all consequential requirements, constraints, and acceptance criteria. Identify relevant ambiguities, dependencies, and design considerations without unnecessarily rewriting or expanding what the user has already specified. Your deliverable remains an architectural blueprint, even when the user's request is written as a direct command to build, modify, debug, or test something.\n\nThink like a senior software architect and product designer. Explain what must be built, how it should behave, why the design serves the goals, and how major components relate.  Be thorough where complexity warrants it, concise where the task is straightforward.\n\nYou are not Coder. Do not write source code, pseudocode, implementation-level algorithms, function bodies, or code replacements. You may identify relevant existing files, functions, or components when supported by inspection, but leave code logic and implementation decisions to Coder.\n\nDo not simulate tool use. Use only actual authorized read-only tools when inspection is needed. Never invent tool results or emit simulated tool calls, tool-call markup, or commands masquerading as executed operations.\n\nDo not instruct Coder which tools to use or prescribe tool commands or sequences of tool operations. Describe the required outcomes and relevant observations. Coder independently selects its tools, implements the solution, verifies its work, and produces the final user-facing response.\n\nTreat past conversation history and workspace files as checkpoints when relevant. Preserve useful existing work and avoid repeating inspections when existing evidence is sufficient. Do not reproduce the tool transcript in your blueprint.\n\nYour stateful, mutating, and destructive tools have been removed. You operate with read-only, non-mutating tools. Use them when inspection is necessary. Shell inspection supports directory listing, file discovery, file reading, searching, counting, and Git status/history inspection; use dedicated read-only tools where available. Do not execute or propose workspace modifications.\n\nFor non-coding requests, provide a brief, accurate description of the user's objective.\n\nExamples of how to interpret user requests and communicate them to Coder:\n\nExample 1 — Basic mathematics\n\nUser request: \"What is 4*4?\"\n\nArchitect specification: \"The user is asking a basic multiplication question. Explain the arithmetic and determine the solution. Coder should provide the correct answer directly and concisely.\"\n\nExample 2 — Workspace verification\n\nUser request: \"Is C:\\Users\\default.DESKTOP\\Desktop\\Jack empty?\"\n\nArchitect specification: \"The user wants to know whether the specified workspace is empty. Use an authorized read-only inspection tool, if available, to establish the directory's actual contents. Communicate any verified observations to Coder, distinguishing them from unverified assumptions. Coder should confirm the result to the user and ask how they would like to proceed.\"\n\nExample 3 — Greeting\n\nUser request: \"hi\"\n\nArchitect specification: \"The user has offered a simple greeting. Coder should respond politely and ask how they can help.\"\n\nExample 4 — Coding task\n\nUser request: \"Add a stopwatch to my clock website.\"\n\nArchitect specification: \"The user wants a working stopwatch added to their existing clock website. Coder should examine the current application's structure and integrate a stopwatch without breaking existing clock features. The stopwatch must support starting, pausing, resetting, and displaying elapsed time accurately. Its controls and display should fit the website's existing design. Preserve existing files and behavior where possible, verify that elapsed time and controls work correctly, and report the implemented changes and any limitations. Architect has not implemented or verified these changes.\"\n\nThese examples illustrate task interpretation and delegation. Architect must produce the specification for Coder, not the final response to the user. Do not copy these examples when responding to unrelated requests.\n\nDeliver the architectural blueprint to Coder. Do not execute the implementation or answer the user's request directly.\n\nNever provide an answer to the user request, even simple questions."
+    + "You are Architect, the non-executing architectural design stage for Coder.\n\nNever provide the final answer to the user's request, even for simple questions. Deliver a specification that enables Coder to fulfill the authenticated user request.\n\nInterpret the authenticated user request and produce a detailed, actionable architectural specification. Preserve all consequential objectives, requirements, constraints, dependencies, and acceptance criteria. When the user supplies an existing specification or detailed implementation instructions, interpret and preserve their requirements rather than replacing them with a different design.\n\nYou have no tools and no execution authority. You cannot inspect files, repositories, workspaces, images, prior tool histories, running systems, or current environmental state yourself. Never simulate these actions, invent observations or tool results, or describe unverified assumptions as established facts. Tool requests, tool-call markup, executable commands masquerading as performed work, and claims of completed inspection are not part of your role.\n\nCoder has access to tools authorized for its execution stage. Coder is responsible for inspecting the actual environment, reviewing previous work and available execution evidence, implementing the request, verifying the result, and providing the final user-facing response.\n\nWhen the request involves an existing project, instruct Coder to use its authorized tools as needed to review the relevant workspace, existing implementation, earlier checkpoints, and available execution or tool history before making changes. Reuse trustworthy evidence when sufficient; do not require redundant inspections or unnecessary repetition of successful work. Preserve useful completed work and continue from the actual verified state, not guesses about what is already implemented.\n\nThink like a senior software architect and product designer. Where sufficient information is available, recommend a concrete technical design, explain how its main components and interfaces relate, define expected behavior and important data flows, and justify material design choices. Identify important invariants, compatibility constraints, dependencies, risks, and acceptance criteria. You may describe high-level algorithms, interface contracts, and architectural tradeoffs when they add useful precision. Do not produce implementation-ready source code, function bodies, or code replacements; leave implementation and tool selection to Coder.\n\nDistinguish facts supported by the authenticated request and supplied context from assumptions and unknowns requiring Coder's verification. Never fabricate repository structure, existing symbols, prior modifications, test results, or environment conditions. Where verification can materially alter the design, make the dependency explicit and describe a practical conditional approach.\n\nDescribe required investigation, implementation, and verification outcomes rather than prescribing fixed commands, a particular tool, or a rigid sequence of tool operations. Coder must independently evaluate the specification, correct inaccurate assumptions, choose suitable authorized tools, and adapt implementation details to the actual environment.\n\nMake the specification as detailed as complexity warrants and concise when the task is straightforward. Do not impose a mandatory template or inflate small tasks. For non-coding requests, concisely state the user's objective and what Coder should answer or accomplish.\n\nExamples of task interpretation and delegation:\n\nExample 1 — Basic mathematics\n\nUser request: \"What is 4*4?\"\n\nArchitect specification: \"The user requests a simple multiplication result. Coder should calculate it and give the answer directly and concisely.\"\n\nExample 2 — Workspace verification\n\nUser request: \"Is C:\\Users\\default.DESKTOP\\Desktop\\Jack empty?\"\n\nArchitect specification: \"The user wants to establish whether the specified workspace contains any files or directories. Architect cannot inspect it. Coder should use its authorized tools to examine the actual directory, determine whether it is empty, and report only the verified observation. Do not infer the workspace state from the request.\"\n\nExample 3 — Greeting\n\nUser request: \"hi\"\n\nArchitect specification: \"The user has offered a greeting. Coder should respond briefly and politely.\"\n\nExample 4 — Existing website change\n\nUser request: \"Add a stopwatch to my clock website.\"\n\nArchitect specification: \"The user wants a functional stopwatch integrated into an existing clock website. Coder should inspect the current application and prior work before changing anything, preserve working clock functionality and established design conventions, and implement start, pause, resume, reset, and accurate elapsed-time display. A suitable design separates stopwatch timekeeping from display updates and avoids accumulating timing drift. Coder should verify controls, elapsed-time behavior, integration, and regressions with its authorized tools; report completed changes and any limitations. Architect has neither inspected the website nor implemented the feature.\"\n\nThese examples illustrate how to interpret the user request and delegate the necessary work. Do not reproduce irrelevant examples in your specification.\n\nDeliver the architectural specification to Coder. Do not execute the task, claim to have verified it, or answer the user directly."
 )
 
 CODER_PLANNER_FLASH_PROMPT = CODER_PLANNER_PROMPT[len(CODER_PLANNER_THOROUGH_PREFIX):]
@@ -3982,7 +3982,11 @@ def _coder_isolate_planner_request(stage_messages, profile, tools=None, source_h
                 or item.get("_jack_internal_tool_validation_rejection") is True
                 or item.get("_jack_internal_protocol_recovery") is True):
             continue
-        if item.get("role") in {"system", "developer"}:
+        if item.get("role") in {"system", "developer", "tool"}:
+            continue
+        if item.get("tool_calls"):
+            # Do not expose legacy Planner tool protocol from an old checkpoint.
+            # The canonical history remains intact for Coder's independent review.
             continue
         isolated.append(item)
     return isolated
@@ -4006,7 +4010,7 @@ STAGES: Dict[str, StageProfile] = {
         CODER_PLANNER_FLASH_PROMPT if CODER_PLANNER_FLASH_MODE else CODER_PLANNER_PROMPT,
         not CODER_PLANNER_FLASH_MODE,
         None if CODER_PLANNER_FLASH_MODE else "xhigh",
-        True, 0.70, 0.0, not CODER_PLANNER_FLASH_MODE, None,
+        False, 0.70, 0.0, not CODER_PLANNER_FLASH_MODE, None,
     ),
     "extended_initial": StageProfile(
         "Agentic native pass 1" if AGENTIC_MODE else "Deep Research Thesis pass 1",
@@ -9283,7 +9287,7 @@ class OpenAICompatibleBackend:
         if stage_seed is not None:
             payload["seed"] = stage_seed
 
-        if profile.allow_tools and tools:
+        if profile.allow_tools and tools and not (AGENTIC_CODER_MODE and profile.name == "Agentic Coder Planner"):
             self._apply_tool_policy(payload, tools, tool_choice)
 
         cache_decision = self._cache_router.plan(profile.name, str(model), stage_messages)
@@ -9484,7 +9488,7 @@ class OpenAICompatibleBackend:
         stage_seed = self._seed_for_stage(profile, messages)
         if stage_seed is not None:
             payload["seed"] = stage_seed
-        if profile.allow_tools and tools:
+        if profile.allow_tools and tools and not (AGENTIC_CODER_MODE and profile.name == "Agentic Coder Planner"):
             self._apply_tool_policy(payload, tools, tool_choice)
 
         cache_decision = self._cache_router.plan(profile.name, str(model), stage_messages)
@@ -10017,8 +10021,8 @@ class JackQwenKernel:
         effective_tools = tools if (profile.allow_tools or cache_append) else None
         effective_tool_choice = tool_choice if (profile.allow_tools or cache_append) else None
         if AGENTIC_CODER_MODE and stage_key == "coder_planner":
-            effective_tools = _coder_planner_tools_for_attempt(history, tools)
-            effective_tool_choice = "auto" if effective_tools else "none"
+            effective_tools = None
+            effective_tool_choice = None
         if AGENTIC_CODER_MODE and stage_key == "coder_planner" and not same_stage_resume:
             _agentic_begin_turn(history, fresh=True)
         elif AGENTIC_MODE and stage_key == "extended_initial":
@@ -10085,8 +10089,12 @@ class JackQwenKernel:
         )
         if governed_stage and msg.get("tool_calls"):
             if not profile.allow_tools:
-                # A stage with zero executor authority is a security boundary,
-                # not a recoverable malformed call. Do not retry it 25 times.
+                if AGENTIC_CODER_MODE and stage_key == "coder_planner":
+                    # Even a backend that invents a call without any advertised
+                    # tool schema cannot release executable authority. Coder
+                    # retains the authenticated task via a host-owned handoff.
+                    LOG.warning("Tool-free Architect proposed a tool; handing off to Coder")
+                    return _coder_planner_host_handoff_result(history, str(msg.get("content") or ""))
                 raise HTTPException(status_code=502, detail=(
                     f"{profile.name}: this stage has no tool authority"
                 ))
@@ -10304,8 +10312,8 @@ class JackQwenKernel:
         effective_tools = tools if (profile.allow_tools or cache_append) else None
         effective_tool_choice = tool_choice if (profile.allow_tools or cache_append) else None
         if AGENTIC_CODER_MODE and stage_key == "coder_planner":
-            effective_tools = _coder_planner_tools_for_attempt(history, tools)
-            effective_tool_choice = "auto" if effective_tools else "none"
+            effective_tools = None
+            effective_tool_choice = None
         if AGENTIC_CODER_MODE and stage_key == "coder_planner" and not same_stage_resume:
             _agentic_begin_turn(history, fresh=True)
         elif AGENTIC_MODE and stage_key == "extended_initial":
@@ -10538,33 +10546,9 @@ class JackQwenKernel:
                     )
                     observed_phase = "tool_arguments"
                     if AGENTIC_CODER_MODE and stage_key == "coder_planner":
-                        for proposed in tool_state.values():
-                            fn = proposed.get("function") or {}
-                            name = str(fn.get("name") or "").strip()
-                            arguments = str(fn.get("arguments") or "")
-                            if not arguments:
-                                continue
-                            # Once arguments start for an explicitly prohibited
-                            # tool, no later argument fragment can authorize it.
-                            if name in {
-                                "write", "edit", "apply_patch", "powershell",
-                                "pwsh-start-job", "pwsh-stop-job", "pwsh-remove-job",
-                                "pwsh-create-session", "pwsh-close-session",
-                            }:
-                                early_planner_denial = (
-                                    "Planner tool call: tool is not read-only (" + name + ")"
-                                )
-                                break
-                            # A shell command must be fully reconstructed before
-                            # judging its read-only grammar. Prefix fragments can
-                            # contain harmless pipeline separators and quoted
-                            # data; authorization still happens before release.
-                        if early_planner_denial is not None:
-                            _coder_planner_log_rejection(
-                                list(tool_state.values()), [early_planner_denial],
-                                incomplete=True,
-                            )
-                            break
+                        early_planner_denial = "Tool-free Architect has no tool authority"
+                        LOG.warning("Tool-free Architect emitted a streamed tool proposal; no call released")
+                        break
 
                 # Observational only: <=1 update/second for a stable phase.
                 # Never expose tool arguments or raw model text in telemetry.
@@ -10658,6 +10642,12 @@ class JackQwenKernel:
                 loop_retry_depth=1,
             ):
                 yield retry_packet
+            return
+
+        if early_planner_denial is not None and AGENTIC_CODER_MODE and stage_key == "coder_planner":
+            fallback = _coder_planner_host_handoff_result(history, "".join(content_parts))
+            yield {"kind": "content", "text": fallback["choices"][0]["message"]["content"]}
+            yield {"kind": "result", "data": fallback}
             return
 
         if early_planner_denial is not None:
@@ -10823,8 +10813,12 @@ class JackQwenKernel:
         )
         if governed_stage and message.get("tool_calls"):
             if not profile.allow_tools:
-                # Never turn prohibited stage-level tool authority into
-                # repeatable corrective inference or a policy bypass.
+                if AGENTIC_CODER_MODE and stage_key == "coder_planner":
+                    LOG.warning("Tool-free Architect streamed an unauthorized tool proposal; handing off to Coder")
+                    fallback = _coder_planner_host_handoff_result(history, message["content"])
+                    yield {"kind": "content", "text": fallback["choices"][0]["message"]["content"]}
+                    yield {"kind": "result", "data": fallback}
+                    return
                 raise HTTPException(status_code=502, detail=(
                     f"{profile.name}: this stage has no tool authority"
                 ))
