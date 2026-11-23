@@ -137,3 +137,34 @@ def test_unadvertised_tool_proposal_cannot_execute_and_falls_forward_to_coder(mo
         assert "Jack host recovery handoff to Coder" in message["content"]
         assert "Verify my existing work" in message["content"]
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("planner", ("flash", "thorough"))
+def test_streamed_unadvertised_tool_proposal_never_reaches_caller(monkeypatch, tmp_path, planner):
+    k = load(monkeypatch, tmp_path, planner=planner)
+    class Backend:
+        async def chat_stream(self, *, messages, profile, tools=None, tool_choice=None, **kwargs):
+            assert profile.name == "Agentic Coder Planner"
+            assert tools is None and tool_choice is None
+            yield {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "id": "unadvertised-tool", "type": "function",
+                 "function": {"name": "bash", "arguments": '{"command":"ls -la"}'}}
+            ]}, "finish_reason": None}]}
+            yield {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}
+
+    async def run():
+        kernel = k.JackQwenKernel(Backend(), k.CFG)
+        packets = [p async for p in kernel._run_stage_streamed(
+            [{"role": "user", "content": "Review the existing repository"}],
+            "", "coder_planner", {}, tools=[{"type": "function", "function": {"name": "bash"}}],
+            tool_choice="required", append=False,
+        )]
+        assert not any(p.get("kind") == "tool_call" or p.get("kind") == "tool_calls" for p in packets)
+        assert not any("tool_calls" in p for p in packets)
+        results = [p["data"] for p in packets if p.get("kind") == "result"]
+        assert len(results) == 1
+        reply = results[0]["choices"][0]["message"]
+        assert reply.get("tool_calls") is None
+        assert "Jack host recovery handoff to Coder" in reply["content"]
+        assert "Review the existing repository" in reply["content"]
+    asyncio.run(run())
