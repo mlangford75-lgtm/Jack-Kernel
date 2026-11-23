@@ -32,7 +32,7 @@ def load(monkeypatch, tmp_path, profile, cache):
     return k
 
 
-@pytest.mark.parametrize("profile,thinking", [("flash", False), ("balanced", False), ("thorough", True), ("exhaustive", True)])
+@pytest.mark.parametrize("profile,thinking", [("flash", False), ("balanced", False), ("thorough", True), ("translated", True)])
 @pytest.mark.parametrize("cache", [False, True])
 @pytest.mark.parametrize("stream", [False, True])
 def test_stage2_review_scheduling_by_profile(monkeypatch, tmp_path, profile, thinking, cache, stream):
