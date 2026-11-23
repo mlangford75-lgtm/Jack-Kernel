@@ -322,7 +322,7 @@ class KernelConfig:
     # cannot override the selected profile's thinking and continuation contract.
     # Balanced remains the default.
     agentic_profile: str = os.getenv("JACK_AGENTIC_PROFILE", "balanced").strip().lower()
-    coder_planner_profile: str = os.getenv("JACK_CODER_PLANNER_PROFILE", "thorough").strip().lower()
+    coder_planner_profile: str = os.getenv("JACK_CODER_PLANNER_PROFILE", "flash").strip().lower()
 
     @property
     def agentic_final_review(self) -> bool:
@@ -16533,7 +16533,7 @@ CLI_DEFAULTS: Dict[str, Any] = {
     "virtual_model": "jack-kernel",
     "reasoning_level": "Local Agentic (Preserve Thinking)",
     "agentic_profile": "balanced",
-    "coder_planner_profile": "thorough",
+    "coder_planner_profile": "flash",
     "translator_language": "en",
     "translated_language": "en",
     "preserve_thinking": True,
@@ -16988,7 +16988,7 @@ def _print_header(
     print(_status_value("Reasoning level", "Coder (Qwen 3.6-4.0)" if level_profile["mode"] == "agentic" and str(cfg.get("agentic_profile", "balanced")).lower() == "coder" else level_profile["label"]))
     if level_profile["mode"] == "agentic":
         if str(cfg.get("agentic_profile", "balanced")).lower() == "coder":
-            print(_status_value("Planner profile", str(cfg.get("coder_planner_profile", "thorough")).capitalize()))
+            print(_status_value("Planner profile", str(cfg.get("coder_planner_profile", "flash")).capitalize()))
         else:
             print(_status_value("Agentic profile", str(cfg.get("agentic_profile", "balanced")).capitalize()))
         if str(cfg.get("agentic_profile", "balanced")).lower() == "translated":
@@ -17056,11 +17056,11 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
         # proven Agentic-Coder runtime/Stage-2 implementation underneath.
         print()
         print("Planner")
-        print("  1) Flash")
+        print("  1) Flash (Default)")
         print("  2) Thorough")
         print(_ansi_rgb("  3) Hybrid (Local+Cloud) (Coming Soon)", _JACK_MUTED))
         print()
-        current_planner = str(cfg.get("coder_planner_profile", "thorough")).lower()
+        current_planner = str(cfg.get("coder_planner_profile", "flash")).lower()
         default_planner = "1" if current_planner == "flash" else "2"
         planner_choice = _cli_input(
             f"Select Planner profile [1-3] [{default_planner}]: "
@@ -17515,7 +17515,7 @@ def _config_to_env(cfg: Dict[str, Any]) -> Dict[str, str]:
         "JACK_VIRTUAL_MODEL": cfg["virtual_model"],
         "JACK_REASONING_LEVEL": cfg["reasoning_level"],
         "JACK_AGENTIC_PROFILE": cfg.get("agentic_profile", "balanced"),
-        "JACK_CODER_PLANNER_PROFILE": cfg.get("coder_planner_profile", "thorough"),
+        "JACK_CODER_PLANNER_PROFILE": cfg.get("coder_planner_profile", "flash"),
         "JACK_TRANSLATOR_LANGUAGE": cfg.get("translator_language", "en"),
         "JACK_TRANSLATED_LANGUAGE": cfg.get("translated_language", "en"),
         "JACK_PRESERVE_THINKING": "1" if cfg.get("preserve_thinking", True) else "0",
