@@ -352,8 +352,8 @@ def test_planner_internal_rejections_cannot_compete_with_user(monkeypatch, tmp_p
     assert projected[0]["content"] == k.CODER_PLANNER_FLASH_PROMPT
     assert [item["role"] for item in projected] == ["system", "user", "assistant"]
     assert projected[1]["content"] == "Verify the workspace is empty"
-    assert "not a user request" in projected[-1]["content"].lower()
-    assert "rejected before execution" in projected[-1]["content"]
+    assert projected[-1]["content"] == "The directory needs inspection"
+    assert "JACK INTERNAL TOOL REJECTION" not in str(projected)
     assert "Pi caller system must be filtered" not in str(projected)
     assert json.dumps(h, sort_keys=True) == original
     # Model-visible validation instructions do not alter canonical role or evidence.
