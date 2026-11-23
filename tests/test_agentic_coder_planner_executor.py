@@ -297,7 +297,7 @@ def test_coder_force_preserve_thinking_with_global_setting_disabled(monkeypatch,
                 await backend._client.aclose()
     asyncio.run(run())
 
-def test_zero_reasoning_budget_llamacpp_and_nonflash_profiles(monkeypatch, tmp_path):
+def test_thinking_off_does_not_inject_numeric_zero_budget(monkeypatch, tmp_path):
     from dataclasses import replace
 
     for chosen, selected_stages in (
@@ -684,7 +684,7 @@ def test_coder_planner_cli_selection_and_child_environment(monkeypatch, tmp_path
     output = []
     monkeypatch.setattr(k, "_ansi_rgb", lambda text, *args, **kwargs: text)
     monkeypatch.setattr("builtins.print", lambda *args, **kwargs: output.append(" ".join(map(str, args))))
-    answers = iter(["6", "5", "1"])
+    answers = iter(["5", "1"])
     monkeypatch.setattr(k, "_cli_input", lambda _: next(answers))
     k._edit_reasoning(cfg)
     assert any("1) Flash (Default)" in line for line in output) and any("2) Thorough" in line for line in output)
@@ -693,7 +693,7 @@ def test_coder_planner_cli_selection_and_child_environment(monkeypatch, tmp_path
     assert cfg["agentic_profile"] == "coder"
     assert cfg["coder_planner_profile"] == "flash"
     assert k._config_to_env(cfg)["JACK_CODER_PLANNER_PROFILE"] == "flash"
-    answers = iter(["6", "5", "2"])
+    answers = iter(["5", "2"])
     k._edit_reasoning(cfg)
     assert cfg["coder_planner_profile"] == "thorough"
     assert k._config_to_env(cfg)["JACK_CODER_PLANNER_PROFILE"] == "thorough"
