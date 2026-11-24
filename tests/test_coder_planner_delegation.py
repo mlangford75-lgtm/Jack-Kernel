@@ -29,11 +29,12 @@ def test_planner_receives_original_task_with_separate_planning_system_contract(m
     assert wire[0]["content"] == k.STAGES["coder_planner"].prompt
     assert "architectural specification" in wire[0]["content"]
     assert "You have no tools and no execution authority" in wire[0]["content"]
-    assert wire[1]["content"] == task
-    assert wire[1]["content"].endswith(task)
+    assert wire[1]["content"].startswith(k._CODER_ARCHITECT_TASK_SOURCE_HEADER)
+    assert task in wire[1]["content"]
     assert wire[1]["content"].count(task) == 1
+    assert wire[1]["content"].endswith(k._CODER_ARCHITECT_TASK_SOURCE_FOOTER)
     assert "Never provide the final answer" in wire[0]["content"]
-    assert k._coder_isolate_planner_request(wire, k.STAGES["coder_planner"]) == wire
+    assert wire[0]["content"] == k.STAGES["coder_planner"].prompt
     assert json.dumps(history, sort_keys=True) == saved
     assert k.STAGES["coder_planner"].thinking is (planner == "thorough")
     assert k.STAGES["extended_initial"].thinking is True
@@ -53,9 +54,10 @@ def test_multimodal_original_request_preserves_every_block(monkeypatch, tmp_path
     wire = k._coder_isolate_planner_request(history, k.STAGES["coder_planner"])
     assert [m["role"] for m in wire] == ["system", "user"]
     delegated = wire[1]["content"]
-    assert delegated == blocks
-    assert delegated[0] is blocks[0]
-    assert k._coder_isolate_planner_request(wire, k.STAGES["coder_planner"]) == wire
+    assert delegated[0]["text"] == k._CODER_ARCHITECT_TASK_SOURCE_HEADER
+    assert delegated[1:-1] == blocks
+    assert delegated[1] is blocks[0]
+    assert delegated[-1]["text"] == k._CODER_ARCHITECT_TASK_SOURCE_FOOTER
     assert json.dumps(history, sort_keys=True) == frozen
 
 
@@ -74,7 +76,7 @@ def test_delegation_excludes_previous_architect_tool_continuation(monkeypatch, t
     ]
     wire = k._coder_isolate_planner_request(history, k.STAGES["coder_planner"], source_history=history)
     assert [m["role"] for m in wire] == ["system", "user"]
-    assert wire[1]["content"].endswith("Verify that the testing workspace is empty")
+    assert "Verify that the testing workspace is empty" in wire[1]["content"]
     assert "inspect-1" not in json.dumps(wire)
     assert "total 8" not in json.dumps(wire)
 
@@ -110,8 +112,9 @@ def test_backend_wire_preserves_original_request_without_changing_coder_and_has_
         first, second = requests
         assert first["messages"][0] == second["messages"][0]
         assert first["messages"][0]["content"] == k.STAGES["coder_planner"].prompt
-        assert first["messages"][1]["content"] == "Create a cuckoo clock SVG"
-        assert second["messages"][1]["content"] == "Create a black and gold clock SVG"
+        assert "Create a cuckoo clock SVG" in first["messages"][1]["content"]
+        assert "Create a black and gold clock SVG" in second["messages"][1]["content"]
+        assert first["messages"][1]["content"].startswith(k._CODER_ARCHITECT_TASK_SOURCE_HEADER)
         assert first["chat_template_kwargs"]["enable_thinking"] is (planner == "thorough")
         assert first["chat_template_kwargs"]["preserve_thinking"] is (planner == "thorough")
         assert first["reasoning_effort"] == ("none" if planner == "flash" else "xhigh")
