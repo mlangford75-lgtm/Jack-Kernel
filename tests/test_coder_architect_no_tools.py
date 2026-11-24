@@ -43,9 +43,9 @@ def test_architect_wire_rejects_external_system_and_mutating_tools(monkeypatch, 
         if stream:
             return httpx.Response(
                 200,
-                text='data: {"choices":[{"index":0,"delta":{"content":"Coder should investigate."},"finish_reason":null}]}\\n\\n'
-                     'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\\n\\n'
-                     'data: [DONE]\\n\\n',
+                text='data: {"choices":[{"index":0,"delta":{"content":"Coder should investigate."},"finish_reason":null}]}\n\n'
+                     'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+                     'data: [DONE]\n\n',
                 headers={"content-type": "text/event-stream"},
             )
         return httpx.Response(200, json={
