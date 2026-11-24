@@ -97,9 +97,9 @@ def test_architect_does_not_replay_prior_or_current_tool_protocol(monkeypatch, t
         source, k.STAGES["coder_planner"])
     wire = k._coder_isolate_planner_request(projected, k.STAGES["coder_planner"],
                                             source_history=source)
-    assert wire[0]["role"] == "system"
-    assert wire[1]["role"] == "user"
-    assert wire[1]["content"] == "Find the relevant code, then give Coder a roadmap"
+    assert [m["role"] for m in wire] == ["system", "user", "user"]
+    assert wire[1]["content"].startswith("JACK HISTORICAL DATA")
+    assert wire[2]["content"] == "Find the relevant code, then give Coder a roadmap"
     assert "OLD_EXECUTOR_RESULT" not in json.dumps(wire)
     assert "read-1" not in json.dumps(wire)
     assert json.dumps(source, sort_keys=True) == snapshot
