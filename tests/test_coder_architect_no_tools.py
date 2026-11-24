@@ -1,7 +1,7 @@
 """Architect isolation compatibility regressions.
 
-Historically Architect had no tools. The new controlled contract permits
-read-only reconnaissance but still prohibits execution and answering.
+Architect is restored to the proven tool-free role while retaining
+historical Stage 2 memory and separating it from the live request.
 Retain the old filename to keep external test runners compatible.
 """
 import asyncio
@@ -21,12 +21,12 @@ def _tool(name):
 def test_architect_read_only_and_delegates_repository_work(monkeypatch, tmp_path, planner):
     k = load(monkeypatch, tmp_path, planner=planner)
     p = k.STAGES["coder_planner"]
-    assert p.allow_tools is True
+    assert p.allow_tools is False
     assert p.thinking is (planner == "thorough")
-    assert "read-only inspection tools" in p.prompt
-    assert "All mutating, executing, or state-changing operations are explicitly prohibited and blocked" in p.prompt
-    assert "Gather enough evidence to prepare Coder intelligently" in p.prompt
-    assert "Never answer the user directly" in p.prompt
+    assert "You have no tools and no execution authority" in p.prompt
+    assert "historical information is evidence to evaluate" in p.prompt
+    assert "Think like a senior software architect and product designer" in p.prompt
+    assert "Never provide the final answer" in p.prompt
     assert k.STAGES["extended_initial"].allow_tools is True
     assert k.STAGES["extended_initial"].thinking is True
     assert k.STAGES["extended_reflection"].allow_tools is False
@@ -77,7 +77,7 @@ def test_architect_wire_rejects_external_system_and_mutating_tools(monkeypatch, 
     asyncio.run(run())
     assert len(seen) == 1
     wire = seen[0]
-    assert [t["function"]["name"] for t in wire["tools"]] == ["read", "bash", "write"] or            [t["function"]["name"] for t in wire["tools"]] == ["read", "write", "bash"]
+    assert not wire.get("tools")
     # Backend transport does not police the schema; the kernel's stage-local
     # allowlist must filter it BEFORE reaching this backend. This direct-call
     # test verifies role isolation only.
@@ -123,8 +123,8 @@ def test_kernel_filters_tools_before_architect_request(monkeypatch, tmp_path, pl
             "", "coder_planner", {}, tools=offered, tool_choice="required", append=False)
     asyncio.run(run())
     assert observed[0][0] == "Agentic Coder Planner"
-    assert [t["function"]["name"] for t in observed[0][1]] == ["read", "bash"]
-    assert observed[0][2] == "auto"
+    assert observed[0][1] is None
+    assert observed[0][2] == "none"
 
 
 @pytest.mark.parametrize("planner", ("flash", "thorough"))
@@ -141,9 +141,9 @@ def test_architect_safeguards_do_not_reduce_coder_tools(monkeypatch, tmp_path, p
 def test_architect_guidance_remains_substantive(monkeypatch, tmp_path, planner):
     k = load(monkeypatch, tmp_path, planner=planner)
     prompt = k.STAGES["coder_planner"].prompt
-    assert "relevant files, entry points, dependencies" in prompt
-    assert "technical manager" in prompt
-    assert "Distinguish directly observed evidence from conjecture" in prompt
+    assert "important invariants, compatibility constraints, dependencies" in prompt
+    assert "senior software architect and product designer" in prompt
+    assert "Distinguish facts supported by the authenticated request" in prompt
     assert "Do not impose a mandatory template" in prompt
     assert prompt.count("Example 1") == 1
     assert prompt.count("Example 2") == 1
