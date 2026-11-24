@@ -3987,8 +3987,16 @@ def _coder_isolate_planner_request(stage_messages, profile, tools=None, source_h
             for original in source_history[int(canonical_target["history_index"]) + 1:]:
                 if not isinstance(original, dict):
                     continue
-                if (original.get("_jack_internal_tool_exchange") is not True
-                        or original.get("_jack_stage_key") != "coder_planner"):
+                if original.get("_jack_internal_tool_exchange") is not True:
+                    continue
+                # The issued call is host-tagged with its stage. A returned Pi
+                # result may have no stage tag; its authenticated pending-call
+                # ID is what binds it to this same-turn Planner exchange.
+                if (original.get("role") == "assistant"
+                        and original.get("_jack_stage_key") != "coder_planner"):
+                    continue
+                if (original.get("role") == "tool"
+                        and original.get("_jack_stage_key") not in {None, "coder_planner"}):
                     continue
                 if original.get("role") == "assistant":
                     for call in original.get("tool_calls") or []:
