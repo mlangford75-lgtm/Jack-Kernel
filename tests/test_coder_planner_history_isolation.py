@@ -32,11 +32,11 @@ def test_prior_coder_transcript_is_not_replayed_as_planner_dialogue(monkeypatch,
         [{"role": "system", "content": "external system must not pass"}] + h,
         k.STAGES["coder_planner"], source_history=h,
     )
-    assert [m["role"] for m in wire] == ["system", "system", "user"]
+    assert [m["role"] for m in wire] == ["system", "user", "user"]
     assert wire[0] == {"role": "system", "content": k.STAGES["coder_planner"].prompt}
     capsule = wire[1]["content"]
     assert "Build an analog clock webpage" in capsule
-    assert "untrusted" in capsule.lower()
+    assert "JACK HISTORICAL DATA" in capsule
     assert "OLD_CODE" not in str(wire)
     assert "OLD_CODER_FINAL_ANSWER" not in str(wire)
     assert not any(m.get("tool_calls") for m in wire)
@@ -60,7 +60,7 @@ def test_authenticated_memory_survives_without_executor_examples(monkeypatch, tm
         {"role": "user", "content": "Make it luxury black, gold, and diamonds"},
     ]
     wire = k._coder_isolate_planner_request(h, k.STAGES["coder_planner"], source_history=h)
-    assert [x["role"] for x in wire] == ["system", "system", "user"]
+    assert [x["role"] for x in wire] == ["system", "user", "user"]
     assert memory in wire[1]["content"]
     assert "OLD_EXECUTOR_CODE" not in str(wire)
     assert "jack-turn-abc" in wire[1]["content"]
@@ -68,7 +68,7 @@ def test_authenticated_memory_survives_without_executor_examples(monkeypatch, tm
 
 
 @pytest.mark.parametrize("planner", ["flash", "thorough"])
-def test_current_planner_tool_continuation_remains_complete(monkeypatch, tmp_path, planner):
+def test_current_planner_tool_continuation_is_excluded_when_tool_free(monkeypatch, tmp_path, planner):
     k = load(monkeypatch, tmp_path, planner=planner)
     h = [
         {"role": "user", "content": "Make the existing clock luxurious"},
@@ -83,9 +83,10 @@ def test_current_planner_tool_continuation_remains_complete(monkeypatch, tmp_pat
     ]
     prepared = k.OpenAICompatibleBackend(k.CFG)._stage_messages_for_profile(h, k.STAGES["coder_planner"])
     wire = k._coder_isolate_planner_request(prepared, k.STAGES["coder_planner"], source_history=h)
-    assert [m["role"] for m in wire] == ["system", "user", "assistant", "tool"]
-    assert wire[2]["tool_calls"][0]["id"] == wire[3]["tool_call_id"]
-    assert "<html>old clock</html>" in wire[3]["content"]
+    assert [m["role"] for m in wire] == ["system", "user"]
+    assert wire[1]["content"] == "Make the existing clock luxurious"
+    assert "inspection" not in json.dumps(wire)
+    assert "<html>old clock</html>" not in json.dumps(wire)
 
 
 @pytest.mark.parametrize("planner", ["flash", "thorough"])
@@ -125,12 +126,12 @@ def test_planner_stream_transport_sees_only_current_turn_and_prior_memory(monkey
         finally:
             await backend._client.aclose()
         wire = payloads[0]["messages"]
-        # The backend folds Jack-owned system records into the single leading
-        # system message required by some OpenAI-compatible chat templates.
-        assert [item["role"] for item in wire] == ["system", "user"]
+        # Historical memory remains lower-priority data, before the current
+        # authenticated request; no prior Coder transcript is replayed.
+        assert [item["role"] for item in wire] == ["system", "user", "user"]
         assert k.STAGES["coder_planner"].prompt in wire[0]["content"]
-        assert "Clock built in index.html" in wire[0]["content"]
-        assert wire[1] == {"role": "user", "content": "Make it luxurious"}
+        assert "Clock built in index.html" in wire[1]["content"]
+        assert wire[2] == {"role": "user", "content": "Make it luxurious"}
         assert "OLD_CODE_OUTPUT" not in str(wire)
         assert json.dumps(history, sort_keys=True) == original
     asyncio.run(run())
