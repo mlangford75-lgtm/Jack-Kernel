@@ -1,4 +1,4 @@
-name: Experimental read-only Coder Architect
+name: Experimental tool-free Coder Architect
 
 on:
   pull_request:
@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 jobs:
-  read-only-architect:
+  tool-free-architect:
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
@@ -30,6 +30,6 @@ jobs:
       - name: Compile kernel and Architect boundary tests
         shell: pwsh
         run: python -m py_compile jack_kernel.py tests/test_coder_architect_no_tools.py tests/test_coder_architect_readonly_role_isolation_20261124.py
-      - name: Verify read-only role isolation in both Coder modes
+      - name: Verify tool-free delegation and historical context in both Coder modes
         shell: pwsh
         run: python -m pytest -q tests/test_coder_architect_no_tools.py tests/test_coder_architect_readonly_role_isolation_20261124.py
