@@ -13720,7 +13720,7 @@ class JackQwenKernel:
                     stage_content_started = False
 
                     if stage_key == "extended_initial" and not same_stage_resume:
-                        label = "DEEP RESEARCH STAGE 1 — THESIS" if ULTRA_MODE else "STAGE 1 PROPOSED RESPONSE"
+                        label = "DEEP RESEARCH STAGE 1 — THESIS" if ULTRA_MODE else "STAGE 1: REASONING"
                         yield event({"reasoning_content": f"\n[{label}]\n"})
                     elif stage_key in {"extended_reflection", "extended_synthesis"}:
                         if not (AGENTIC_FLASH_MODE and stage_key == "extended_reflection"):
@@ -13751,7 +13751,7 @@ class JackQwenKernel:
                                     # for Coder's independent execution.
                                     if not stage_content_started:
                                         stage_content_started = True
-                                        yield event({"reasoning_content": "\n[CODER PLANNER — SPEC SHEET]\n"})
+                                        yield event({"reasoning_content": "\n[PLAN — SPEC SHEET]\n"})
                                     yield event({"reasoning_content": packet["text"]})
                                 elif stage_key == "extended_initial":
                                     if AGENTIC_MODE:
