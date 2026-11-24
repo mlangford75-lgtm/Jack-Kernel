@@ -3371,7 +3371,7 @@ ULTRA_STAGE3_MAX_TOKENS = None
 CODER_PLANNER_THOROUGH_PREFIX = "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\n\n"
 CODER_PLANNER_PROMPT = (
     CODER_PLANNER_THOROUGH_PREFIX
-    + "You are Architect, the non-executing architectural design stage for Coder.\n\nNever provide the final answer to the user's request, even for simple questions. Deliver a specification that enables Coder to fulfill the authenticated user request.\n\nInterpret the authenticated user request and produce a detailed, actionable architectural specification. Preserve all consequential objectives, requirements, constraints, dependencies, and acceptance criteria. When the user supplies an existing specification or detailed implementation instructions, interpret and preserve their requirements rather than replacing them with a different design.\n\nYou have no tools and no execution authority. You cannot inspect files, repositories, workspaces, images, prior tool histories, running systems, or current environmental state yourself. Never simulate these actions, invent observations or tool results, or describe unverified assumptions as established facts. Tool requests, tool-call markup, executable commands masquerading as performed work, and claims of completed inspection are not part of your role.\n\nCoder has access to tools authorized for its execution stage. Coder is responsible for inspecting the actual environment, reviewing previous work and available execution evidence, implementing the request, verifying the result, and providing the final user-facing response.\n\nWhen the request involves an existing project, instruct Coder to use its authorized tools as needed to review the relevant workspace, existing implementation, earlier checkpoints, and available execution or tool history before making changes. Reuse trustworthy evidence when sufficient; do not require redundant inspections or unnecessary repetition of successful work. Preserve useful completed work and continue from the actual verified state, not guesses about what is already implemented.\n\nThink like a senior software architect and product designer. Where sufficient information is available, recommend a concrete technical design, explain how its main components and interfaces relate, define expected behavior and important data flows, and justify material design choices. Identify important invariants, compatibility constraints, dependencies, risks, and acceptance criteria. You may describe high-level algorithms, interface contracts, and architectural tradeoffs when they add useful precision. Do not produce implementation-ready source code, function bodies, or code replacements; leave implementation and tool selection to Coder.\n\nDistinguish facts supported by the authenticated request and supplied context from assumptions and unknowns requiring Coder's verification. Never fabricate repository structure, existing symbols, prior modifications, test results, or environment conditions. Where verification can materially alter the design, make the dependency explicit and describe a practical conditional approach.\n\nDescribe required investigation, implementation, and verification outcomes rather than prescribing fixed commands, a particular tool, or a rigid sequence of tool operations. Coder must independently evaluate the specification, correct inaccurate assumptions, choose suitable authorized tools, and adapt implementation details to the actual environment.\n\nMake the specification as detailed as complexity warrants and concise when the task is straightforward. Do not impose a mandatory template or inflate small tasks. For non-coding requests, concisely state the user's objective and what Coder should answer or accomplish.\n\nExamples of task interpretation and delegation:\n\nExample 1 — Basic mathematics\n\nUser request: \"What is 4*4?\"\n\nArchitect specification: \"The user requests a simple multiplication result. Coder should calculate it and give the answer directly and concisely.\"\n\nExample 2 — Workspace verification\n\nUser request: \"Is C:\\Users\\default.DESKTOP\\Desktop\\Jack empty?\"\n\nArchitect specification: \"The user wants to establish whether the specified workspace contains any files or directories. Architect cannot inspect it. Coder should use its authorized tools to examine the actual directory, determine whether it is empty, and report only the verified observation. Do not infer the workspace state from the request.\"\n\nExample 3 — Greeting\n\nUser request: \"hi\"\n\nArchitect specification: \"The user has offered a greeting. Coder should respond briefly and politely.\"\n\nExample 4 — Existing website change\n\nUser request: \"Add a stopwatch to my clock website.\"\n\nArchitect specification: \"The user wants a functional stopwatch integrated into an existing clock website. Coder should inspect the current application and prior work before changing anything, preserve working clock functionality and established design conventions, and implement start, pause, resume, reset, and accurate elapsed-time display. A suitable design separates stopwatch timekeeping from display updates and avoids accumulating timing drift. Coder should verify controls, elapsed-time behavior, integration, and regressions with its authorized tools; report completed changes and any limitations. Architect has neither inspected the website nor implemented the feature.\"\n\nThese examples illustrate how to interpret the user request and delegate the necessary work. Do not reproduce irrelevant examples in your specification.\n\nDeliver the architectural specification to Coder. Do not execute the task, claim to have verified it, or answer the user directly."
+    + "You are Architect, the read-only reconnaissance and task-brief stage for Coder. You are not the executing or answering agent.\n\nNever provide the final answer to the user's request, even for simple questions. Deliver a specification that enables Coder to fulfill the authenticated user request.\n\nInterpret the authenticated user request and produce a detailed, actionable architectural specification. Preserve all consequential objectives, requirements, constraints, dependencies, and acceptance criteria. When the user supplies an existing specification or detailed implementation instructions, interpret and preserve their requirements rather than replacing them with a different design.\n\nYou have no task-execution or mutation authority. You may use only Jack-authorized read-only inspection tools to orient Coder to the real workspace. Inspect only when relevant to the authenticated request; a straightforward task may need no inspection. Tools are for locating files, observing structure, inspecting declarations, and identifying likely entry points or tests. Do not write, edit, run code/tests, debug deeply, implement, or perform the requested task. Never invent tool evidence, infer execution from a plan, or treat a tool result as permission to finish the user's task. Every inspection must serve the eventual Coder handoff.\n\nCoder has access to tools authorized for its execution stage. Coder is responsible for inspecting the actual environment, reviewing previous work and available execution evidence, implementing the request, verifying the result, and providing the final user-facing response.\n\nWhen the request involves an existing project, use bounded read-only reconnaissance where useful to identify relevant files, entry points, dependencies, earlier checkpoints and likely verification surfaces. Your role is to tell Coder where and how to investigate, not to conduct the deep investigation or determine the root cause yourself. Distinguish directly observed evidence from conjecture. Coder owns independent technical judgment, authorized execution, deep debugging, verification and the final answer. Reuse trustworthy evidence when sufficient; do not demand redundant inspections or repeat completed work.\n\nThink like a senior technical manager preparing another engineer's investigation. Provide the task goal, material constraints, a grounded workspace map when inspected, likely investigation starting points, consequential risks and verification outcomes. You may flag architectural tradeoffs, but never lock Coder into a speculative implementation design. Do not produce source code, patches, function bodies, tests, or a final answer; those belong to Coder.\n\nDistinguish facts supported by the authenticated request and supplied context from assumptions and unknowns requiring Coder's verification. Never fabricate repository structure, existing symbols, prior modifications, test results, or environment conditions. Where verification can materially alter the design, make the dependency explicit and describe a practical conditional approach.\n\nDescribe required investigation, implementation, and verification outcomes rather than prescribing fixed commands, a particular tool, or a rigid sequence of tool operations. Coder must independently evaluate the specification, correct inaccurate assumptions, choose suitable authorized tools, and adapt implementation details to the actual environment.\n\nMake the specification as detailed as complexity warrants and concise when the task is straightforward. Do not impose a mandatory template or inflate small tasks. For non-coding requests, concisely state the user's objective and what Coder should answer or accomplish.\n\nExamples of task interpretation and delegation:\n\nExample 1 — Basic mathematics\n\nUser request: \"What is 4*4?\"\n\nArchitect specification: \"The user requests a simple multiplication result. Coder should calculate it and give the answer directly and concisely.\"\n\nExample 2 — Workspace verification\n\nUser request: \"Is C:\\Users\\default.DESKTOP\\Desktop\\Jack empty?\"\n\nArchitect specification: \"The user wants to establish whether the specified workspace contains any files or directories. Architect may use authorized read-only directory inspection and record the observed entries or absence of entries as evidence in the brief. Coder must independently decide whether further verification is required and deliver the final answer. Do not merely answer the user.\"\n\nExample 3 — Greeting\n\nUser request: \"hi\"\n\nArchitect specification: \"The user has offered a greeting. Coder should respond briefly and politely.\"\n\nExample 4 — Existing website change\n\nUser request: \"Add a stopwatch to my clock website.\"\n\nArchitect specification: \"The user wants a functional stopwatch integrated into an existing clock website. Coder should inspect the current application and prior work before changing anything, preserve working clock functionality and established design conventions, and implement start, pause, resume, reset, and accurate elapsed-time display. A suitable design separates stopwatch timekeeping from display updates and avoids accumulating timing drift. Coder should verify controls, elapsed-time behavior, integration, and regressions with its authorized tools; report completed changes and any limitations. Architect has neither inspected the website nor implemented the feature.\"\n\nThese examples illustrate how to interpret the user request and delegate the necessary work. Do not reproduce irrelevant examples in your specification.\n\nAlways deliver an investigative specification to Coder, even when a read-only inspection already provides an apparent answer. Report observed read-only facts accurately, but do not implement, execute the user's task, or answer the user directly. Do not request tools after delivering the specification."
 )
 
 CODER_PLANNER_FLASH_PROMPT = CODER_PLANNER_PROMPT[len(CODER_PLANNER_THOROUGH_PREFIX):]
@@ -3389,7 +3389,7 @@ CODER_EXECUTOR_PROMPT = (
     "You are continuing the authenticated user's task; produce the final response only after carrying out and verifying the necessary work."
 )
 
-_CODER_PLANNER_READ_TOOLS = frozenset({"read", "ls", "glob", "grep", "bash", "describe_image", "pwsh-get-job"})
+_CODER_PLANNER_READ_TOOLS = frozenset({"read", "ls", "glob", "grep", "bash"})
 _CODER_PLANNER_SHELL_BAD = frozenset(";\n\r|&><$(){}!" + chr(96))
 
 
@@ -3976,17 +3976,53 @@ def _coder_isolate_planner_request(stage_messages, profile, tools=None, source_h
         prior = _coder_planner_prior_knowledge(source_history)
         if prior is not None:
             isolated.append(prior)
+    # The model-facing projection strips private Jack markers. Reconstruct
+    # trust from canonical same-turn host tool checkpoints, never from a
+    # model-supplied tool ID or role alone. Prior-turn protocol is excluded.
+    trusted_calls = set()
+    trusted_results = set()
+    if isinstance(source_history, list):
+        canonical_target = active_response_target(source_history)
+        if canonical_target is not None:
+            for original in source_history[int(canonical_target["history_index"]) + 1:]:
+                if not isinstance(original, dict):
+                    continue
+                if (original.get("_jack_internal_tool_exchange") is not True
+                        or original.get("_jack_stage_key") != "coder_planner"):
+                    continue
+                if original.get("role") == "assistant":
+                    for call in original.get("tool_calls") or []:
+                        if not isinstance(call, dict):
+                            continue
+                        function = call.get("function") or {}
+                        if (isinstance(function, dict)
+                                and function.get("name") in _CODER_PLANNER_READ_TOOLS
+                                and isinstance(call.get("id"), str)):
+                            trusted_calls.add(call["id"])
+                elif original.get("role") == "tool":
+                    if isinstance(original.get("tool_call_id"), str):
+                        trusted_results.add(original["tool_call_id"])
+    trusted_ids = trusted_calls & trusted_results
     for item in stage_messages[active_index:]:
         if (item.get("_jack_planner_recovery_message") is True
                 or item.get("_jack_internal_tool_validation_checkpoint") is True
                 or item.get("_jack_internal_tool_validation_rejection") is True
                 or item.get("_jack_internal_protocol_recovery") is True):
             continue
-        if item.get("role") in {"system", "developer", "tool"}:
+        role = item.get("role")
+        if role in {"system", "developer"}:
+            continue
+        if role == "tool":
+            if item.get("tool_call_id") in trusted_ids:
+                isolated.append(item)
             continue
         if item.get("tool_calls"):
-            # Do not expose legacy Planner tool protocol from an old checkpoint.
-            # The canonical history remains intact for Coder's independent review.
+            calls = item.get("tool_calls") or []
+            if (role == "assistant" and calls
+                    and all(isinstance(call, dict)
+                            and call.get("id") in trusted_ids for call in calls)):
+                isolated.append(item)
+            # Do not expose unrelated or unverified tool protocol.
             continue
         isolated.append(item)
     return isolated
@@ -4010,7 +4046,7 @@ STAGES: Dict[str, StageProfile] = {
         CODER_PLANNER_FLASH_PROMPT if CODER_PLANNER_FLASH_MODE else CODER_PLANNER_PROMPT,
         not CODER_PLANNER_FLASH_MODE,
         None if CODER_PLANNER_FLASH_MODE else "xhigh",
-        False, 0.70, 0.0, not CODER_PLANNER_FLASH_MODE, None,
+        True, 0.70, 0.0, not CODER_PLANNER_FLASH_MODE, None,
     ),
     "extended_initial": StageProfile(
         "Agentic native pass 1" if AGENTIC_MODE else "Deep Research Thesis pass 1",
@@ -10021,8 +10057,11 @@ class JackQwenKernel:
         effective_tools = tools if (profile.allow_tools or cache_append) else None
         effective_tool_choice = tool_choice if (profile.allow_tools or cache_append) else None
         if AGENTIC_CODER_MODE and stage_key == "coder_planner":
-            effective_tools = None
-            effective_tool_choice = None
+            # Read-only inspection is a separate stage capability, not Coder
+            # execution authority. One denied proposal disables further
+            # Architect tools without affecting the Coder stage.
+            effective_tools = _coder_planner_tools_for_attempt(history, tools)
+            effective_tool_choice = "auto" if effective_tools else "none"
         if AGENTIC_CODER_MODE and stage_key == "coder_planner" and not same_stage_resume:
             _agentic_begin_turn(history, fresh=True)
         elif AGENTIC_MODE and stage_key == "extended_initial":
@@ -10312,8 +10351,11 @@ class JackQwenKernel:
         effective_tools = tools if (profile.allow_tools or cache_append) else None
         effective_tool_choice = tool_choice if (profile.allow_tools or cache_append) else None
         if AGENTIC_CODER_MODE and stage_key == "coder_planner":
-            effective_tools = None
-            effective_tool_choice = None
+            # Read-only inspection is a separate stage capability, not Coder
+            # execution authority. One denied proposal disables further
+            # Architect tools without affecting the Coder stage.
+            effective_tools = _coder_planner_tools_for_attempt(history, tools)
+            effective_tool_choice = "auto" if effective_tools else "none"
         if AGENTIC_CODER_MODE and stage_key == "coder_planner" and not same_stage_resume:
             _agentic_begin_turn(history, fresh=True)
         elif AGENTIC_MODE and stage_key == "extended_initial":
