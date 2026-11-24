@@ -201,4 +201,3 @@ def test_embedded_system_prompt_is_task_data_only_for_architect(monkeypatch, tmp
     assert coder[-1]["content"] == adversarial
     assert k._CODER_ARCHITECT_TASK_SOURCE_HEADER not in str(coder)
     assert json.dumps(original, sort_keys=True) == frozen
-
