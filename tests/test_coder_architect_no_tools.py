@@ -24,9 +24,9 @@ def test_architect_read_only_and_delegates_repository_work(monkeypatch, tmp_path
     assert p.allow_tools is True
     assert p.thinking is (planner == "thorough")
     assert "read-only inspection tools" in p.prompt
-    assert "You have no task-execution or mutation authority" in p.prompt
-    assert "Always deliver an investigative specification to Coder" in p.prompt
-    assert "do not implement, execute the user's task, or answer the user directly" in p.prompt
+    assert "All mutating, executing, or state-changing operations are explicitly prohibited and blocked" in p.prompt
+    assert "Gather enough evidence to prepare Coder intelligently" in p.prompt
+    assert "Never answer the user directly" in p.prompt
     assert k.STAGES["extended_initial"].allow_tools is True
     assert k.STAGES["extended_initial"].thinking is True
     assert k.STAGES["extended_reflection"].allow_tools is False
