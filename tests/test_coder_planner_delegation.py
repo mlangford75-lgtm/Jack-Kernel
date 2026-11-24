@@ -27,12 +27,12 @@ def test_planner_receives_original_task_with_separate_planning_system_contract(m
     wire = k._coder_isolate_planner_request(history, k.STAGES["coder_planner"], source_history=history)
     assert [m["role"] for m in wire] == ["system", "user"]
     assert wire[0]["content"] == k.STAGES["coder_planner"].prompt
-    assert "detailed message" in wire[0]["content"]
-    assert "plan the user" in wire[0]["content"]
+    assert "investigative specification to Coder" in wire[0]["content"]
+    assert "read-only reconnaissance" in wire[0]["content"]
     assert wire[1]["content"] == task
     assert wire[1]["content"].endswith(task)
     assert wire[1]["content"].count(task) == 1
-    assert "Prepare Coder to complete the request." in wire[0]["content"]
+    assert "You are not the executing or answering agent." in wire[0]["content"]
     assert k._coder_isolate_planner_request(wire, k.STAGES["coder_planner"]) == wire
     assert json.dumps(history, sort_keys=True) == saved
     assert k.STAGES["coder_planner"].thinking is (planner == "thorough")
@@ -64,10 +64,13 @@ def test_delegation_preserves_read_only_current_turn_tool_continuation(monkeypat
     k = load(monkeypatch, tmp_path, planner=planner)
     history = [
         {"role": "user", "content": "Verify that the testing workspace is empty"},
-        {"role": "assistant", "content": "", "tool_calls": [
+        {"role": "assistant", "content": "",
+             "_jack_internal_tool_exchange": True, "_jack_stage_key": "coder_planner",
+             "tool_calls": [
             {"id": "inspect-1", "type": "function", "function": {
                 "name": "bash", "arguments": '{"command":"ls -la"}'}}]},
-        {"role": "tool", "tool_call_id": "inspect-1", "content": "total 8\ndrwxr-x .\ndrwxr-x .."},
+        {"role": "tool", "tool_call_id": "inspect-1",
+             "_jack_internal_tool_exchange": True, "content": "total 8\ndrwxr-x .\ndrwxr-x .."},
     ]
     wire = k._coder_isolate_planner_request(history, k.STAGES["coder_planner"], source_history=history)
     assert [m["role"] for m in wire] == ["system", "user", "assistant", "tool"]
