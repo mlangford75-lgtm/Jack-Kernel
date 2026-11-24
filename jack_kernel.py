@@ -10596,9 +10596,22 @@ class JackQwenKernel:
                     )
                     observed_phase = "tool_arguments"
                     if AGENTIC_CODER_MODE and stage_key == "coder_planner":
-                        early_planner_denial = "Tool-free Architect has no tool authority"
-                        LOG.warning("Tool-free Architect emitted a streamed tool proposal; no call released")
-                        break
+                        # Do not mistake a legitimate read-only tool proposal
+                        # for role collapse. Withhold every fragment until
+                        # ordinary completed-call validation. Interrupt early
+                        # only when the reconstructed name is conclusively
+                        # outside Architect's inspection-only allowlist.
+                        for pending in tool_state.values():
+                            fn = pending.get("function") if isinstance(pending, dict) else None
+                            name = fn.get("name") if isinstance(fn, dict) else None
+                            if (isinstance(name, str) and name
+                                    and name not in _CODER_PLANNER_READ_TOOLS
+                                    and not any(allowed.startswith(name) for allowed in _CODER_PLANNER_READ_TOOLS)):
+                                early_planner_denial = "Architect proposed a forbidden tool; no call released"
+                                LOG.warning("Architect streamed a non-inspection tool name; no call released")
+                                break
+                        if early_planner_denial is not None:
+                            break
 
                 # Observational only: <=1 update/second for a stable phase.
                 # Never expose tool arguments or raw model text in telemetry.
