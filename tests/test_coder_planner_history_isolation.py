@@ -41,7 +41,8 @@ def test_prior_coder_transcript_is_not_replayed_as_planner_dialogue(monkeypatch,
     assert "OLD_CODER_FINAL_ANSWER" not in str(wire)
     assert not any(m.get("tool_calls") for m in wire)
     assert wire[-1]["role"] == current["role"]
-    assert wire[-1]["content"] == current["content"]
+    assert current["content"] in wire[-1]["content"]
+    assert wire[-1]["content"].startswith(k._CODER_ARCHITECT_TASK_SOURCE_HEADER)
     assert json.dumps(h, sort_keys=True) == frozen
 
 
@@ -64,7 +65,7 @@ def test_authenticated_memory_survives_without_executor_examples(monkeypatch, tm
     assert memory in wire[1]["content"]
     assert "OLD_EXECUTOR_CODE" not in str(wire)
     assert "jack-turn-abc" in wire[1]["content"]
-    assert wire[-1]["content"] == "Make it luxury black, gold, and diamonds"
+    assert "Make it luxury black, gold, and diamonds" in wire[-1]["content"]
 
 
 @pytest.mark.parametrize("planner", ["flash", "thorough"])
@@ -84,7 +85,7 @@ def test_current_planner_tool_continuation_is_excluded_when_tool_free(monkeypatc
     prepared = k.OpenAICompatibleBackend(k.CFG)._stage_messages_for_profile(h, k.STAGES["coder_planner"])
     wire = k._coder_isolate_planner_request(prepared, k.STAGES["coder_planner"], source_history=h)
     assert [m["role"] for m in wire] == ["system", "user"]
-    assert wire[1]["content"] == "Make the existing clock luxurious"
+    assert "Make the existing clock luxurious" in wire[1]["content"]
     assert not any(m.get("tool_calls") or m.get("tool_call_id") for m in wire)
     assert "<html>old clock</html>" not in json.dumps(wire)
 
@@ -131,7 +132,9 @@ def test_planner_stream_transport_sees_only_current_turn_and_prior_memory(monkey
         assert [item["role"] for item in wire] == ["system", "user", "user"]
         assert k.STAGES["coder_planner"].prompt in wire[0]["content"]
         assert "Clock built in index.html" in wire[1]["content"]
-        assert wire[2] == {"role": "user", "content": "Make it luxurious"}
+        assert wire[2]["role"] == "user"
+        assert "Make it luxurious" in wire[2]["content"]
+        assert wire[2]["content"].startswith(k._CODER_ARCHITECT_TASK_SOURCE_HEADER)
         assert "OLD_CODE_OUTPUT" not in str(wire)
         assert json.dumps(history, sort_keys=True) == original
     asyncio.run(run())
