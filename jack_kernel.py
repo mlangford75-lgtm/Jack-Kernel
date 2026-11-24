@@ -3949,8 +3949,8 @@ def _coder_isolate_planner_request(stage_messages, profile, tools=None, source_h
 
     Previous assistant responses, tool calls and user turns must not be
     replayed as Planner conversation. Earlier authenticated memory may appear
-    only in a labeled data capsule. Current-turn read-only inspections and
-    tool-result continuations remain intact. No canonical history is changed.
+    only in a labeled data capsule. Only authenticated prior memory and the active request are projected
+    while Architect is tool-free. No canonical history is changed.
     """
     if not AGENTIC_CODER_MODE or profile.name != "Agentic Coder Planner":
         return stage_messages
@@ -3981,7 +3981,7 @@ def _coder_isolate_planner_request(stage_messages, profile, tools=None, source_h
     # model-supplied tool ID or role alone. Prior-turn protocol is excluded.
     trusted_calls = set()
     trusted_results = set()
-    if isinstance(source_history, list):
+    if profile.allow_tools and isinstance(source_history, list):
         canonical_target = active_response_target(source_history)
         if canonical_target is not None:
             for original in source_history[int(canonical_target["history_index"]) + 1:]:
