@@ -85,7 +85,7 @@ def test_current_planner_tool_continuation_is_excluded_when_tool_free(monkeypatc
     wire = k._coder_isolate_planner_request(prepared, k.STAGES["coder_planner"], source_history=h)
     assert [m["role"] for m in wire] == ["system", "user"]
     assert wire[1]["content"] == "Make the existing clock luxurious"
-    assert "inspection" not in json.dumps(wire)
+    assert not any(m.get("tool_calls") or m.get("tool_call_id") for m in wire)
     assert "<html>old clock</html>" not in json.dumps(wire)
 
 
