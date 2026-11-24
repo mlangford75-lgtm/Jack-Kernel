@@ -9331,7 +9331,7 @@ class OpenAICompatibleBackend:
         if stage_seed is not None:
             payload["seed"] = stage_seed
 
-        if profile.allow_tools and tools and not (AGENTIC_CODER_MODE and profile.name == "Agentic Coder Planner"):
+        if profile.allow_tools and tools:
             self._apply_tool_policy(payload, tools, tool_choice)
 
         cache_decision = self._cache_router.plan(profile.name, str(model), stage_messages)
@@ -9532,7 +9532,7 @@ class OpenAICompatibleBackend:
         stage_seed = self._seed_for_stage(profile, messages)
         if stage_seed is not None:
             payload["seed"] = stage_seed
-        if profile.allow_tools and tools and not (AGENTIC_CODER_MODE and profile.name == "Agentic Coder Planner"):
+        if profile.allow_tools and tools:
             self._apply_tool_policy(payload, tools, tool_choice)
 
         cache_decision = self._cache_router.plan(profile.name, str(model), stage_messages)
