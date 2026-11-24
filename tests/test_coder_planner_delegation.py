@@ -1,7 +1,7 @@
 """Deterministic checks for the Planner -> Coder delegated assignment.
 
 Do not judge model sampling. Verify the exact model-facing task, role authority,
-cache-stable prefix, multimodal fidelity, and current-turn read-only continuity.
+cache-stable prefix, multimodal fidelity, and tool-free delegation.
 """
 import asyncio
 import json
@@ -27,12 +27,12 @@ def test_planner_receives_original_task_with_separate_planning_system_contract(m
     wire = k._coder_isolate_planner_request(history, k.STAGES["coder_planner"], source_history=history)
     assert [m["role"] for m in wire] == ["system", "user"]
     assert wire[0]["content"] == k.STAGES["coder_planner"].prompt
-    assert "detailed message" in wire[0]["content"]
-    assert "plan the user" in wire[0]["content"]
+    assert "architectural specification" in wire[0]["content"]
+    assert "You have no tools and no execution authority" in wire[0]["content"]
     assert wire[1]["content"] == task
     assert wire[1]["content"].endswith(task)
     assert wire[1]["content"].count(task) == 1
-    assert "Prepare Coder to complete the request." in wire[0]["content"]
+    assert "Never provide the final answer" in wire[0]["content"]
     assert k._coder_isolate_planner_request(wire, k.STAGES["coder_planner"]) == wire
     assert json.dumps(history, sort_keys=True) == saved
     assert k.STAGES["coder_planner"].thinking is (planner == "thorough")
@@ -60,20 +60,23 @@ def test_multimodal_original_request_preserves_every_block(monkeypatch, tmp_path
 
 
 @pytest.mark.parametrize("planner", ("flash", "thorough"))
-def test_delegation_preserves_read_only_current_turn_tool_continuation(monkeypatch, tmp_path, planner):
+def test_delegation_excludes_previous_architect_tool_continuation(monkeypatch, tmp_path, planner):
     k = load(monkeypatch, tmp_path, planner=planner)
     history = [
         {"role": "user", "content": "Verify that the testing workspace is empty"},
-        {"role": "assistant", "content": "", "tool_calls": [
+        {"role": "assistant", "content": "",
+             "_jack_internal_tool_exchange": True, "_jack_stage_key": "coder_planner",
+             "tool_calls": [
             {"id": "inspect-1", "type": "function", "function": {
                 "name": "bash", "arguments": '{"command":"ls -la"}'}}]},
-        {"role": "tool", "tool_call_id": "inspect-1", "content": "total 8\ndrwxr-x .\ndrwxr-x .."},
+        {"role": "tool", "tool_call_id": "inspect-1",
+             "_jack_internal_tool_exchange": True, "content": "total 8\ndrwxr-x .\ndrwxr-x .."},
     ]
     wire = k._coder_isolate_planner_request(history, k.STAGES["coder_planner"], source_history=history)
-    assert [m["role"] for m in wire] == ["system", "user", "assistant", "tool"]
+    assert [m["role"] for m in wire] == ["system", "user"]
     assert wire[1]["content"].endswith("Verify that the testing workspace is empty")
-    assert wire[2]["tool_calls"] == history[1]["tool_calls"]
-    assert wire[3]["content"] == history[2]["content"]
+    assert "inspect-1" not in json.dumps(wire)
+    assert "total 8" not in json.dumps(wire)
 
 
 @pytest.mark.parametrize("planner", ("flash", "thorough"))
