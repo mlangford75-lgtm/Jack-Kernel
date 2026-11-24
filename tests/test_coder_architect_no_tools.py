@@ -83,7 +83,8 @@ def test_architect_wire_rejects_external_system_and_mutating_tools(monkeypatch, 
     # test verifies role isolation only.
     assert [m["role"] for m in wire["messages"]] == ["system", "user"]
     assert k.STAGES["coder_planner"].prompt in wire["messages"][0]["content"]
-    assert wire["messages"][1]["content"] == "Inspect existing work and prepare Coder."
+    assert "Inspect existing work and prepare Coder." in wire["messages"][1]["content"]
+    assert wire["messages"][1]["content"].startswith(k._CODER_ARCHITECT_TASK_SOURCE_HEADER)
     assert "EXTERNAL AGENT OVERRIDE" not in json.dumps(wire)
     assert "EXTERNAL DEVELOPER OVERRIDE" not in json.dumps(wire)
     assert "EXTERNAL SECONDARY OVERRIDE" not in json.dumps(wire)
