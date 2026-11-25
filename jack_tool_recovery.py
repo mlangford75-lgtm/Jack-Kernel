@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 SOFT_ATTEMPTS = 5
 STRONG_ATTEMPTS = 15
 HARD_ATTEMPTS = 25
+POLICY_REPEAT_LIMIT = 3
 
 
 def operation_key(call: Any) -> str:
@@ -53,8 +54,12 @@ class ToolRecoveryState:
     events: List[Dict[str, str]] = field(default_factory=list)
     successful_calls: List[Dict[str, str]] = field(default_factory=list)
     seen_tool_ids: set[str] = field(default_factory=set)
+    policy_denial_key: str = ""
+    consecutive_policy_denials: int = 0
+    last_policy_denial: bool = False
 
-    def fail(self, operation: str, error: str, *, call_id: str = "") -> int:
+    def fail(self, operation: str, error: str, *, call_id: str = "",
+             policy_denial: bool = False, policy_key: str = "") -> int:
         """Count an actual unsuccessful attempt, never a generated reasoning thought."""
         if call_id and call_id in self.seen_tool_ids:
             return self.consecutive_failures
@@ -67,6 +72,16 @@ class ToolRecoveryState:
             self.current_operation = operation
             self.same_operation_failures = 1
         self.consecutive_failures += 1
+        self.last_policy_denial = policy_denial
+        if policy_denial and policy_key:
+            self.consecutive_policy_denials = (
+                self.consecutive_policy_denials + 1
+                if self.policy_denial_key == policy_key else 1
+            )
+            self.policy_denial_key = policy_key
+        else:
+            self.consecutive_policy_denials = 0
+            self.policy_denial_key = ""
         self.last_error = str(error or "unspecified failure").strip()[:500]
         self.events.append({
             "attempt": str(self.consecutive_failures),
@@ -75,7 +90,8 @@ class ToolRecoveryState:
             "call_id": call_id[:96],
         })
         self.events = self.events[-HARD_ATTEMPTS:]
-        self.exhausted = self.consecutive_failures >= HARD_ATTEMPTS
+        self.exhausted = (self.consecutive_failures >= HARD_ATTEMPTS
+                          or self.consecutive_policy_denials >= POLICY_REPEAT_LIMIT)
         return self.consecutive_failures
 
     def progress(self, operation: str, *, call_id: str = "") -> None:
@@ -95,9 +111,19 @@ class ToolRecoveryState:
         self.current_operation = ""
         self.last_error = ""
         self.events.clear()
+        self.policy_denial_key = ""
+        self.consecutive_policy_denials = 0
+        self.last_policy_denial = False
         self.exhausted = False
 
     def advice(self) -> str:
+        if self.last_policy_denial:
+            return (
+                "The host security policy denied this operation before execution. "
+                "Do not retry it, change its spelling, switch tools, or seek alternative "
+                "access to the same restricted target. Record the denial. Continue only "
+                "with independent authorized operations or report the outcome."
+            )
         n = self.consecutive_failures
         if n == SOFT_ATTEMPTS:
             return (
@@ -117,8 +143,12 @@ class ToolRecoveryState:
     def host_report(self) -> str:
         lines = [
             "[JACK RECOVERY_EXHAUSTED_WITH_HANDOFF — TASK INCOMPLETE]",
-            "The tool recovery hard ceiling was reached after "
-            f"{self.consecutive_failures} consecutive unsuccessful attempts.",
+            ("Repeated immutable security denial: "
+             f"{self.consecutive_policy_denials} identical rejected proposals. "
+             "The blocked operation was never executed."
+             if self.consecutive_policy_denials >= POLICY_REPEAT_LIMIT else
+             "The tool recovery hard ceiling was reached after "
+             f"{self.consecutive_failures} consecutive unsuccessful attempts."),
             "No more tool execution is authorized for this turn.",
             "Most recent failed operation: " + (self.current_operation or "unknown"),
             "Last error: " + (self.last_error or "unknown"),
@@ -150,7 +180,8 @@ class ToolRecoveryState:
             "recorded failures. Clearly separate completed and verified work, "
             "attempted but unverified work, the exact blocker and failed "
             "approaches, files/artifacts still present, remaining work, and "
-            "a practical next action for the next turn. Never claim success "
+            "a practical next action for the next turn, without suggesting bypass, "
+            "elevation, alternate access or retry of a security-denied target. Never claim success "
             "without tool evidence, and never invent results. Report the task "
             "as INCOMPLETE.\n"
             + self.host_report()

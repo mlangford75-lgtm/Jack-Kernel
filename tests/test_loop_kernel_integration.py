@@ -259,3 +259,34 @@ def test_agentic_stream_loop_returns_exact_frozen_stage1_answer(monkeypatch, tmp
     assert "MEMORY NOT PRODUCED" in wire
     assert "[END AGENTIC STAGE 2 — MEMORY COMPLETE" not in wire
     assert "data: [DONE]" in wire
+
+def test_same_stage_correction_keeps_native_loop_state(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path, mode="agentic", repetitions=4)
+    cycle = " ".join(f"reason_{i:02d}" for i in range(64)) + " "
+
+    class RejectingBackend:
+        calls = 0
+
+        async def chat_stream(self, **kwargs):
+            self.calls += 1
+            if self.calls <= 4:
+                yield {"choices": [{"index": 0, "delta": {"reasoning_content": cycle}}]}
+                yield {"choices": [{"index": 0, "delta": {"tool_calls": [
+                    {"index": 0, "id": "bad-" + str(self.calls), "type": "function",
+                     "function": {"name": "unavailable", "arguments": "{}"}}
+                ]}, "finish_reason": "tool_calls"}]}
+            else:
+                yield {"choices": [{"index": 0, "delta": {"content": "completed"}, "finish_reason": "stop"}]}
+
+    backend = RejectingBackend()
+    kernel = k.JackQwenKernel(backend, k.CFG)
+    async def run():
+        return [packet async for packet in kernel._run_stage_streamed(
+            [{"role": "user", "content": "Do it"}], "", "extended_initial", {},
+            tools=[{"type": "function", "function": {"name": "read", "parameters": {"type": "object"}}}],
+            append=False,
+        )]
+    packets = asyncio.run(run())
+    assert backend.calls == 5
+    assert "Loop Detected" in " ".join(p.get("text", "") for p in packets)
+    assert packets[-1]["kind"] == "result"

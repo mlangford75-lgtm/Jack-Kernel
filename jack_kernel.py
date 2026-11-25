@@ -377,7 +377,7 @@ class KernelConfig:
     log_level: str = os.getenv("JACK_LOG_LEVEL", "INFO").upper()
     log_reasoning: bool = os.getenv("JACK_LOG_REASONING", "0") == "1"
     loop_detector_enabled: bool = os.getenv("JACK_LOOP_DETECTOR", "1").strip().lower() not in {"0", "false", "no", "off"}
-    loop_detector_repetitions: int = int(os.getenv("JACK_LOOP_REPETITIONS", "24"))
+    loop_detector_repetitions: int = int(os.getenv("JACK_LOOP_REPETITIONS", "12"))
     # Deterministic, host-only Agentic tool-cycle gate. Unlike the native
     # reasoning loop detector, this compares consecutive completed tool
     # transactions across backend generations. No model-facing prompt changes.
@@ -5414,6 +5414,14 @@ def _phase4_executor_admission_decision(
     }
 
 
+def _immutable_path_denial(errors: Iterable[str]) -> bool:
+    """Only host-generated represented-target denials, not schema corrections."""
+    items = list(errors)
+    return bool(items) and all(
+        "path policy denied the represented filesystem target" in item for item in items
+    )
+
+
 def _tool_rejection_notice(
     errors: Iterable[str],
     stage_name: str,
@@ -5445,6 +5453,13 @@ def _tool_rejection_notice(
                 "developer specification for Coder. If further inspection is "
                 "needed, use an authorized read-only tool; otherwise finish the spec."
             )
+    elif _immutable_path_denial(items):
+        guidance = (
+            "This is an immutable host security denial, not a correctable tool error. "
+            "Do not retry the denied target or seek alternate access. "
+            "Preserve completed evidence; continue independent authorized work "
+            "or finish with a clear denial report."
+        )
     else:
         guidance = (
             "Preserve the useful analysis that led here. If this stage has tool "
@@ -5481,7 +5496,7 @@ _TOOL_RECOVERY_PENDING: contextvars.ContextVar[Optional["PendingToolResume"]] = 
 def _tool_recovery_check(
     history: List[Dict[str, Any]], message: Dict[str, Any],
     errors: List[str], stage_key: str, secondary_system: str,
-    usage: Dict[str, int],
+    usage: Dict[str, int], *, path_denial: bool = False,
 ) -> List[Dict[str, Any]]:
     """Preserve reasoning and prior tool results, rejecting only invalid actions."""
     repaired = _tool_rejection_history(history, message, errors, STAGES[stage_key].name)
@@ -5492,7 +5507,25 @@ def _tool_recovery_check(
     calls = message.get("tool_calls")
     operations = [operation_key(item) for item in calls if isinstance(item, dict)] if isinstance(calls, list) else []
     operation = operations[0] if operations else "rejected_tool_operation"
-    count = tracker.fail(operation, "; ".join(errors))
+    immutable_denial = path_denial and _immutable_path_denial(errors)
+    policy_key = ""
+    if immutable_denial and isinstance(calls, list):
+        # Exact complete proposal identity, not the truncated diagnostic
+        # operation name; call IDs do not distinguish repeated proposals.
+        signatures = []
+        for call in calls:
+            function = call.get("function") if isinstance(call, dict) else None
+            if not isinstance(function, dict):
+                continue
+            args = function.get("arguments")
+            try:
+                args = json.loads(args) if isinstance(args, str) else args
+            except (TypeError, ValueError):
+                pass
+            signatures.append([function.get("name"), args])
+        policy_key = _sha256_text(json.dumps(signatures, sort_keys=True, ensure_ascii=True))
+    count = tracker.fail(operation, "; ".join(errors),
+                         policy_denial=immutable_denial, policy_key=policy_key)
     advisory = tracker.advice()
     if advisory:
         repaired[-1]["content"] += "\n[JACK TOOL RECOVERY GUIDANCE]\n" + advisory
@@ -10269,7 +10302,7 @@ class JackQwenKernel:
                     )
                     repair_history = _tool_recovery_check(
                         history, msg, path_authorization_errors,
-                        stage_key, secondary_system, usage,
+                        stage_key, secondary_system, usage, path_denial=True,
                     )
                     return await self._run_stage(
                         repair_history,
@@ -10401,6 +10434,7 @@ class JackQwenKernel:
         loop_retry_depth: int = 0,
         empty_stream_retry_depth: int = 0,
         tool_cycle_recovery_depth: int = 0,
+        correction_loop_detector: Optional[ReasoningLoopDetector] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """Run one Jack stage with backend streaming and reconstruct its message.
 
@@ -10462,7 +10496,12 @@ class JackQwenKernel:
             if AGENTIC_MODE and stage_key == "extended_reflection"
             else self.cfg.loop_detector_repetitions
         )
-        detector = ReasoningLoopDetector(loop_repetitions) if self.cfg.loop_detector_enabled else None
+        detector = (
+            correction_loop_detector or ReasoningLoopDetector(loop_repetitions)
+            if self.cfg.loop_detector_enabled else None
+        )
+        if correction_loop_detector is not None and detector is not None:
+            detector.generation_boundary()
         # Diagnostic only. The long-cycle observer never interrupts, retries,
         # alters model requests, or changes any existing budget/loop decisions.
         # Enabled only when the user has enabled the Loop Detector.
@@ -10799,6 +10838,7 @@ class JackQwenKernel:
                 tools=tools, tool_choice=tool_choice,
                 append=append, same_stage_resume=True,
                 tool_validation_repair_depth=tool_validation_repair_depth + 1,
+            correction_loop_detector=detector,
             )) as retry_packets:
                 async for packet in retry_packets:
                     yield packet
@@ -10845,6 +10885,7 @@ class JackQwenKernel:
                         tools=tools, tool_choice=tool_choice,
                         append=append, same_stage_resume=True,
                         tool_validation_repair_depth=tool_validation_repair_depth,
+                        correction_loop_detector=detector,
                         loop_retry_depth=loop_retry_depth,
                         empty_stream_retry_depth=1,
                     )) as retry_packets:
@@ -10895,6 +10936,7 @@ class JackQwenKernel:
                     tools=tools, tool_choice=tool_choice,
                     append=append, same_stage_resume=True,
                     tool_validation_repair_depth=tool_validation_repair_depth,
+                    correction_loop_detector=detector,
                     loop_retry_depth=loop_retry_depth,
                     empty_stream_retry_depth=1,
                 )) as retry_packets:
@@ -10974,6 +11016,8 @@ class JackQwenKernel:
                 async for packet in self._run_stage_streamed(
                     repair_history, secondary_system, stage_key, usage, tools=tools, tool_choice=tool_choice,
                     append=append, same_stage_resume=True, tool_validation_repair_depth=tool_validation_repair_depth + 1,
+                correction_loop_detector=detector,
+                    loop_retry_depth=loop_retry_depth,
                 ):
                     yield packet
                 return
@@ -11000,6 +11044,7 @@ class JackQwenKernel:
                     tools=tools, tool_choice=tool_choice,
                     append=append, same_stage_resume=True,
                     tool_validation_repair_depth=tool_validation_repair_depth,
+                    correction_loop_detector=detector,
                     loop_retry_depth=loop_retry_depth,
                 )) as retry_packets:
                     async for packet in retry_packets:
@@ -11022,6 +11067,7 @@ class JackQwenKernel:
                 tools=tools, tool_choice=tool_choice,
                 append=append, same_stage_resume=True,
                 tool_validation_repair_depth=tool_validation_repair_depth + 1,
+                correction_loop_detector=detector,
                 loop_retry_depth=loop_retry_depth,
                 empty_stream_retry_depth=empty_stream_retry_depth,
                 tool_cycle_recovery_depth=tool_cycle_recovery_depth,
@@ -11053,6 +11099,7 @@ class JackQwenKernel:
                     tools=tools, tool_choice=tool_choice,
                     append=append, same_stage_resume=True,
                     tool_validation_repair_depth=tool_validation_repair_depth,
+                    correction_loop_detector=detector,
                     loop_retry_depth=loop_retry_depth,
                     empty_stream_retry_depth=empty_stream_retry_depth,
                     tool_cycle_recovery_depth=1,
@@ -11079,13 +11126,13 @@ class JackQwenKernel:
                     )
                     repair_history = _tool_recovery_check(
                         history, message, path_authorization_errors,
-                        stage_key, secondary_system, usage,
+                        stage_key, secondary_system, usage, path_denial=True,
                     )
                     yield {
                         "kind": "reasoning",
                         "text": (
-                            "\n[JACK PHASE-4 FILESYSTEM ACTION REJECTED BEFORE "
-                            "EXECUTION — CORRECTING IN SAME STAGE]\n"
+                            "\n[JACK SECURITY — RESTRICTED PATHS: ACTION DENIED BEFORE "
+                            "EXECUTION; CONTINUING AUTHORIZED WORK]\n"
                         ),
                     }
                     async for packet in self._run_stage_streamed(
@@ -11098,6 +11145,8 @@ class JackQwenKernel:
                         append=append,
                         same_stage_resume=True,
                         tool_validation_repair_depth=tool_validation_repair_depth + 1,
+                    correction_loop_detector=detector,
+                        loop_retry_depth=loop_retry_depth,
                     ):
                         yield packet
                     return
@@ -12234,6 +12283,7 @@ class JackQwenKernel:
                     tracker.fail(
                         "phase4_withheld_action", error,
                         call_id=f"{state.resume_id}:withheld:{index}",
+                        policy_denial=_immutable_path_denial([error]),
                     )
                 if tracker.exhausted:
                     raise ToolRecoveryExhausted(
@@ -12248,7 +12298,7 @@ class JackQwenKernel:
                 )
             )
         tracker = state.tool_recovery
-        if tracker is not None and tracker.consecutive_failures:
+        if tracker is not None and tracker.consecutive_failures and not state.deferred_tool_rejection_errors:
             advisory = tracker.advice()
             if advisory:
                 history.append({
@@ -16353,7 +16403,12 @@ async def _safe_public_stream(
             }
             return ("data: " + json.dumps(obj, ensure_ascii=False) + "\n\n").encode("utf-8")
 
-        if isinstance(exc, RepeatedLoopInterrupt):
+        import jack_evidence_guard
+        if isinstance(exc, Phase4RestrictedPathInterrupt):
+            failure_text = "\n\n[JACK SECURITY — RESTRICTED PATHS: HARD INTERRUPT]"
+        elif isinstance(exc, jack_evidence_guard.StreamingIRQCanaryInterrupt):
+            failure_text = "\n\n[JACK SECURITY — STREAMINGIRQ: CANARY HARD INTERRUPT]"
+        elif isinstance(exc, RepeatedLoopInterrupt):
             failure_text = "Jack Kernel interrupt - Repeated Loop Failure"
         elif isinstance(exc, RepeatedToolCycleInterrupt):
             failure_text = str(exc.detail)
@@ -16679,7 +16734,7 @@ CLI_DEFAULTS: Dict[str, Any] = {
     "log_level": "INFO",
     "log_reasoning": False,
     "loop_detector_enabled": True,
-    "loop_detector_repetitions": 24,
+    "loop_detector_repetitions": 12,
     "forensic_archive_mode": "stage",
     "forensic_archive_dir": "",
     "security_path_policy": None,
@@ -17327,7 +17382,7 @@ def _print_header(
     print(_status_value("Preserve thinking", "ON" if cfg.get("preserve_thinking", True) else "OFF"))
     print(_status_value("Forensic archive", str(cfg.get("forensic_archive_mode", "stage")).upper()))
     _security_center_summary(cfg)
-    loop_n = cfg.get("loop_detector_repetitions", 24)
+    loop_n = cfg.get("loop_detector_repetitions", 12)
     print(_status_value("Loop Detector", f"ON / {loop_n} repetitions" if cfg.get("loop_detector_enabled", True) else "OFF"))
     active_mode = _REASONING_LEVEL_ALIASES.get(str(cfg.get("reasoning_level", "x-high")).lower(), str(cfg.get("reasoning_level", "x-high")).lower())
     print(_status_value("Live stage streaming", "BUFFERED  [stream=true; Pi-compatible]" if active_mode == "deep-reasoning" else "ON  [stream=true]"))
@@ -17510,8 +17565,8 @@ def _edit_loop_detector(cfg: Dict[str, Any]) -> None:
     if not cfg.get("loop_detector_enabled", True):
         print("Loop Detector disabled; backend limits and agent cancellation unchanged.")
         return
-    print("Native reasoning repetitions: 12, 16, 24 (Default), 32, 48, 64, 128")
-    current = int(cfg.get("loop_detector_repetitions", 24))
+    print("Native reasoning repetitions: 4, 6, 8, 12 (Default), 16, 24, 32, 48, 64, 128")
+    current = int(cfg.get("loop_detector_repetitions", 12))
     selected = _cli_input(f"Select repetition threshold [{current}]: ").strip()
     if selected:
         try:
@@ -17880,7 +17935,7 @@ def _config_to_env(cfg: Dict[str, Any]) -> Dict[str, str]:
         "JACK_LOG_LEVEL": cfg["log_level"],
         "JACK_LOG_REASONING": "1" if cfg["log_reasoning"] else "0",
         "JACK_LOOP_DETECTOR": "1" if cfg.get("loop_detector_enabled", True) else "0",
-        "JACK_LOOP_REPETITIONS": cfg.get("loop_detector_repetitions", 24),
+        "JACK_LOOP_REPETITIONS": cfg.get("loop_detector_repetitions", 12),
         "JACK_FORENSIC_ARCHIVE_MODE": cfg.get("forensic_archive_mode", "stage"),
         "JACK_FORENSIC_ARCHIVE_DIR": cfg.get("forensic_archive_dir", ""),
         "JACK_THINKING_TEMPERATURE": cfg["thinking_temperature"],
@@ -17950,7 +18005,7 @@ def _start_server_from_cli(cfg: Dict[str, Any]) -> None:
         print(f"Target language  : {TRANSLATOR_LANGUAGES[lang]}")
     print(f"Preserve thinking: {'ON' if cfg.get('preserve_thinking', True) else 'OFF'}")
     print(f"Forensic archive : {str(cfg.get('forensic_archive_mode', 'stage')).upper()}")
-    print(f"Loop Detector    : {'ON' if cfg.get('loop_detector_enabled', True) else 'OFF'} / {cfg.get('loop_detector_repetitions', 32)} repetitions")
+    print(f"Loop Detector    : {'ON' if cfg.get('loop_detector_enabled', True) else 'OFF'} / {cfg.get('loop_detector_repetitions', 12)} repetitions")
     print(f"Reasoning budget : {cfg.get('reasoning_budget_tokens', 100000):,} estimated tokens" if cfg.get("reasoning_budget_tokens", 100000) else "Reasoning budget : OFF")
     print(f"Output budget    : {cfg.get('output_budget_tokens', 100000):,} estimated tokens" if cfg.get("output_budget_tokens", 100000) else "Output budget    : OFF")
     print("Press Ctrl+C to stop the server and return to the launcher.")

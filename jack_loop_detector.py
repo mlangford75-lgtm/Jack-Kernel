@@ -9,9 +9,9 @@ from __future__ import annotations
 import hashlib
 import re
 
-LOOP_THRESHOLDS = (12, 16, 24, 32, 48, 64, 128)
-DEFAULT_LOOP_THRESHOLD = 24
-MIN_CYCLE_WORDS = 128
+LOOP_THRESHOLDS = (4, 6, 8, 12, 16, 24, 32, 48, 64, 128)
+DEFAULT_LOOP_THRESHOLD = 12
+MIN_CYCLE_WORDS = 64
 MAX_CYCLE_WORDS = 2048
 _MASK = (1 << 64) - 1
 _BASE = 0x100000001B3
@@ -48,13 +48,13 @@ class ReasoningLoopDetector:
     """Incremental exact-suffix detector, independent of transport chunk sizes.
 
     Only completed whitespace-delimited words count. A single contiguous
-    repeating cycle must be >= 128 words and recur the selected number of
+    repeating cycle must be >= 64 words and recur the selected number of
     times. Rolling fingerprints cheaply identify candidate periods; *every*
     candidate is independently checked by exact word comparison before an
     interrupt is authorized. No semantic similarity or hash-only decisions.
 
     Retains only enough recent words for 128 copies of the largest supported
-    cycle. Detector state is scoped to a single backend generation attempt.
+    cycle. The owner may retain state through no-progress same-stage corrections.
     """
 
     def __init__(
@@ -65,9 +65,9 @@ class ReasoningLoopDetector:
         max_cycle_words: int = MAX_CYCLE_WORDS,
     ) -> None:
         if repetitions not in LOOP_THRESHOLDS:
-            raise ValueError("loop repetitions must be one of 12, 16, 24, 32, 48, 64, 128")
+            raise ValueError("unsupported loop repetition threshold")
         if min_cycle_words < MIN_CYCLE_WORDS:
-            raise ValueError("minimum cycle must be at least 128 words")
+            raise ValueError("minimum cycle must be at least 64 words")
         if max_cycle_words < min_cycle_words:
             raise ValueError("maximum cycle shorter than minimum")
         self.repetitions = repetitions
@@ -129,6 +129,17 @@ class ReasoningLoopDetector:
                 self.detected_cycle_words = width
                 return True
         return False
+
+    def generation_boundary(self) -> None:
+        """Separate attempts without adding synthetic reasoning or losing history.
+
+        The final incomplete word cannot safely establish a loop outside the
+        runner's guarded detection scope. Retain it as a completed word so the
+        next inference never concatenates unrelated lexical fragments.
+        """
+        if self._tail.strip():
+            self._record(self._tail.strip())
+        self._tail = ""
 
     def feed(self, text: str) -> bool:
         """Return true exactly once a qualifying repeated suffix is observed."""

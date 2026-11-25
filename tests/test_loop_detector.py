@@ -6,13 +6,13 @@ from jack_loop_detector import (
 
 
 def test_public_defaults():
-    assert LOOP_THRESHOLDS == (12, 16, 24, 32, 48, 64, 128)
-    assert DEFAULT_LOOP_THRESHOLD == 24
-    assert MIN_CYCLE_WORDS == 128
+    assert LOOP_THRESHOLDS == (4, 6, 8, 12, 16, 24, 32, 48, 64, 128)
+    assert DEFAULT_LOOP_THRESHOLD == 12
+    assert MIN_CYCLE_WORDS == 64
 
 
 def test_no_early_detection_for_23_copies():
-    detector = ReasoningLoopDetector()
+    detector = ReasoningLoopDetector(24)
     cycle = [f"step_{i:03d}" for i in range(128)]
     assert detector.feed(" ".join(cycle * 23) + " ") is False
     assert detector.detected_cycle_words is None
@@ -20,14 +20,14 @@ def test_no_early_detection_for_23_copies():
     assert detector.detected_cycle_words == 128
 
 
-def test_detects_shorter_base_cycle_via_128_word_supercycle():
-    # Gemma-style 66-word base cycles can be detected as a 132-word
-    # exact repeated cycle without relaxing the 128-word minimum.
-    cycle = [f"reason_{i:02d}" for i in range(66)]
-    detector = ReasoningLoopDetector()
-    assert detector.feed(" ".join(cycle * 47) + " ") is False
+def test_detects_shorter_base_cycle_across_generations():
+    cycle = [f"reason_{i:02d}" for i in range(64)]
+    detector = ReasoningLoopDetector(4)
+    for _ in range(3):
+        assert detector.feed(" ".join(cycle)) is False
+        detector.generation_boundary()
     assert detector.feed(" ".join(cycle) + " ") is True
-    assert detector.detected_cycle_words == 132
+    assert detector.detected_cycle_words == 64
 
 
 def test_chunk_invariance_and_whitespace_normalization():
