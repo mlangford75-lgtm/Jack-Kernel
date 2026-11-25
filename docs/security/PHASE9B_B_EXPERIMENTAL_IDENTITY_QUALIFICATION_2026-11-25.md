@@ -1,9 +1,9 @@
 # Phase 9B-B — Experimental Identity Primitive Windows Qualification (2026-11-25)
 
-**Candidate commit:** `40b7a5a3e796490f77c6bfcf3390f667d4e30590`  
-**Branch:** `security/phase9b-runtime-code-integrity-20261125`  
-**PR:** [#173, DRAFT — NOT FOR MERGE](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/173)  
-**Runner:** Windows, pinned Python **3.14.6**, same pinned test requirements as current repository.  
+**Candidate commit:** `40b7a5a3e796490f77c6bfcf3390f667d4e30590`
+**Branch:** `security/phase9b-runtime-code-integrity-20261125`
+**PR:** [#173, DRAFT — NOT FOR MERGE](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/173)
+**Runner:** Windows, pinned Python **3.14.6**, same pinned test requirements as current repository.
 **Evidence:** [GitHub Actions run 45591652795](https://github.com/mlangford75-lgtm/Jack-Kernel/actions/runs/45591652795), job `phase9b-windows-qualification`, **SUCCESS**.
 
 ## Executed and passed
