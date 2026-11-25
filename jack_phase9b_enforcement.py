@@ -18,6 +18,32 @@ from jack_runtime_code_guard import (
 )
 
 DENIAL_BODY = b'{"error":"jack_runtime_code_integrity_unavailable"}'
+# Read-only, host-owned observation remains available when an unrelated model
+# or executor authority has been invalidated. This is NOT a security-disable
+# toggle: the common verifier and real route dispatch remain protected.
+OBSERVATION_PATHS = frozenset({
+    "/", "/health", "/jack/runtime/status", "/jack/source-authority",
+    "/jack/runtimes", "/v1/models", "/api/v1/models",
+    "/jack/orchestration/status", "/jack/orchestration/events",
+})
+
+
+def _http_authority_scopes(scope: Any) -> tuple[str, ...]:
+    path = str(scope.get("path", ""))
+    method = str(scope.get("method", "GET")).upper()
+    if method == "GET" and path in OBSERVATION_PATHS:
+        return ("observation",)
+    if path == "/jack/security/path-admission":
+        return ("executor", "authority")
+    if path in (
+        "/jack/orchestration/tasks",
+        "/jack/orchestration/tasks/cancel",
+        "/jack/orchestration/session/new",
+    ):
+        return ("orchestration", "authority")
+    # The default is consequential; a new/differently routed endpoint cannot
+    # acquire observational privileges by changing route or request metadata.
+    return ("model", "authority")
 _PHASE9B_MARKER = "_JACK_RUNTIME_CODE_ENFORCEMENT_INSTALLED"
 
 
@@ -52,10 +78,12 @@ class Phase9BASGIGuard:
             await self.app(scope, receive, send)
             return
 
-        # Check every HTTP route, including unknown/added paths: limiting this
-        # to previously known URLs would allow bypass via a newly added route.
+        # Shared checker and route-table identity are checked for EVERY HTTP
+        # path. Only consequence-specific slots are scoped, so an unrelated
+        # model failure cannot discard safe status/diagnostic work.
+        scopes = _http_authority_scopes(scope)
         try:
-            self.authority.verify()
+            self.authority.verify_for(*scopes)
         except RuntimeCodeIntegrityUnavailable:
             await self._denied(send)
             return
@@ -70,7 +98,7 @@ class Phase9BASGIGuard:
             if kind == "http.response.start":
                 # Verify before irreversible headers. For a violation here,
                 # raise and return a canonical 503 from the outer middleware.
-                self.authority.verify()
+                self.authority.verify_for(*scopes)
                 headers = event.get("headers") or ()
                 is_sse = any(
                     bytes(k).lower() == b"content-type"
@@ -92,7 +120,7 @@ class Phase9BASGIGuard:
                     return
 
                 try:
-                    self.authority.verify()
+                    self.authority.verify_for(*scopes)
                 except RuntimeCodeIntegrityUnavailable:
                     if is_sse:
                         blocked_stream = True
@@ -188,14 +216,14 @@ def install(jk: Any) -> RuntimeCodeAuthority:
 
     @wraps(original_run)
     async def guarded_run(*args: Any, **kwargs: Any) -> Any:
-        guard.verify()
+        guard.verify_for("model", "authority")
         result = await original_run(*args, **kwargs)
-        guard.verify()
+        guard.verify_for("model", "authority")
         return result
 
     @wraps(original_stream)
     async def guarded_stream(*args: Any, **kwargs: Any):
-        guard.verify()
+        guard.verify_for("model", "authority")
         interrupted: RuntimeCodeIntegrityUnavailable | None = None
         try:
             async for chunk in original_stream(*args, **kwargs):
@@ -204,7 +232,7 @@ def install(jk: Any) -> RuntimeCodeAuthority:
                     # cognition without releasing any subsequent bytes.
                     continue
                 try:
-                    guard.verify()
+                    guard.verify_for("model", "authority")
                 except RuntimeCodeIntegrityUnavailable as exc:
                     interrupted = exc
                     continue
@@ -220,16 +248,16 @@ def install(jk: Any) -> RuntimeCodeAuthority:
 
     @wraps(original_tools)
     def guarded_tool_release(*args: Any, **kwargs: Any) -> Any:
-        guard.verify()
+        guard.verify_for("model", "authority")
         result = original_tools(*args, **kwargs)
-        guard.verify()
+        guard.verify_for("model", "authority")
         return result
 
     @wraps(original_executor)
     def guarded_executor(*args: Any, **kwargs: Any) -> Any:
-        guard.verify()
+        guard.verify_for("executor", "authority")
         result = original_executor(*args, **kwargs)
-        guard.verify()
+        guard.verify_for("executor", "authority")
         return result
 
     @wraps(original_proxy)
@@ -237,7 +265,7 @@ def install(jk: Any) -> RuntimeCodeAuthority:
         if str(method).upper() == "POST" and str(path) in (
             "/v1/tasks", "/v1/tasks/cancel", "/v1/session/new",
         ):
-            guard.verify()
+            guard.verify_for("orchestration", "authority")
         # Do not retract an external action already admitted by the host.
         return await original_proxy(request, method, path, *args, **kwargs)
 
@@ -247,46 +275,72 @@ def install(jk: Any) -> RuntimeCodeAuthority:
     jk._phase4_executor_admission_decision = guarded_executor
     jk._proxy_pi_control_request = guarded_proxy
 
-    for label, owner, attr in (
-        ("kernel-run", jk.KERNEL, "run"),
-        ("kernel-stream", jk.KERNEL, "stream"),
-        ("tool-release", jk, "_phase4_partition_structured_tool_calls"),
-        ("executor-admission", jk, "_phase4_executor_admission_decision"),
-        ("pi-control", jk, "_proxy_pi_control_request"),
-        ("source-measure", source, "_measure_regular_file"),
-        ("source-verify", jk._JACK_SOURCE_AUTHORITY, "verify_for_authority_boundary"),
-        ("source-observe", jk._JACK_SOURCE_AUTHORITY, "verify_now"),
-        ("path-represented", path_policy, "authorize_represented_path"),
-        ("path-structured", path_policy, "authorize_structured_tool_call"),
-        ("path-executor", path_policy, "authorize_executor_tool_call"),
-        ("consequence", consequence, "evaluate_consequence"),
-        ("responses-stream", responses, "_stream"),
-        ("responses-nonstream", responses, "_nonstream"),
-        ("p9-verify", code_guard.RuntimeCodeAuthority, "verify"),
-        ("p9-resolve", code_guard, "_resolve"),
-        ("p9-measure", code_guard, "_function_shape"),
-        ("p9-asgi", Phase9BASGIGuard, "__call__"),
+    # Declare the consequence owned by each executable slot. Shared checker
+    # and ASGI identities protect every request; ordinary read-only status
+    # paths do not depend on model execution or mutating Pi orchestration.
+    for label, owner, attr, scope in (
+        ("kernel-run", jk.KERNEL, "run", "model"),
+        ("kernel-stream", jk.KERNEL, "stream", "model"),
+        ("tool-release", jk, "_phase4_partition_structured_tool_calls", "model"),
+        ("executor-admission", jk, "_phase4_executor_admission_decision", "executor"),
+        ("pi-control", jk, "_proxy_pi_control_request", "orchestration"),
+        ("source-measure", source, "_measure_regular_file", "authority"),
+        ("source-verify", jk._JACK_SOURCE_AUTHORITY, "verify_for_authority_boundary", "authority"),
+        ("source-observe", jk._JACK_SOURCE_AUTHORITY, "verify_now", "authority"),
+        ("path-represented", path_policy, "authorize_represented_path", "authority"),
+        ("path-structured", path_policy, "authorize_structured_tool_call", "authority"),
+        ("path-executor", path_policy, "authorize_executor_tool_call", "authority"),
+        ("consequence", consequence, "evaluate_consequence", "authority"),
+        ("responses-stream", responses, "_stream", "model"),
+        ("responses-nonstream", responses, "_nonstream", "model"),
+        ("p9-verify", code_guard.RuntimeCodeAuthority, "verify_for", "shared"),
+        ("p9-resolve", code_guard, "_resolve", "shared"),
+        ("p9-measure", code_guard, "_function_shape", "shared"),
+        ("p9-asgi", Phase9BASGIGuard, "__call__", "shared"),
     ):
-        guard.register(name=label, owner=owner, attribute=attr)
+        guard.register(name=label, owner=owner, attribute=attr, scope=scope)
 
-    for label, module in (
-        ("module-source", source),
-        ("module-code-guard", code_guard),
-        ("module-phase9b-enforcement", sys.modules[__name__]),
-        ("module-path-policy", path_policy),
-        ("module-consequence", consequence),
-        ("module-evidence", evidence),
-        ("module-responses", responses),
+    for label, module, scope in (
+        ("module-source", source, "authority"),
+        ("module-code-guard", code_guard, "shared"),
+        ("module-phase9b-enforcement", sys.modules[__name__], "shared"),
+        ("module-path-policy", path_policy, "authority"),
+        ("module-consequence", consequence, "authority"),
+        ("module-evidence", evidence, "authority"),
+        ("module-responses", responses, "model"),
     ):
-        guard.register_module(name=label, module_name=module.__name__)
+        guard.register_module(name=label, module_name=module.__name__, scope=scope)
 
     for label, route in _selected_required_routes(jk):
+        scope = ("model" if label in ("chat", "responses") else
+                 "executor" if label == "executor" else "orchestration")
         for attribute in ("endpoint", "app"):
-            guard.register(name=f"route-{label}-{attribute}", owner=route, attribute=attribute)
+            guard.register(name=f"route-{label}-{attribute}",
+                           owner=route, attribute=attribute, scope=scope)
         dependency = getattr(route, "dependant", None)
         if dependency is None:
             raise RuntimeCodeIntegrityUnavailable("required FastAPI route dependency absent")
-        guard.register(name=f"route-{label}-dependent", owner=dependency, attribute="call")
+        guard.register(name=f"route-{label}-dependent", owner=dependency,
+                       attribute="call", scope=scope)
+
+    # Protect the observational routes themselves. They may continue serving
+    # verified read-only state when a separate consequence path is compromised.
+    # Optional observational routes are absent in isolated minimal ASGI tests.
+    for route in tuple(jk.APP.routes):
+        path = getattr(route, "path", None)
+        methods = getattr(route, "methods", ()) or ()
+        if path not in OBSERVATION_PATHS or "GET" not in methods:
+            continue
+        if not all(callable(getattr(route, attr, None)) for attr in ("endpoint", "app")):
+            raise RuntimeCodeIntegrityUnavailable("required observational route not measurable")
+        safe_name = path.replace("/", "_") or "_root"
+        for attribute in ("endpoint", "app"):
+            guard.register(name=f"route-observation-{safe_name}-{attribute}",
+                           owner=route, attribute=attribute, scope="observation")
+        dependency = getattr(route, "dependant", None)
+        if dependency is not None and callable(getattr(dependency, "call", None)):
+            guard.register(name=f"route-observation-{safe_name}-dependent",
+                           owner=dependency, attribute="call", scope="observation")
 
     guard.register_route_table(name="all-http-routes", app=jk.APP)
     guard.seal()
