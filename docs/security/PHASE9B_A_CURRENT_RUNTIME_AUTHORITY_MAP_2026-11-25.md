@@ -1,12 +1,12 @@
 # Jack Kernel — Phase 9B-A Current Runtime Authority Map and G0 Regression Gate
 
-**Prepared:** 2026-11-25  
-**Status:** Read-only engineering assessment / **not** a Phase 9B enforcement implementation or approval to activate it.  
-**Repository:** [mlangford75-lgtm/Jack-Kernel](https://github.com/mlangford75-lgtm/Jack-Kernel)  
-**Inspected main HEAD:** `7ba82072647941f779f5c5fa955274112ca04844` (2026-11-24T18:21:12Z)  
-**Isolated planning branch:** `security/phase9b-runtime-code-integrity-20261125`, created from that exact HEAD.  
-**Last validated security release:** Phase 8, `security-layer-phase8-validated-2026-10-06`.  
-**Governing scope:** September 26 corrected architecture, October 14 Phase 9A research checkpoint, November 25 remaining-work specification.  
+**Prepared:** 2026-11-25
+**Status:** Read-only engineering assessment / **not** a Phase 9B enforcement implementation or approval to activate it.
+**Repository:** [mlangford75-lgtm/Jack-Kernel](https://github.com/mlangford75-lgtm/Jack-Kernel)
+**Inspected main HEAD:** `7ba82072647941f779f5c5fa955274112ca04844` (2026-11-24T18:21:12Z)
+**Isolated planning branch:** `security/phase9b-runtime-code-integrity-20261125`, created from that exact HEAD.
+**Last validated security release:** Phase 8, `security-layer-phase8-validated-2026-10-06`.
+**Governing scope:** September 26 corrected architecture, October 14 Phase 9A research checkpoint, November 25 remaining-work specification.
 **Read-only milestone:** No runtime or test sources are modified in this assessment.
 
 ## 1. Executive disposition
