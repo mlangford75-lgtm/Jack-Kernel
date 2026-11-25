@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import hashlib
 import sys
-import marshal
 import threading
 import types
 from dataclasses import dataclass
@@ -54,12 +53,27 @@ def _function_shape(fn: types.FunctionType) -> bytes:
         nodes += 1
         if nodes > 4096 or depth > 20:
             raise RuntimeCodeIntegrityUnavailable("executable shape exceeds measurement limits")
-        if isinstance(obj, types.MethodType):
+        if isinstance(obj, types.CodeType):
+            update_atom(b"code-bytecode", obj.co_code)
+            update_atom(b"code-exceptions", obj.co_exceptiontable)
+            for attribute in (
+                "co_argcount", "co_posonlyargcount", "co_kwonlyargcount",
+                "co_nlocals", "co_stacksize", "co_flags",
+                "co_names", "co_varnames", "co_cellvars", "co_freevars",
+                "co_consts",
+            ):
+                update_atom(b"code-attribute", attribute.encode("ascii"))
+                walk(getattr(obj, attribute), depth + 1)
+        elif isinstance(obj, types.MethodType):
             update_atom(b"method-owner", str(id(obj.__self__)).encode("ascii"))
             walk(obj.__func__, depth + 1)
         elif isinstance(obj, types.FunctionType):
             update_atom(b"function-id", str(id(obj)).encode("ascii"))
-            update_atom(b"code", marshal.dumps(obj.__code__))
+            # CPython 3.14 can produce different marshal code-object bytes
+            # while the *same* function is executing / specializing. Fingerprint
+            # explicit behavior-bearing attributes instead, recursively.
+            # co_code is the stable, non-adaptive bytecode representation.
+            walk(obj.__code__, depth + 1)
             if id(obj) in visited_functions:
                 update_atom(b"function-cycle")
                 return
@@ -88,6 +102,10 @@ def _function_shape(fn: types.FunctionType) -> bytes:
             update_atom(b"bytes", obj)
         elif type(obj) is float:
             update_atom(b"float", repr(obj).encode("ascii"))
+        elif obj is Ellipsis:
+            update_atom(b"ellipsis")
+        elif type(obj) is complex:
+            update_atom(b"complex", repr(obj).encode("ascii"))
         elif type(obj) is tuple:
             update_atom(b"tuple-size", str(len(obj)).encode("ascii"))
             for item in obj:
