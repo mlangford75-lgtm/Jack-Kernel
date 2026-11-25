@@ -65,3 +65,21 @@ GitHub Actions [Phase 10 qualification run 45619481626](https://github.com/mlang
 The real-Kernel test proves that `jk._RUNTIME_PATH_POLICY` is the same object consumed by `jk._runtime_path_policy()`; the output-protection wrapper's captured `RuntimeCanaryPolicy` is also present in the stream-protection delegate graph; and the credential policy bound at `jk._JACK_RUNTIME_CREDENTIAL_POLICY` is retained by the actual guarded backend `_client.post` closure. Replacing the credential policy holder with an otherwise equivalent new frozen object triggers the prototype's terminal identity alarm while the independent original transport closure remains accurately measured.
 
 **The code is still measurement-only.** This is evidence for *where to install* security gating, not evidence that current production automatically blocks policy changes. Any future Phase 10-C integration must verify the exact binding used by the consequence path before release, including the direct `_RUNTIME_PATH_POLICY is None` branch in structured tool partition. An authorization decision that bypasses a getter cannot be secured merely by wrapping that getter. Installation order with Phase 9B sealing must be proven so that one new guard does not accidentally invalidate the other guard's legitimate wrapper composition. Do not add a runtime security toggle.
+
+
+## Phase 10C experimental qualification record
+
+Operator supplied four Pi/Coder live transcripts on the path-only experimental
+build: workspace listing allowed; System32 directory existence query allowed;
+BCD read stopped by Phase4RestrictedPathInterrupt before visible tool execution;
+workspace listing subsequently succeeded in the same session without restart.
+These are behavioral preservation controls, not independent filesystem
+attestation or evidence of active policy mutation resistance. Receipt paths
+and execution CWD remain unverified as explicitly indicated by the host.
+
+Static Canary and credential candidates are integrated before Phase 9B sealing.
+Startup ordering fixtures and real consumer consequence tests are added.
+Automated qualification, mid-stream mutation/release tests, credential
+orchestration publication timing, selected executable/source coverage,
+and combined performance measurements remain open. Do not merge or deploy
+the candidate as qualified on the basis of these transcripts alone.
