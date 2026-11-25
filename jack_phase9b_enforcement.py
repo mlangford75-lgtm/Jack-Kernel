@@ -28,7 +28,11 @@ OBSERVATION_PATHS = frozenset({"/", "/jack/runtime/status", "/jack/runtimes"})
 def _http_authority_scopes(scope: Any) -> tuple[str, ...]:
     path = str(scope.get("path", ""))
     method = str(scope.get("method", "GET")).upper()
-    if method == "GET" and path in OBSERVATION_PATHS:
+    # Keep this classification in the executable's own literal bytecode.
+    # Do not consult a rebindable global exception set on the request path.
+    if method == "GET" and path in (
+        "/", "/jack/runtime/status", "/jack/runtimes",
+    ):
         return ("observation",)
     if method == "POST" and path == "/jack/security/path-admission":
         return ("executor", "authority")
