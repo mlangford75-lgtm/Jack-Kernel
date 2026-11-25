@@ -1,10 +1,10 @@
 # Phase 9B-C — Experimental Runtime Enforcement Windows Qualification
 
-**Recorded:** 2026-11-25  
-**Repo:** [mlangford75-lgtm/Jack-Kernel](https://github.com/mlangford75-lgtm/Jack-Kernel)  
-**Candidate SHA:** `65c1312e76cec498a292daa6afee61ac7d6cf110`  
-**Draft PR:** [#173](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/173) — NOT FOR MERGE  
-**Windows evidence:** [GitHub Actions run 45596092663](https://github.com/mlangford75-lgtm/Jack-Kernel/actions/runs/45596092663) — **SUCCESS**, Python 3.14.6  
+**Recorded:** 2026-11-25
+**Repo:** [mlangford75-lgtm/Jack-Kernel](https://github.com/mlangford75-lgtm/Jack-Kernel)
+**Candidate SHA:** `65c1312e76cec498a292daa6afee61ac7d6cf110`
+**Draft PR:** [#173](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/173) — NOT FOR MERGE
+**Windows evidence:** [GitHub Actions run 45596092663](https://github.com/mlangford75-lgtm/Jack-Kernel/actions/runs/45596092663) — **SUCCESS**, Python 3.14.6
 **Test environment:** pinned `requirements-test.txt` and hosted Windows runner.
 
 ## 1. Experimental implementation
