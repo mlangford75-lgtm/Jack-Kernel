@@ -18,14 +18,10 @@ from jack_runtime_code_guard import (
 )
 
 DENIAL_BODY = b'{"error":"jack_runtime_code_integrity_unavailable"}'
-# Read-only, host-owned observation remains available when an unrelated model
-# or executor authority has been invalidated. This is NOT a security-disable
-# toggle: the common verifier and real route dispatch remain protected.
-OBSERVATION_PATHS = frozenset({
-    "/", "/health", "/jack/runtime/status", "/jack/source-authority",
-    "/jack/runtimes", "/v1/models", "/api/v1/models",
-    "/jack/orchestration/status", "/jack/orchestration/events",
-})
+# Read-only exception paths are deliberately small and proven not to run
+# model inference, Pi transport, or executor-side effects. Never infer read-only
+# authority from GET alone: /health, /v1/models and Pi events have dependencies.
+OBSERVATION_PATHS = frozenset({"/", "/jack/runtime/status", "/jack/runtimes"})
 
 
 def _http_authority_scopes(scope: Any) -> tuple[str, ...]:
@@ -33,18 +29,36 @@ def _http_authority_scopes(scope: Any) -> tuple[str, ...]:
     method = str(scope.get("method", "GET")).upper()
     if method == "GET" and path in OBSERVATION_PATHS:
         return ("observation",)
-    if path == "/jack/security/path-admission":
+    if method == "POST" and path == "/jack/security/path-admission":
         return ("executor", "authority")
-    if path in (
-        "/jack/orchestration/tasks",
+    if method == "POST" and path == "/jack/orchestration/tasks":
+        # Creating a Pi task can cause model/tool execution. Its release
+        # requires intact model, executor, Pi and common security authority.
+        return ("orchestration", "model", "executor", "authority")
+    if method == "POST" and path in (
         "/jack/orchestration/tasks/cancel",
         "/jack/orchestration/session/new",
     ):
+        # Cancellation must remain available when model execution is blocked.
+        # Its actual Pi proxy and shared auth must still be intact.
         return ("orchestration", "authority")
-    # The default is consequential; a new/differently routed endpoint cannot
-    # acquire observational privileges by changing route or request metadata.
-    return ("model", "authority")
-_PHASE9B_MARKER = "_JACK_RUNTIME_CODE_ENFORCEMENT_INSTALLED"
+    if method == "GET" and path in (
+        "/jack/orchestration/status", "/jack/orchestration/events",
+    ):
+        # Both depend on authenticated Pi transport, not just observation.
+        return ("orchestration", "authority")
+    if method == "POST" and path in (
+        "/v1/chat/completions", "/v1/responses",
+    ):
+        # Model result is permitted only after the protected tool-release
+        # gate has separately verified executor authority for tool calls.
+        return ("model", "authority")
+    if method == "GET" and path in ("/health", "/v1/models", "/api/v1/models"):
+        return ("model", "authority")
+    # Unknown routes are not automatically blessed as diagnostics. Since no
+    # dependency graph has been qualified for them, require all consequential
+    # authorities until explicitly mapped and independently validated.
+    return ("model", "executor", "orchestration", "authority")
 
 
 class Phase9BASGIGuard:
@@ -224,33 +238,27 @@ def install(jk: Any) -> RuntimeCodeAuthority:
     @wraps(original_stream)
     async def guarded_stream(*args: Any, **kwargs: Any):
         guard.verify_for("model", "authority")
-        interrupted: RuntimeCodeIntegrityUnavailable | None = None
+        # A confirmed code-integrity violation can also affect hidden
+        # inference-stage tool actions. Merely draining the predecessor would
+        # keep executing code whose authority cannot be trusted. Preserve the
+        # already-released safe prefix and interrupt *future* work instead.
+        source_stream = original_stream(*args, **kwargs)
         try:
-            async for chunk in original_stream(*args, **kwargs):
-                if interrupted is not None:
-                    # Already-produced safe bytes remain committed; drain
-                    # cognition without releasing any subsequent bytes.
-                    continue
-                try:
-                    guard.verify_for("model", "authority")
-                except RuntimeCodeIntegrityUnavailable as exc:
-                    interrupted = exc
-                    continue
+            async for chunk in source_stream:
+                guard.verify_for("model", "authority")
                 yield chunk
-        except Exception:
-            if interrupted is not None:
-                raise interrupted
-            raise
-        if interrupted is not None:
-            # Preserve clean async-generator close/cancellation semantics.
-            # Raise only after the predecessor has naturally finished.
-            raise interrupted
+        finally:
+            close = getattr(source_stream, "aclose", None)
+            if callable(close):
+                await close()
 
     @wraps(original_tools)
     def guarded_tool_release(*args: Any, **kwargs: Any) -> Any:
-        guard.verify_for("model", "authority")
+        # A model tool-call proposal is a future executor consequence; never
+        # release it while the executor admission code cannot be trusted.
+        guard.verify_for("model", "executor", "authority")
         result = original_tools(*args, **kwargs)
-        guard.verify_for("model", "authority")
+        guard.verify_for("model", "executor", "authority")
         return result
 
     @wraps(original_executor)
@@ -262,11 +270,14 @@ def install(jk: Any) -> RuntimeCodeAuthority:
 
     @wraps(original_proxy)
     async def guarded_proxy(request: Any, method: str, path: str, *args: Any, **kwargs: Any) -> Any:
-        if str(method).upper() == "POST" and str(path) in (
-            "/v1/tasks", "/v1/tasks/cancel", "/v1/session/new",
-        ):
+        # The Pi proxy is an actual shared delegate for both status reads and
+        # mutating operations. A GET is not independent of a mutated proxy.
+        if str(method).upper() == "POST" and str(path) == "/v1/tasks":
+            guard.verify_for("orchestration", "model", "executor", "authority")
+        else:
             guard.verify_for("orchestration", "authority")
-        # Do not retract an external action already admitted by the host.
+        # Worker settlements already admitted before this call remain outside
+        # Jack's ability to revoke. Do not claim retroactive cancellation.
         return await original_proxy(request, method, path, *args, **kwargs)
 
     jk.KERNEL.run = guarded_run
@@ -284,13 +295,13 @@ def install(jk: Any) -> RuntimeCodeAuthority:
         ("tool-release", jk, "_phase4_partition_structured_tool_calls", "model"),
         ("executor-admission", jk, "_phase4_executor_admission_decision", "executor"),
         ("pi-control", jk, "_proxy_pi_control_request", "orchestration"),
-        ("source-measure", source, "_measure_regular_file", "authority"),
-        ("source-verify", jk._JACK_SOURCE_AUTHORITY, "verify_for_authority_boundary", "authority"),
-        ("source-observe", jk._JACK_SOURCE_AUTHORITY, "verify_now", "authority"),
-        ("path-represented", path_policy, "authorize_represented_path", "authority"),
-        ("path-structured", path_policy, "authorize_structured_tool_call", "authority"),
-        ("path-executor", path_policy, "authorize_executor_tool_call", "authority"),
-        ("consequence", consequence, "evaluate_consequence", "authority"),
+        ("source-measure", source, "_measure_regular_file", "shared"),
+        ("source-verify", jk._JACK_SOURCE_AUTHORITY, "verify_for_authority_boundary", "shared"),
+        ("source-observe", jk._JACK_SOURCE_AUTHORITY, "verify_now", "shared"),
+        ("path-represented", path_policy, "authorize_represented_path", "shared"),
+        ("path-structured", path_policy, "authorize_structured_tool_call", "shared"),
+        ("path-executor", path_policy, "authorize_executor_tool_call", "shared"),
+        ("consequence", consequence, "evaluate_consequence", "shared"),
         ("responses-stream", responses, "_stream", "model"),
         ("responses-nonstream", responses, "_nonstream", "model"),
         ("p9-verify", code_guard.RuntimeCodeAuthority, "verify_for", "shared"),
@@ -301,12 +312,12 @@ def install(jk: Any) -> RuntimeCodeAuthority:
         guard.register(name=label, owner=owner, attribute=attr, scope=scope)
 
     for label, module, scope in (
-        ("module-source", source, "authority"),
+        ("module-source", source, "shared"),
         ("module-code-guard", code_guard, "shared"),
         ("module-phase9b-enforcement", sys.modules[__name__], "shared"),
-        ("module-path-policy", path_policy, "authority"),
-        ("module-consequence", consequence, "authority"),
-        ("module-evidence", evidence, "authority"),
+        ("module-path-policy", path_policy, "shared"),
+        ("module-consequence", consequence, "shared"),
+        ("module-evidence", evidence, "shared"),
         ("module-responses", responses, "model"),
     ):
         guard.register_module(name=label, module_name=module.__name__, scope=scope)
