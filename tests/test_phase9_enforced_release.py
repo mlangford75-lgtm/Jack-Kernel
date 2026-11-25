@@ -473,3 +473,19 @@ def test_verifier_check_rebinding_is_a_shared_integrity_violation(tmp_path, monk
         assert rejected.status_code == 503, (rejected.text, guard.mismatched_slots)
     assert "p9-check" in guard.mismatched_slots
     assert calls["run"] == 0
+
+
+def test_read_only_exception_set_cannot_be_expanded_after_sealing(monkeypatch):
+    import jack_phase9b_enforcement as phase9
+    monkeypatch.setattr(
+        phase9, "OBSERVATION_PATHS",
+        frozenset({"/jack/orchestration/events", "/v1/chat/completions"}),
+    )
+    assert phase9._http_authority_scopes({
+        "type": "http", "method": "GET",
+        "path": "/jack/orchestration/events",
+    }) == ("orchestration", "authority")
+    assert phase9._http_authority_scopes({
+        "type": "http", "method": "POST",
+        "path": "/v1/chat/completions",
+    }) == ("model", "authority")
