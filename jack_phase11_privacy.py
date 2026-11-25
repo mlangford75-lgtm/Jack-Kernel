@@ -3,6 +3,7 @@
 Never rewrite model output, authenticated tool evidence, or authoritative state.
 Optional archives containing protected data are withheld rather than falsified.
 """
+import json
 import logging
 from dataclasses import dataclass
 
@@ -104,28 +105,46 @@ def protect_logging_handlers(boundary):
 
 
 def install_http_diagnostic_guard(jk, boundary):
-    """Preserve predecessor HTTP exception handling; withhold unsafe diagnostics."""
-    from fastapi.exception_handlers import http_exception_handler
+    """Inspect actual error responses; preserve established Phase 7 markers."""
+    from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
+    from fastapi.exceptions import RequestValidationError
     from fastapi.responses import JSONResponse
     from starlette.exceptions import HTTPException as StarletteHTTPException
 
-    for exception_type in {jk.HTTPException, StarletteHTTPException}:
-        previous = jk.APP.exception_handlers.get(exception_type, http_exception_handler)
+    for exception_type, default in (
+        (jk.HTTPException, http_exception_handler),
+        (StarletteHTTPException, http_exception_handler),
+        (RequestValidationError, request_validation_exception_handler),
+    ):
+        previous = jk.APP.exception_handlers.get(exception_type, default)
 
         async def guarded(request, exc, _previous=previous):
+            # The predecessor owns status, content and credential markers.
+            # Examine its result before external release, including decoded
+            # JSON (escaping must not hide a protected field).
+            response = await _previous(request, exc)
+            safe_headers = {}
             try:
-                detail_ok = boundary.permits_diagnostic(exc.detail)
-                headers = exc.headers or {}
-                safe_headers = {k: v for k, v in headers.items()
-                                if boundary.permits_diagnostic((k, v))}
-                if detail_ok and len(safe_headers) == len(headers):
-                    return await _previous(request, exc)
+                headers = response.raw_headers
+                for key, value in headers:
+                    if (key.lower() not in (b"content-type", b"content-length")
+                            and boundary.permits_diagnostic((key, value))):
+                        safe_headers[key.decode("latin-1")] = value.decode("latin-1")
+                body = response.body
+                safe = boundary.permits_diagnostic(body) and boundary.permits_diagnostic(headers)
+                if safe and body:
+                    try:
+                        decoded = json.loads(body)
+                    except (ValueError, UnicodeError):
+                        pass
+                    else:
+                        safe = boundary.permits_diagnostic(decoded)
+                if safe:
+                    return response
             except Exception:
-                safe_headers = {}
-            # Preserve HTTP failure status and benign headers; do not echo
-            # upstream content or invent a successful response.
+                pass
             return JSONResponse(
-                status_code=exc.status_code,
+                status_code=response.status_code,
                 content={"detail": "protected diagnostic withheld"},
                 headers=safe_headers,
             )
