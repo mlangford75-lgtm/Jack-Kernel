@@ -195,6 +195,15 @@ class _ModuleIdentity:
 
 
 @dataclass(frozen=True)
+class _HolderIdentity:
+    label: str
+    owner: Any
+    attribute: str
+    original: Any
+    scope: str = "shared"
+
+
+@dataclass(frozen=True)
 class _SourceIdentity:
     label: str
     path: Path
@@ -247,6 +256,7 @@ class RuntimeCodeAuthority:
         self._slots: list[ExecutableSlot] = []
         self._modules: list[_ModuleIdentity] = []
         self._sources: list[_SourceIdentity] = []
+        self._holders: list[_HolderIdentity] = []
         self._route_tables: list[_RouteTableIdentity] = []
         self._state = "INITIALIZING"
         # Pin the method that performs actual measurement. Checking it before
@@ -296,6 +306,18 @@ class RuntimeCodeAuthority:
             if not isinstance(module, types.ModuleType):
                 raise RuntimeCodeIntegrityUnavailable("required module not loaded")
             self._modules.append(_ModuleIdentity(name, module_name, module, scope))
+
+    def register_holder(self, *, name: str, owner: Any, attribute: str, scope: str = "shared") -> None:
+        """Pin an existing authority holder, not its legitimate dynamic contents."""
+        with self._lock:
+            if self._state != "INITIALIZING":
+                raise RuntimeError("protected holder manifest is sealed")
+            if any(item.label == name for item in self._holders):
+                raise ValueError("duplicate protected holder label")
+            original = getattr(owner, attribute, None)
+            if original is None:
+                raise RuntimeCodeIntegrityUnavailable("required authority holder unavailable")
+            self._holders.append(_HolderIdentity(name, owner, attribute, original, scope))
 
     def register_source(self, *, name: str, path: Path, scope: str = "shared") -> None:
         """Seal exact source bytes for new Phase 9 modules absent from Phase 8.
@@ -377,6 +399,18 @@ class RuntimeCodeAuthority:
             if sys.modules.get(module.module_name) is not module.original:
                 mismatches.append(module.label)
                 mismatch_scopes.add(module.scope)
+        for holder in self._holders:
+            if not selected(holder.scope):
+                continue
+            try:
+                current = getattr(holder.owner, holder.attribute, None)
+            except Exception:
+                record_unavailable(holder.scope, RuntimeCodeIntegrityUnavailable(
+                    "authority holder measurement unavailable"))
+                continue
+            if current is not holder.original:
+                mismatches.append(holder.label)
+                mismatch_scopes.add(holder.scope)
         if self._sources:
             import jack_source_drift_guard as source
         for item in self._sources:
