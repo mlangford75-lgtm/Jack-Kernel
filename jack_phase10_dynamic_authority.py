@@ -3,14 +3,13 @@ import hashlib
 import hmac
 import json
 import secrets
-from dataclasses import asdict, is_dataclass
 
 
 class DynamicAuthorityUnavailable(RuntimeError):
     pass
 
 
-def _material(state):
+def _material(state, context_type):
     # Only authorization-bearing data; ordinary cognition/usage is not frozen.
     expected = state.expected_tool_call_ids
     calls = {}
@@ -22,24 +21,38 @@ def _material(state):
     if set(calls) != set(expected):
         raise DynamicAuthorityUnavailable("pending authority unavailable")
     context = state.accepted_executor_context
+    if context is not None:
+        if context_type is None or type(context) is not context_type:
+            raise DynamicAuthorityUnavailable("pending executor context unavailable")
+        context = {name: getattr(context, name) for name in (
+            "protocol_version", "runtime_id", "lane_id", "cwd", "platform",
+            "adapter", "command_dialect",
+        )}
+        if (type(context["protocol_version"]) is not int or
+                any(type(context[name]) is not str for name in (
+                    "runtime_id", "lane_id", "cwd", "platform", "adapter")) or
+                (context["command_dialect"] is not None and
+                 type(context["command_dialect"]) is not str)):
+            raise DynamicAuthorityUnavailable("pending executor context unavailable")
     return json.dumps({
         "resume": state.resume_id, "stage": state.stage_key,
         "expected": expected, "withheld": state.withheld_tool_call_ids,
         "calls": calls, "results": state.accepted_tool_results,
-        "context": asdict(context) if context is not None and is_dataclass(context) else None,
+        "context": context,
         "in_flight": state.in_flight,
     }, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8", "surrogatepass")
 
 
 class PendingAuthority:
-    def __init__(self):
+    def __init__(self, context_type=None):
+        self._context_type = context_type
         self._key = secrets.token_bytes(32)
         self._entries = {}
         self._invalid = set()
 
     def _digest(self, state):
         try:
-            return hmac.new(self._key, _material(state), hashlib.sha256).digest()
+            return hmac.new(self._key, _material(state, self._context_type), hashlib.sha256).digest()
         except Exception:
             raise DynamicAuthorityUnavailable("pending authority unavailable") from None
 
