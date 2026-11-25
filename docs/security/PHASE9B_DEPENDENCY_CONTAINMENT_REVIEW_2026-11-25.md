@@ -1,9 +1,9 @@
 # Phase 9B — Security Dependency and Containment Correction
 
-**Date:** 2026-11-25  
-**Candidate code SHA:** `bf3cfb4006c7c7eb31725622f3dd5462936df49c`  
-**Draft:** [PR #173](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/173)  
-**Windows qualification:** [run 45601286075](https://github.com/mlangford75-lgtm/Jack-Kernel/actions/runs/45601286075): **SUCCESS**, pinned Python 3.14.6.  
+**Date:** 2026-11-25
+**Candidate code SHA:** `bf3cfb4006c7c7eb31725622f3dd5462936df49c`
+**Draft:** [PR #173](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/173)
+**Windows qualification:** [run 45601286075](https://github.com/mlangford75-lgtm/Jack-Kernel/actions/runs/45601286075): **SUCCESS**, pinned Python 3.14.6.
 **Release status:** NOT READY TO MERGE OR TAG. Phase 8 remains the last validated merged security phase.
 
 ## Security objective
