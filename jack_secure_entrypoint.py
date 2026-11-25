@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import threading
 from enum import Enum
@@ -350,6 +351,16 @@ def main() -> None:
         # Phase-8B install contract while wiring live enforcement only in the
         # actual serving child.
         jack_source_drift_guard.activate_runtime_enforcement(jk, authority)
+
+        # Phase 9B-C is experimental and explicitly opt-in. Compose only in
+        # the actual secured serving child, after Phase 8 and before Uvicorn
+        # starts / FastAPI lazily builds the middleware stack. An invalid
+        # or incomplete manifest aborts secure-child startup; it must never
+        # silently downgrade to source-only enforcement after opt-in.
+        if os.getenv("JACK_PHASE9B_EXPERIMENTAL", "") == "1":
+            import jack_phase9b_enforcement
+
+            jack_phase9b_enforcement.install(jk)
 
     # The interactive launcher spawns a fresh serving child. Keep the bundled
     # runtime-extension path active in that child rather than falling back to a
