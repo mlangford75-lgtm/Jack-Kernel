@@ -18,6 +18,7 @@ from jack_runtime_code_guard import (
 )
 
 DENIAL_BODY = b'{"error":"jack_runtime_code_integrity_unavailable"}'
+_PHASE9B_MARKER = "_JACK_RUNTIME_CODE_ENFORCEMENT_INSTALLED"
 # Read-only exception paths are deliberately small and proven not to run
 # model inference, Pi transport, or executor-side effects. Never infer read-only
 # authority from GET alone: /health, /v1/models and Pi events have dependencies.
