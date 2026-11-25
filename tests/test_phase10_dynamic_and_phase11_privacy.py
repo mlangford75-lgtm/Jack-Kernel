@@ -169,3 +169,60 @@ def test_released_id_cannot_collide_with_another_withheld_id():
         a.register(state("blocked-a", ()))
     with pytest.raises(DynamicAuthorityUnavailable):
         a.register(state("call-b", ("call-a",)))
+
+
+def test_replaced_pending_index_cannot_be_used_or_resealed():
+    a = PendingAuthority()
+    s = state()
+    old = a._entries
+    a.register(s)
+    a._entries = old
+    with pytest.raises(DynamicAuthorityUnavailable):
+        a.verify_request(["call-a"], {"call-a": s})
+    with pytest.raises(DynamicAuthorityUnavailable):
+        a.register(state("call-b", ()))
+
+
+def test_authority_holder_replacement_is_terminal_but_scoped():
+    from jack_runtime_code_guard import RuntimeCodeAuthority, RuntimeCodeIntegrityCompromised
+    owner = SimpleNamespace(holder={}, fn=lambda: None)
+    guard = RuntimeCodeAuthority()
+    guard.register(name="control", owner=owner, attribute="fn")
+    guard.register_holder(name="holder", owner=owner, attribute="holder", scope="authority")
+    guard.seal()
+    old = owner.holder
+    old["legitimate"] = 1
+    guard.verify_for("authority")
+    owner.holder = {}
+    with pytest.raises(RuntimeCodeIntegrityCompromised):
+        guard.verify_for("authority")
+    owner.holder = old
+    with pytest.raises(RuntimeCodeIntegrityCompromised):
+        guard.verify_for("authority")
+    guard.verify_for("observation")
+
+
+def test_http_diagnostics_keep_status_and_safe_headers():
+    from fastapi import FastAPI, HTTPException
+    from fastapi.testclient import TestClient
+    from jack_phase11_privacy import install_http_diagnostic_guard
+    app = FastAPI()
+    b = boundary()
+
+    @app.get("/failure")
+    def failure():
+        raise HTTPException(409, detail={"TEST-CANARY-7420": "private"},
+                            headers={"X-Secret": "TEST-CREDENTIAL-8391", "X-Safe": "yes"})
+
+    @app.get("/clean")
+    def clean():
+        raise HTTPException(400, detail="ordinary invalid request")
+
+    install_http_diagnostic_guard(SimpleNamespace(APP=app, HTTPException=HTTPException), b)
+    with TestClient(app) as client:
+        response = client.get("/failure")
+        assert response.status_code == 409
+        assert response.headers["X-Safe"] == "yes"
+        assert "X-Secret" not in response.headers
+        assert "TEST-CANARY-7420" not in response.text
+        assert client.get("/clean").json() == {"detail": "ordinary invalid request"}
