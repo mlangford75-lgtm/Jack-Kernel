@@ -269,6 +269,12 @@ async def exercise():
         pass
     else:
         raise AssertionError("invalidated credentials allowed dispatch")
+    try:
+        await jk._proxy_pi_control_request(None, "POST", "/v1/tasks")
+    except PolicyIntegrityCompromised:
+        pass
+    else:
+        raise AssertionError("invalidated credentials reached Pi dispatch")
     cell.cell_contents = dataclasses.replace(original)
     try:
         await jk.KERNEL.run({})

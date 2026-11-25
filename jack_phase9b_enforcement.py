@@ -396,6 +396,7 @@ def install(jk: Any) -> RuntimeCodeAuthority:
             ("pending-live-map-holder", jk.KERNEL, "_pending_tool_resumes", "authority"),
             ("pending-lock-holder", jk.KERNEL, "_pending_tool_resume_lock", "authority"),
             ("privacy-holder", jk, "_JACK_DIAGNOSTIC_PRIVACY", "shared"),
+            ("privacy-values", jk._JACK_DIAGNOSTIC_PRIVACY, "_values", "shared"),
             ("path-authority-holder", jk, "_JACK_PHASE10_PATH_AUTHORITY", "shared"),
             ("canary-authority-holder", jk, "_JACK_PHASE10_CANARY_AUTHORITY", "model"),
             ("credential-authority-holder", jk, "_JACK_PHASE10_CREDENTIAL_AUTHORITY", "authority"),
@@ -428,6 +429,11 @@ def install(jk: Any) -> RuntimeCodeAuthority:
             ("privacy-redact", privacy.PrivacyBoundary, "redact", "shared"),
             ("privacy-match", privacy.PrivacyBoundary, "_contains", "shared"),
             ("privacy-archive", privacy.PrivacyBoundary, "permits_archive", "shared"),
+            ("privacy-diagnostic", privacy.PrivacyBoundary, "permits_diagnostic", "shared"),
+            ("privacy-text-sink", jk, "_diagnostic_text", "shared"),
+            ("privacy-upstream-sink", jk, "_upstream_diagnostic", "shared"),
+            ("privacy-archive-sink", jk, "_diagnostic_archive_allowed", "shared"),
+            ("privacy-log-install", privacy, "protect_logging_handlers", "shared"),
             ("privacy-formatter", privacy.ProtectedDiagnosticFormatter, "format", "shared"),
         ):
             guard.register(name=label, owner=owner, attribute=attr, scope=scope)

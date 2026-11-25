@@ -111,6 +111,18 @@ def install_http_diagnostic_guard(jk, boundary):
     from fastapi.responses import JSONResponse
     from starlette.exceptions import HTTPException as StarletteHTTPException
 
+    from jack_policy_integrity import PolicyIntegrityUnavailable, PolicyIntegrityCompromised
+    from jack_phase10_dynamic_authority import DynamicAuthorityUnavailable
+
+    async def authority_unavailable(request, exc):
+        detail = ("AUTHORITY_POLICY_INTEGRITY_COMPROMISED"
+                  if isinstance(exc, PolicyIntegrityCompromised)
+                  else "Security authority unavailable")
+        return JSONResponse(status_code=503, content={"detail": detail})
+
+    jk.APP.add_exception_handler(PolicyIntegrityUnavailable, authority_unavailable)
+    jk.APP.add_exception_handler(DynamicAuthorityUnavailable, authority_unavailable)
+
     for exception_type, default in (
         (jk.HTTPException, http_exception_handler),
         (StarletteHTTPException, http_exception_handler),

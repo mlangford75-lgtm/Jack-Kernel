@@ -176,11 +176,15 @@ def test_replaced_pending_index_cannot_be_used_or_resealed():
     s = state()
     old = a._entries
     a.register(s)
+    current = a._entries
     a._entries = old
     with pytest.raises(DynamicAuthorityUnavailable):
         a.verify_request(["call-a"], {"call-a": s})
     with pytest.raises(DynamicAuthorityUnavailable):
         a.register(state("call-b", ()))
+    a._entries = current
+    with pytest.raises(DynamicAuthorityUnavailable):
+        a.verify(s)
 
 
 def test_authority_holder_replacement_is_terminal_but_scoped():
@@ -226,3 +230,21 @@ def test_http_diagnostics_keep_status_and_safe_headers():
         assert "X-Secret" not in response.headers
         assert "TEST-CANARY-7420" not in response.text
         assert client.get("/clean").json() == {"detail": "ordinary invalid request"}
+
+
+def test_http_authority_failure_is_not_reported_as_success_or_raw_error():
+    from fastapi import FastAPI, HTTPException
+    from fastapi.testclient import TestClient
+    from jack_phase11_privacy import install_http_diagnostic_guard
+    from jack_policy_integrity import PolicyIntegrityCompromised
+    app = FastAPI()
+
+    @app.get("/policy")
+    def policy():
+        raise PolicyIntegrityCompromised("TEST-CREDENTIAL-8391")
+
+    install_http_diagnostic_guard(SimpleNamespace(APP=app, HTTPException=HTTPException), boundary())
+    with TestClient(app) as client:
+        response = client.get("/policy")
+        assert response.status_code == 503
+        assert response.json() == {"detail": "AUTHORITY_POLICY_INTEGRITY_COMPROMISED"}

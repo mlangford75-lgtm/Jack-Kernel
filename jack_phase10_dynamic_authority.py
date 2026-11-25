@@ -89,10 +89,13 @@ class PendingAuthority:
         self._key = secrets.token_bytes(32)
         self._entries = MappingProxyType({})
         self._current_entries = self._entries
+        self._index_invalid = False
         self._invalid = set()
 
     def _verify_index(self):
         if self._entries is not self._current_entries:
+            self._index_invalid = True
+        if self._index_invalid:
             raise DynamicAuthorityUnavailable("pending authority index unavailable")
 
     def _replace_index(self, entries):

@@ -5819,8 +5819,20 @@ def _diagnostic_archive_allowed(value: Any) -> bool:
 
 def _diagnostic_text(value: Any) -> str:
     boundary = globals().get("_JACK_DIAGNOSTIC_PRIVACY")
-    text = str(value)
-    return text if boundary is None else boundary.redact(text)
+    if boundary is None:
+        return str(value)
+    if isinstance(value, (dict, list, tuple, bytes)) and not boundary.permits_diagnostic(value):
+        return "protected diagnostic withheld"
+    return boundary.redact(str(value))
+
+
+def _upstream_diagnostic(value: Any, *, safe: str = "upstream diagnostic withheld", limit: int = 4000) -> str:
+    # Provider error bodies may contain private infrastructure, escaped
+    # credentials, or partial secrets. Do not echo arbitrary upstream text
+    # through secured public diagnostics. Status and stage are kept by callers.
+    if globals().get("_JACK_DIAGNOSTIC_PRIVACY") is not None:
+        return safe
+    return str(value)[:limit]
 
 
 def _json_forensic_copy(value: Any) -> Any:
@@ -8468,7 +8480,7 @@ class OpenAICompatibleBackend:
             except Exception as exc:
                 raise HTTPException(
                     status_code=502,
-                    detail=_diagnostic_text(f"Cannot query backend models at {url}: {exc}"),
+                    detail=_upstream_diagnostic(f"Cannot query backend models at {url}: {exc}", safe="Cannot query backend models"),
                 ) from exc
             self._model_metadata_checked = True
             ids = [str(item.get("id", "")) for item in data if isinstance(item, dict) and item.get("id")]
@@ -9416,7 +9428,7 @@ class OpenAICompatibleBackend:
             response = await self._client.post(url, headers=self._headers(), json=current_payload)
         except httpx.ConnectError as exc:
             if not cache_decision.alternate_endpoint:
-                raise HTTPException(status_code=502, detail=_diagnostic_text(f"Backend connection failed: {exc}")) from exc
+                raise HTTPException(status_code=502, detail=_upstream_diagnostic(f"Backend connection failed: {exc}", safe="Backend connection failed")) from exc
             LOG.warning("Optional auxiliary cache endpoint unavailable; falling back to primary backend")
             self._cache_router.disable_unavailable_aux()
             url = primary_url
@@ -9424,7 +9436,7 @@ class OpenAICompatibleBackend:
         except Exception as exc:
             raise HTTPException(
                 status_code=502,
-                detail=_diagnostic_text(f"Backend request failed during {profile.name}: {exc}"),
+                detail=_upstream_diagnostic(f"Backend request failed during {profile.name}: {exc}", safe=f"Backend request failed during {profile.name}"),
             ) from exc
 
         # Only retry before generation when an OPTIONAL cache feature is rejected.
@@ -9463,7 +9475,7 @@ class OpenAICompatibleBackend:
                 status_code=502,
                 detail=(
                     f"Backend rejected stage {profile.name} with HTTP "
-                    f"{response.status_code}: {_diagnostic_text(response.text[:4000])}"
+                    f"{response.status_code}: {_upstream_diagnostic(response.text)}"
                 ),
             )
 
@@ -9666,7 +9678,7 @@ class OpenAICompatibleBackend:
             else:
                 raise HTTPException(
                     status_code=502,
-                    detail=f"Backend rejected streaming stage {profile.name}: {raw[:4000]}",
+                    detail=f"Backend rejected streaming stage {profile.name}: {_upstream_diagnostic(raw)}",
                 )
 
         if response.status_code >= 500:
@@ -9684,7 +9696,7 @@ class OpenAICompatibleBackend:
                 status_code=502,
                 detail=(
                     f"Backend rejected streaming stage {profile.name} with HTTP "
-                    f"{response.status_code}: {raw[:4000]}"
+                    f"{response.status_code}: {_upstream_diagnostic(raw)}"
                 ),
             )
 
@@ -14848,7 +14860,7 @@ class OrchestrationEventHub:
             if response.status_code >= 500:
                 raise HTTPException(status_code=502, detail="Pi control bridge is unavailable")
             if response.status_code >= 400:
-                raise HTTPException(status_code=response.status_code, detail=_diagnostic_text(response.text))
+                raise HTTPException(status_code=response.status_code, detail=_upstream_diagnostic(response.text, safe="Pi control bridge rejected status request"))
         except HTTPException:
             raise
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout) as exc:
@@ -15033,7 +15045,7 @@ class OrchestrationEventHub:
                     ) as upstream:
                         if upstream.status_code != 200:
                             body = await upstream.aread()
-                            self._last_error = _diagnostic_text(f"Pi SSE status {upstream.status_code}: {body[:200]!r}")
+                            self._last_error = _upstream_diagnostic(f"Pi SSE status {upstream.status_code}: {body[:200]!r}", safe=f"Pi SSE status {upstream.status_code}")
                             await asyncio.sleep(1.0)
                             continue
                         self._last_error = None
@@ -15041,7 +15053,7 @@ class OrchestrationEventHub:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self._last_error = _diagnostic_text(exc)
+                self._last_error = _upstream_diagnostic(exc, safe=f"Pi SSE failure: {type(exc).__name__}")
                 if self._stopping:
                     return
                 await asyncio.sleep(1.0)
@@ -16354,7 +16366,7 @@ async def _safe_public_stream(
             )
         else:
             failure_text = "\n\n[Jack Kernel internal stage failure: " + detail[:2000] + "]"
-        yield event({"content": failure_text})
+        yield event({"content": _diagnostic_text(failure_text)})
         yield event({}, "stop")
         yield b"data: [DONE]\n\n"
     finally:
