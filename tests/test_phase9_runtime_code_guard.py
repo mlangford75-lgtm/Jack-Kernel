@@ -257,3 +257,80 @@ def test_unrelated_runtime_state_does_not_invalidate():
     owner.stage["turn"] = 2
     guard.verify()
     assert guard.state == "ACTIVE"
+
+
+def test_scoped_model_mismatch_preserves_independent_execution_and_observation():
+    model = SimpleNamespace(run=lambda: "model-safe")
+    execution = SimpleNamespace(admit=lambda: "executor-safe")
+    observation = SimpleNamespace(status=lambda: "healthy")
+    guard = RuntimeCodeAuthority()
+    guard.register(name="model", owner=model, attribute="run", scope="model")
+    guard.register(name="executor", owner=execution, attribute="admit", scope="executor")
+    guard.register(name="status", owner=observation, attribute="status", scope="observation")
+    guard.seal()
+    model.run = lambda: "untrusted"
+    with pytest.raises(RuntimeCodeIntegrityCompromised):
+        guard.verify_for("model")
+    assert guard.state == "INVALIDATED"
+    guard.verify_for("executor")
+    guard.verify_for("observation")
+    assert execution.admit() == "executor-safe"
+    assert observation.status() == "healthy"
+    with pytest.raises(RuntimeCodeIntegrityCompromised):
+        guard.verify_for("model")
+
+
+def test_scoped_executor_mismatch_keeps_model_and_read_only_status_available():
+    model = SimpleNamespace(run=lambda: "safe")
+    executor = SimpleNamespace(admit=lambda: "safe")
+    guard = RuntimeCodeAuthority()
+    guard.register(name="model", owner=model, attribute="run", scope="model")
+    guard.register(name="executor", owner=executor, attribute="admit", scope="executor")
+    guard.seal()
+    executor.admit = lambda: "bypass"
+    with pytest.raises(RuntimeCodeIntegrityCompromised):
+        guard.verify_for("executor")
+    guard.verify_for("model")
+    guard.verify_for("observation")
+
+
+def test_shared_verifier_mismatch_stops_all_scoped_consequences():
+    shared = SimpleNamespace(check=lambda: True)
+    model = SimpleNamespace(run=lambda: "safe")
+    guard = RuntimeCodeAuthority()
+    guard.register(name="shared", owner=shared, attribute="check", scope="shared")
+    guard.register(name="model", owner=model, attribute="run", scope="model")
+    guard.seal()
+    shared.check = lambda: False
+    with pytest.raises(RuntimeCodeIntegrityCompromised):
+        guard.verify_for("observation")
+    with pytest.raises(RuntimeCodeIntegrityCompromised):
+        guard.verify_for("model")
+
+
+def test_scoped_temporary_measurement_suspends_only_affected_authority():
+    class Unstable:
+        def __init__(self):
+            self.blocked = False
+            self.execute = lambda: 1
+
+        def __getattribute__(self, name):
+            if name == "execute" and object.__getattribute__(self, "blocked"):
+                raise OSError("synthetic local read failure")
+            return object.__getattribute__(self, name)
+
+    owner = Unstable()
+    read_only = SimpleNamespace(status=lambda: "healthy")
+    guard = RuntimeCodeAuthority()
+    guard.register(name="executor", owner=owner, attribute="execute", scope="executor")
+    guard.register(name="status", owner=read_only, attribute="status", scope="observation")
+    guard.seal()
+    owner.blocked = True
+    with pytest.raises(RuntimeCodeIntegrityUnavailable):
+        guard.verify_for("executor")
+    assert guard.state == "SUSPENDED_UNVERIFIED"
+    guard.verify_for("observation")
+    assert read_only.status() == "healthy"
+    owner.blocked = False
+    guard.verify_for("executor")
+    assert guard.state == "ACTIVE"
