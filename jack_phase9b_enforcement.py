@@ -295,6 +295,11 @@ def install(jk: Any) -> RuntimeCodeAuthority:
     # and ASGI identities protect every request; ordinary read-only status
     # paths do not depend on model execution or mutating Pi orchestration.
     for label, owner, attr, scope in (
+        ("http-auth", jk, "enforce_kernel_auth", "shared"),
+        ("agent-request-sanitizer", jk, "sanitize_agent_request", "model"),
+        ("executor-context", jk, "_phase4_executor_context_from_request", "model"),
+        ("stream-public-release", jk, "_safe_public_stream", "model"),
+        ("completion-envelope", jk, "completion_envelope", "model"),
         ("kernel-run", jk.KERNEL, "run", "model"),
         ("kernel-stream", jk.KERNEL, "stream", "model"),
         ("tool-release", jk, "_phase4_partition_structured_tool_calls", "model"),
