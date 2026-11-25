@@ -88,7 +88,17 @@ class PendingAuthority:
         self._context_type = context_type
         self._key = secrets.token_bytes(32)
         self._entries = MappingProxyType({})
+        self._current_entries = self._entries
         self._invalid = set()
+
+    def _verify_index(self):
+        if self._entries is not self._current_entries:
+            raise DynamicAuthorityUnavailable("pending authority index unavailable")
+
+    def _replace_index(self, entries):
+        self._verify_index()
+        snapshot = MappingProxyType(entries)
+        self._entries = self._current_entries = snapshot
 
     def _digest(self, state):
         try:
@@ -97,6 +107,7 @@ class PendingAuthority:
             raise DynamicAuthorityUnavailable("pending authority unavailable") from None
 
     def register(self, state):
+        self._verify_index()
         expected, withheld = _ids(state.expected_tool_call_ids), _ids(state.withheld_tool_call_ids)
         if id(state) in self._entries or any(e.resume_id == state.resume_id or
                 set(e.expected).intersection(expected + withheld) or
@@ -104,9 +115,10 @@ class PendingAuthority:
             raise DynamicAuthorityUnavailable("pending authority already registered")
         entry = _Entry(state, state.resume_id, expected, withheld,
                        state.created_at, state.in_flight, self._digest(state))
-        self._entries = MappingProxyType({**self._entries, id(state): entry})
+        self._replace_index({**self._entries, id(state): entry})
 
     def verify(self, state):
+        self._verify_index()
         key = id(state)
         entry = self._entries.get(key)
         if key in self._invalid or entry is None or entry.state is not state:
@@ -117,6 +129,7 @@ class PendingAuthority:
 
     def verify_request(self, ids, live):
         """Check only transactions selected by the incoming IDs or their sealed IDs."""
+        self._verify_index()
         ids = set(ids)
         withheld = set()
         for entry in self._entries.values():
@@ -151,7 +164,7 @@ class PendingAuthority:
         state.in_flight = candidate.in_flight
         successor = _Entry(state, entry.resume_id, entry.expected,
             entry.withheld, entry.created_at, in_flight, digest)
-        self._entries = MappingProxyType({**self._entries, id(state): successor})
+        self._replace_index({**self._entries, id(state): successor})
 
     def freeze(self, state, history, answer):
         """Seal the completed Stage-1 checkpoint during its owned in-flight resume."""
@@ -169,10 +182,11 @@ class PendingAuthority:
                            entry.created_at, entry.in_flight, digest)
         state.frozen_stage1_history = candidate.frozen_stage1_history
         state.frozen_stage1_answer = candidate.frozen_stage1_answer
-        self._entries = MappingProxyType({**self._entries, id(state): successor})
+        self._replace_index({**self._entries, id(state): successor})
 
     def expire(self, cutoff, live):
         """Use sealed lifecycle facts rather than attacker-controlled expiry fields."""
+        self._verify_index()
         stale = [entry for entry in self._entries.values()
                  if entry.created_at < cutoff and not entry.in_flight]
         for entry in stale:
@@ -183,10 +197,11 @@ class PendingAuthority:
         return len(stale)
 
     def retire(self, state):
+        self._verify_index()
         entry = self._entries.get(id(state))
         if entry is not None and entry.state is state:
-            self._entries = MappingProxyType({key: value for key, value in self._entries.items()
-                                              if key != id(state)})
+            self._replace_index({key: value for key, value in self._entries.items()
+                                 if key != id(state)})
             self._invalid.discard(id(state))
             return entry.expected
         return ()
