@@ -85,6 +85,7 @@ from jack_loop_shadow import LongCycleShadowDetector, LongCycleRepeatedReasoning
 from jack_tool_outcomes import reported_tool_outcome, SUCCESS as TOOL_SUCCESS, FAILED as TOOL_FAILED, UNKNOWN as TOOL_UNKNOWN
 from jack_tool_recovery import ToolRecoveryState, ToolRecoveryExhausted, operation_key
 from jack_tool_lifecycle import ToolLifecycleObserver
+from jack_phase10_dynamic_authority import PendingAuthority, DynamicAuthorityUnavailable
 from jack_cache_orchestrator import CacheOrchestrator
 from jack_cache_prefix_diagnostics import CacheBytePrefixProbe
 from jack_stage1_cache_stability import Stage1CacheStabilizer
@@ -9978,6 +9979,7 @@ class JackQwenKernel:
         self._activity_telemetry_degraded = False
         self._pending_tool_resumes: Dict[str, PendingToolResume] = {}
         self._pending_tool_resume_lock = asyncio.Lock()
+        self._pending_authority = PendingAuthority()
         self._pending_debugging_intake_resumes: Dict[str, PendingDebuggingIntakeResume] = {}
         self._pending_debugging_intake_resume_lock = asyncio.Lock()
         self._pending_debugging_user_resumes: Dict[str, PendingDebuggingUserResume] = {}
@@ -11245,6 +11247,7 @@ class JackQwenKernel:
         for call_id, state in list(self._pending_tool_resumes.items()):
             if state.resume_id in stale:
                 self._pending_tool_resumes.pop(call_id, None)
+                self._pending_authority.retire(state)
         LOG.info("Expired %d stale Jack tool-resume transaction(s)", len(stale))
 
     @staticmethod
@@ -11967,6 +11970,7 @@ class JackQwenKernel:
                     status_code=409,
                     detail=f"{STAGES[stage_key].name} tool_call_id collision with an existing pending transaction: " + ", ".join(collision),
                 )
+            self._pending_authority.register(state)
             for call_id in call_ids:
                 self._pending_tool_resumes[call_id] = state
         LOG.info(
@@ -12008,6 +12012,10 @@ class JackQwenKernel:
                     detail="Phase-4 executor admission does not match a pending Jack tool call",
                 )
 
+            try:
+                self._pending_authority.verify(state)
+            except DynamicAuthorityUnavailable:
+                raise HTTPException(status_code=503, detail="Pending tool authority unavailable") from None
             for message in reversed(state.history):
                 if not isinstance(message, dict):
                     continue
@@ -12123,6 +12131,10 @@ class JackQwenKernel:
                     detail="Tool-result request matches multiple pending Jack stage transactions.",
                 )
             state = matched[0]
+            try:
+                self._pending_authority.verify(state)
+            except DynamicAuthorityUnavailable:
+                raise HTTPException(status_code=503, detail="Pending tool authority unavailable") from None
             if state.in_flight:
                 raise HTTPException(
                     status_code=409,
@@ -12153,14 +12165,16 @@ class JackQwenKernel:
                 key=lambda m: m["tool_call_id"],
             ))
             if state.accepted_tool_results is None:
-                state.accepted_tool_results = tuple(copy.deepcopy(matched_messages))
-                state.accepted_executor_context = _phase4_current_executor_context()
+                self._pending_authority.transition(state, in_flight=True,
+                    accept=tuple(copy.deepcopy(matched_messages)),
+                    context=_phase4_current_executor_context())
             elif state.accepted_tool_results != matched_messages:
                 raise HTTPException(
                     status_code=409,
                     detail="Retried tool results differ from authenticated results already accepted by Jack.",
                 )
-            state.in_flight = True
+            else:
+                self._pending_authority.transition(state, in_flight=True)
 
         matched_messages = list(copy.deepcopy(state.accepted_tool_results))
         executor = state.accepted_executor_context
@@ -12232,12 +12246,13 @@ class JackQwenKernel:
             for call_id in state.expected_tool_call_ids:
                 if self._pending_tool_resumes.get(call_id) is state:
                     self._pending_tool_resumes.pop(call_id, None)
+            self._pending_authority.retire(state)
             state.in_flight = False
 
     async def _rearm_pending_tool_resume(self, state: PendingToolResume) -> None:
         async with self._pending_tool_resume_lock:
             if any(self._pending_tool_resumes.get(call_id) is state for call_id in state.expected_tool_call_ids):
-                state.in_flight = False
+                self._pending_authority.transition(state, in_flight=False)
 
     async def _rearm_pending_tool_resume_for_messages(self, messages: Any) -> None:
         if not isinstance(messages, list):
@@ -12252,7 +12267,7 @@ class JackQwenKernel:
         async with self._pending_tool_resume_lock:
             states = {id(self._pending_tool_resumes[call_id]): self._pending_tool_resumes[call_id] for call_id in ids if call_id in self._pending_tool_resumes}
             for state in states.values():
-                state.in_flight = False
+                self._pending_authority.transition(state, in_flight=False)
 
     @staticmethod
     def _required_completed_answer_from_stage(data: Dict[str, Any], stage_name: str) -> str:
