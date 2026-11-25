@@ -55,8 +55,9 @@ def install(jk):
 
     @wraps(proxy)
     async def guarded_proxy(*args, **kwargs):
-        # Cancellation and already-admitted worker settlements should not be
-        # retroactively revoked. Check the response before releasing it.
+        # A new credential-dependent request must not cross the Pi boundary
+        # under compromised authority. Already-admitted effects are not revoked.
+        verify()
         response = await proxy(*args, **kwargs)
         verify()
         return response
