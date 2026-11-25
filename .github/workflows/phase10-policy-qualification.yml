@@ -35,4 +35,4 @@ jobs:
       - name: Run Phase 10 static-policy identity and tamper controls
         run: python -m pytest -q tests/test_phase10_policy_identity.py
       - name: Run previous Phase 7 credential and Phase 8 policy/security controls
-        run: python -m pytest -q tests/test_phase7_credential_guard.py tests/test_phase8_source_baseline.py tests/test_phase8_runtime_enforcement.py
+        run: python -m pytest -q tests/test_phase7_credential_policy.py tests/test_phase8_source_baseline.py tests/test_phase8_runtime_enforcement.py
