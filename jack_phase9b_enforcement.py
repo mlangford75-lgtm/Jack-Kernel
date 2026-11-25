@@ -305,8 +305,11 @@ def install(jk: Any) -> RuntimeCodeAuthority:
         ("responses-stream", responses, "_stream", "model"),
         ("responses-nonstream", responses, "_nonstream", "model"),
         ("p9-verify", code_guard.RuntimeCodeAuthority, "verify_for", "shared"),
+        ("p9-check", code_guard.RuntimeCodeAuthority, "_check_locked", "shared"),
         ("p9-resolve", code_guard, "_resolve", "shared"),
         ("p9-measure", code_guard, "_function_shape", "shared"),
+        ("p9-route-snapshot", code_guard, "_route_snapshot", "shared"),
+        ("p9-route-classifier", sys.modules[__name__], "_http_authority_scopes", "shared"),
         ("p9-asgi", Phase9BASGIGuard, "__call__", "shared"),
     ):
         guard.register(name=label, owner=owner, attribute=attr, scope=scope)
