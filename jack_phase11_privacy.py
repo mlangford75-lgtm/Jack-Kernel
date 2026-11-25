@@ -4,7 +4,6 @@ Never rewrite model output, authenticated tool evidence, or authoritative state.
 Optional archives containing protected data are withheld rather than falsified.
 """
 import logging
-import json
 
 
 class PrivacyBoundary:
@@ -15,17 +14,26 @@ class PrivacyBoundary:
             item.value for item in canary_policy.canaries._patterns
         }, key=lambda value: (-len(value), value)))
 
+    def _contains(self, text):
+        return any(value and value in text for value in self._values)
+
     def redact(self, text):
+        if not self._contains(text):
+            return text
+        marker = next((candidate for candidate in ("[PROTECTED]", "[REDACTED]", "")
+                       if not self._contains(candidate)), "")
         for value in self._values:
             if value:
-                text = text.replace(value, "[PROTECTED]")
-        return text
+                text = text.replace(value, marker)
+        # A replacement may create a match across adjacent text boundaries.
+        # Withhold the diagnostic rather than release any residual match.
+        return "" if self._contains(text) else text
 
     def permits_archive(self, value):
         # JSON escaping must not disguise a protected string in a value/key.
         def safe(node):
             if isinstance(node, str):
-                return self.redact(node) == node
+                return not self._contains(node)
             if isinstance(node, dict):
                 return all(safe(k) and safe(v) for k, v in node.items())
             if isinstance(node, (tuple, list)):
@@ -48,7 +56,7 @@ class ProtectedDiagnosticFormatter(logging.Formatter):
             # After formatting: includes arguments and exception text.
             return self.boundary.redact(self.original.format(record))
         except Exception:
-            return "Diagnostic unavailable (privacy boundary)"
+            return ""
 
 
 def install(jk):
