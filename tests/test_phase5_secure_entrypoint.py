@@ -6,6 +6,7 @@ import jack_phase9b_enforcement as runtime_guard
 import jack_phase10_path_enforcement as policy_guard
 import jack_phase10_canary_enforcement as canary_guard
 import jack_phase10_credential_enforcement as credential_guard
+import jack_phase11_privacy as privacy_guard
 from jack_runtime_code_guard import RuntimeCodeIntegrityUnavailable
 
 
@@ -78,13 +79,14 @@ def test_secure_entrypoint_serving_process_seals_observes_then_activates_before_
         # Phase 9B is mandatory and cannot precede a successfully activated
         # Phase 8. This mock isolates ordering only; separate serving-child
         # tests prove the real manifest and HTTP release behavior.
-        assert events[-3:] == ["path-policy-enforcement", "canary-policy-enforcement", "credential-policy-enforcement"]
+        assert events[-4:] == ["path-policy-enforcement", "canary-policy-enforcement", "credential-policy-enforcement", "diagnostic-privacy"]
         events.append("runtime-code-enforcement")
         return object()
 
     monkeypatch.setattr(policy_guard, "install", lambda jk: events.append("path-policy-enforcement"))
     monkeypatch.setattr(canary_guard, "install", lambda jk: events.append("canary-policy-enforcement"))
     monkeypatch.setattr(credential_guard, "install", lambda jk: events.append("credential-policy-enforcement"))
+    monkeypatch.setattr(privacy_guard, "install", lambda jk: events.append("diagnostic-privacy"))
     monkeypatch.setattr(runtime_guard, "install", phase9b_install)
     monkeypatch.setattr(
         entrypoint.jk,
@@ -102,6 +104,8 @@ def test_secure_entrypoint_serving_process_seals_observes_then_activates_before_
         "path-policy-enforcement",
         "canary-policy-enforcement",
         "credential-policy-enforcement",
+        "diagnostic-privacy",
+        "runtime-code-enforcement",
         "kernel-main",
     ]
 
@@ -138,6 +142,7 @@ def test_secure_serving_child_aborts_before_kernel_main_when_phase9b_cannot_seal
     monkeypatch.setattr(policy_guard, "install", lambda jk: events.append("path-policy-enforcement"))
     monkeypatch.setattr(canary_guard, "install", lambda jk: events.append("canary-policy-enforcement"))
     monkeypatch.setattr(credential_guard, "install", lambda jk: events.append("credential-policy-enforcement"))
+    monkeypatch.setattr(privacy_guard, "install", lambda jk: events.append("diagnostic-privacy"))
     monkeypatch.setattr(runtime_guard, "install", reject_seal)
     monkeypatch.setattr(entrypoint.jk, "main", lambda: events.append("kernel-main"))
 
@@ -152,4 +157,6 @@ def test_secure_serving_child_aborts_before_kernel_main_when_phase9b_cannot_seal
         "path-policy-enforcement",
         "canary-policy-enforcement",
         "credential-policy-enforcement",
+        "diagnostic-privacy",
+        "runtime-code-enforcement",
     ]
