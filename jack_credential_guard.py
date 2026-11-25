@@ -259,11 +259,13 @@ def _credential_resource_paths() -> Tuple[str, ...]:
         appdata = os.getenv("APPDATA", "").strip()
         root = Path(appdata) if appdata else home / "AppData" / "Roaming"
         jack_config = root / "JackKernelLMStudio" / "config.json"
+        current_jack_config = root / "JackKernel" / "config.json"
     else:
         jack_config = home / ".jack-kernel-lm-studio" / "config.json"
+        current_jack_config = home / ".jack-kernel" / "config.json"
 
     pi_config = home / ".pi" / "agent" / "jack-kernel.json"
-    return (str(jack_config), str(pi_config))
+    return (str(jack_config), str(current_jack_config), str(pi_config))
 
 
 def _logical_sources(jk: Any) -> Tuple[tuple, ...]:

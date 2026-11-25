@@ -16682,6 +16682,7 @@ CLI_DEFAULTS: Dict[str, Any] = {
     "loop_detector_repetitions": 24,
     "forensic_archive_mode": "stage",
     "forensic_archive_dir": "",
+    "security_path_policy": None,
     "thinking_temperature": 1.0,
     "thinking_top_p": 0.95,
     "thinking_top_k": 20,
@@ -16726,6 +16727,8 @@ def _load_cli_config() -> Dict[str, Any]:
             source_path = legacy
     try:
         loaded = json.loads(source_path.read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict):
+            raise ValueError("configuration must be an object")
         if isinstance(loaded, dict):
             prior_schema = str(loaded.get("config_schema_version") or "")
             if prior_schema != str(CONFIG_SCHEMA_VERSION):
@@ -16766,8 +16769,8 @@ def _load_cli_config() -> Dict[str, Any]:
                 cfg["qwen_control_shape"] = "template_kwargs"
     except FileNotFoundError:
         pass
-    except Exception as exc:
-        print(f"Warning: could not read {source_path}: {exc}")
+    except Exception:
+        raise RuntimeError("Launcher configuration unavailable; repair before startup.") from None
 
     # Startup invariant: every new launcher session begins on X-High.
     # A user may select Deep Research, Agentic, or either Code Debugging profile for the current session before starting
@@ -16788,12 +16791,15 @@ def _load_cli_config() -> Dict[str, Any]:
             "Note: legacy Jack secondary prompt file is preserved but ignored: "
             f"{legacy_prompt}. Configure the agent system contract in Pi/the caller."
         )
+    _security_center_policies(cfg)
     return cfg
 
 
 def _save_cli_config(cfg: Dict[str, Any]) -> None:
     config_path, _ = _config_paths()
+    _security_center_policies(cfg)
     config_path.parent.mkdir(parents=True, exist_ok=True)
+    # Session Canary values are deliberately not in CLI_DEFAULTS.
     safe = {k: cfg[k] for k in CLI_DEFAULTS if k in cfg}
     config_path.write_text(
         json.dumps(safe, indent=2, ensure_ascii=False) + "\n",
@@ -16889,6 +16895,150 @@ def _run_transactional_editor(editor: Any, cfg: Dict[str, Any]) -> None:
     editor(candidate)
     cfg.clear()
     cfg.update(candidate)
+
+
+def _security_center_policies(cfg: Dict[str, Any]):
+    """Validate local startup configuration using the existing policy owners."""
+    import jack_path_policy as paths
+    import jack_evidence_guard as evidence
+    try:
+        saved = cfg.get("security_path_policy")
+        session = cfg.get("_security_session_canaries")
+        saved_raw = "" if saved is None else json.dumps(saved, ensure_ascii=False)
+        session_raw = "" if session is None else json.dumps(session, ensure_ascii=False)
+        paths.build_runtime_path_policy(runtime_id=RUNTIME_ID, lane_id=LANE_ID, raw_json=saved_raw)
+        evidence.build_static_runtime_canary_policy(runtime_id=RUNTIME_ID, lane_id=LANE_ID, raw_json=session_raw)
+        path_raw = os.getenv(paths.STATIC_PATH_POLICY_ENV, "").strip() or saved_raw
+        canary_raw = os.getenv(evidence.STATIC_CANARY_POLICY_ENV, "").strip() or session_raw
+        path_policy = paths.build_runtime_path_policy(runtime_id=RUNTIME_ID, lane_id=LANE_ID, raw_json=path_raw)
+        canary_policy = evidence.build_static_runtime_canary_policy(runtime_id=RUNTIME_ID, lane_id=LANE_ID, raw_json=canary_raw)
+    except Exception:
+        raise RuntimeError("Invalid security policy; Kernel start refused. Correct local settings or environment.") from None
+    return path_policy, canary_policy, path_raw, canary_raw
+
+
+def _security_center_summary(cfg: Dict[str, Any]) -> None:
+    paths, canaries, _, _ = _security_center_policies(cfg)
+    print(_status_value("Workspace Lock", "ON" if paths.workspace_root is not None else "OFF"))
+    print(_status_value("Restricted roots", str(len(paths.never_roots))))
+    print(_status_value("Startup Canaries", str(len(canaries.canaries._patterns))))
+    print(_status_value("Core security", "REQUIRED AT SECURED STARTUP"))
+
+
+def _edit_security_center(cfg: Dict[str, Any]) -> None:
+    """Edit local startup policy only; never expose a runtime mutation API."""
+    import jack_path_policy as paths
+    import jack_evidence_guard as evidence
+
+    def override(name):
+        if os.getenv(name, "").strip():
+            print("Administrator environment override is active. Change it outside Jack and restart the launcher.")
+            return True
+        return False
+
+    def apply_candidate(key, candidate):
+        trial = dict(cfg)
+        trial[key] = candidate
+        try:
+            _security_center_policies(trial)
+        except RuntimeError:
+            print("Invalid or conflicting security setting; previous setting retained.")
+            return
+        cfg[key] = candidate
+        print("Setting accepted for the next Kernel start.")
+
+    def remove_index(items, label):
+        try:
+            index = int(_cli_input(label + " number to remove (0 cancels): "))
+        except ValueError:
+            return False
+        if not 1 <= index <= len(items):
+            return False
+        if _cli_input("Remove this restriction? [y/N]: ").strip().lower() != "y":
+            return False
+        items.pop(index - 1)
+        return True
+
+    while True:
+        print()
+        print("JACK KERNEL - SECURITY CENTER")
+        _security_center_summary(cfg)
+        print("1  Set or change Workspace Lock directory")
+        print("2  Disable Workspace Lock (explicit confirmation)")
+        print("3  Add a restricted NEVER path")
+        print("4  Remove a user-defined NEVER path")
+        print("5  Add a custom Canary (hidden, launcher session only)")
+        print("6  Remove a session Canary")
+        print("7  View effective startup policy and core protections")
+        print("8  Forensic archive settings")
+        print("S  Save and apply settings    M  Discard and return")
+        choice = _cli_input("Security > ").strip().lower()
+        if choice == "s":
+            try:
+                _save_cli_config(cfg)
+            except (OSError, RuntimeError):
+                print("Settings could not be saved; no successful save is claimed.")
+                continue
+            print("Settings saved. Session Canaries are not written to disk.")
+            return
+        if choice == "m":
+            raise _ReturnToMainMenu()
+        if choice in {"1", "2", "3", "4"}:
+            if override(paths.STATIC_PATH_POLICY_ENV):
+                continue
+            candidate = copy.deepcopy(cfg.get("security_path_policy") or {
+                "version": 1, "workspace_root": None, "never_paths": [],
+            })
+            if choice in {"1", "3"}:
+                root = _cli_input("Absolute Windows path (blank cancels): ").strip()
+                if not root:
+                    continue
+                if choice == "1":
+                    candidate["workspace_root"] = root
+                else:
+                    candidate["never_paths"].append(root)
+            elif choice == "2":
+                if _cli_input("Disable Workspace Lock? [y/N]: ").strip().lower() != "y":
+                    continue
+                candidate["workspace_root"] = None
+            else:
+                for index, root in enumerate(candidate["never_paths"], 1):
+                    print(f"  {index}: {root!r}")
+                if not remove_index(candidate["never_paths"], "Path"):
+                    continue
+            apply_candidate("security_path_policy", candidate)
+        elif choice in {"5", "6"}:
+            if override(evidence.STATIC_CANARY_POLICY_ENV):
+                continue
+            candidate = copy.deepcopy(cfg.get("_security_session_canaries") or {"version": 1, "patterns": []})
+            if choice == "5":
+                value = _cli_input("Protected exact string (hidden; blank cancels): ", secret=True)
+                if not value:
+                    continue
+                candidate["patterns"].append({"id": "custom-" + uuid.uuid4().hex, "tier": "B", "value": value})
+            else:
+                print(f"{len(candidate['patterns'])} session Canaries; values hidden.")
+                if not remove_index(candidate["patterns"], "Canary"):
+                    continue
+            apply_candidate("_security_session_canaries", candidate)
+        elif choice == "7":
+            path_policy, _, _, _ = _security_center_policies(cfg)
+            print("Workspace directory:", repr(path_policy.workspace_root) if path_policy.workspace_root else "NOT CONFIGURED")
+            print("Path policy source:", "ADMIN ENVIRONMENT" if os.getenv(paths.STATIC_PATH_POLICY_ENV, "").strip() else "LOCAL SETTINGS / DEFAULTS")
+            print("Canary policy source:", "ADMIN ENVIRONMENT" if os.getenv(evidence.STATIC_CANARY_POLICY_ENV, "").strip() else "LAUNCHER SESSION")
+            print("Effective restricted roots (default and user-defined):")
+            for root in path_policy.never_roots:
+                print("  " + repr(root))
+            print("Credential protection: automatic known-value isolation; values hidden.")
+            print("Mandatory at secured startup: StreamingIRQ / Reasoning Airlock, Canary enforcement,")
+            print("Consequence Gate, Authority Ledger, Credential Isolation & DLP, Source Drift Guard,")
+            print("Runtime Code Integrity, Static Policy Integrity, Dynamic Authority Integrity, Diagnostic Privacy.")
+            print("Configuration validation passed; this is not a live serving-process attestation.")
+            print("Path checks cover represented targets, not universal final filesystem-object identity.")
+        elif choice == "8":
+            _edit_forensic_archive(cfg)
+        else:
+            print("Unknown security selection.")
 
 
 def _prompt_value(label: str, current: Any, cast=str, *, allow_empty: bool = False) -> Any:
@@ -17108,6 +17258,7 @@ def _print_header(
     print(_status_value("Virtual model", cfg['virtual_model']))
     print(_status_value("Preserve thinking", "ON" if cfg.get("preserve_thinking", True) else "OFF"))
     print(_status_value("Forensic archive", str(cfg.get("forensic_archive_mode", "stage")).upper()))
+    _security_center_summary(cfg)
     loop_n = cfg.get("loop_detector_repetitions", 24)
     print(_status_value("Loop Detector", f"ON / {loop_n} repetitions" if cfg.get("loop_detector_enabled", True) else "OFF"))
     active_mode = _REASONING_LEVEL_ALIASES.get(str(cfg.get("reasoning_level", "x-high")).lower(), str(cfg.get("reasoning_level", "x-high")).lower())
@@ -17679,6 +17830,9 @@ def _config_to_env(cfg: Dict[str, Any]) -> Dict[str, str]:
     }
     for key, value in values.items():
         env[key] = str(value)
+    _, _, path_raw, canary_raw = _security_center_policies(cfg)
+    env["JACK_PATH_POLICY_JSON"] = path_raw
+    env["JACK_CANARY_POLICY_JSON"] = canary_raw
     return env
 
 
@@ -17693,10 +17847,15 @@ def _start_server_from_cli(cfg: Dict[str, Any]) -> None:
         print()
         print("Backend endpoint is not configured. Use option 2 first.")
         return
-    _save_cli_config(cfg)
-    env = _config_to_env(cfg)
+    try:
+        env = _config_to_env(cfg)
+        _save_cli_config(cfg)
+    except (RuntimeError, OSError):
+        print("Security configuration could not be validated or saved; Kernel start refused.")
+        return
     print()
     print("Starting Jack Kernel...")
+    _security_center_summary(cfg)
     print(f"Backend        : {_backend_name(cfg)}")
     print(f"Backend URL    : {cfg.get('backend_base_url')}")
     print(f"Backend model  : {_backend_model_status(cfg)}")
@@ -17748,6 +17907,7 @@ def _print_main_menu_options() -> None:
     print(_ansi_rgb("  L", _JACK_STEEL, bold=True) + "  Loop Detector")
     print(_ansi_rgb("  B", _JACK_STEEL, bold=True) + "  Generation budgets")
     print(_ansi_rgb("  C", _JACK_STEEL, bold=True) + "  Context monitor (separate window)")
+    print(_ansi_rgb("  K", _JACK_STEEL, bold=True) + "  Security Center")
     print(_ansi_rgb("  S", _JACK_STEEL, bold=True) + "  Save settings")
     print(_ansi_rgb("  M", _JACK_STEEL, bold=True) + "  Main screen / refresh")
     print(_ansi_rgb("  Q", _JACK_STEEL, bold=True) + "  Quit")
@@ -17759,7 +17919,7 @@ def _print_compact_main_commands() -> None:
     print()
     print(_ansi_rgb("Main:", _JACK_MUTED) +
           " 1 Start  2 Models  3 Reasoning  4 Sampling  5 Endpoint  6 Advanced")
-    print("      7 Test  8 Reset  P Thinking  F Forensic  L Loop  B Budgets  C Context  S Save  M Main screen  Q Quit")
+    print("      7 Test  8 Reset  P Thinking  F Forensic  L Loop  B Budgets  C Context  K Security  S Save  M Main screen  Q Quit")
     print(_ansi_rgb("Use M only when you want the full status screen redrawn.", _JACK_MUTED))
     print()
 
@@ -17775,8 +17935,12 @@ def _render_full_main_screen(cfg: Dict[str, Any], *, preserve_intro: bool = Fals
 def run_cli() -> None:
     _enable_cli_branding()
     intro_shown = _show_brand_intro()
-    cfg = _load_cli_config()
-    _save_cli_config(cfg)
+    try:
+        cfg = _load_cli_config()
+        _save_cli_config(cfg)
+    except (RuntimeError, OSError):
+        print("Launcher configuration unavailable or invalid; Kernel start refused.")
+        return
 
     # Render the complete branded main screen once.  Normal actions deliberately
     # do not repaint it; their results remain visible and control returns to the
@@ -17806,8 +17970,13 @@ def run_cli() -> None:
             elif choice == "8":
                 confirm = _cli_input("Reset all settings to Jack defaults? [y/N]: ").strip().lower()
                 if confirm in {"y", "yes"}:
+                    saved_security = cfg.get("security_path_policy")
+                    session_canaries = cfg.get("_security_session_canaries")
                     cfg = copy.deepcopy(CLI_DEFAULTS)
-                    print("Defaults restored.")
+                    cfg["security_path_policy"] = saved_security
+                    if session_canaries is not None:
+                        cfg["_security_session_canaries"] = session_canaries
+                    print("Defaults restored; security policy retained. Use Security Center to change it.")
             elif choice == "p":
                 _run_transactional_editor(_edit_preserve_thinking, cfg)
             elif choice == "f":
@@ -17819,6 +17988,8 @@ def run_cli() -> None:
             elif choice == "c":
                 cfg["context_monitor_enabled"] = not bool(cfg.get("context_monitor_enabled", True))
                 print("Context monitor: " + ("ON (next kernel start)" if cfg["context_monitor_enabled"] else "OFF (next kernel start)"))
+            elif choice == "k":
+                _run_transactional_editor(_edit_security_center, cfg)
             elif choice == "s":
                 _save_cli_config(cfg)
                 print("Settings saved.")

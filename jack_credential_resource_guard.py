@@ -8,6 +8,7 @@ from typing import Any, Optional, Tuple
 
 
 RESOURCE_JACK_CONFIG = "resource:jack-config"
+RESOURCE_JACK_CURRENT_CONFIG = "resource:jack-current-config"
 RESOURCE_PI_CONFIG = "resource:pi-config"
 
 
@@ -105,6 +106,8 @@ def _resource_id_for_path(canonical: str) -> str:
         r"\.jack-kernel-lm-studio\config.json"
     ):
         return RESOURCE_JACK_CONFIG
+    if lowered.endswith(r"\jackkernel\config.json") or lowered.endswith(r"\.jack-kernel\config.json"):
+        return RESOURCE_JACK_CURRENT_CONFIG
     if lowered.endswith(r"\.pi\agent\jack-kernel.json"):
         return RESOURCE_PI_CONFIG
     raise RuntimeError("Phase-7 encountered an unknown protected credential resource")
