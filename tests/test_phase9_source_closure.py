@@ -113,5 +113,3 @@ def test_source_manifest_is_sealed_and_does_not_accept_late_components(tmp_path)
     guard = _guard(path)
     with pytest.raises(RuntimeError):
         guard.register_source(name="late", path=path)
-
-
