@@ -16,6 +16,9 @@ def state(call_id="call-a", withheld=("blocked-a",)):
             "name": "read", "arguments": '{"path":"safe.txt"}'}}]}],
         accepted_tool_results=None, accepted_executor_context=None,
         in_flight=False, created_at=100.0, tools=[], tool_choice=None,
+        secondary_system="stage instructions", debugging_run_id=None,
+        deferred_tool_rejection_errors=(), frozen_stage1_history=None,
+        frozen_stage1_answer=None,
     )
 
 
@@ -113,3 +116,56 @@ def test_formatter_covers_arguments_exceptions_and_late_handlers():
         logger.setLevel(old_level)
         logger.propagate = old_propagate
         handler.close()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("secondary_system", "substituted instructions"),
+    ("debugging_run_id", "wrong-run"),
+    ("deferred_tool_rejection_errors", ("substituted denial",)),
+    ("frozen_stage1_answer", "forged answer"),
+])
+def test_resume_authority_metadata_tampering_is_denied(field, value):
+    a = PendingAuthority()
+    s = state()
+    a.register(s)
+    setattr(s, field, value)
+    with pytest.raises(DynamicAuthorityUnavailable):
+        a.verify_request(["call-a"], {"call-a": s})
+
+
+def test_frozen_checkpoint_is_sealed_and_retry_preserved():
+    a = PendingAuthority()
+    s = state()
+    a.register(s)
+    a.transition(s, in_flight=True, accept=[{"content": "evidence"}])
+    history = [{"role": "assistant", "content": "completed work"}]
+    a.freeze(s, history, "completed work")
+    history[0]["content"] = "external mutation"
+    a.transition(s, in_flight=False)
+    a.verify(s)
+    assert s.frozen_stage1_history[0]["content"] == "completed work"
+    assert s.frozen_stage1_answer == "completed work"
+    a.transition(s, in_flight=True)
+    with pytest.raises(DynamicAuthorityUnavailable):
+        a.freeze(s, [], "replacement")
+    s.frozen_stage1_history[0]["content"] = "forged evidence"
+    with pytest.raises(DynamicAuthorityUnavailable):
+        a.verify(s)
+
+
+def test_pending_index_cannot_be_mutated_in_place():
+    a = PendingAuthority()
+    s = state()
+    a.register(s)
+    with pytest.raises(TypeError):
+        a._entries[id(s)] = None
+    a.verify(s)
+
+
+def test_released_id_cannot_collide_with_another_withheld_id():
+    a = PendingAuthority()
+    a.register(state())
+    with pytest.raises(DynamicAuthorityUnavailable):
+        a.register(state("blocked-a", ()))
+    with pytest.raises(DynamicAuthorityUnavailable):
+        a.register(state("call-b", ("call-a",)))
