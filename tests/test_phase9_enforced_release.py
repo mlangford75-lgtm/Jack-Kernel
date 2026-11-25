@@ -317,3 +317,35 @@ def test_secure_install_refuses_required_route_absence(tmp_path):
     from jack_runtime_code_guard import RuntimeCodeIntegrityUnavailable
     with pytest.raises(RuntimeCodeIntegrityUnavailable):
         install(host)
+
+
+def test_model_request_survives_independent_executor_integrity_failure(tmp_path):
+    host, calls = _integrated_host(tmp_path)
+    guard = install(host)
+    with TestClient(host.APP) as client:
+        host._phase4_executor_admission_decision = (
+            lambda _body: {"allowed": "untrusted"}
+        )
+        assert client.post("/jack/security/path-admission").status_code == 503
+        result = client.post("/v1/chat/completions")
+        assert result.status_code == 200, (result.text, guard.mismatched_slots)
+        assert result.json() == {"verified": True}
+    assert calls["run"] == 1
+    assert calls["executor"] == 0
+
+
+def test_executor_and_pi_requests_survive_independent_model_compromise(tmp_path):
+    host, calls = _integrated_host(tmp_path)
+    guard = install(host)
+    with TestClient(host.APP) as client:
+        async def bypass(_body):
+            return {"untrusted": "must not release"}
+        host.KERNEL.run = bypass
+        assert client.post("/v1/chat/completions").status_code == 503
+        executor = client.post("/jack/security/path-admission")
+        control = client.post("/jack/orchestration/tasks")
+        assert executor.status_code == 200, (executor.text, guard.mismatched_slots)
+        assert executor.json() == {"allowed": True}
+        assert control.status_code == 200, (control.text, guard.mismatched_slots)
+        assert control.json() == {"ok": True}
+    assert calls == {"run": 0, "executor": 1, "control": 1}
