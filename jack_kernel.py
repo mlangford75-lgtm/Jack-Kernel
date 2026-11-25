@@ -9979,7 +9979,7 @@ class JackQwenKernel:
         self._activity_telemetry_degraded = False
         self._pending_tool_resumes: Dict[str, PendingToolResume] = {}
         self._pending_tool_resume_lock = asyncio.Lock()
-        self._pending_authority = PendingAuthority()
+        self._pending_authority = PendingAuthority(Phase4ExecutorRequestContext)
         self._pending_debugging_intake_resumes: Dict[str, PendingDebuggingIntakeResume] = {}
         self._pending_debugging_intake_resume_lock = asyncio.Lock()
         self._pending_debugging_user_resumes: Dict[str, PendingDebuggingUserResume] = {}
