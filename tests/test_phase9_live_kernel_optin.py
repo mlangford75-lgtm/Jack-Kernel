@@ -70,7 +70,12 @@ async def probe():
             route.dependant.call = bypass_route
         else:
             raise AssertionError("Unknown test scenario")
-        rejected = await client.get("/")
+        # The affected consequence must be denied, while unrelated
+        # read-only observation remains independently available.
+        if SCENARIO == "executor_binding":
+            rejected = await client.post("/jack/security/path-admission", json={})
+        else:
+            rejected = await client.post("/v1/chat/completions", json={})
         assert rejected.status_code == 503, (
             rejected.status_code, rejected.text, guard.mismatched_slots
         )
@@ -79,6 +84,11 @@ async def probe():
         }
         assert guard.state == "INVALIDATED"
         assert guard.mismatched_slots
+        healthy = await client.get("/")
+        assert healthy.status_code == 200, (
+            healthy.status_code, healthy.text, guard.mismatched_slots
+        )
+        assert src.state is source.SourceAuthorityState.ACTIVE
 
 SCENARIO = "__SCENARIO__"
 try:
