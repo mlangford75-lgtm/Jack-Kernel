@@ -244,6 +244,21 @@ def test_integrated_fastapi_blocks_rebound_run_before_dispatch(tmp_path):
     authority = install(host)
     with TestClient(host.APP) as client:
         response = client.post("/v1/chat/completions")
+        if response.status_code != 200:
+            from jack_runtime_code_guard import _resolve
+            debug = []
+            for slot in authority._slots:
+                if slot.name in authority.mismatched_slots:
+                    try:
+                        receiver, function, shape = _resolve(slot.owner, slot.attribute)
+                        debug.append((slot.name, receiver is slot.receiver,
+                                      function is slot.function, shape == slot.shape,
+                                      len(shape), slot.shape.hex()[:20], shape.hex()[:20],
+                                      getattr(function.__code__, "co_filename", ""),
+                                      getattr(function.__code__, "co_firstlineno", 0)))
+                    except Exception as exc:
+                        debug.append((slot.name, type(exc).__name__))
+            pytest.fail("benign Phase9 startup mismatch: " + repr(debug))
         assert response.status_code == 200, authority.mismatched_slots
         assert response.json() == {"verified": True}
         async def bypass(_body):
