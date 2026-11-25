@@ -302,7 +302,7 @@ class RuntimeCodeAuthority:
             if self._state != "INITIALIZING" or not self._slots:
                 raise RuntimeCodeIntegrityUnavailable("nonempty manifest required before sealing")
             # Current identities must still match their registration captures.
-            self._check_locked()
+            self._check_method(self)
             self._state = "ACTIVE"
 
     def _check_locked(self, *, scopes: frozenset[str] | None = None) -> None:
@@ -400,7 +400,7 @@ class RuntimeCodeAuthority:
                 raise RuntimeCodeIntegrityCompromised("shared runtime executable authority invalidated")
             if self._invalidated_scopes.intersection(scopes):
                 raise RuntimeCodeIntegrityCompromised("affected executable authority invalidated")
-            self._check_locked(scopes=frozenset(scopes))
+            self._check_method(self, scopes=frozenset(scopes))
 
     def verify(self) -> None:
         with self._lock:
@@ -414,5 +414,5 @@ class RuntimeCodeAuthority:
                 raise RuntimeCodeIntegrityCompromised("runtime executable authority invalidated")
             if self._state == "INITIALIZING":
                 raise RuntimeCodeIntegrityUnavailable("runtime executable authority not sealed")
-            self._check_locked()
+            self._check_method(self)
             self._state = "ACTIVE"
