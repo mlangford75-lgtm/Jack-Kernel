@@ -209,11 +209,14 @@ def install(jk: Any) -> RuntimeCodeAuthority:
                     interrupted = exc
                     continue
                 yield chunk
-        finally:
+        except Exception:
             if interrupted is not None:
-                # The ASGI release boundary additionally blocks error text
-                # and all later chunks once state becomes unavailable.
                 raise interrupted
+            raise
+        if interrupted is not None:
+            # Preserve clean async-generator close/cancellation semantics.
+            # Raise only after the predecessor has naturally finished.
+            raise interrupted
 
     @wraps(original_tools)
     def guarded_tool_release(*args: Any, **kwargs: Any) -> Any:
