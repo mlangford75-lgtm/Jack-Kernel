@@ -5812,6 +5812,17 @@ def extended_stage1_reasoning_trace(
     return "\n\n".join(parts).strip()
 
 
+def _diagnostic_archive_allowed(value: Any) -> bool:
+    boundary = globals().get("_JACK_DIAGNOSTIC_PRIVACY")
+    return boundary is None or boundary.permits_archive(value)
+
+
+def _diagnostic_text(value: Any) -> str:
+    boundary = globals().get("_JACK_DIAGNOSTIC_PRIVACY")
+    text = str(value)
+    return text if boundary is None else boundary.redact(text)
+
+
 def _json_forensic_copy(value: Any) -> Any:
     """Return a JSON-safe deep copy for out-of-band forensic persistence."""
     return json.loads(json.dumps(value, ensure_ascii=False, default=str))
@@ -5906,6 +5917,10 @@ def _archive_agentic_stage1_forensic(
     record["archived_at_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     record["frozen_stage1_answer_sha256"] = _sha256_text(str(frozen_stage1_answer or ""))
     record["jack_xml_sha256"] = _sha256_text(str(frozen_jack_xml or ""))
+    if not _diagnostic_archive_allowed(record):
+        _discard_agentic_stage1_forensic_snapshot(history)
+        LOG.warning("Optional Stage-1 archive withheld by privacy boundary")
+        return None
     canonical = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
     record["record_sha256"] = _sha256_text(canonical)
 
@@ -5996,6 +6011,9 @@ def _archive_extended_forensic(
         "transaction_trajectory": trajectory,
         "archived_at_utc": time.strftime("%Y-%m-%dT%H%M%SZ", time.gmtime()),
     }
+    if not _diagnostic_archive_allowed(record):
+        LOG.warning("Optional Deep Research archive withheld by privacy boundary")
+        return None
     canonical = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
     record["record_sha256"] = _sha256_text(canonical)
     target_meta = record.get("active_response_target") or {}
@@ -8450,7 +8468,7 @@ class OpenAICompatibleBackend:
             except Exception as exc:
                 raise HTTPException(
                     status_code=502,
-                    detail=f"Cannot query backend models at {url}: {exc}",
+                    detail=_diagnostic_text(f"Cannot query backend models at {url}: {exc}"),
                 ) from exc
             self._model_metadata_checked = True
             ids = [str(item.get("id", "")) for item in data if isinstance(item, dict) and item.get("id")]
@@ -9398,7 +9416,7 @@ class OpenAICompatibleBackend:
             response = await self._client.post(url, headers=self._headers(), json=current_payload)
         except httpx.ConnectError as exc:
             if not cache_decision.alternate_endpoint:
-                raise HTTPException(status_code=502, detail=f"Backend connection failed: {exc}") from exc
+                raise HTTPException(status_code=502, detail=_diagnostic_text(f"Backend connection failed: {exc}")) from exc
             LOG.warning("Optional auxiliary cache endpoint unavailable; falling back to primary backend")
             self._cache_router.disable_unavailable_aux()
             url = primary_url
@@ -9406,7 +9424,7 @@ class OpenAICompatibleBackend:
         except Exception as exc:
             raise HTTPException(
                 status_code=502,
-                detail=f"Backend request failed during {profile.name}: {exc}",
+                detail=_diagnostic_text(f"Backend request failed during {profile.name}: {exc}"),
             ) from exc
 
         # Only retry before generation when an OPTIONAL cache feature is rejected.
@@ -9445,7 +9463,7 @@ class OpenAICompatibleBackend:
                 status_code=502,
                 detail=(
                     f"Backend rejected stage {profile.name} with HTTP "
-                    f"{response.status_code}: {response.text[:4000]}"
+                    f"{response.status_code}: {_diagnostic_text(response.text[:4000])}"
                 ),
             )
 
@@ -11237,18 +11255,9 @@ class JackQwenKernel:
     async def _expire_pending_tool_resumes_locked(self, now: Optional[float] = None) -> None:
         now = time.time() if now is None else now
         cutoff = now - (6 * 60 * 60)
-        stale = {
-            state.resume_id
-            for state in self._pending_tool_resumes.values()
-            if state.created_at < cutoff and not state.in_flight
-        }
-        if not stale:
-            return
-        for call_id, state in list(self._pending_tool_resumes.items()):
-            if state.resume_id in stale:
-                self._pending_tool_resumes.pop(call_id, None)
-                self._pending_authority.retire(state)
-        LOG.info("Expired %d stale Jack tool-resume transaction(s)", len(stale))
+        expired = self._pending_authority.expire(cutoff, self._pending_tool_resumes)
+        if expired:
+            LOG.info("Expired %d stale Jack tool-resume transaction(s)", expired)
 
     @staticmethod
     def _tool_result_explicitly_failed(message: Dict[str, Any]) -> bool:
@@ -12005,6 +12014,10 @@ class JackQwenKernel:
 
         async with self._pending_tool_resume_lock:
             await self._expire_pending_tool_resumes_locked()
+            try:
+                self._pending_authority.verify_request((call_id,), self._pending_tool_resumes)
+            except DynamicAuthorityUnavailable:
+                raise HTTPException(status_code=503, detail="Pending tool authority unavailable") from None
             state = self._pending_tool_resumes.get(call_id)
             if state is None:
                 raise HTTPException(
@@ -12012,10 +12025,6 @@ class JackQwenKernel:
                     detail="Phase-4 executor admission does not match a pending Jack tool call",
                 )
 
-            try:
-                self._pending_authority.verify(state)
-            except DynamicAuthorityUnavailable:
-                raise HTTPException(status_code=503, detail="Pending tool authority unavailable") from None
             for message in reversed(state.history):
                 if not isinstance(message, dict):
                     continue
@@ -12090,16 +12099,12 @@ class JackQwenKernel:
             # checkpoints remain pending for transport retry, have no authority
             # to select or reject the current transaction. They are not appended
             # to the resumed stage; independent historical evidence remains intact.
-            live_states = {
-                id(pending_state): pending_state
-                for pending_state in self._pending_tool_resumes.values()
-            }
-            withheld_live_ids = {
-                call_id
-                for pending_state in live_states.values()
-                for call_id in pending_state.withheld_tool_call_ids
-            }
-            returned_withheld = set(ids_in_request) & withheld_live_ids
+            try:
+                returned_withheld = self._pending_authority.verify_request(
+                    ids_in_request, self._pending_tool_resumes
+                )
+            except DynamicAuthorityUnavailable:
+                raise HTTPException(status_code=503, detail="Pending tool authority unavailable") from None
             if returned_withheld:
                 raise HTTPException(
                     status_code=409,
@@ -12243,16 +12248,18 @@ class JackQwenKernel:
 
     async def _retire_pending_tool_resume(self, state: PendingToolResume) -> None:
         async with self._pending_tool_resume_lock:
-            for call_id in state.expected_tool_call_ids:
+            for call_id in self._pending_authority.retire(state):
                 if self._pending_tool_resumes.get(call_id) is state:
                     self._pending_tool_resumes.pop(call_id, None)
-            self._pending_authority.retire(state)
             state.in_flight = False
 
     async def _rearm_pending_tool_resume(self, state: PendingToolResume) -> None:
         async with self._pending_tool_resume_lock:
-            if any(self._pending_tool_resumes.get(call_id) is state for call_id in state.expected_tool_call_ids):
-                self._pending_authority.transition(state, in_flight=False)
+            if any(value is state for value in self._pending_tool_resumes.values()):
+                try:
+                    self._pending_authority.transition(state, in_flight=False)
+                except DynamicAuthorityUnavailable:
+                    LOG.warning("Pending authority rearm withheld")
 
     async def _rearm_pending_tool_resume_for_messages(self, messages: Any) -> None:
         if not isinstance(messages, list):
@@ -12267,7 +12274,10 @@ class JackQwenKernel:
         async with self._pending_tool_resume_lock:
             states = {id(self._pending_tool_resumes[call_id]): self._pending_tool_resumes[call_id] for call_id in ids if call_id in self._pending_tool_resumes}
             for state in states.values():
-                self._pending_authority.transition(state, in_flight=False)
+                try:
+                    self._pending_authority.transition(state, in_flight=False)
+                except DynamicAuthorityUnavailable:
+                    LOG.warning("Pending authority rearm withheld")
 
     @staticmethod
     def _required_completed_answer_from_stage(data: Dict[str, Any], stage_name: str) -> str:
@@ -12794,7 +12804,7 @@ class JackQwenKernel:
             except Exception as exc:
                 if isinstance(exc, GenerationBudgetExceeded):
                     raise
-                detail = str(exc.detail) if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
+                detail = _diagnostic_text(exc.detail if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}")
                 completed = self._agentic_degraded_result(history, usage, frozen_stage1_answer, detail)
             await self._retire_pending_tool_resume(state)
             return completed
@@ -12875,7 +12885,7 @@ class JackQwenKernel:
         except Exception as exc:
             if isinstance(exc, GenerationBudgetExceeded):
                 raise
-            detail = str(exc.detail) if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
+            detail = _diagnostic_text(exc.detail if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}")
             return self._agentic_degraded_result(history, usage, frozen_answer, detail)
 
     async def _prepare_commit(
@@ -13010,7 +13020,7 @@ class JackQwenKernel:
             except Exception as exc:
                 if isinstance(exc, GenerationBudgetExceeded):
                     raise
-                detail = str(exc.detail) if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
+                detail = _diagnostic_text(exc.detail if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}")
                 return self._agentic_degraded_result(history, usage, frozen_stage1_answer, detail)
 
         if CODE_DEBUGGING_MODE:
@@ -13933,7 +13943,7 @@ class JackQwenKernel:
                         if AGENTIC_MODE and stage_key == "extended_reflection" and agentic_frozen_stage1_answer is not None:
                             # An interrupted Stage 2 never commits M. Explicitly
                             # mark memory failure and deliver byte-exact frozen A1.
-                            detail = str(exc.detail) if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
+                            detail = _diagnostic_text(exc.detail if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}")
                             degraded = self._agentic_degraded_result(history, usage, agentic_frozen_stage1_answer, detail)
                             if pending_state is not None:
                                 await self._retire_pending_tool_resume(pending_state)
@@ -14012,7 +14022,7 @@ class JackQwenKernel:
                     except Exception as exc:
                         if isinstance(exc, GenerationBudgetExceeded):
                             raise
-                        detail = str(exc.detail) if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
+                        detail = _diagnostic_text(exc.detail if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}")
                         completed = self._agentic_degraded_result(
                             history, usage, agentic_frozen_stage1_answer, detail
                         )
@@ -14103,7 +14113,7 @@ class JackQwenKernel:
                         raise
                     if agentic_frozen_stage1_answer is None:
                         raise
-                    detail = str(exc.detail) if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
+                    detail = _diagnostic_text(exc.detail if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}")
                     degraded = self._agentic_degraded_result(history, usage, agentic_frozen_stage1_answer, detail)
                     if pending_state is not None:
                         await self._retire_pending_tool_resume(pending_state)
@@ -14836,7 +14846,7 @@ class OrchestrationEventHub:
             if response.status_code >= 500:
                 raise HTTPException(status_code=502, detail="Pi control bridge is unavailable")
             if response.status_code >= 400:
-                raise HTTPException(status_code=response.status_code, detail=response.text)
+                raise HTTPException(status_code=response.status_code, detail=_diagnostic_text(response.text))
         except HTTPException:
             raise
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout) as exc:
@@ -15021,7 +15031,7 @@ class OrchestrationEventHub:
                     ) as upstream:
                         if upstream.status_code != 200:
                             body = await upstream.aread()
-                            self._last_error = f"Pi SSE status {upstream.status_code}: {body[:200]!r}"
+                            self._last_error = _diagnostic_text(f"Pi SSE status {upstream.status_code}: {body[:200]!r}")
                             await asyncio.sleep(1.0)
                             continue
                         self._last_error = None
@@ -15029,7 +15039,7 @@ class OrchestrationEventHub:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self._last_error = str(exc)
+                self._last_error = _diagnostic_text(exc)
                 if self._stopping:
                     return
                 await asyncio.sleep(1.0)
@@ -16315,7 +16325,7 @@ async def _safe_public_stream(
         if not isinstance(exc, (RepeatedLoopInterrupt, RepeatedToolCycleInterrupt)):
             await KERNEL._rearm_pending_tool_resume_for_messages(body.get("messages"))
         await KERNEL._rearm_pending_debugging_resumes_for_messages(body.get("messages"))
-        detail = str(exc.detail) if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
+        detail = _diagnostic_text(exc.detail if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}")
         response_id = f"chatcmpl-jack-error-{uuid.uuid4().hex}"
         created = int(time.time())
 
@@ -17914,6 +17924,11 @@ def run_server() -> None:
         port=actual_port,
         log_level=CFG.log_level.lower(),
     )
+    # Uvicorn configures its handlers after secure startup; cover the final handlers.
+    privacy = globals().get("_JACK_DIAGNOSTIC_PRIVACY")
+    if privacy is not None:
+        from jack_phase11_privacy import protect_logging_handlers
+        protect_logging_handlers(privacy)
     server = uvicorn.Server(config)
     # Spawn a separate, fully optional process after the actual port is bound.
     # It cannot block the server startup or influence cognition/execution.
