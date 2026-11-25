@@ -214,6 +214,10 @@ def _integrated_host(tmp_path: Path):
     )
     calls = {"run": 0, "executor": 0, "control": 0}
 
+    @app.get("/")
+    async def status():
+        return {"ready": True}
+
     @app.post("/v1/chat/completions")
     async def chat():
         calls["run"] += 1
@@ -514,6 +518,8 @@ def test_model_sanitizer_rebinding_denies_model_but_preserves_verified_observati
     host.sanitize_agent_request = lambda body: {"unsafe": True}
     with TestClient(host.APP) as client:
         assert client.post("/v1/chat/completions").status_code == 503
-        assert client.get("/").status_code == 404 or client.get("/").status_code == 200
+        result = client.get("/")
+        assert result.status_code == 200
+        assert result.json() == {"ready": True}
     assert guard.state == "INVALIDATED"
     assert calls["run"] == 0
