@@ -16,7 +16,7 @@ Deep Reasoning, Local Agentic (Preserve Thinking), and Code Debugging are **refe
 >
 > **Current security state:** [`CURRENT_SECURITY_STATUS.md`](CURRENT_SECURITY_STATUS.md)
 >
-> **Latest operational checkpoint (October 14, 2026):** Phase 8 remains the last formally validated/frozen security phase. Phase 9A research closed without Phase 9 runtime-code-integrity enforcement; the Agentic (Preserve Thinking) lineage tool-resume repair (PR #45) and Responses error non-disclosure repair (PR #46) are merged, with **527 Windows Python tests passing** on the verified post-fix baseline.
+> **Security update (November 25, 2026):** Phase 9B selected executable-identity enforcement is implemented and **mandatory in the secured `--serve` child**, layered after Phase 8. It passed **98 targeted Windows Python 3.14.6 tests**, including a post-start live HTTP executable-tampering test on the real secured server ([CI evidence](https://github.com/mlangford75-lgtm/Jack-Kernel/actions/runs/45606058846)). Phase 8 remains the last formally **fully validated, frozen and tagged** security phase; Phase 9B's full regression, real external side-effect, and comprehensive release gates are not yet complete. See [current security status](CURRENT_SECURITY_STATUS.md) and [Phase 9B evidence](docs/security/README.md).
 
 ## Architecture at a glance
 
