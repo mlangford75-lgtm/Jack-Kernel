@@ -11,6 +11,7 @@ on:
       - 'tests/test_phase9_enforced_release.py'
       - 'tests/test_phase9_live_kernel_optin.py'
       - 'tests/test_phase9_secure_child_http.py'
+      - 'tests/test_phase9_live_security_http_tamper.py'
       - '.github/workflows/phase9b-qualification.yml'
   workflow_dispatch:
 
@@ -33,12 +34,14 @@ jobs:
           python -m pip install pip==26.2.1
           python -m pip install -r requirements-test.txt
       - name: Compile experimental guard
-        run: python -m py_compile jack_runtime_code_guard.py tests/test_phase9_runtime_code_guard.py tests/test_phase9_real_wrapper_qualification.py jack_phase9b_enforcement.py jack_secure_entrypoint.py tests/test_phase9_enforced_release.py tests/test_phase9_live_kernel_optin.py tests/test_phase9_secure_child_http.py
+        run: python -m py_compile jack_runtime_code_guard.py tests/test_phase9_runtime_code_guard.py tests/test_phase9_real_wrapper_qualification.py jack_phase9b_enforcement.py jack_secure_entrypoint.py tests/test_phase9_enforced_release.py tests/test_phase9_live_kernel_optin.py tests/test_phase9_secure_child_http.py tests/test_phase9_live_security_http_tamper.py
       - name: Run Phase 9B isolated identity and Phase 8 wrapper qualification
         run: python -m pytest -q tests/test_phase9_runtime_code_guard.py tests/test_phase9_real_wrapper_qualification.py tests/test_phase9_enforced_release.py
       - name: Run live loaded Jack Kernel with mandatory Phase 9B in isolated child
         run: python -m pytest -q tests/test_phase9_live_kernel_optin.py
       - name: Run real secure child mandatory Phase 9B loopback HTTP smoke
         run: python -m pytest -q tests/test_phase9_secure_child_http.py
+      - name: Live secured HTTP security tamper attack (model + shared authentication)
+        run: python -m pytest -q tests/test_phase9_live_security_http_tamper.py
       - name: Run existing Phase 8 security and preservation gates
         run: python -m pytest -q tests/test_phase8_source_baseline.py tests/test_phase8_runtime_enforcement.py tests/test_phase8_ledger_observation.py tests/test_phase8_adversarial_preservation.py
