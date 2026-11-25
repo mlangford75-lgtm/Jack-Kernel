@@ -103,6 +103,11 @@ class CanaryPattern:
     canary_id: str
     tier: CanaryTier
     value: str = field(repr=False)
+    sensitivity_percent: int = 100
+
+    @property
+    def match_chars(self) -> int:
+        return (len(self.value) * self.sensitivity_percent + 99) // 100
 
     def __post_init__(self) -> None:
         if not isinstance(self.canary_id, str):
@@ -117,6 +122,8 @@ class CanaryPattern:
             raise TypeError("canary value must be a string")
         if not self.value:
             raise ValueError("canary value must not be empty")
+        if type(self.sensitivity_percent) is not int or not 1 <= self.sensitivity_percent <= 100:
+            raise ValueError("Canary sensitivity must be an integer percentage from 1 to 100")
 
 
 @dataclass(frozen=True)
@@ -190,7 +197,7 @@ class DeterministicCanarySet:
             values.add(pattern.value)
 
         required_window = max(
-            (len(pattern.value) - 1 for pattern in materialized),
+            (pattern.match_chars - 1 for pattern in materialized),
             default=0,
         )
 
@@ -236,7 +243,21 @@ class DeterministicCanarySet:
         best = None
 
         for pattern in self._patterns:
-            index = data.find(pattern.value)
+            width = pattern.match_chars
+            if width == len(pattern.value):
+                index = data.find(pattern.value)
+            else:
+                # Match any contiguous fragment of the registered value,
+                # not a bag of characters or just its leading prefix.
+                # Do not materialize a second collection of secret fragments.
+                end = len(data) - width
+                if best is not None:
+                    end = min(end, best[0][0])
+                index = next(
+                    (i for i in range(end + 1)
+                     if data[i:i + width] in pattern.value),
+                    -1,
+                )
             if index < 0:
                 continue
 
@@ -277,8 +298,11 @@ class RuntimeCanaryPolicy:
     runtime_id: str
     lane_id: str
     canaries: DeterministicCanarySet
+    sensitivity_percent: int = 100
 
     def __post_init__(self) -> None:
+        if type(self.sensitivity_percent) is not int or not 1 <= self.sensitivity_percent <= 100:
+            raise ValueError("Canary sensitivity must be an integer percentage from 1 to 100")
         if not isinstance(self.runtime_id, str):
             raise TypeError("runtime_id must be a string")
         if not self.runtime_id:
@@ -370,6 +394,8 @@ STATIC_CANARY_POLICY_VERSION = 1
 STATIC_CANARY_MAX_PATTERNS = 128
 STATIC_CANARY_MAX_WINDOW = 256
 STATIC_CANARY_MIN_VALUE_LENGTH = 8
+STATIC_CANARY_CONFIGURABLE_MAX_WINDOW = 16384
+STATIC_CANARY_MAX_VALUE_LENGTH = 16385
 
 
 def build_static_runtime_canary_policy(
@@ -408,7 +434,7 @@ def build_static_runtime_canary_policy(
             f"{STATIC_CANARY_POLICY_ENV} must be a JSON object"
         )
 
-    if set(payload) != {"version", "patterns"}:
+    if not {"version", "patterns"} <= set(payload) or set(payload) - {"version", "patterns", "sensitivity_percent", "max_window"}:
         raise RuntimeError(
             f"{STATIC_CANARY_POLICY_ENV} has unsupported top-level fields"
         )
@@ -424,6 +450,13 @@ def build_static_runtime_canary_policy(
             f"{STATIC_CANARY_POLICY_ENV} version must be "
             f"{STATIC_CANARY_POLICY_VERSION}"
         )
+
+    sensitivity = payload.get("sensitivity_percent", 100)
+    max_window = payload.get("max_window", STATIC_CANARY_MAX_WINDOW)
+    if type(sensitivity) is not int or not 1 <= sensitivity <= 100:
+        raise RuntimeError("Canary sensitivity must be an integer percentage from 1 to 100")
+    if type(max_window) is not int or not 0 <= max_window <= STATIC_CANARY_CONFIGURABLE_MAX_WINDOW:
+        raise RuntimeError("Canary quarantine ceiling is outside supported resource limits")
 
     raw_patterns = payload.get("patterns")
 
@@ -446,7 +479,7 @@ def build_static_runtime_canary_policy(
                 "must be an object"
             )
 
-        if set(item) != {"id", "tier", "value"}:
+        if not {"id", "tier", "value"} <= set(item) or set(item) - {"id", "tier", "value", "sensitivity_percent"}:
             raise RuntimeError(
                 f"{STATIC_CANARY_POLICY_ENV} pattern {index} "
                 "has unsupported fields"
@@ -471,6 +504,8 @@ def build_static_runtime_canary_policy(
                 "value must be a string"
             )
 
+        if len(value) > STATIC_CANARY_MAX_VALUE_LENGTH:
+            raise RuntimeError("Canary value exceeds supported resource limits")
         if len(value) < STATIC_CANARY_MIN_VALUE_LENGTH:
             raise RuntimeError(
                 f"{STATIC_CANARY_POLICY_ENV} pattern {index} "
@@ -482,6 +517,7 @@ def build_static_runtime_canary_policy(
                 canary_id=canary_id,
                 tier=CanaryTier(tier_value),
                 value=value,
+                sensitivity_percent=item.get("sensitivity_percent", sensitivity),
             )
         except (TypeError, ValueError):
             # Never render the supplied item or value into an error.
@@ -495,8 +531,8 @@ def build_static_runtime_canary_policy(
         canaries = DeterministicCanarySet(
             patterns,
             max_window=(
-                STATIC_CANARY_MAX_WINDOW
-                if patterns
+                max_window
+                if patterns or "max_window" in payload
                 else 0
             ),
         )
@@ -512,6 +548,7 @@ def build_static_runtime_canary_policy(
         runtime_id=runtime_id,
         lane_id=lane_id,
         canaries=canaries,
+        sensitivity_percent=sensitivity,
     )
 
 

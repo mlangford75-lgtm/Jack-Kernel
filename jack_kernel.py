@@ -16683,6 +16683,7 @@ CLI_DEFAULTS: Dict[str, Any] = {
     "forensic_archive_mode": "stage",
     "forensic_archive_dir": "",
     "security_path_policy": None,
+    "security_irq_settings": None,
     "thinking_temperature": 1.0,
     "thinking_top_p": 0.95,
     "thinking_top_k": 20,
@@ -16905,7 +16906,16 @@ def _security_center_policies(cfg: Dict[str, Any]):
         saved = cfg.get("security_path_policy")
         session = cfg.get("_security_session_canaries")
         saved_raw = "" if saved is None else json.dumps(saved, ensure_ascii=False)
-        session_raw = "" if session is None else json.dumps(session, ensure_ascii=False)
+        irq = cfg.get("security_irq_settings")
+        if irq is not None:
+            if not isinstance(irq, dict) or set(irq) != {"sensitivity_percent", "max_window"}:
+                raise ValueError("Invalid StreamingIRQ settings")
+        session_payload = copy.deepcopy(session) if session is not None else {"version": 1, "patterns": []}
+        if irq is not None or session is not None:
+            session_payload.update(irq if irq is not None else {"sensitivity_percent": 100, "max_window": 4096})
+            session_raw = json.dumps(session_payload, ensure_ascii=False)
+        else:
+            session_raw = ""
         paths.build_runtime_path_policy(runtime_id=RUNTIME_ID, lane_id=LANE_ID, raw_json=saved_raw)
         evidence.build_static_runtime_canary_policy(runtime_id=RUNTIME_ID, lane_id=LANE_ID, raw_json=session_raw)
         path_raw = os.getenv(paths.STATIC_PATH_POLICY_ENV, "").strip() or saved_raw
@@ -16921,7 +16931,9 @@ def _security_center_summary(cfg: Dict[str, Any]) -> None:
     paths, canaries, _, _ = _security_center_policies(cfg)
     print(_status_value("Workspace Lock", "ON" if paths.workspace_root is not None else "OFF"))
     print(_status_value("Restricted roots", str(len(paths.never_roots))))
-    print(_status_value("Startup Canaries", str(len(canaries.canaries._patterns))))
+    print(_status_value("Startup Canaries", str(canaries.canaries.count)))
+    print(_status_value("StreamingIRQ sensitivity", str(canaries.sensitivity_percent) + "% consecutive match"))
+    print(_status_value("Custom Canary quarantine", f"{canaries.canaries.required_window} active / {canaries.canaries.max_window} ceiling"))
     print(_status_value("Core security", "REQUIRED AT SECURED STARTUP"))
 
 
@@ -16971,6 +16983,8 @@ def _edit_security_center(cfg: Dict[str, Any]) -> None:
         print("6  Remove a session Canary")
         print("7  View effective startup policy and core protections")
         print("8  Forensic archive settings")
+        print("9  StreamingIRQ sensitivity and quarantine ceiling")
+        print("10 Set or clear an individual Canary sensitivity override")
         print("S  Save and apply settings    M  Discard and return")
         choice = _cli_input("Security > ").strip().lower()
         if choice == "s":
@@ -17021,8 +17035,62 @@ def _edit_security_center(cfg: Dict[str, Any]) -> None:
                 if not remove_index(candidate["patterns"], "Canary"):
                     continue
             apply_candidate("_security_session_canaries", candidate)
+        elif choice == "9":
+            if override(evidence.STATIC_CANARY_POLICY_ENV):
+                continue
+            current = cfg.get("security_irq_settings") or {"sensitivity_percent": 100, "max_window": 4096}
+            print("Maximum 5%, High 10%, Standard 25%, Low 50%, Exact 100%, or Custom 1-100%.")
+            raw = _cli_input(f"Consecutive match percentage [{current['sensitivity_percent']}]: ").strip().lower()
+            presets = {"maximum": 5, "high": 10, "standard": 25, "low": 50, "exact": 100}
+            try:
+                if raw == "custom":
+                    percent = int(_cli_input("Custom percentage (1-100): "))
+                else:
+                    percent = presets[raw] if raw in presets else int(raw) if raw else current["sensitivity_percent"]
+                ceiling = _cli_input(f"Custom Canary quarantine ceiling (0-16384 chars) [{current['max_window']}]: ").strip()
+                ceiling = int(ceiling) if ceiling else current["max_window"]
+            except ValueError:
+                print("Invalid number; previous setting retained.")
+                continue
+            if percent < 100:
+                print("Partial matching can interrupt benign text that shares a key fragment.")
+                if _cli_input("Apply this sensitivity, including automatic credential Canaries? [y/N]: ").strip().lower() != "y":
+                    continue
+            apply_candidate("security_irq_settings", {"sensitivity_percent": percent, "max_window": ceiling})
+        elif choice == "10":
+            if override(evidence.STATIC_CANARY_POLICY_ENV):
+                continue
+            candidate = copy.deepcopy(cfg.get("_security_session_canaries") or {"version": 1, "patterns": []})
+            if not candidate["patterns"]:
+                print("No session Canaries configured.")
+                continue
+            for index, item in enumerate(candidate["patterns"], 1):
+                print(f"  {index}: {item.get('sensitivity_percent', 'inherit')} (value hidden)")
+            try:
+                index = int(_cli_input("Canary number (0 cancels): "))
+                if not 1 <= index <= len(candidate["patterns"]):
+                    continue
+                raw = _cli_input("Sensitivity percentage (1-100) or inherit: ").strip().lower()
+                item = candidate["patterns"][index - 1]
+                if raw == "inherit":
+                    item.pop("sensitivity_percent", None)
+                else:
+                    percent = int(raw)
+                    if (len(item["value"]) * percent + 99) // 100 < 8:
+                        print("Warning: effective match is shorter than eight characters; false positives likely.")
+                        if _cli_input("Apply anyway? [y/N]: ").strip().lower() != "y":
+                            continue
+                    item["sensitivity_percent"] = percent
+            except ValueError:
+                print("Invalid selection; previous setting retained.")
+                continue
+            apply_candidate("_security_session_canaries", candidate)
         elif choice == "7":
-            path_policy, _, _, _ = _security_center_policies(cfg)
+            path_policy, canary_policy, _, _ = _security_center_policies(cfg)
+            print("Custom Canary active quarantine:", canary_policy.canaries.required_window, "characters")
+            print("Global sensitivity:", canary_policy.sensitivity_percent, "%")
+            for index, item in enumerate(canary_policy.canaries._patterns, 1):
+                print(f"  Canary {index}: {item.sensitivity_percent}% / {item.match_chars} consecutive characters (value hidden)")
             print("Workspace directory:", repr(path_policy.workspace_root) if path_policy.workspace_root else "NOT CONFIGURED")
             print("Path policy source:", "ADMIN ENVIRONMENT" if os.getenv(paths.STATIC_PATH_POLICY_ENV, "").strip() else "LOCAL SETTINGS / DEFAULTS")
             print("Canary policy source:", "ADMIN ENVIRONMENT" if os.getenv(evidence.STATIC_CANARY_POLICY_ENV, "").strip() else "LAUNCHER SESSION")
@@ -17971,9 +18039,11 @@ def run_cli() -> None:
                 confirm = _cli_input("Reset all settings to Jack defaults? [y/N]: ").strip().lower()
                 if confirm in {"y", "yes"}:
                     saved_security = cfg.get("security_path_policy")
+                    saved_irq = cfg.get("security_irq_settings")
                     session_canaries = cfg.get("_security_session_canaries")
                     cfg = copy.deepcopy(CLI_DEFAULTS)
                     cfg["security_path_policy"] = saved_security
+                    cfg["security_irq_settings"] = saved_irq
                     if session_canaries is not None:
                         cfg["_security_session_canaries"] = session_canaries
                     print("Defaults restored; security policy retained. Use Security Center to change it.")

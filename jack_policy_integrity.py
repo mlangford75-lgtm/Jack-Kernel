@@ -124,18 +124,24 @@ def _canonical_material(kind: PolicyKind, policy: Any, key: bytes) -> bytes:
             if type(item) is not CanaryPattern or type(item.tier) is not CanaryTier:
                 raise PolicyIntegrityUnavailable("required Canary schema unavailable")
             value = _safe_scalar(item.value)
+            if type(item.sensitivity_percent) is not int or not 1 <= item.sensitivity_percent <= 100:
+                raise PolicyIntegrityUnavailable("required Canary sensitivity schema unavailable")
             entries.append({
+                "sensitivity_percent": item.sensitivity_percent,
                 "id": _safe_scalar(item.canary_id),
                 "tier": item.tier.value,
                 "value_mac": hmac.new(key, value.encode("utf-8", "surrogatepass"),
                                        hashlib.sha256).hexdigest(),
             })
+        if type(policy.sensitivity_percent) is not int or not 1 <= policy.sensitivity_percent <= 100:
+            raise PolicyIntegrityUnavailable("required Canary sensitivity schema unavailable")
         for bound in (policy.canaries.max_window, policy.canaries.required_window):
             if type(bound) is not int:
                 raise PolicyIntegrityUnavailable("required Canary window schema unavailable")
         data = {
             "runtime_id": _safe_scalar(policy.runtime_id),
             "lane_id": _safe_scalar(policy.lane_id),
+            "sensitivity_percent": policy.sensitivity_percent,
             "max_window": policy.canaries.max_window,
             "required_window": policy.canaries.required_window,
             "patterns": entries,
