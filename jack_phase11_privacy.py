@@ -66,11 +66,21 @@ def install(jk):
     if not cells:
         raise RuntimeError("Required diagnostic privacy policy unavailable")
     boundary = PrivacyBoundary(jk._JACK_RUNTIME_CREDENTIAL_POLICY, cells[0].cell_contents)
+    protect_logging_handlers(boundary)
+    jk._JACK_DIAGNOSTIC_PRIVACY = boundary
+    return boundary
+
+
+def protect_logging_handlers(boundary):
+    """Cover handlers added by the server after secure startup; idempotent."""
     handlers = set(logging.getLogger().handlers)
-    for logger in logging.Logger.manager.loggerDict.values():
+    for logger in tuple(logging.Logger.manager.loggerDict.values()):
         if isinstance(logger, logging.Logger):
             handlers.update(logger.handlers)
     for handler in handlers:
-        handler.setFormatter(ProtectedDiagnosticFormatter(handler.formatter, boundary))
-    jk._JACK_DIAGNOSTIC_PRIVACY = boundary
-    return boundary
+        original = handler.formatter
+        if isinstance(original, ProtectedDiagnosticFormatter):
+            if original.boundary is boundary:
+                continue
+            original = original.original
+        handler.setFormatter(ProtectedDiagnosticFormatter(original, boundary))
