@@ -228,3 +228,75 @@ jk._JACK_AUTHORITY_LEDGER.close()
         text=True, capture_output=True, check=False, timeout=55,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_phase10c_real_canary_and_credential_consequences(tmp_path):
+    script = r'''
+import asyncio
+import dataclasses
+import jack_kernel as jk
+from jack_evidence_guard import RuntimeCanaryPolicy
+from jack_phase10_canary_enforcement import install as install_canary, policy_cells
+from jack_phase10_credential_enforcement import install as install_credential
+from jack_policy_integrity import PolicyIntegrityCompromised
+
+jk._install_bundled_runtime_extensions()
+cell = policy_cells(jk.KERNEL.run, RuntimeCanaryPolicy)[0]
+original = cell.cell_contents
+canary = install_canary(jk)
+credential = install_credential(jk)
+client = jk.BACKEND._client
+# Real transport construction without network transmission.
+request = client.build_request("POST", "http://127.0.0.1:9/v1/chat/completions",
+                               json={"messages": []})
+assert request.method == "POST"
+old = jk._JACK_RUNTIME_CREDENTIAL_POLICY
+jk._JACK_RUNTIME_CREDENTIAL_POLICY = dataclasses.replace(old)
+try:
+    client.build_request("POST", "http://127.0.0.1:9/v1/chat/completions",
+                         json={"messages": []})
+except PolicyIntegrityCompromised:
+    pass
+else:
+    raise AssertionError("tampered credential policy allowed request construction")
+jk._JACK_RUNTIME_CREDENTIAL_POLICY = old
+assert credential.state == "INVALIDATED"
+
+async def exercise():
+    try:
+        await client.post("http://127.0.0.1:9/v1/chat/completions", json={"messages": []})
+    except PolicyIntegrityCompromised:
+        pass
+    else:
+        raise AssertionError("invalidated credentials allowed dispatch")
+    cell.cell_contents = dataclasses.replace(original)
+    try:
+        await jk.KERNEL.run({})
+    except PolicyIntegrityCompromised:
+        pass
+    else:
+        raise AssertionError("tampered Canary allowed model run")
+    cell.cell_contents = original
+    try:
+        async for chunk in jk.KERNEL.stream({}):
+            raise AssertionError("invalidated Canary allowed stream release")
+    except PolicyIntegrityCompromised:
+        pass
+
+asyncio.run(exercise())
+assert canary.state == "INVALIDATED"
+jk._JACK_AUTHORITY_LEDGER.close()
+'''
+    env = dict(os.environ)
+    env.update({
+        "JACK_AUTHORITY_LEDGER_DIR": str(tmp_path / "ledger"),
+        "JACK_FORENSIC_ARCHIVE_MODE": "off",
+        "JACK_BACKEND_MODEL": "test-model",
+        "JACK_BACKEND_PROFILE": "lmstudio",
+        "JACK_BACKEND_BASE_URL": "http://127.0.0.1:9/v1",
+    })
+    result = subprocess.run(
+        [sys.executable, "-c", script], cwd=_ROOT, env=env,
+        text=True, capture_output=True, check=False, timeout=55,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
