@@ -391,6 +391,16 @@ def install(jk: Any) -> RuntimeCodeAuthority:
                                   module_name=module.__name__, scope=scope)
             guard.register_source(name="source-" + module.__name__,
                                   path=Path(module.__file__).resolve(), scope=scope)
+        for name, owner, attr, scope in (
+            ("pending-authority-holder", jk.KERNEL, "_pending_authority", "authority"),
+            ("pending-live-map-holder", jk.KERNEL, "_pending_tool_resumes", "authority"),
+            ("pending-lock-holder", jk.KERNEL, "_pending_tool_resume_lock", "authority"),
+            ("privacy-holder", jk, "_JACK_DIAGNOSTIC_PRIVACY", "shared"),
+            ("path-authority-holder", jk, "_JACK_PHASE10_PATH_AUTHORITY", "shared"),
+            ("canary-authority-holder", jk, "_JACK_PHASE10_CANARY_AUTHORITY", "model"),
+            ("credential-authority-holder", jk, "_JACK_PHASE10_CREDENTIAL_AUTHORITY", "authority"),
+        ):
+            guard.register_holder(name=name, owner=owner, attribute=attr, scope=scope)
         for label, owner, attr, scope in (
             ("policy-verify", static.RuntimePolicyAuthority, "verify_for", "shared"),
             ("policy-check", static.RuntimePolicyAuthority, "_check_locked", "shared"),
