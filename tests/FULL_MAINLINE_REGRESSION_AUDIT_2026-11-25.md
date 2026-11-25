@@ -37,7 +37,7 @@
 | `test_agentic_stage2_review_evidence_continuity.py` | 4 |
 | `test_agentic_file_mutation_readback.py` | 3 |
 | `test_agentic_optional_draft_recovery.py` | 3 |
-| 10 additional 2-failure files, 9 additional 1-failure files | 29 |
+| 10 additional 2-failure files, 8 additional 1-failure files | 28 |
 
 The source of truth for all individual failing test names and tracebacks is the linked workflow log, not the abbreviated grouping above.
 
