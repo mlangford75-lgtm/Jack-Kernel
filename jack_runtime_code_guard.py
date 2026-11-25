@@ -301,14 +301,6 @@ class RuntimeCodeAuthority:
                 measurement_error = measurement_error or exc
                 continue
             if receiver is not slot.receiver or fn is not slot.function or shape != slot.shape:
-                if getattr(self, "_phase9b_diagnostic_enabled", False):
-                    log = getattr(self, "_phase9b_diagnostic", None)
-                    if log is None:
-                        log = []
-                        self._phase9b_diagnostic = log
-                    log.append((slot.name, receiver is slot.receiver,
-                                fn is slot.function, shape == slot.shape,
-                                slot.shape.hex()[:16], shape.hex()[:16]))
                 mismatches.append(slot.name)
         for module in self._modules:
             if sys.modules.get(module.module_name) is not module.original:
