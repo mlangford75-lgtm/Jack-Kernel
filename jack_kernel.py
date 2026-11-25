@@ -14004,8 +14004,10 @@ class JackQwenKernel:
                             self._agentic_require_completed_stage(stage_result, "Agentic Stage 1")
                             agentic_frozen_stage1_answer = append_extended_candidate_response(history, first_msg)
                             if pending_state is not None and pending_state.accepted_tool_results is not None:
-                                pending_state.frozen_stage1_history = copy.deepcopy(history)
-                                pending_state.frozen_stage1_answer = agentic_frozen_stage1_answer
+                                async with self._pending_tool_resume_lock:
+                                    self._pending_authority.freeze(
+                                        pending_state, history, agentic_frozen_stage1_answer
+                                    )
                             yield event({"reasoning_content": "\n[END STAGE 1 — A1 FROZEN]\n"})
                     elif ULTRA_MODE and stage_key == "extended_reflection":
                         anti_msg = ((stage_result.get("choices") or [{}])[0].get("message") or {})
