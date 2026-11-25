@@ -33,7 +33,7 @@ signals = Path(os.environ["JACK_PHASE9B_TEST_SIGNALS"])
 
 def adversarial_watcher():
     while True:
-        for target in ("model", "authentication"):
+        for target in ("model", "authentication", "path-policy"):
             request = signals / (target + ".request")
             receipt = signals / (target + ".ack")
             if not request.exists() or receipt.exists():
@@ -45,6 +45,8 @@ def adversarial_watcher():
                     )
                     return {"unauthorized": True}
                 jk.KERNEL.run = unauthorized_model
+            elif target == "path-policy":
+                jk._RUNTIME_PATH_POLICY = None
             else:
                 async def unauthorized_auth(*_args, **_kwargs):
                     (signals / "unauthorized_auth_executed").write_text(
@@ -156,7 +158,16 @@ def test_live_secure_http_detects_post_start_model_and_shared_auth_tamper(tmp_pa
             code, _ = _http(base, "/")
             assert code == 200
 
-            # First attack: replace the actual effective run binding while
+            # Remove the active policy after successful startup. The real
+            # executor route must reject this without disabling status.
+            _signal(signals, "path-policy", child, output)
+            code, response = _http(base, "/jack/security/path-admission", post=True)
+            assert code == 503, (code, response)
+            assert b"AUTHORITY_POLICY_INTEGRITY_COMPROMISED" in response
+            code, _ = _http(base, "/")
+            assert code == 200
+
+            # First executable attack: replace the actual effective run binding while
             # Phase 8 has verified unchanged source files. Phase 9B must
             # prevent any HTTP dispatch to this unauthorized function.
             _signal(signals, "model", child, output)
