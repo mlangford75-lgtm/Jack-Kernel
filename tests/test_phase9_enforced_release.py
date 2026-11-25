@@ -382,20 +382,24 @@ def test_compromised_shared_path_authority_prevents_even_read_only_public_releas
 
 
 def test_compromised_pi_proxy_blocks_pi_read_only_status(tmp_path):
+    from jack_phase9b_enforcement import _http_authority_scopes
     host, _calls = _integrated_host(tmp_path)
     guard = install(host)
-
-    @host.APP.get("/jack/orchestration/status")
-    async def pi_status():
+    assert _http_authority_scopes({
+        "type": "http", "method": "GET", "path": "/jack/orchestration/status"
+    }) == ("orchestration", "authority")
+    async def bypass(*_a, **_k):
+        return {"unsafe": True}
+    host._proxy_pi_control_request = bypass
+    async def read_pi_status():
         return await host._proxy_pi_control_request(None, "GET", "/v1/status")
-
-    # Route table was intentionally sealed before adding this route; use a
-    # separate host with registered route to test the actual Pi dependency.
-    with TestClient(host.APP) as client:
-        async def bypass(*_a, **_k): return {"unsafe": True}
-        host._proxy_pi_control_request = bypass
-        assert client.get("/jack/orchestration/status").status_code == 503
-        assert guard.state == "INVALIDATED"
+    # This read depends on the Pi bridge; unlike independent status, it does
+    # not gain a read-only exception once that bridge is compromised.
+    with pytest.raises(RuntimeCodeIntegrityCompromised):
+        guard.verify_for(*_http_authority_scopes({
+            "type": "http", "method": "GET", "path": "/jack/orchestration/status"
+        }))
+    assert guard.state == "INVALIDATED"
 
 
 def test_model_tool_release_requires_intact_executor_admission(tmp_path):
@@ -408,8 +412,6 @@ def test_model_tool_release_requires_intact_executor_admission(tmp_path):
 
 
 def test_stream_integrity_failure_closes_predecessor_without_draining(tmp_path):
-    host, _calls = _integrated_host(tmp_path)
-    guard = install(host)
     emitted = []
     terminated = []
 
