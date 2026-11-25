@@ -443,3 +443,33 @@ def test_stream_integrity_failure_closes_predecessor_without_draining(tmp_path):
     assert emitted == ["safe", "untrusted"]
     assert terminated == ["closed"]
     assert guard2.state == "INVALIDATED"
+
+
+def test_route_classification_monkeypatch_cannot_bypass_model_authority(tmp_path, monkeypatch):
+    import jack_phase9b_enforcement as phase9
+    host, calls = _integrated_host(tmp_path)
+    guard = install(host)
+
+    # Attacker attempts to bless a model endpoint as mere observation.
+    monkeypatch.setattr(
+        phase9, "_http_authority_scopes", lambda _scope: ("observation",)
+    )
+    with TestClient(host.APP) as client:
+        rejected = client.post("/v1/chat/completions")
+        assert rejected.status_code == 503, (rejected.text, guard.mismatched_slots)
+    assert "p9-route-classifier" in guard.mismatched_slots
+    assert calls["run"] == 0
+
+
+def test_verifier_check_rebinding_is_a_shared_integrity_violation(tmp_path, monkeypatch):
+    from jack_runtime_code_guard import RuntimeCodeAuthority
+    host, calls = _integrated_host(tmp_path)
+    guard = install(host)
+    monkeypatch.setattr(
+        RuntimeCodeAuthority, "_check_locked", lambda self, **_kw: None
+    )
+    with TestClient(host.APP) as client:
+        rejected = client.post("/v1/chat/completions")
+        assert rejected.status_code == 503, (rejected.text, guard.mismatched_slots)
+    assert "p9-check" in guard.mismatched_slots
+    assert calls["run"] == 0
