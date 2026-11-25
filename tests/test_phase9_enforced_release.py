@@ -206,6 +206,11 @@ def _integrated_host(tmp_path: Path):
         _JACK_SOURCE_AUTHORITY=source,
         _JACK_SOURCE_RUNTIME_ENFORCEMENT_INSTALLED=True,
         ORCHESTRATION_BASE_PATH="/jack/orchestration",
+        enforce_kernel_auth=lambda _request: True,
+        sanitize_agent_request=lambda body: body,
+        _phase4_executor_context_from_request=lambda _request: None,
+        _safe_public_stream=lambda _body: None,
+        completion_envelope=lambda value: value,
     )
     calls = {"run": 0, "executor": 0, "control": 0}
 
@@ -489,3 +494,26 @@ def test_read_only_exception_set_cannot_be_expanded_after_sealing(monkeypatch):
         "type": "http", "method": "POST",
         "path": "/v1/chat/completions",
     }) == ("model", "authority")
+
+
+def test_monkeypatched_http_authentication_blocks_all_protected_http(tmp_path):
+    host, calls = _integrated_host(tmp_path)
+    guard = install(host)
+    host.enforce_kernel_auth = lambda _request: None
+    with TestClient(host.APP) as client:
+        assert client.get("/").status_code == 503
+        assert client.post("/v1/chat/completions").status_code == 503
+    assert guard.state == "INVALIDATED"
+    assert "http-auth" in guard.mismatched_slots
+    assert calls["run"] == 0
+
+
+def test_model_sanitizer_rebinding_denies_model_but_preserves_verified_observation(tmp_path):
+    host, calls = _integrated_host(tmp_path)
+    guard = install(host)
+    host.sanitize_agent_request = lambda body: {"unsafe": True}
+    with TestClient(host.APP) as client:
+        assert client.post("/v1/chat/completions").status_code == 503
+        assert client.get("/").status_code == 404 or client.get("/").status_code == 200
+    assert guard.state == "INVALIDATED"
+    assert calls["run"] == 0
