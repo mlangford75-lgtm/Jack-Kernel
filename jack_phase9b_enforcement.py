@@ -9,6 +9,7 @@ can rewrite all interpreter state or replace the outer ASGI call chain.
 from __future__ import annotations
 
 from functools import wraps
+from pathlib import Path
 from typing import Any
 
 from jack_runtime_code_guard import (
@@ -366,6 +367,19 @@ def install(jk: Any) -> RuntimeCodeAuthority:
             guard.register(name=f"route-observation-{safe_name}-dependent",
                            owner=dependency, attribute="call", scope="observation")
 
+    # Phase 9B was introduced after the historical Phase 8 frozen source
+    # manifest. Protect both new executable security modules using the same
+    # exact regular-file measurement semantics, without changing Phase 8.
+    guard.register_source(
+        name="source-phase9-code-guard",
+        path=Path(code_guard.__file__).resolve(),
+        scope="shared",
+    )
+    guard.register_source(
+        name="source-phase9-enforcement",
+        path=Path(__file__).resolve(),
+        scope="shared",
+    )
     guard.register_route_table(name="all-http-routes", app=jk.APP)
     guard.seal()
 
