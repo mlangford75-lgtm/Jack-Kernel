@@ -351,6 +351,15 @@ def main() -> None:
         # actual serving child.
         jack_source_drift_guard.activate_runtime_enforcement(jk, authority)
 
+        # Phase 9B is mandatory in every secured --serve child on this
+        # experimental branch. Branch isolation controls release readiness;
+        # runtime configuration must never downgrade executable integrity.
+        # Install after Phase 8 and before Uvicorn/ASGI middleware startup.
+        # Failure to seal the required manifest aborts secure-child startup.
+        import jack_phase9b_enforcement
+
+        jack_phase9b_enforcement.install(jk)
+
     # The interactive launcher spawns a fresh serving child. Keep the bundled
     # runtime-extension path active in that child rather than falling back to a
     # different authority surface.

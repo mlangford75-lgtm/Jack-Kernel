@@ -26,6 +26,21 @@ The accepted Phase-8E candidate tree and integrated implementation tree are iden
 
 `93771e59ab7f9213d438bc56dbe434961b07c0f4`
 
+## Phase 9B — Current implemented layer (2026-11-25)
+
+Phase 9B adds **mandatory selected runtime executable-identity enforcement** in the actual secured `--serve` process, composed after Phase 8 source authority. There is **no runtime toggle**. The new layer checks selected executable bindings, code constants/delegates, modules, and FastAPI dispatch plus actual consequential release/admission boundaries. The host retains narrowly scoped containment only when dependencies have been established; shared security-control corruption withholds dependent public authority.
+
+**Validation classification:** Implemented and **target-qualified**, but **not formally complete / frozen / tagged**. The latest isolated Windows 3.14.6 run [45606058846](https://github.com/mlangford75-lgtm/Jack-Kernel/actions/runs/45606058846) on commit `563d02f682a5213ea7962263477b717e30a152ff` passed **98 targeted tests**, including a real secured-child live HTTP executable-substitution attack. The injected model and shared authentication replacements were blocked before execution. The pre-existing general Coder regression remains unresolved and comprehensive Pi/Windows security closure is not established.
+
+**Current-phase evidence (not historical frozen checkpoints):**
+
+- [Phase 9B-A live authority map](PHASE9B_A_CURRENT_RUNTIME_AUTHORITY_MAP_2026-11-25.md)
+- [Phase 9B-B executable identity measurement](PHASE9B_B_EXPERIMENTAL_IDENTITY_QUALIFICATION_2026-11-25.md)
+- [Phase 9B-C guarded release](PHASE9B_C_EXPERIMENTAL_ENFORCEMENT_QUALIFICATION_2026-11-25.md)
+- [Security dependency / containment audit](PHASE9B_DEPENDENCY_CONTAINMENT_REVIEW_2026-11-25.md)
+
+**Limits:** selected process-local identity monitoring is not independent in-process or remote attestation, complete protection from arbitrary same-interpreter mutation, physical side-effect cancellation, or a general OS sandbox. Backend streaming, actual worker/tool effects, performance and complete Windows/Pi regressions remain future release evidence. See [current security status](../../CURRENT_SECURITY_STATUS.md) for the authoritative latest classification.
+
 ## Preserved checkpoint records
 
 - [`SECURITY_LAYER_PHASE0_3_VALIDATED_2026-09-27.md`](SECURITY_LAYER_PHASE0_3_VALIDATED_2026-09-27.md)
