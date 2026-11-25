@@ -343,9 +343,101 @@ def test_executor_and_pi_requests_survive_independent_model_compromise(tmp_path)
         host.KERNEL.run = bypass
         assert client.post("/v1/chat/completions").status_code == 503
         executor = client.post("/jack/security/path-admission")
+        # Starting a new Pi task depends on the compromised model authority.
+        # Cancelling a preexisting task should remain possible through the
+        # intact authenticated Pi bridge; it does not create new model work.
         control = client.post("/jack/orchestration/tasks")
+        cancel = client.post("/jack/orchestration/tasks/cancel")
         assert executor.status_code == 200, (executor.text, guard.mismatched_slots)
         assert executor.json() == {"allowed": True}
-        assert control.status_code == 200, (control.text, guard.mismatched_slots)
-        assert control.json() == {"ok": True}
-    assert calls == {"run": 0, "executor": 1, "control": 1}
+        assert control.status_code == 503
+        assert cancel.status_code == 200, (cancel.text, guard.mismatched_slots)
+        assert cancel.json() == {"ok": True}
+    assert calls == {"run": 0, "executor": 1, "control": 0}
+
+
+def test_compromised_executor_prevents_new_pi_task_but_preserves_cancellation(tmp_path):
+    host, calls = _integrated_host(tmp_path)
+    guard = install(host)
+    with TestClient(host.APP) as client:
+        host._phase4_executor_admission_decision = lambda _payload: {"allowed": "ANY"}
+        assert client.post("/jack/security/path-admission").status_code == 503
+        assert client.post("/jack/orchestration/tasks").status_code == 503
+        cancel = client.post("/jack/orchestration/tasks/cancel")
+        assert cancel.status_code == 200, (cancel.text, guard.mismatched_slots)
+    assert calls["control"] == 0
+
+
+def test_compromised_shared_path_authority_prevents_even_read_only_public_release(tmp_path, monkeypatch):
+    import jack_path_policy
+    host, _calls = _integrated_host(tmp_path)
+    guard = install(host)
+    monkeypatch.setattr(jack_path_policy, "authorize_executor_tool_call", lambda *_a, **_k: None)
+    with TestClient(host.APP) as client:
+        # Protecting a common authorization authority takes precedence over
+        # ordinary status availability, unlike an isolated model failure.
+        result = client.post("/jack/security/path-admission")
+        assert result.status_code == 503, (result.text, guard.mismatched_slots)
+        assert client.get("/").status_code == 503
+
+
+def test_compromised_pi_proxy_blocks_pi_read_only_status(tmp_path):
+    host, _calls = _integrated_host(tmp_path)
+    guard = install(host)
+
+    @host.APP.get("/jack/orchestration/status")
+    async def pi_status():
+        return await host._proxy_pi_control_request(None, "GET", "/v1/status")
+
+    # Route table was intentionally sealed before adding this route; use a
+    # separate host with registered route to test the actual Pi dependency.
+    with TestClient(host.APP) as client:
+        async def bypass(*_a, **_k): return {"unsafe": True}
+        host._proxy_pi_control_request = bypass
+        assert client.get("/jack/orchestration/status").status_code == 503
+        assert guard.state == "INVALIDATED"
+
+
+def test_model_tool_release_requires_intact_executor_admission(tmp_path):
+    host, _calls = _integrated_host(tmp_path)
+    guard = install(host)
+    host._phase4_executor_admission_decision = lambda _payload: {"allowed": "bypass"}
+    with pytest.raises(RuntimeCodeIntegrityCompromised):
+        host._phase4_partition_structured_tool_calls([])
+    assert guard.state == "INVALIDATED"
+
+
+def test_stream_integrity_failure_closes_predecessor_without_draining(tmp_path):
+    host, _calls = _integrated_host(tmp_path)
+    guard = install(host)
+    emitted = []
+    terminated = []
+
+    async def controlled_stream(_body):
+        try:
+            emitted.append("safe")
+            yield b"safe"
+            emitted.append("untrusted")
+            yield b"not-safe"
+            emitted.append("must-not-execute")
+            yield b"untrusted-followup"
+        finally:
+            terminated.append("closed")
+
+    # Install a fresh host with the controlled stream before the guard seals.
+    host2, _ = _integrated_host(tmp_path)
+    host2.KERNEL.stream = controlled_stream
+    guard2 = install(host2)
+
+    async def simulate():
+        it = host2.KERNEL.stream({})
+        first = await anext(it)
+        assert first == b"safe"
+        host2.KERNEL.run = lambda _body: {"untrusted": "code-rebound"}
+        with pytest.raises(RuntimeCodeIntegrityCompromised):
+            await anext(it)
+
+    asyncio.run(simulate())
+    assert emitted == ["safe", "untrusted"]
+    assert terminated == ["closed"]
+    assert guard2.state == "INVALIDATED"
