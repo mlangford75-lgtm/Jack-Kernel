@@ -9,6 +9,7 @@ import hmac
 import json
 import secrets
 from dataclasses import dataclass
+from types import MappingProxyType
 
 
 class DynamicAuthorityUnavailable(RuntimeError):
@@ -63,6 +64,11 @@ def _material(state, context_type):
         "context": context, "in_flight": state.in_flight,
         "created_at": state.created_at, "tools": state.tools,
         "tool_choice": state.tool_choice,
+        "secondary_system": state.secondary_system,
+        "debugging_run_id": state.debugging_run_id,
+        "deferred_rejections": state.deferred_tool_rejection_errors,
+        "frozen_stage1_history": state.frozen_stage1_history,
+        "frozen_stage1_answer": state.frozen_stage1_answer,
     }, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8", "surrogatepass")
 
 
@@ -81,7 +87,7 @@ class PendingAuthority:
     def __init__(self, context_type=None):
         self._context_type = context_type
         self._key = secrets.token_bytes(32)
-        self._entries = {}
+        self._entries = MappingProxyType({})
         self._invalid = set()
 
     def _digest(self, state):
@@ -93,10 +99,12 @@ class PendingAuthority:
     def register(self, state):
         expected, withheld = _ids(state.expected_tool_call_ids), _ids(state.withheld_tool_call_ids)
         if id(state) in self._entries or any(e.resume_id == state.resume_id or
-                set(e.expected).intersection(expected) for e in self._entries.values()):
+                set(e.expected).intersection(expected + withheld) or
+                set(e.withheld).intersection(expected) for e in self._entries.values()):
             raise DynamicAuthorityUnavailable("pending authority already registered")
-        self._entries[id(state)] = _Entry(state, state.resume_id, expected, withheld,
-                                           state.created_at, state.in_flight, self._digest(state))
+        entry = _Entry(state, state.resume_id, expected, withheld,
+                       state.created_at, state.in_flight, self._digest(state))
+        self._entries = MappingProxyType({**self._entries, id(state): entry})
 
     def verify(self, state):
         key = id(state)
@@ -141,8 +149,27 @@ class PendingAuthority:
         state.accepted_tool_results = candidate.accepted_tool_results
         state.accepted_executor_context = candidate.accepted_executor_context
         state.in_flight = candidate.in_flight
-        self._entries[id(state)] = _Entry(state, entry.resume_id, entry.expected,
+        successor = _Entry(state, entry.resume_id, entry.expected,
             entry.withheld, entry.created_at, in_flight, digest)
+        self._entries = MappingProxyType({**self._entries, id(state): successor})
+
+    def freeze(self, state, history, answer):
+        """Seal the completed Stage-1 checkpoint during its owned in-flight resume."""
+        self.verify(state)
+        entry = self._entries[id(state)]
+        if (not state.in_flight or state.accepted_tool_results is None or
+                state.frozen_stage1_history is not None or state.frozen_stage1_answer is not None or
+                type(history) is not list or type(answer) is not str or not answer.strip()):
+            raise DynamicAuthorityUnavailable("pending frozen checkpoint unavailable")
+        candidate = copy.copy(state)
+        candidate.frozen_stage1_history = copy.deepcopy(history)
+        candidate.frozen_stage1_answer = answer
+        digest = self._digest(candidate)
+        successor = _Entry(state, entry.resume_id, entry.expected, entry.withheld,
+                           entry.created_at, entry.in_flight, digest)
+        state.frozen_stage1_history = candidate.frozen_stage1_history
+        state.frozen_stage1_answer = candidate.frozen_stage1_answer
+        self._entries = MappingProxyType({**self._entries, id(state): successor})
 
     def expire(self, cutoff, live):
         """Use sealed lifecycle facts rather than attacker-controlled expiry fields."""
@@ -158,7 +185,8 @@ class PendingAuthority:
     def retire(self, state):
         entry = self._entries.get(id(state))
         if entry is not None and entry.state is state:
-            self._entries.pop(id(state))
+            self._entries = MappingProxyType({key: value for key, value in self._entries.items()
+                                              if key != id(state)})
             self._invalid.discard(id(state))
             return entry.expected
         return ()
