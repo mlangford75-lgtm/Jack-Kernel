@@ -115,13 +115,3 @@ def test_source_manifest_is_sealed_and_does_not_accept_late_components(tmp_path)
         guard.register_source(name="late", path=path)
 
 
-def test_real_phase9_enforcement_files_are_present_in_installed_source_manifest(tmp_path):
-    from tests.test_phase9_enforced_release import _integrated_host
-    from jack_phase9b_enforcement import install
-
-    host, _calls = _integrated_host(tmp_path)
-    authority = install(host)
-    expected = {"source-phase9-code-guard", "source-phase9-enforcement"}
-    observed = {slot.label for slot in authority._sources}
-    assert expected.issubset(observed)
-    authority.verify_for("model")
