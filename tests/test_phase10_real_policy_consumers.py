@@ -161,3 +161,70 @@ jk._JACK_AUTHORITY_LEDGER.close()
         f"real policy consumer qualification failed ({result.returncode})\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
+
+
+def test_phase10c_candidate_real_path_release_and_admission(tmp_path):
+    """Actual loaded Phase 4 consumers; no production startup activation."""
+    script = r'''
+import dataclasses
+import json
+import jack_kernel as jk
+from jack_phase10_path_enforcement import install
+
+jk._install_bundled_runtime_extensions()
+original = jk._RUNTIME_PATH_POLICY
+assert original.workspace_root is not None
+guard = install(jk)
+
+def call(path):
+    return {"id": "candidate", "type": "function", "function": {
+        "name": "write", "arguments": json.dumps({
+            "path": path, "content": "safe"})}}
+
+safe = call(r"D:\Projects\Jack\result.txt")
+outside = call(r"D:\Outside\result.txt")
+allowed, errors = jk._phase4_partition_structured_tool_calls([safe])
+assert len(allowed) == 1 and not errors
+allowed, errors = jk._phase4_partition_structured_tool_calls([outside])
+assert not allowed and errors
+
+payload = {
+    "protocol_version": jk.PHASE4_EXECUTOR_ADMISSION_PROTOCOL_VERSION,
+    "runtime_id": jk.RUNTIME_ID, "lane_id": jk.LANE_ID,
+    "tool_call_id": "candidate", "tool_name": "write",
+    "arguments": {"path": r"D:\Outside\result.txt", "content": "safe"},
+    "executor_cwd": r"D:\Projects\Jack", "executor_platform": "win32",
+    "command_dialect": "powershell",
+}
+# Removing the optional holder would bypass the legacy partition's None branch.
+jk._RUNTIME_PATH_POLICY = None
+allowed, errors = jk._phase4_partition_structured_tool_calls([outside])
+assert not allowed and errors
+assert "AUTHORITY_POLICY_INTEGRITY_COMPROMISED" in errors[0]
+try:
+    jk._phase4_executor_admission_decision(payload)
+except jk.HTTPException as exc:
+    assert exc.status_code == 503
+    assert exc.detail == "AUTHORITY_POLICY_INTEGRITY_COMPROMISED"
+else:
+    raise AssertionError("executor admission did not reject missing policy")
+assert jk._phase4_partition_structured_tool_calls([]) == ([], [])
+jk._RUNTIME_PATH_POLICY = original
+allowed, errors = jk._phase4_partition_structured_tool_calls([safe])
+assert not allowed and errors
+assert guard.invalidated_labels == ("path-consumer",)
+jk._JACK_AUTHORITY_LEDGER.close()
+'''
+    env = dict(os.environ)
+    env.update({
+        "JACK_AUTHORITY_LEDGER_DIR": str(tmp_path / "ledger"),
+        "JACK_FORENSIC_ARCHIVE_MODE": "off",
+        "JACK_BACKEND_MODEL": "test-model",
+        "JACK_BACKEND_PROFILE": "lmstudio",
+        "JACK_PATH_POLICY_JSON": '{"version":1,"workspace_root":"D:/Projects/Jack","never_paths":[]}',
+    })
+    result = subprocess.run(
+        [sys.executable, "-c", script], cwd=_ROOT, env=env,
+        text=True, capture_output=True, check=False, timeout=55,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
