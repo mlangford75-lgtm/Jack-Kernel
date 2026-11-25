@@ -11,7 +11,7 @@
 
 - `jack_runtime_code_guard.py`: versioned process-local callable, module and registered FastAPI route-table identity; differentiates confirmed replacement from unavailable measurement, with terminal invalidation on confirmed mismatch.
 - `jack_phase9b_enforcement.py`: Phase-9B-C executable admission and release interception for `KERNEL.run`, `KERNEL.stream`, structured tool release, Phase-4 executor admission and privileged Pi control, plus an ASGI middleware that verifies before ingress, response headers and body chunks. SSE interruption preserves a previously released safe prefix while withholding later chunks.
-- `jack_secure_entrypoint.py`: exclusively **opt-in** installation in the actual secured `--serve` child after Phase 8 activation and before Uvicorn starts. Set `JACK_PHASE9B_EXPERIMENTAL=1` to exercise. Default remains unchanged; the interactive parent never seals Phase 9B.
+- `jack_secure_entrypoint.py`: mandatory installation in the actual secured `--serve` child after Phase 8 activation and before Uvicorn starts. There is no Phase 9B disable switch. The experimental branch is the isolation boundary; the interactive parent never seals Phase 9B.
 - All current Phase 8 source files and current Architect/Coder production prompts remain unchanged.
 
 ## 2. Actual Windows result at the candidate SHA
@@ -20,12 +20,12 @@
 |---|---|
 | Compile all new modules and tests | PASS |
 | Isolated Phase 9B identity, Phase 8-wrapper qualification, ASGI stream/nonstream and integrated FastAPI enforcement | **38 passed** (2 dependency deprecation warnings) |
-| Fresh-process real loaded Jack Kernel + actual Phase 8 + opt-in Phase 9B ASGI dispatch/admission tests | **3 passed** |
+| Fresh-process real loaded Jack Kernel + actual Phase 8 + mandatory Phase 9B ASGI dispatch/admission tests | **3 passed** |
 | Fresh **actual secured `jack_secure_entrypoint.py --serve` child**, loopback HTTP, repeated first/warm requests and invalid executor-path admission | **1 passed** |
 | Unmodified existing Phase 8 source baseline, runtime enforcement, ledger observation and adversarial-preservation tests | **39 passed** |
 | **Total** | **81 passed, no targeted failures** |
 
-The live child smoke test used `JACK_PHASE9B_EXPERIMENTAL=1`, loopback host, a reserved test port, unique runtime/ledger directories, context monitor disabled and an unavailable mock backend endpoint. It did **not** invoke real backend inference, perform real executor work, or test a live SSE connection.
+The live child smoke test used the mandatory Phase 9B secure child, loopback host, a reserved test port, unique runtime/ledger directories, context monitor disabled and an unavailable mock backend endpoint. It did **not** invoke real backend inference, perform real executor work, or test a live SSE connection.
 
 ## 3. Material defect found and corrected during this phase
 
@@ -41,7 +41,7 @@ After correcting the harness, diagnostics showed that the exact same `Phase9BASG
 
 **Demonstrated in fresh real Kernel subprocesses:** Phase 8 and Phase 9B compose on the actual dynamically installed Kernel, which handles normal ASGI calls; deliberate `KERNEL.run`, executor-admission and route-dependency mutations cause subsequent HTTP denial.
 
-**Demonstrated in actual secured serving child:** the real `--serve` startup with the opt-in flag, middleware warm-up and ordinary loopback HTTP requests pass.
+**Demonstrated in actual secured serving child:** the real `--serve` startup with the mandatory protection, middleware warm-up and ordinary loopback HTTP requests pass.
 
 **Still NOT proven:** authoritative in-process P0 topology against every same-privilege mutation, true live backend generation and long-running SSE, real external tool admission/side-effect prevention, Pi worker settlement and cancellation, higher-load/concurrency, all Agentic/Coder/Ultra/Responses paths, or full Windows/Pi regression suite. An attacker able to modify the ASGI middleware root or equally privileged checker/call-site code may bypass a process-local guard: the current prototype does **not** claim tamper resistance against unrestricted same-interpreter control. Verification and consequence are not atomic against hostile code that does not honor the verifier lock.
 
@@ -55,4 +55,4 @@ Phase 8 source-component sealing currently predates Phase 9B installation, so th
 4. Independently review impact of per-SSE-event whole-manifest verification on cost, cache/streaming, concurrency and cleanup/cancellation. No premature performance or readiness claim.
 5. Complete full pinned Windows regression, Pi harnesses, independently reviewed diff, and source security-document reconciliation before promotion/tag.
 
-**Disposition:** Phase 9B-C **experimental execution interception and actual opt-in secured-child smoke-qualified**, but **NOT a validated production security release; NO MERGE**.
+**Disposition:** Phase 9B-C **experimental execution interception and actual secured-child smoke-qualified**, but **NOT a validated production security release; NO MERGE**.
