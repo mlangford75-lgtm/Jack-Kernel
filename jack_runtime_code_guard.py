@@ -182,6 +182,7 @@ class ExecutableSlot:
     receiver: Any
     function: Any
     shape: bytes
+    scope: str = "shared"
 
 
 @dataclass(frozen=True)
@@ -189,6 +190,7 @@ class _ModuleIdentity:
     label: str
     module_name: str
     original: types.ModuleType
+    scope: str = "shared"
 
 
 @dataclass(frozen=True)
@@ -203,6 +205,7 @@ class _RouteTableIdentity:
     label: str
     app: Any
     routes: tuple[_RouteIdentity, ...]
+    scope: str = "shared"
 
 
 def _route_snapshot(app: Any) -> tuple[_RouteIdentity, ...]:
@@ -222,7 +225,12 @@ def _route_snapshot(app: Any) -> tuple[_RouteIdentity, ...]:
 
 
 class RuntimeCodeAuthority:
-    """Opt-in snapshot validator, not a full runtime gate or independent verifier."""
+    """Selected executable-identity validator with consequence-scoped containment.
+
+    Scope labels are host-owned at installation. A model-path mismatch cannot
+    revoke unrelated read-only diagnostics or pre-admitted independent work.
+    Shared verifier/dispatch corruption still blocks all registered authority.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -231,10 +239,16 @@ class RuntimeCodeAuthority:
         self._route_tables: list[_RouteTableIdentity] = []
         self._state = "INITIALIZING"
         self._last_mismatches: tuple[str, ...] = ()
+        self._invalidated_scopes: set[str] = set()
+        self._unavailable_scopes: set[str] = set()
 
     @property
     def state(self) -> str:
         with self._lock:
+            if self._state == "INVALIDATED" or self._invalidated_scopes:
+                return "INVALIDATED"
+            if self._state == "SUSPENDED_UNVERIFIED" or self._unavailable_scopes:
+                return "SUSPENDED_UNVERIFIED"
             return self._state
 
     @property
@@ -242,8 +256,8 @@ class RuntimeCodeAuthority:
         with self._lock:
             return self._last_mismatches
 
-    def register(self, *, name: str, owner: Any, attribute: str) -> None:
-        if not isinstance(name, str) or not name or not isinstance(attribute, str) or not attribute:
+    def register(self, *, name: str, owner: Any, attribute: str, scope: str = "shared") -> None:
+        if not isinstance(name, str) or not name or not isinstance(attribute, str) or not attribute or not isinstance(scope, str) or not scope:
             raise ValueError("protected executable name and attribute must be non-empty strings")
         with self._lock:
             if self._state != "INITIALIZING":
@@ -251,12 +265,12 @@ class RuntimeCodeAuthority:
             if any(slot.name == name for slot in self._slots):
                 raise ValueError("duplicate protected executable label")
             receiver, fn, shape = _resolve(owner, attribute)
-            self._slots.append(ExecutableSlot(name, owner, attribute, receiver, fn, shape))
+            self._slots.append(ExecutableSlot(name, owner, attribute, receiver, fn, shape, scope))
 
-    def register_module(self, *, name: str, module_name: str) -> None:
+    def register_module(self, *, name: str, module_name: str, scope: str = "shared") -> None:
         """Pin the imported-module identity used by dynamic import call sites."""
-        if not name or not module_name:
-            raise ValueError("module label and import name must be non-empty")
+        if not name or not module_name or not scope:
+            raise ValueError("module label, import name and scope must be non-empty")
         with self._lock:
             if self._state != "INITIALIZING":
                 raise RuntimeError("protected module manifest is sealed")
@@ -265,18 +279,18 @@ class RuntimeCodeAuthority:
             module = sys.modules.get(module_name)
             if not isinstance(module, types.ModuleType):
                 raise RuntimeCodeIntegrityUnavailable("required module not loaded")
-            self._modules.append(_ModuleIdentity(name, module_name, module))
+            self._modules.append(_ModuleIdentity(name, module_name, module, scope))
 
-    def register_route_table(self, *, name: str, app: Any) -> None:
+    def register_route_table(self, *, name: str, app: Any, scope: str = "shared") -> None:
         """Pin a completed HTTP route table; middleware warm-up is out-of-scope."""
-        if not name:
-            raise ValueError("route table label must be non-empty")
+        if not name or not scope:
+            raise ValueError("route table label and scope must be non-empty")
         with self._lock:
             if self._state != "INITIALIZING":
                 raise RuntimeError("protected route manifest is sealed")
             if any(x.label == name for x in self._route_tables):
                 raise ValueError("duplicate route table label")
-            self._route_tables.append(_RouteTableIdentity(name, app, _route_snapshot(app)))
+            self._route_tables.append(_RouteTableIdentity(name, app, _route_snapshot(app), scope))
 
     def seal(self) -> None:
         with self._lock:
@@ -286,30 +300,49 @@ class RuntimeCodeAuthority:
             self._check_locked()
             self._state = "ACTIVE"
 
-    def _check_locked(self) -> None:
+    def _check_locked(self, *, scopes: frozenset[str] | None = None) -> None:
+        """Measure selected authority. Only proven affected scopes are revoked."""
         mismatches: list[str] = []
+        mismatch_scopes: set[str] = set()
+        unavailable_scopes: set[str] = set()
         measurement_error: RuntimeCodeIntegrityUnavailable | None = None
+
+        def selected(scope: str) -> bool:
+            return scopes is None or scope == "shared" or scope in scopes
+
+        def record_unavailable(scope: str, exc: RuntimeCodeIntegrityUnavailable) -> None:
+            nonlocal measurement_error
+            unavailable_scopes.add(scope)
+            measurement_error = measurement_error or exc
+
         for slot in self._slots:
+            if not selected(slot.scope):
+                continue
             try:
                 receiver, fn, shape = _resolve(slot.owner, slot.attribute)
             except _ProtectedSlotMissing:
-                # A formerly present required binding is now definitely gone.
                 mismatches.append(slot.name)
+                mismatch_scopes.add(slot.scope)
                 continue
             except RuntimeCodeIntegrityUnavailable as exc:
-                # Preserve confirmed mismatches if another slot is unmeasurable.
-                measurement_error = measurement_error or exc
+                record_unavailable(slot.scope, exc)
                 continue
             if receiver is not slot.receiver or fn is not slot.function or shape != slot.shape:
                 mismatches.append(slot.name)
+                mismatch_scopes.add(slot.scope)
         for module in self._modules:
+            if not selected(module.scope):
+                continue
             if sys.modules.get(module.module_name) is not module.original:
                 mismatches.append(module.label)
+                mismatch_scopes.add(module.scope)
         for table in self._route_tables:
+            if not selected(table.scope):
+                continue
             try:
                 observed = _route_snapshot(table.app)
             except RuntimeCodeIntegrityUnavailable as exc:
-                measurement_error = measurement_error or exc
+                record_unavailable(table.scope, exc)
                 continue
             if len(observed) != len(table.routes) or any(
                 current.route is not expected.route
@@ -318,15 +351,45 @@ class RuntimeCodeAuthority:
                 for current, expected in zip(observed, table.routes)
             ):
                 mismatches.append(table.label)
+                mismatch_scopes.add(table.scope)
         if mismatches:
             self._last_mismatches = tuple(mismatches)
-            self._state = "INVALIDATED"
+            if scopes is None:
+                self._state = "INVALIDATED"
+            else:
+                self._invalidated_scopes.update(mismatch_scopes)
             raise RuntimeCodeIntegrityCompromised("protected executable identity changed")
         if measurement_error is not None:
-            self._state = "SUSPENDED_UNVERIFIED"
+            if scopes is None:
+                self._state = "SUSPENDED_UNVERIFIED"
+            else:
+                self._unavailable_scopes.update(unavailable_scopes)
             raise RuntimeCodeIntegrityUnavailable(
                 "protected executable measurement unavailable"
             ) from measurement_error
+        if scopes is not None:
+            # Only previously uncertain measurements may recover. Confirmed
+            # mismatches remain terminal; no in-place rebaseline is allowed.
+            self._unavailable_scopes.difference_update(scopes)
+            self._unavailable_scopes.discard("shared")
+
+    def verify_for(self, *scopes: str) -> None:
+        """Verify only authority needed by this real admission/release.
+
+        All scopes include protected shared checker and route-table identity.
+        A model-side compromise must not prevent healthy read-only diagnostic
+        endpoints or independent Pi control from operating.
+        """
+        if not scopes or any(not isinstance(s, str) or not s for s in scopes):
+            raise ValueError("at least one explicit authority scope is required")
+        with self._lock:
+            if self._state == "INITIALIZING":
+                raise RuntimeCodeIntegrityUnavailable("runtime executable authority not sealed")
+            if self._state == "INVALIDATED" or "shared" in self._invalidated_scopes:
+                raise RuntimeCodeIntegrityCompromised("shared runtime executable authority invalidated")
+            if self._invalidated_scopes.intersection(scopes):
+                raise RuntimeCodeIntegrityCompromised("affected executable authority invalidated")
+            self._check_locked(scopes=frozenset(scopes))
 
     def verify(self) -> None:
         with self._lock:
