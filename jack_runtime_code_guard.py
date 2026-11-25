@@ -238,6 +238,11 @@ class RuntimeCodeAuthority:
         self._modules: list[_ModuleIdentity] = []
         self._route_tables: list[_RouteTableIdentity] = []
         self._state = "INITIALIZING"
+        # Pin the method that performs actual measurement. Checking it before
+        # dispatch prevents straightforward descriptor rebinding from making
+        # every subsequent verify() report a fabricated success. This is not
+        # independent attestation against arbitrary same-interpreter mutation.
+        self._check_method = type(self)._check_locked
         self._last_mismatches: tuple[str, ...] = ()
         self._invalidated_scopes: set[str] = set()
         self._unavailable_scopes: set[str] = set()
@@ -383,6 +388,12 @@ class RuntimeCodeAuthority:
         if not scopes or any(not isinstance(s, str) or not s for s in scopes):
             raise ValueError("at least one explicit authority scope is required")
         with self._lock:
+            if type(self)._check_locked is not self._check_method:
+                self._last_mismatches = ("p9-check",)
+                self._invalidated_scopes.add("shared")
+                raise RuntimeCodeIntegrityCompromised(
+                    "runtime executable verifier binding changed"
+                )
             if self._state == "INITIALIZING":
                 raise RuntimeCodeIntegrityUnavailable("runtime executable authority not sealed")
             if self._state == "INVALIDATED" or "shared" in self._invalidated_scopes:
@@ -393,6 +404,12 @@ class RuntimeCodeAuthority:
 
     def verify(self) -> None:
         with self._lock:
+            if type(self)._check_locked is not self._check_method:
+                self._last_mismatches = ("p9-check",)
+                self._invalidated_scopes.add("shared")
+                raise RuntimeCodeIntegrityCompromised(
+                    "runtime executable verifier binding changed"
+                )
             if self._state == "INVALIDATED":
                 raise RuntimeCodeIntegrityCompromised("runtime executable authority invalidated")
             if self._state == "INITIALIZING":
