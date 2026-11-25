@@ -18,6 +18,12 @@ from jack_runtime_code_guard import RuntimeCodeAuthority, RuntimeCodeIntegrityCo
 from jack_phase9b_enforcement import Phase9BASGIGuard, install, DENIAL_BODY
 
 
+def _async_send(events):
+    async def send(event):
+        events.append(event)
+    return send
+
+
 def _authority():
     def approved():
         return "permitted"
@@ -41,7 +47,7 @@ def test_asgi_request_admission_blocks_swapped_binding_before_handler():
     owner.action = lambda: "bypass"
     async def execute():
         outbound = []
-        await app({"type": "http", "path": "/v1/chat/completions"}, None, outbound.append)
+        await app({"type": "http", "path": "/v1/chat/completions"}, None, _async_send(outbound))
         return outbound
     messages = asyncio.run(execute())
     assert calls == []
@@ -60,7 +66,7 @@ def test_asgi_benign_nonstream_returns_unaltered_bytes():
     events = []
     async def execute():
         await Phase9BASGIGuard(backend, authority=authority)(
-            {"type": "http"}, None, events.append
+            {"type": "http"}, None, _async_send(events)
         )
     asyncio.run(execute())
     assert events == [
@@ -80,7 +86,7 @@ def test_asgi_response_start_mutation_returns_503_without_leaking():
     events = []
     async def execute():
         await Phase9BASGIGuard(backend, authority=authority)(
-            {"type": "http"}, None, events.append
+            {"type": "http"}, None, _async_send(events)
         )
     asyncio.run(execute())
     assert events[0]["status"] == 503
@@ -98,7 +104,7 @@ def test_asgi_nonstream_after_headers_never_releases_unverified_body():
 
     async def execute():
         await Phase9BASGIGuard(backend, authority=authority)(
-            {"type": "http"}, None, events.append
+            {"type": "http"}, None, _async_send(events)
         )
     with pytest.raises(RuntimeCodeIntegrityCompromised):
         asyncio.run(execute())
@@ -122,7 +128,7 @@ def test_asgi_stream_preserves_prefix_and_withholds_future_chunks():
 
     async def execute():
         await Phase9BASGIGuard(backend, authority=authority)(
-            {"type": "http"}, None, events.append
+            {"type": "http"}, None, _async_send(events)
         )
     asyncio.run(execute())
     bodies = [event["body"] for event in events if event["type"] == "http.response.body"]
@@ -146,7 +152,7 @@ def test_asgi_stream_does_not_emit_fake_success_after_tampering():
 
     async def execute():
         await Phase9BASGIGuard(backend, authority=authority)(
-            {"type": "http"}, None, events.append
+            {"type": "http"}, None, _async_send(events)
         )
     asyncio.run(execute())
     assert events[-1]["body"] == b""
@@ -163,7 +169,7 @@ def test_asgi_non_http_passes_through():
     owner.action = lambda: "tampered"
     async def execute():
         await Phase9BASGIGuard(backend, authority=authority)(
-            {"type": "websocket"}, None, events.append
+            {"type": "websocket"}, None, _async_send(events)
         )
     asyncio.run(execute())
     assert events == [{"type": "websocket.close", "code": 1000}]
@@ -238,7 +244,7 @@ def test_integrated_fastapi_blocks_rebound_run_before_dispatch(tmp_path):
     authority = install(host)
     with TestClient(host.APP) as client:
         response = client.post("/v1/chat/completions")
-        assert response.status_code == 200
+        assert response.status_code == 200, authority.mismatched_slots
         assert response.json() == {"verified": True}
         async def bypass(_body):
             return {"untrusted": "bypass"}
@@ -254,7 +260,7 @@ def test_integrated_fastapi_blocks_bypassed_executor_before_dispatch(tmp_path):
     host, calls = _integrated_host(tmp_path)
     install(host)
     with TestClient(host.APP) as client:
-        assert client.post("/jack/security/path-admission").status_code == 200
+        assert client.post("/jack/security/path-admission").status_code == 200, host._JACK_RUNTIME_CODE_AUTHORITY.mismatched_slots
         host._phase4_executor_admission_decision = lambda _body: {"allowed": "ANY"}
         assert client.post("/jack/security/path-admission").status_code == 503
     assert calls["executor"] == 1
@@ -264,7 +270,7 @@ def test_integrated_fastapi_blocks_bypassed_pi_control_before_dispatch(tmp_path)
     host, calls = _integrated_host(tmp_path)
     install(host)
     with TestClient(host.APP) as client:
-        assert client.post("/jack/orchestration/tasks").status_code == 200
+        assert client.post("/jack/orchestration/tasks").status_code == 200, host._JACK_RUNTIME_CODE_AUTHORITY.mismatched_slots
         async def bypass(*_args, **_kwargs):
             return {"unsafe": True}
         host._proxy_pi_control_request = bypass
