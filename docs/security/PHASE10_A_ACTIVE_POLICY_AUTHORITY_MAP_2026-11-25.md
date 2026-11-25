@@ -56,3 +56,12 @@ Do **not** copy all transient task/run/ledger state into a global frozen structu
 Phase 8 frozen source guard does not automatically include the new Phase 9B modules as protected source. Resolve that gap as a Phase 9 security close-out, not by silently rewriting the Phase 8 historical record. Do not conflate a code fingerprint with the integrity of active policy data.
 
 **Disposition: Phase 10-A source inventory created, no implementation release.**
+
+
+## Phase 10-B Windows qualification and actual consumer proof
+
+GitHub Actions [Phase 10 qualification run 45619481626](https://github.com/mlangford75-lgtm/Jack-Kernel/actions/runs/45619481626) on the current experimental implementation (Python 3.14.6, pinned dependencies): **52 passed**, consisting of **17** explicit static-policy identity/field/closure tests, **1** fresh-subprocess test of the **actual loaded Jack Kernel** producers and consumers, and **34** unchanged Phase 7 credential and Phase 8 security regression tests.
+
+The real-Kernel test proves that `jk._RUNTIME_PATH_POLICY` is the same object consumed by `jk._runtime_path_policy()`; the output-protection wrapper's captured `RuntimeCanaryPolicy` is also present in the stream-protection delegate graph; and the credential policy bound at `jk._JACK_RUNTIME_CREDENTIAL_POLICY` is retained by the actual guarded backend `_client.post` closure. Replacing the credential policy holder with an otherwise equivalent new frozen object triggers the prototype's terminal identity alarm while the independent original transport closure remains accurately measured.
+
+**The code is still measurement-only.** This is evidence for *where to install* security gating, not evidence that current production automatically blocks policy changes. Any future Phase 10-C integration must verify the exact binding used by the consequence path before release, including the direct `_RUNTIME_PATH_POLICY is None` branch in structured tool partition. An authorization decision that bypasses a getter cannot be secured merely by wrapping that getter. Installation order with Phase 9B sealing must be proven so that one new guard does not accidentally invalidate the other guard's legitimate wrapper composition. Do not add a runtime security toggle.
