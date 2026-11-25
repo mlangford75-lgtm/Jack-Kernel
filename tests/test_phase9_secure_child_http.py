@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 
 
-def test_real_secure_serve_child_phase9b_optin_http_startup(tmp_path):
+def test_real_secure_serve_child_phase9b_mandatory_http_startup(tmp_path):
     root = Path(__file__).resolve().parents[1]
 
     # Reserve a loopback port only long enough to select an unused candidate.
@@ -28,9 +28,8 @@ def test_real_secure_serve_child_phase9b_optin_http_startup(tmp_path):
         port = probe.getsockname()[1]
 
     env = dict(os.environ)
-    # An explicit obsolete off value must not be interpreted as authority.
+    # Phase 9B has no runtime disable switch in the secure child.
     env.update({
-        "JACK_PHASE9B_EXPERIMENTAL": "0",
         "JACK_HOST": "127.0.0.1",
         "JACK_PORT": str(port),
         "JACK_PORT_FALLBACK": "0",
