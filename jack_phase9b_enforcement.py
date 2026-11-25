@@ -417,6 +417,8 @@ def install(jk: Any) -> RuntimeCodeAuthority:
             ("pending-expire", dynamic.PendingAuthority, "expire", "authority"),
             ("pending-freeze", dynamic.PendingAuthority, "freeze", "authority"),
             ("pending-ids", dynamic, "_ids", "authority"),
+            ("pending-index-verify", dynamic.PendingAuthority, "_verify_index", "authority"),
+            ("pending-index-transition", dynamic.PendingAuthority, "_replace_index", "authority"),
             ("pending-admission", jk.KERNEL, "_phase4_pending_tool_call_snapshot", "executor"),
             ("pending-consume", jk.KERNEL, "_consume_pending_tool_resume", "model"),
             ("pending-create", jk.KERNEL, "_register_stage_tool_resume", "model"),
