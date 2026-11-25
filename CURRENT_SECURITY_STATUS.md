@@ -4,7 +4,7 @@
 
 **Last fully validated and frozen security checkpoint:** Phase 8 — Active Source Authority / Source Drift Protection
 
-**Current implemented security layer (2026-11-25):** Phase 9B — Selected Runtime Executable Identity and Consequence-Boundary Enforcement. **Mandatory in the secured `--serve` child** on the Phase 9B branch; merge into `main` is being processed in PR #173. **Target-qualified, not fully validated/frozen/tagged.**
+**Current implemented security layer (2026-11-25):** Phase 9B — Selected Runtime Executable Identity and Consequence-Boundary Enforcement. **Mandatory in secured `--serve` child on `main`; merged as [PR #173](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/173), merge commit `6565e08b2e4bd114725b8edea6987880498f3087`.** Target-qualified, but **not fully validated/frozen/tagged**.
 
 **Last validated/frozen security checkpoint date:** 2026-10-06
 
@@ -25,6 +25,8 @@ Phase 8 is **VALIDATED / MERGED / DOCUMENTED / TAGGED / FROZEN**.
 **Phase 9A:** exploratory research closed 2026-10-14 (historical only).
 
 **Phase 9B:** mandatory selected runtime-code-integrity enforcement **implemented and target-qualified on 2026-11-25** in [PR #173](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/173); **not yet a complete production-security validation**. GitHub Actions [run 45606058846](https://github.com/mlangford75-lgtm/Jack-Kernel/actions/runs/45606058846) on candidate SHA `563d02f682a5213ea7962263477b717e30a152ff` completed **98 targeted Windows Python 3.14.6 tests** (54 Phase 9B primitive/enforcement, 3 real-Kernel subprocess, 1 mandatory secure-child startup, 1 live post-start adversarial HTTP, 39 unchanged Phase 8). The live attack swapped actual `KERNEL.run` and API-authentication callables in the already-running secured child; both attempted releases were denied before the unauthorized functions executed. A successful targeted run does not replace the full cross-mode regression suite.
+
+**Merge status:** Merged 2026-11-25 via PR #173, without declaring Phase 9B a frozen full-security checkpoint. The exact pre-merge security target-qualified SHA is `563d02f682a5213ea7962263477b717e30a152ff` (98 targeted Windows tests). Main's merged implementation is `6565e08b2e4bd114725b8edea6987880498f3087`. Post-merge full CI must be evaluated independently.
 
 **Outstanding CI qualification:** The general PR workflow initially failed its `git diff --check` gate because of Markdown trailing whitespace (corrected on this branch). The prior Nov 24 `main` full-suite gate also failed in a Coder Planner compatibility test (24 passed / 24 failed in that file), preventing downstream full Windows and Pi gates. These failures must be reconciled without changing approved Architect/Coder behavior or concealing genuine regressions.
 
