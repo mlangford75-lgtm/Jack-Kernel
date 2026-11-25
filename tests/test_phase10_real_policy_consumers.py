@@ -62,7 +62,10 @@ canary_stream_cells = cells_of_type(jk.KERNEL.stream, RuntimeCanaryPolicy)
 assert canary_run_cells, "No real Canary output-run closure found"
 assert canary_stream_cells, "No real Canary output-stream closure found"
 canary_policy = canary_run_cells[0].cell_contents
-assert any(cell.cell_contents is canary_policy for cell in canary_stream_cells)
+canary_stream_cell = next(
+    cell for cell in canary_stream_cells
+    if cell.cell_contents is canary_policy
+)
 
 credential_policy = jk._JACK_RUNTIME_CREDENTIAL_POLICY
 assert type(credential_policy) is RuntimeCredentialPolicy
@@ -71,6 +74,14 @@ credential_post_cells = cells_of_type(
 )
 assert credential_post_cells, "Protected backend transport has no credential-policy closure"
 assert any(cell.cell_contents is credential_policy for cell in credential_post_cells)
+credential_build_cells = cells_of_type(
+    jk.BACKEND._client.build_request, RuntimeCredentialPolicy
+)
+assert credential_build_cells, "Protected backend request builder has no policy closure"
+credential_build_cell = next(
+    cell for cell in credential_build_cells
+    if cell.cell_contents is credential_policy
+)
 
 guard = RuntimePolicyAuthority()
 guard.register_attribute(
@@ -86,13 +97,22 @@ guard.register_cell(
     cell=canary_run_cells[0],
 )
 guard.register_cell(
+    label="canary-real-stream-closure", kind="canary",
+    cell=canary_stream_cell,
+)
+guard.register_cell(
     label="credential-real-transport", kind="credential",
     cell=credential_post_cells[0],
+)
+guard.register_cell(
+    label="credential-real-build-request", kind="credential",
+    cell=credential_build_cell,
 )
 guard.seal()
 for label in (
     "path-consumer", "credential-holder",
-    "canary-real-run-closure", "credential-real-transport",
+    "canary-real-run-closure", "canary-real-stream-closure",
+    "credential-real-transport", "credential-real-build-request",
 ):
     guard.verify_for(label)
 
@@ -108,7 +128,20 @@ else:
     raise AssertionError("Replacing effective credential holder was not detected")
 # The transport retained the original policy and is still accurately observed.
 guard.verify_for("credential-real-transport")
+guard.verify_for("credential-real-build-request")
 assert guard.invalidated_labels == ("credential-holder",)
+
+# A second independent attack changes the actual streaming DLP policy cell.
+# Even if the run guard remains intact, the stream boundary must not be
+# considered trusted with a different policy captured at release time.
+canary_stream_cell.cell_contents = dataclasses.replace(canary_policy)
+try:
+    guard.verify_for("canary-real-stream-closure")
+except PolicyIntegrityCompromised:
+    pass
+else:
+    raise AssertionError("Replacing active streaming Canary closure was not detected")
+assert "canary-real-stream-closure" in guard.invalidated_labels
 jk._JACK_AUTHORITY_LEDGER.close()
 '''
 
