@@ -242,6 +242,7 @@ def _integrated_host(tmp_path: Path):
 def test_integrated_fastapi_blocks_rebound_run_before_dispatch(tmp_path):
     host, calls = _integrated_host(tmp_path)
     authority = install(host)
+    authority._phase9b_diagnostic_enabled = True
     with TestClient(host.APP) as client:
         response = client.post("/v1/chat/completions")
         if response.status_code != 200:
@@ -258,7 +259,7 @@ def test_integrated_fastapi_blocks_rebound_run_before_dispatch(tmp_path):
                                       getattr(function.__code__, "co_firstlineno", 0)))
                     except Exception as exc:
                         debug.append((slot.name, type(exc).__name__))
-            pytest.fail("benign Phase9 startup mismatch: " + repr(debug))
+            pytest.fail("benign Phase9 startup mismatch: " + repr(debug) + " actual-time: " + repr(getattr(authority, "_phase9b_diagnostic", [])))
         assert response.status_code == 200, authority.mismatched_slots
         assert response.json() == {"verified": True}
         async def bypass(_body):
