@@ -361,6 +361,12 @@ def main() -> None:
 
         jack_phase10_path_enforcement.install(jk)
 
+        import jack_phase10_canary_enforcement
+        import jack_phase10_credential_enforcement
+
+        jack_phase10_canary_enforcement.install(jk)
+        jack_phase10_credential_enforcement.install(jk)
+
         import jack_phase9b_enforcement
 
         jack_phase9b_enforcement.install(jk)
