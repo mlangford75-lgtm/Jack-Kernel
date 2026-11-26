@@ -877,12 +877,17 @@ def _install_evidence_release_hooks(jk: Any, ledger: AuthorityLedger) -> None:
         @wraps(original_stream)
         async def ledger_stream(*args: Any, **kwargs: Any):
             with live_ledger_scope(ledger):
+                source_stream = original_stream(*args, **kwargs)
                 try:
-                    async for chunk in original_stream(*args, **kwargs):
+                    async for chunk in source_stream:
                         yield chunk
                 except guard.StreamingIRQCanaryInterrupt as exc:
                     _record_canary_failsoft(ledger, exc.match)
                     raise
+                finally:
+                    close = getattr(source_stream, "aclose", None)
+                    if callable(close):
+                        await close()
 
         ledger_stream._jack_phase6_authority_ledger = True
         ledger_stream._jack_phase6_original = original_stream

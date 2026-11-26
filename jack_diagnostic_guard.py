@@ -297,8 +297,9 @@ def _install_stream_exception_guard(jk: Any, policy: Any) -> bool:
         return True
 
     async def guarded_stream(*args: Any, **kwargs: Any):
+        source_stream = original_stream(*args, **kwargs)
         try:
-            async for chunk in original_stream(*args, **kwargs):
+            async for chunk in source_stream:
                 yield chunk
         except Exception as exc:
             if not _exception_has_credential(
@@ -325,6 +326,10 @@ def _install_stream_exception_guard(jk: Any, policy: Any) -> bool:
                 detail=_blocked_payload(BOUNDARY_STREAM_EXCEPTION_RELEASE),
                 headers=safe_headers,
             ) from None
+        finally:
+            close = getattr(source_stream, "aclose", None)
+            if callable(close):
+                await close()
 
     guarded_stream._jack_phase7_diagnostic_stream_guard = True
     guarded_stream._jack_phase7_original_stream = original_stream

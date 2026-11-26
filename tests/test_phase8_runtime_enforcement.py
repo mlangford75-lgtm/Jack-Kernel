@@ -71,13 +71,16 @@ def test_nonstream_result_is_withheld_when_source_drifts_during_cognition(tmp_pa
 def test_stream_preserves_released_prefix_and_drains_safe_cognition_after_invalidation(tmp_path):
     authority, target = _authority_for(tmp_path)
     drained = []
+    failures = []
 
     async def raw_stream(*_args, **_kwargs):
         yield b"first"
         yield b"second"
+        assert len(failures) == 1
         drained.append("completed")
 
     jk = _runtime_host(authority, stream=raw_stream)
+    jk.KERNEL._note_outer_stream_failure = failures.append
     source_guard.activate_runtime_enforcement(jk, authority, start_periodic=False)
 
     async def exercise():
@@ -93,6 +96,7 @@ def test_stream_preserves_released_prefix_and_drains_safe_cognition_after_invali
 
     asyncio.run(exercise())
     assert drained == ["completed"]
+    assert isinstance(failures[0], source_guard.SourceAuthorityInvalidated)
 
 
 def test_suspended_runtime_blocks_new_cognition_and_exact_reverification_restores_it(

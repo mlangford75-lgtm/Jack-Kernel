@@ -75,6 +75,11 @@ def install(jk):
             async for chunk in source:
                 verify()
                 yield chunk
+        except PolicyIntegrityUnavailable as exc:
+            note = getattr(jk.KERNEL, "_note_outer_stream_failure", None)
+            if callable(note):
+                note(exc)
+            raise
         finally:
             await source.aclose()
 

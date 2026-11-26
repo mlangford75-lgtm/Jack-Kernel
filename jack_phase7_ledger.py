@@ -300,8 +300,9 @@ def _install_kernel_exception_hooks(
 
         @wraps(original_stream)
         async def phase7_stream(*args: Any, **kwargs: Any):
+            source_stream = original_stream(*args, **kwargs)
             try:
-                async for chunk in original_stream(*args, **kwargs):
+                async for chunk in source_stream:
                     yield chunk
             except evidence_guard.StreamingIRQCanaryInterrupt as exc:
                 canary_id = str(getattr(exc.match, "canary_id", "") or "")
@@ -324,6 +325,10 @@ def _install_kernel_exception_hooks(
                         producer_code="phase7.diagnostic_stream",
                     )
                 raise
+            finally:
+                close = getattr(source_stream, "aclose", None)
+                if callable(close):
+                    await close()
 
         phase7_stream._jack_phase7_authority_ledger = True
         phase7_stream._jack_phase7_original = original_stream

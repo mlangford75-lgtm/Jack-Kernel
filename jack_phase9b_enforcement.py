@@ -76,9 +76,10 @@ class Phase9BASGIGuard:
     authority's own terminal/suspension state decides future admissions.
     """
 
-    def __init__(self, app: Any, *, authority: RuntimeCodeAuthority) -> None:
+    def __init__(self, app: Any, *, authority: RuntimeCodeAuthority, note_stream_failure: Any = None) -> None:
         self.app = app
         self.authority = authority
+        self.note_stream_failure = note_stream_failure
 
     @staticmethod
     async def _denied(send: Any) -> None:
@@ -141,8 +142,10 @@ class Phase9BASGIGuard:
 
                 try:
                     self.authority.verify_for(*scopes)
-                except RuntimeCodeIntegrityUnavailable:
+                except RuntimeCodeIntegrityUnavailable as exc:
                     if is_sse:
+                        if callable(self.note_stream_failure):
+                            self.note_stream_failure(exc)
                         blocked_stream = True
                         if not event.get("more_body", False):
                             await send({
@@ -253,6 +256,11 @@ def install(jk: Any) -> RuntimeCodeAuthority:
             async for chunk in source_stream:
                 guard.verify_for("model", "authority")
                 yield chunk
+        except RuntimeCodeIntegrityUnavailable as exc:
+            note = getattr(jk.KERNEL, "_note_outer_stream_failure", None)
+            if callable(note):
+                note(exc)
+            raise
         finally:
             close = getattr(source_stream, "aclose", None)
             if callable(close):
@@ -460,7 +468,10 @@ def install(jk: Any) -> RuntimeCodeAuthority:
     # The *outer* HTTP guard makes it impossible to defeat request/response
     # checks just by swapping jk.KERNEL.run in an otherwise unchanged APP.
     # ASGI wrapping itself remains inside the same interpreter trust domain.
-    jk.APP.add_middleware(Phase9BASGIGuard, authority=guard)
+    jk.APP.add_middleware(
+        Phase9BASGIGuard, authority=guard,
+        note_stream_failure=getattr(jk.KERNEL, "_note_outer_stream_failure", None),
+    )
     jk._JACK_RUNTIME_CODE_AUTHORITY = guard
     setattr(jk, _PHASE9B_MARKER, True)
     return guard

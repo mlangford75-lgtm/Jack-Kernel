@@ -114,6 +114,7 @@ def test_asgi_nonstream_after_headers_never_releases_unverified_body():
 def test_asgi_stream_preserves_prefix_and_withholds_future_chunks():
     authority, owner = _authority()
     events = []
+    failures = []
 
     async def backend(scope, receive, send):
         await send({
@@ -127,10 +128,14 @@ def test_asgi_stream_preserves_prefix_and_withholds_future_chunks():
         await send({"type": "http.response.body", "body": b"data: [DONE]\n\n", "more_body": False})
 
     async def execute():
-        await Phase9BASGIGuard(backend, authority=authority)(
+        await Phase9BASGIGuard(
+            backend, authority=authority, note_stream_failure=failures.append,
+        )(
             {"type": "http"}, None, _async_send(events)
         )
     asyncio.run(execute())
+    assert len(failures) == 1
+    assert isinstance(failures[0], RuntimeCodeIntegrityCompromised)
     bodies = [event["body"] for event in events if event["type"] == "http.response.body"]
     assert bodies == [b"data: safe\n\n", b""]
     assert b"unsafe" not in b"".join(bodies)
