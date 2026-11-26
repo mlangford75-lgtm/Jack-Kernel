@@ -16988,11 +16988,11 @@ def _security_center_policies(cfg: Dict[str, Any]):
         saved_raw = "" if saved is None else json.dumps(saved, ensure_ascii=False)
         irq = cfg.get("security_irq_settings")
         if irq is not None:
-            if not isinstance(irq, dict) or set(irq) != {"sensitivity_percent", "max_window"}:
+            if not isinstance(irq, dict) or set(irq) not in ({"max_window"}, {"sensitivity_percent", "max_window"}):
                 raise ValueError("Invalid StreamingIRQ settings")
         session_payload = copy.deepcopy(session) if session is not None else {"version": 1, "patterns": []}
         if irq is not None or session is not None:
-            session_payload.update(irq if irq is not None else {"sensitivity_percent": 100, "max_window": 4096})
+            session_payload.update(irq if irq is not None else {"max_window": 4096})
             session_raw = json.dumps(session_payload, ensure_ascii=False)
         else:
             session_raw = ""
@@ -17012,7 +17012,8 @@ def _security_center_summary(cfg: Dict[str, Any]) -> None:
     print(_status_value("Workspace Lock", "ON" if paths.workspace_root is not None else "OFF"))
     print(_status_value("Restricted roots", str(len(paths.never_roots))))
     print(_status_value("Startup Canaries", str(canaries.canaries.count)))
-    print(_status_value("StreamingIRQ sensitivity", str(canaries.sensitivity_percent) + "% consecutive match"))
+    print(_status_value("StreamingIRQ sensitivity", "Adaptive (25%, minimum 16; short values exact)"
+                        if canaries.sensitivity_percent is None else str(canaries.sensitivity_percent) + "% consecutive match"))
     print(_status_value("Custom Canary quarantine", f"{canaries.canaries.required_window} active / {canaries.canaries.max_window} ceiling"))
     print(_status_value("Core security", "REQUIRED AT SECURED STARTUP"))
 
@@ -17119,25 +17120,33 @@ def _edit_security_center(cfg: Dict[str, Any]) -> None:
         elif choice == "9":
             if override(evidence.STATIC_CANARY_POLICY_ENV):
                 continue
-            current = cfg.get("security_irq_settings") or {"sensitivity_percent": 100, "max_window": 4096}
+            current = cfg.get("security_irq_settings") or {"max_window": 4096}
+            current_percent = current.get("sensitivity_percent")
+            current_label = "Adaptive" if current_percent is None else str(current_percent)
+            print("Adaptive (default): 25%, minimum 16 characters, short values exact.")
             print("Maximum 5%, High 10%, Standard 25%, Low 50%, Exact 100%, or Custom 1-100%.")
-            raw = _cli_input(f"Consecutive match percentage [{current['sensitivity_percent']}]: ").strip().lower()
+            raw = _cli_input(f"Consecutive match sensitivity [{current_label}]: ").strip().lower()
             presets = {"maximum": 5, "high": 10, "standard": 25, "low": 50, "exact": 100}
             try:
-                if raw == "custom":
+                if raw == "adaptive":
+                    percent = None
+                elif raw == "custom":
                     percent = int(_cli_input("Custom percentage (1-100): "))
                 else:
-                    percent = presets[raw] if raw in presets else int(raw) if raw else current["sensitivity_percent"]
+                    percent = presets[raw] if raw in presets else int(raw) if raw else current_percent
                 ceiling = _cli_input(f"Custom Canary quarantine ceiling (0-16384 chars) [{current['max_window']}]: ").strip()
                 ceiling = int(ceiling) if ceiling else current["max_window"]
             except ValueError:
                 print("Invalid number; previous setting retained.")
                 continue
-            if percent < 100:
+            if percent is not None and percent < 100:
                 print("Partial matching can interrupt benign text that shares a key fragment.")
                 if _cli_input("Apply this sensitivity, including automatic credential Canaries? [y/N]: ").strip().lower() != "y":
                     continue
-            apply_candidate("security_irq_settings", {"sensitivity_percent": percent, "max_window": ceiling})
+            settings = {"max_window": ceiling}
+            if percent is not None:
+                settings["sensitivity_percent"] = percent
+            apply_candidate("security_irq_settings", settings)
         elif choice == "10":
             if override(evidence.STATIC_CANARY_POLICY_ENV):
                 continue
@@ -17169,7 +17178,8 @@ def _edit_security_center(cfg: Dict[str, Any]) -> None:
         elif choice == "7":
             path_policy, canary_policy, _, _ = _security_center_policies(cfg)
             print("Custom Canary active quarantine:", canary_policy.canaries.required_window, "characters")
-            print("Global sensitivity:", canary_policy.sensitivity_percent, "%")
+            print("Global sensitivity:", "Adaptive (25%, minimum 16; short values exact)"
+                  if canary_policy.sensitivity_percent is None else f"{canary_policy.sensitivity_percent}%")
             # The immutable matcher sorts its patterns for deterministic
             # precedence; the editor uses insertion order. Keep UI numbers
             # aligned to the removal/override menus, not the matcher order.
@@ -17180,7 +17190,8 @@ def _edit_security_center(cfg: Dict[str, Any]) -> None:
                 ordered = [effective[item["id"]] for item in
                            (cfg.get("_security_session_canaries") or {}).get("patterns", [])]
             for index, item in enumerate(ordered, 1):
-                print(f"  Canary {index}: {len(item.value)} characters / {item.sensitivity_percent}% / {item.match_chars} consecutive characters (value hidden)")
+                sensitivity_label = "Adaptive" if item.sensitivity_percent is None else f"{item.sensitivity_percent}%"
+                print(f"  Canary {index}: {len(item.value)} characters / {sensitivity_label} / {item.match_chars} consecutive characters (value hidden)")
             print("Workspace directory:", repr(path_policy.workspace_root) if path_policy.workspace_root else "NOT CONFIGURED")
             print("Path policy source:", "ADMIN ENVIRONMENT" if os.getenv(paths.STATIC_PATH_POLICY_ENV, "").strip() else "LOCAL SETTINGS / DEFAULTS")
             print("Canary policy source:", "ADMIN ENVIRONMENT" if os.getenv(evidence.STATIC_CANARY_POLICY_ENV, "").strip() else "LAUNCHER SESSION")

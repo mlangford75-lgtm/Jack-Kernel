@@ -107,3 +107,42 @@ def test_irq_admin_override_keeps_resolved_settings_authoritative(cfg, monkeypat
     policy = jk._security_center_policies(cfg)[1]
     assert policy.sensitivity_percent == 100
     assert jk._config_to_env(cfg)["JACK_CANARY_POLICY_JSON"] == admin
+
+
+def test_adaptive_default_and_saved_exact_override(cfg, monkeypatch, capsys):
+    policy = jk._security_center_policies(cfg)[1]
+    assert policy.sensitivity_percent is None
+    jk._security_center_summary(cfg)
+    assert "Adaptive (25%, minimum 16; short values exact)" in capsys.readouterr().out
+    cfg["security_irq_settings"] = {"sensitivity_percent": 100, "max_window": 4096}
+    assert jk._security_center_policies(cfg)[1].sensitivity_percent == 100
+    token = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz+-"
+    inputs = iter(["9", "adaptive", "", "5", token, "7", "s"])
+    monkeypatch.setattr(jk, "_cli_input", lambda *a, **k: next(inputs))
+    jk._run_transactional_editor(jk._edit_security_center, cfg)
+    assert cfg["security_irq_settings"] == {"max_window": 4096}
+    policy = jk._security_center_policies(cfg)[1]
+    assert policy.sensitivity_percent is None
+    assert policy.canaries._patterns[0].match_chars == 16
+    raw = json.loads(jk._config_to_env(cfg)["JACK_CANARY_POLICY_JSON"])
+    assert "sensitivity_percent" not in raw
+    out = capsys.readouterr().out
+    assert "Canary 1: 64 characters / Adaptive / 16 consecutive characters" in out
+    assert token not in out
+    restored = jk._load_cli_config()
+    assert restored["security_irq_settings"] == {"max_window": 4096}
+    assert jk._security_center_policies(restored)[1].sensitivity_percent is None
+
+
+def test_adaptive_and_individual_override_round_trip(cfg, monkeypatch):
+    token = "ABCDEFGHIJKLMNOP"
+    inputs = iter(["5", token, "10", "1", "25", "y", "s"])
+    monkeypatch.setattr(jk, "_cli_input", lambda *a, **k: next(inputs))
+    jk._run_transactional_editor(jk._edit_security_center, cfg)
+    policy = jk._security_center_policies(cfg)[1]
+    assert policy.sensitivity_percent is None
+    assert policy.canaries._patterns[0].match_chars == 4
+    inputs = iter(["10", "1", "inherit", "s"])
+    monkeypatch.setattr(jk, "_cli_input", lambda *a, **k: next(inputs))
+    jk._run_transactional_editor(jk._edit_security_center, cfg)
+    assert jk._security_center_policies(cfg)[1].canaries._patterns[0].match_chars == 16

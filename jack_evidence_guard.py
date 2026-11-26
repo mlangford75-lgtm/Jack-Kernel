@@ -98,16 +98,24 @@ _CANARY_ID_CHARS = frozenset(
 
 @dataclass(frozen=True)
 class CanaryPattern:
-    """One exact-match canary without exposing its value through repr()."""
+    """One protected value without exposing it through repr().
+
+    The low-level constructor retains its exact-match default. Runtime policy
+    owners explicitly supply None for the adaptive default or an override.
+    """
 
     canary_id: str
     tier: CanaryTier
     value: str = field(repr=False)
-    sensitivity_percent: int = 100
+    sensitivity_percent: Optional[int] = 100
 
     @property
     def match_chars(self) -> int:
-        return (len(self.value) * self.sensitivity_percent + 99) // 100
+        length = len(self.value)
+        if self.sensitivity_percent is None:
+            # Adaptive runtime default: 25%, at least 16, never beyond value.
+            return min(length, max(16, (length + 3) // 4))
+        return (length * self.sensitivity_percent + 99) // 100
 
     def __post_init__(self) -> None:
         if not isinstance(self.canary_id, str):
@@ -122,7 +130,9 @@ class CanaryPattern:
             raise TypeError("canary value must be a string")
         if not self.value:
             raise ValueError("canary value must not be empty")
-        if type(self.sensitivity_percent) is not int or not 1 <= self.sensitivity_percent <= 100:
+        if self.sensitivity_percent is not None and (
+            type(self.sensitivity_percent) is not int or not 1 <= self.sensitivity_percent <= 100
+        ):
             raise ValueError("Canary sensitivity must be an integer percentage from 1 to 100")
 
 
@@ -309,10 +319,13 @@ class RuntimeCanaryPolicy:
     runtime_id: str
     lane_id: str
     canaries: DeterministicCanarySet
-    sensitivity_percent: int = 100
+    # None denotes the adaptive default, distinct from an explicit 25%.
+    sensitivity_percent: Optional[int] = None
 
     def __post_init__(self) -> None:
-        if type(self.sensitivity_percent) is not int or not 1 <= self.sensitivity_percent <= 100:
+        if self.sensitivity_percent is not None and (
+            type(self.sensitivity_percent) is not int or not 1 <= self.sensitivity_percent <= 100
+        ):
             raise ValueError("Canary sensitivity must be an integer percentage from 1 to 100")
         if not isinstance(self.runtime_id, str):
             raise TypeError("runtime_id must be a string")
@@ -422,7 +435,7 @@ def build_static_runtime_canary_policy(
 
     text = raw_json.strip()
 
-    # No configured policy preserves Jack's existing default behavior.
+    # No configured policy uses adaptive sensitivity for automatic credentials.
     if not text:
         return RuntimeCanaryPolicy(
             runtime_id=runtime_id,
@@ -462,9 +475,10 @@ def build_static_runtime_canary_policy(
             f"{STATIC_CANARY_POLICY_VERSION}"
         )
 
-    sensitivity = payload.get("sensitivity_percent", 100)
+    sensitivity = payload.get("sensitivity_percent")
     max_window = payload.get("max_window", STATIC_CANARY_MAX_WINDOW)
-    if type(sensitivity) is not int or not 1 <= sensitivity <= 100:
+    # Omission selects Adaptive. Explicit overrides must be integer percentages.
+    if "sensitivity_percent" in payload and (type(sensitivity) is not int or not 1 <= sensitivity <= 100):
         raise RuntimeError("Canary sensitivity must be an integer percentage from 1 to 100")
     if type(max_window) is not int or not 0 <= max_window <= STATIC_CANARY_CONFIGURABLE_MAX_WINDOW:
         raise RuntimeError("Canary quarantine ceiling is outside supported resource limits")
@@ -523,6 +537,11 @@ def build_static_runtime_canary_policy(
                 "value is too short for a static hard-interrupt Canary"
             )
 
+        if "sensitivity_percent" in item and (
+            type(item["sensitivity_percent"]) is not int or not 1 <= item["sensitivity_percent"] <= 100
+        ):
+            raise RuntimeError(f"{STATIC_CANARY_POLICY_ENV} pattern {index} has invalid sensitivity")
+
         try:
             pattern = CanaryPattern(
                 canary_id=canary_id,
@@ -548,8 +567,8 @@ def build_static_runtime_canary_policy(
             ),
         )
     except (TypeError, ValueError):
-        # Includes duplicate IDs/values and values whose exact-match
-        # look-behind would exceed the fixed hard ceiling.
+        # Includes duplicate IDs/values and values whose effective-match
+        # look-behind would exceed the configured hard ceiling.
         raise RuntimeError(
             f"{STATIC_CANARY_POLICY_ENV} contains an invalid, duplicate, "
             "or over-window Canary pattern"

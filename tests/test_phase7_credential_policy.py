@@ -199,6 +199,7 @@ def test_future_canary_window_limit_does_not_make_input_policy_installation_brit
         runtime_id=jack.RUNTIME_ID,
         lane_id=jack.LANE_ID,
         canaries=evidence.DeterministicCanarySet((), max_window=0),
+        sensitivity_percent=100,
     )
     with pytest.raises(RuntimeError, match="output-DLP ceiling"):
         guard.merge_runtime_canary_policy(existing, credentials)
@@ -248,3 +249,36 @@ def test_canary_collision_fails_instead_of_silently_dropping_policy():
     )
     with pytest.raises(RuntimeError, match="collision"):
         guard.merge_runtime_canary_policy(existing, credentials)
+
+
+@pytest.mark.parametrize("length,width", [(7, 7), (10, 10), (16, 16), (32, 16), (64, 16), (65, 17), (256, 64), (1024, 256)])
+def test_automatic_credentials_inherit_adaptive_threshold(length, width):
+    secret = "".join(chr(0x500 + i) for i in range(length))
+    jack = _jack(api_key=secret)
+    credentials = guard.build_runtime_credential_policy(jack)
+    initial = evidence.build_static_runtime_canary_policy(runtime_id=jack.RUNTIME_ID, lane_id=jack.LANE_ID, raw_json="")
+    merged = guard.merge_runtime_canary_policy(initial, credentials)
+    item = next(item for item in merged.canaries._patterns if item.value == secret)
+    assert item.sensitivity_percent is None and item.match_chars == width
+    assert merged.canaries.required_window == max(p.match_chars - 1 for p in merged.canaries._patterns)
+    assert merged.canaries.find(secret[:width - 1]) is None
+    assert merged.canaries.find(secret[:width]).canary_id == item.canary_id
+    # Input isolation remains exact, independent of the output threshold.
+    credentials.guard_model_payload({"messages": [{"role": "user", "content": secret[:-1]}]})
+    with pytest.raises(guard.ProtectedCredentialInterrupt):
+        credentials.guard_model_payload({"messages": [{"role": "user", "content": secret}]})
+
+
+def test_adaptive_credential_window_uses_effective_match_and_still_fails_closed():
+    max_window = guard.CREDENTIAL_CANARY_MAX_WINDOW
+    # Width 4097 requires a 4096-character quarantine; one more character fails.
+    for length, rejected in ((4 * (max_window + 1), False), (4 * (max_window + 1) + 1, True)):
+        jack = _jack(api_key="x" * length)
+        credentials = guard.build_runtime_credential_policy(jack)
+        initial = evidence.build_static_runtime_canary_policy(runtime_id=jack.RUNTIME_ID, lane_id=jack.LANE_ID, raw_json="")
+        if rejected:
+            with pytest.raises(RuntimeError, match="output-DLP ceiling"):
+                guard.merge_runtime_canary_policy(initial, credentials)
+        else:
+            merged = guard.merge_runtime_canary_policy(initial, credentials)
+            assert merged.canaries.required_window == max_window
