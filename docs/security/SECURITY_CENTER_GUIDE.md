@@ -37,6 +37,85 @@ each new launcher session, or supply an administrator-controlled startup policy.
 The review screen is a configuration check, not a live serving-process
 attestation. Keep configuration and environment access appropriately restricted.
 
+## Operator walkthrough (current mainline)
+
+On Windows, launch Jack with `start.bat`, then choose K at the launcher.
+Use the following sequence before starting a secured serving session.
+
+1. Choose **1** and enter the absolute authorized workspace directory, for
+   example `C:\Jack_Testing\workspace`. Blank cancels. Workspace Lock is
+   optional; enable it when the agent should operate only inside that root.
+2. Choose **3** and enter an absolute NEVER path, for example
+   `C:\Jack_Testing\restricted`. Repeat for additional roots. NEVER restrictions
+   remain effective independently of Workspace Lock. Option 4 removes only
+   user-defined entries; it does not remove built-in protected roots.
+3. Choose **9**. Enter `adaptive` to select the recommended default explicitly,
+   then press Enter to retain the current quarantine ceiling (4096 on fresh
+   local settings). A previously saved explicit 100% setting is not migrated
+   automatically; select Adaptive if that is your intended policy.
+4. Choose **5** to register a protected value using the hidden input prompt.
+   For a test, use a disposable synthetic value of at least eight characters.
+   Repeat for additional values. Do not paste production secrets into test prompts.
+5. Optionally choose **10**, enter the displayed Canary number, then enter
+   an integer percentage (1–100) or `inherit`. Entering 0 at the selection
+   prompt cancels. Confirm the warning if you deliberately choose a match
+   shorter than eight characters.
+6. Choose **7** to review the workspace, restricted roots, global sensitivity,
+   individual effective match lengths and active quarantine. Values remain hidden.
+7. Choose **S** to save and apply the configuration for the next Kernel start.
+   Start the secured server through the launcher and point the agent at Jack's
+   authenticated endpoint, not directly at the inference backend.
+
+To remove a restriction, choose 4 or 6, select its number and confirm with
+`y`. To disable Workspace Lock, choose 2 and confirm with `y`. To abandon
+unsaved editor changes, choose M. Restart the serving process for changed
+policies to take effect. Session Canaries must be registered again after
+restarting the launcher; saved global sensitivity and path settings persist.
+
+### Selecting sensitivity in practice
+
+| Protected length | Adaptive match | Explicit 25% match |
+|---:|---:|---:|
+| 8 | 8 | 2 |
+| 10 | 10 | 3 |
+| 16 | 16 | 4 |
+| 32 | 16 | 8 |
+| 64 | 16 | 16 |
+| 128 | 32 | 32 |
+| 256 | 64 | 64 |
+| 1024 | 256 | 256 |
+
+A lower percentage means **more sensitive** detection, not stronger encryption
+or a guaranteed bound on total leakage. Option 9 accepts preset names,
+`adaptive`, an integer, or `custom` followed by an integer at the next prompt.
+Explicit partial global sensitivity requires confirmation because it also
+applies to automatic credential Canaries. Blank input retains the existing
+selection. Option 10 overrides only the selected session Canary; `inherit`
+restores the global policy. The quarantine ceiling is a capacity limit, not
+the match threshold: the active window is derived from effective matches.
+If a setting conflicts with the policy or capacity, Jack retains the previous
+setting. Review option 7 after each change.
+
+### Operational verification and response
+
+Use an authorized disposable workspace and synthetic protected values.
+Verify an allowed operation succeeds, an outside-root or NEVER operation
+is denied, a below-threshold synthetic fragment is permitted, and a matching
+fragment produces a hard interrupt without being released. Confirm the
+actual host security decision and filesystem state, not merely the model's
+statement. After a hard interrupt, start a fresh authorized request; do not
+retry the prohibited operation through a different tool or path.
+
+The November 26, 2026 live qualification reported nine supported cognitive
+configurations and three security cases passing on candidate
+[`610377b6`](https://github.com/mlangford75-lgtm/Jack-Kernel/commit/610377b6aa4f1f931f7b0a3a70bf90aaafa2e013),
+merged in [PR #178](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/178).
+With `ling-3.0-tiny` and four simultaneous requests, the 15-character control
+was released, the 16-character protected fragment was blocked, unrelated
+streams completed independently, invalid authentication was rejected, and
+a subsequent request recovered. This is reported live qualification of
+those cases, not a universal security guarantee or independent certification.
+
 ## Restricted Paths and Workspace Lock
 
 Workspace Lock is optional; when enabled it denies represented filesystem
