@@ -16,6 +16,10 @@ Deep Reasoning, Local Agentic (Preserve Thinking), and Code Debugging are **refe
 >
 > **Current security state:** [`CURRENT_SECURITY_STATUS.md`](CURRENT_SECURITY_STATUS.md)
 >
+> **Operating Jack's security controls:** [Security Center operator guide](docs/security/SECURITY_CENTER_GUIDE.md) — select **K** in the launcher. See [StreamingIRQ sensitivity](docs/security/STREAMING_IRQ_SENSITIVITY.md) for Adaptive defaults, explicit overrides and quarantine behavior.
+>
+> **November 26, 2026 — Adaptive StreamingIRQ:** [PR #178](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/178) merged the adaptive default. Live qualification reported 9/9 supported cognitive configurations and 3/3 security cases passing with `ling-3.0-tiny` at concurrency four. This is scoped live acceptance, not a new formal frozen-phase certification.
+>
 > **Security update (November 25, 2026):** Phase 9B selected executable-identity enforcement is implemented and **mandatory in the secured `--serve` child**, layered after Phase 8. It passed **98 targeted Windows Python 3.14.6 tests**, including a post-start live HTTP executable-tampering test on the real secured server ([CI evidence](https://github.com/mlangford75-lgtm/Jack-Kernel/actions/runs/45606058846)). Phase 8 remains the last formally **fully validated, frozen and tagged** security phase; Phase 9B's full regression, real external side-effect, and comprehensive release gates are not yet complete. See [current security status](CURRENT_SECURITY_STATUS.md) and [Phase 9B evidence](docs/security/README.md).
 
 ## Architecture at a glance
