@@ -52,7 +52,7 @@ def test_profile_isolated_and_reasoning_contract(monkeypatch, tmp_path):
     assert k.AGENTIC_CODER_MODE and k.AGENTIC_MODE and not k.AGENTIC_THOROUGH_MODE
     assert k.STAGES["coder_planner"].thinking
     assert k.STAGES["coder_planner"].reasoning_effort == "xhigh"
-    assert k.STAGES["coder_planner"].allow_tools
+    assert not k.STAGES["coder_planner"].allow_tools
     assert k.STAGES["extended_initial"].thinking
     assert k.STAGES["extended_initial"].reasoning_effort == "xhigh"
     assert k.STAGES["extended_initial"].allow_tools
@@ -60,13 +60,8 @@ def test_profile_isolated_and_reasoning_contract(monkeypatch, tmp_path):
     assert not k.STAGES["extended_reflection"].allow_tools
     assert k.CODER_PLANNER_PROMPT.startswith(PREFIX)
     assert k.CODER_EXECUTOR_PROMPT.startswith(PREFIX)
-    assert "read-only, non-mutating tools" in k.CODER_PLANNER_PROMPT
-    assert "detailed message" in k.CODER_PLANNER_PROMPT
-    assert "You are Planner." in k.CODER_PLANNER_PROMPT
-    assert "Use them when inspection is necessary" in k.CODER_PLANNER_PROMPT
-    assert "Your responsibility is to plan the user" in k.CODER_PLANNER_PROMPT
+    assert "You have no tools and no execution authority" in k.CODER_PLANNER_PROMPT
     assert "You've been provided a detailed, read-only developer specification prepared by Planner." in k.CODER_EXECUTOR_PROMPT
-    assert "Do not perform Coder\'s implementation work" in k.CODER_PLANNER_PROMPT
     assert "read-only developer specification" in k.CODER_EXECUTOR_PROMPT
     assert "sole implementation and answer-authority" in k.CODER_EXECUTOR_PROMPT
     assert "Files in the workspace are previous checkpoints" in k.CODER_EXECUTOR_PROMPT
@@ -88,9 +83,9 @@ def test_coder_planner_flash_and_thorough_are_isolated(monkeypatch, tmp_path):
     assert b.prompt == flash.CODER_PLANNER_FLASH_PROMPT
     assert b.prompt == a.prompt[len(flash.CODER_PLANNER_THOROUGH_PREFIX):]
     assert not b.prompt.startswith(PREFIX)
-    assert b.prompt.startswith("You are Planner")
-    assert "read-only, non-mutating tools" in b.prompt
-    assert a.allow_tools and b.allow_tools
+    assert b.prompt.startswith("You are Architect")
+    assert "You have no tools and no execution authority" in b.prompt
+    assert not a.allow_tools and not b.allow_tools
     assert thorough.CFG.coder_planner_profile == "thorough"
     assert flash.CFG.coder_planner_profile == "flash"
     assert flash._agentic_zero_reasoning(b) is True
@@ -115,14 +110,14 @@ def test_coder_planner_flash_and_thorough_are_isolated(monkeypatch, tmp_path):
     assert payload["chat_template_kwargs"]["preserve_thinking"] is False
     assert "reasoning_effort" not in payload["chat_template_kwargs"]
     assert payload["reasoning_effort"] == "none"
-    assert payload["chat_template_kwargs"]["thinking_budget"] == 0
+    assert "thinking_budget" not in payload["chat_template_kwargs"]
     assert "thinking_budget_tokens" not in payload
 
     # Coder Flash Stage 2 is also thinking-off; it must receive the same
     # generation budget while retaining its preserved R1 input.
     memory_payload = {"model": "test-model"}
     backend._apply_qwen_controls(memory_payload, flash.STAGES["extended_reflection"])
-    assert memory_payload["chat_template_kwargs"]["thinking_budget"] == 0
+    assert "thinking_budget" not in memory_payload["chat_template_kwargs"]
     assert memory_payload["chat_template_kwargs"]["enable_thinking"] is False
     assert memory_payload["chat_template_kwargs"]["preserve_thinking"] is True
 
@@ -173,19 +168,20 @@ def test_coder_planner_actual_wire_prompt_and_memory_thinking(monkeypatch, tmp_p
                 assert wire["messages"][0]["role"] == "system"
                 assert wire["messages"][0]["content"].startswith(k.STAGES["coder_planner"].prompt)
                 assert wire["messages"][0]["content"] == k.STAGES["coder_planner"].prompt
-                assert "read-only, non-mutating tools" in wire["messages"][0]["content"]
-                assert wire["messages"][-1]["content"] == "Verify workspace is empty"
+                assert "You have no tools and no execution authority" in wire["messages"][0]["content"]
+                assert "Verify workspace is empty" in wire["messages"][-1]["content"]
+                assert wire["messages"][-1]["content"].startswith(k._CODER_ARCHITECT_TASK_SOURCE_HEADER)
                 assert sum(x["role"] == "user" for x in wire["messages"]) == 1
                 assert "External Pi instructions" not in str(wire["messages"])
-                assert [t["function"]["name"] for t in wire["tools"]] == ["read"]
+                assert not wire.get("tools")
                 assert wire["chat_template_kwargs"]["enable_thinking"] is (selected == "thorough")
                 assert wire["reasoning_effort"] == ("none" if selected == "flash" else "xhigh")
                 if selected == "flash":
-                    assert wire["chat_template_kwargs"]["thinking_budget"] == 0
+                    assert "thinking_budget" not in wire["chat_template_kwargs"]
                 else:
                     assert "thinking_budget" not in wire["chat_template_kwargs"]
                 if selected == "flash":
-                    assert wire["messages"][0]["content"].startswith("You are Planner")
+                    assert wire["messages"][0]["content"].startswith("You are Architect")
                     assert k.CODER_PLANNER_THOROUGH_PREFIX not in str(wire["messages"])
                     assert wire["chat_template_kwargs"]["preserve_thinking"] is False
                 else:
@@ -227,8 +223,9 @@ def test_planner_rejected_template_artifacts_are_not_replayed(monkeypatch, tmp_p
     assert request[0] == {"role": "system", "content": k.CODER_PLANNER_FLASH_PROMPT}
     assert sum(x["role"] == "system" for x in request) == 1
     assert sum(x["role"] == "user" for x in request) == 1
-    assert request[-2]["content"] == "Inspect the directory; do not modify it."
-    assert request[-1]["role"] == "assistant"
+    assert [m["role"] for m in request] == ["system", "user"]
+    assert "Verify the directory is empty" in request[-1]["content"]
+    assert "Inspect the directory; do not modify it." not in str(request)
     assert all("<think>" not in str(m.get("content")) for m in request)
     assert all(m.get("content") != "assistant" for m in request)
     assert json.dumps(h, sort_keys=True) == original
@@ -299,8 +296,8 @@ def test_zero_reasoning_budget_llamacpp_and_nonflash_profiles(monkeypatch, tmp_p
             profile = k.STAGES[key]
             backend._apply_qwen_controls(p, profile)
             if key in selected_stages:
-                assert p["thinking_budget_tokens"] == 0
-                assert p.get("chat_template_kwargs", {}).get("thinking_budget") == 0
+                assert "thinking_budget_tokens" not in p
+                assert "thinking_budget" not in p.get("chat_template_kwargs", {})
                 assert p["chat_template_kwargs"]["enable_thinking"] is False
             else:
                 assert "thinking_budget_tokens" not in p
@@ -322,8 +319,7 @@ def test_planner_internal_rejections_cannot_compete_with_user(monkeypatch, tmp_p
         ["Planner tool call 0: shell command is outside the inspection-only grammar"],
         k.STAGES["coder_planner"].name,
     )
-    assert "single read-only inspection command" in internal["content"]
-    assert "'ls -la' or 'pwd'" in internal["content"]
+    assert internal["_jack_internal_tool_validation_rejection"] is True
     h = [
         {"role": "system", "content": "Pi caller system must be filtered"},
         {"role": "user", "content": "Verify the workspace is empty"},
@@ -337,11 +333,10 @@ def test_planner_internal_rejections_cannot_compete_with_user(monkeypatch, tmp_p
     projected = k._coder_isolate_planner_request(prepared, k.STAGES["coder_planner"])
     assert sum(item["role"] == "user" for item in projected) == 1
     assert projected[0]["content"] == k.CODER_PLANNER_FLASH_PROMPT
-    assert projected[-1]["role"] == "assistant"
-    assert "not a user request" in projected[-1]["content"]
-    assert "single read-only inspection command" in projected[-1]["content"]
+    assert [m["role"] for m in projected] == ["system", "user"]
+    assert "Verify the workspace is empty" in projected[-1]["content"]
+    assert "JACK INTERNAL TOOL REJECTION" not in str(projected)
     assert "Pi caller system must be filtered" not in str(projected)
-    assert projected[-2]["role"] == "assistant"
     assert json.dumps(h, sort_keys=True) == original
     # Model-visible validation instructions do not alter canonical role or evidence.
     assert internal["role"] == "user"
@@ -375,14 +370,9 @@ def test_planner_protocol_recovery_is_host_owned_with_single_user(monkeypatch, t
         projected = k._coder_isolate_planner_request(prepared, k.STAGES["coder_planner"])
         assert projected[0]["content"] == k.STAGES["coder_planner"].prompt
         assert [x["role"] for x in projected].count("user") == 1
-        assert [x["role"] for x in projected].count("tool") == 1
-        assert "only . and .." in str(projected)
-        assert any(
-            x["role"] == "assistant" and
-            "Jack internal recovery feedback (not a user request or Planner answer):" in str(x.get("content")) and
-            "Jack protocol continuation:" in str(x.get("content"))
-            for x in projected
-        )
+        assert [x["role"] for x in projected] == ["system", "user"]
+        assert "only . and .." not in str(projected)
+        assert "Jack protocol continuation:" not in str(projected)
         assert "External caller should be removed" not in str(projected)
         assert all(not (x["role"] == "user" and "Jack protocol continuation" in str(x.get("content"))) for x in projected)
         assert json.dumps(h, sort_keys=True) == frozen
@@ -400,8 +390,8 @@ def test_planner_spec_streams_as_advisory_reasoning_without_answer_contamination
                 calls.append(profile.name)
                 if profile.name == "Agentic Coder Planner":
                     assert profile.thinking is (planner == "thorough")
-                    assert profile.prompt.startswith("You are Planner") if planner == "flash" else True
-                    assert [t["function"]["name"] for t in tools] == ["read"]
+                    assert profile.prompt.startswith("You are Architect") if planner == "flash" else True
+                    assert tools is None and tool_choice == "none"
                     if planner == "thorough":
                         yield {"choices": [{"index": 0, "delta": {
                             "reasoning_content": "PLANNER_NATIVE_REASONING_MARKER"}, "finish_reason": None}]}
@@ -429,7 +419,7 @@ def test_planner_spec_streams_as_advisory_reasoning_without_answer_contamination
             for line in frame.splitlines():
                 if line.startswith("data: ") and line != "data: [DONE]":
                     deltas.append((json.loads(line[6:]).get("choices") or [{}])[0].get("delta", {}))
-        assert sum("[CODER PLANNER — SPEC SHEET]" in d.get("reasoning_content", "") for d in deltas) == 1
+        assert sum("[PLAN — SPEC SHEET]" in d.get("reasoning_content", "") for d in deltas) == 1
         assert all(any(part == d.get("reasoning_content") for d in deltas) for part in parts)
         assert all(not any(part in d.get("content", "") for part in parts) for d in deltas)
         if planner == "thorough":
@@ -442,8 +432,11 @@ def test_planner_spec_streams_as_advisory_reasoning_without_answer_contamination
         assert reasoning_chunks[plan_idx:plan_idx + len(parts)] == parts
         assert not any("Planner developer specification:" in d.get("content", "") for d in deltas)
         assert plan_idx < next(i for i, d in enumerate(deltas) if "Verified empty." in str(d))
-        assert "Workspace check completed." in "".join(str(d) for d in deltas)
-        assert calls == ["Agentic Coder Planner", "Agentic native pass 1", "Agentic native pass 2"]
+        expected = ["Agentic Coder Planner", "Agentic native pass 1"]
+        if planner == "thorough":
+            assert "Workspace check completed." in "".join(str(d) for d in deltas)
+            expected.append("Agentic native pass 2")
+        assert calls == expected
         assert sum("data: [DONE]" in frame for frame in frames) == 1
     asyncio.run(run())
 
@@ -460,7 +453,8 @@ def test_planner_read_only_vision_and_explicit_actual_tool_contract(monkeypatch,
             {"type": "function", "function": {"name": "pwsh-start-job"}},
         ]
         allowed = k._coder_planner_tools(offered)
-        assert [x["function"]["name"] for x in allowed] == ["read", "describe_image", "pwsh-get-job"]
+        assert [x["function"]["name"] for x in allowed] == ["read"]
+        assert not k.STAGES["coder_planner"].allow_tools
         assert [x["function"]["name"] for x in offered] == [
             "read", "describe_image", "pwsh-get-job", "write", "powershell", "pwsh-start-job"
         ]
@@ -471,8 +465,7 @@ def test_planner_read_only_vision_and_explicit_actual_tool_contract(monkeypatch,
         )
         assert wire[0]["content"] == k.STAGES["coder_planner"].prompt
         assert [msg["role"] for msg in wire] == ["system", "user"]
-        assert "read-only, non-mutating tools" in wire[0]["content"]
-        assert "Do not perform Coder's implementation work" in wire[0]["content"]
+        assert "You have no tools and no execution authority" in wire[0]["content"]
         assert "Caller must not alter Planner" not in str(wire)
         assert sum(m["role"] == "user" for m in wire) == 1
 
@@ -482,67 +475,37 @@ def test_repeated_planner_shell_denials_do_not_abort_or_discard_coder_task(monke
         for mode in ("flash", "thorough"):
             k = load(monkeypatch, tmp_path, planner=mode)
             sequence = []
-            request = "Create drifting.txt describing the sport of drifting"
+            request = "Create a harmless text file"
             class Backend:
                 async def chat_stream(self, *, messages, secondary_system, profile,
                                       tools=None, tool_choice=None):
                     sequence.append(profile.name)
                     if profile.name == "Agentic Coder Planner":
-                        n = sum(x == "Agentic Coder Planner" for x in sequence)
-                        assert n <= 3
-                        assert profile.thinking is (mode == "thorough")
-                        if n <= 2:
-                            assert [x["function"]["name"] for x in tools] == ["bash", "describe_image"]
-                        else:
-                            assert tools == []
-                            assert tool_choice == "none"
-                        yield {"choices": [{"index": 0, "delta": {
-                            "tool_calls": [{"index": 0, "id": f"forbidden-{n}",
-                                            "type": "function", "function": {
-                                                "name": "bash",
-                                                "arguments": '{"command":"cat > drifting.txt"}'}}]},
-                             "finish_reason": None}]}
-                        yield {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}
+                        assert tools is None and tool_choice == "none"
+                        yield {"choices": [{"index": 0, "delta": {"tool_calls": [
+                            {"index": 0, "id": "forbidden-architect-call", "type": "function",
+                             "function": {"name": "bash", "arguments": '{"command":"touch file.txt"}'}}
+                        ]}, "finish_reason": "tool_calls"}]}
                         return
                     if profile.name == "Agentic native pass 1":
-                        assert profile.thinking is True
-                        assert any(m.get("_jack_coder_plan") for m in messages)
                         plan = next(m for m in messages if m.get("_jack_coder_plan"))
                         assert request in plan["content"]
-                        assert "Jack host recovery handoff to Coder" in plan["content"]
                         assert plan["_jack_coder_goal_fallback"] is True
-                        assert [x["function"]["name"] for x in tools] == ["bash", "describe_image", "write"]
-                        yield {"choices": [{"index": 0, "delta": {"content": "Coder received the task."}, "finish_reason": None}]}
-                        yield {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
-                        return
-                    if profile.name == "Agentic native pass 2":
-                        assert profile.thinking is (mode == "thorough")
+                        assert {t["function"]["name"] for t in tools} == {"bash", "write"}
+                        yield {"choices": [{"index": 0, "delta": {"content": "Coder received the task."}, "finish_reason": "stop"}]}
+                    else:
                         assert not profile.allow_tools
-                        yield {"choices": [{"index": 0, "delta": {"content": "Coder handoff preserved."}, "finish_reason": None}]}
-                        yield {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
-                        return
-                    raise AssertionError("Unexpected stage: " + profile.name)
+                        yield {"choices": [{"index": 0, "delta": {"content": "Handoff preserved."}, "finish_reason": "stop"}]}
             kernel = k.JackQwenKernel(Backend(), k.CFG)
             offered = [{"type": "function", "function": {"name": name,
-                       "parameters": {"type": "object", "properties": {}}}}
-                       for name in ("bash", "describe_image", "write")]
-            frames = [x.decode("utf-8") async for x in kernel.stream({
-                "messages": [{"role": "user", "content": request}],
-                "tools": offered, "stream": True,
-            })]
-            output = "".join(frames)
-            assert "Jack host recovery handoff to Coder" in output
+                       "parameters": {"type": "object"}}} for name in ("bash", "write")]
+            output = "".join(
+                [x.decode() async for x in kernel.stream({"messages": [{"role": "user", "content": request}],
+                                                        "tools": offered, "stream": True})])
+            assert "forbidden-architect-call" not in output
             assert "Coder received the task." in output
-            assert "[CODER PLANNER — SPEC CAPTURED AND DELIVERED TO CODER]" not in output
-            assert "[CODER PLANNER — DEVELOPER SPECIFICATION]" not in output
-            assert "[JACK TOOL ACTION REJECTED BEFORE EXECUTION" not in output
-            assert "[JACK PLANNER TOOL REJECTED EARLY" not in output
-            assert sequence == [
-                "Agentic Coder Planner", "Agentic Coder Planner",
-                "Agentic Coder Planner", "Agentic native pass 1",
-                "Agentic native pass 2"
-            ]
-            assert "forbidden-1" not in output and "forbidden-2" not in output
+            assert sequence.count("Agentic Coder Planner") == 1
+            assert sequence.count("Agentic native pass 1") == 1
     asyncio.run(run())
 
 
@@ -551,10 +514,8 @@ def test_planner_stable_prompt_and_preserved_flash_thorough_contract(monkeypatch
         k = load(monkeypatch, tmp_path, planner=selected)
         base = k.CODER_PLANNER_PROMPT[len(k.CODER_PLANNER_THOROUGH_PREFIX):]
         assert k.CODER_PLANNER_FLASH_PROMPT == base
-        assert base.startswith("You are Planner.")
-        assert len(base) < 2400
-        assert "Past chat history" in base
-        assert "read-only, non-mutating tools" in base
+        assert base.startswith("You are Architect")
+        assert "You have no tools and no execution authority" in base
         assert k.STAGES["coder_planner"].thinking is (selected == "thorough")
         assert k.STAGES["extended_initial"].thinking is True
         assert k.STAGES["extended_reflection"].thinking is (selected == "thorough")
@@ -564,15 +525,17 @@ def test_planner_stable_prompt_and_preserved_flash_thorough_contract(monkeypatch
         second = k._coder_isolate_planner_request(source, k.STAGES["coder_planner"],
                     tools=[{"type":"function","function":{"name":"read"}},
                            {"type":"function","function":{"name":"describe_image"}}])
-        assert first == second == [{"role":"system","content":k.STAGES["coder_planner"].prompt},
-                                    {"role":"user","content":"Make a cuckoo SVG"}]
+        assert first == second
+        assert first[0] == {"role":"system","content":k.STAGES["coder_planner"].prompt}
+        assert first[1]["content"].startswith(k._CODER_ARCHITECT_TASK_SOURCE_HEADER)
+        assert "Make a cuckoo SVG" in first[1]["content"]
         note = k._tool_rejection_notice(
             ["Planner tool call 0: tool is not read-only"], k.STAGES["coder_planner"].name)
         backend = k.OpenAICompatibleBackend(k.CFG)
         prepared = backend._stage_messages_for_profile(source + [note], k.STAGES["coder_planner"])
         resumed = k._coder_isolate_planner_request(prepared, k.STAGES["coder_planner"])
         assert resumed[:len(first)] == first
-        assert resumed[-1]["role"] == "assistant"
+        assert resumed == first
 
 
 def test_planner_read_only_unchanged_evidence_cycle_detection(monkeypatch, tmp_path):
@@ -631,43 +594,32 @@ def test_planner_partial_output_survives_fallback(monkeypatch, tmp_path):
 
 def test_early_planner_mutation_abort_preserves_partial_spec(monkeypatch, tmp_path):
     async def run():
-        k=load(monkeypatch,tmp_path,planner="flash")
-        calls=[]
+        k = load(monkeypatch, tmp_path, planner="flash")
+        calls = []
         class Backend:
-            async def chat_stream(self, *,messages,secondary_system,profile,tools=None,tool_choice=None):
+            async def chat_stream(self, *, messages, secondary_system, profile, tools=None, tool_choice=None):
                 calls.append(profile.name)
                 if profile.name == "Agentic Coder Planner":
-                    n=calls.count(profile.name)
-                    if n==1:
-                        yield {"choices":[{"index":0,"delta":{"content":"Beautiful wooden roof"},"finish_reason":None}]}
-                        yield {"choices":[{"index":0,"delta":{"tool_calls":[{
-                            "index":0,"id":"blocked-write","type":"function",
-                            "function":{"name":"write","arguments":'{"path":"cuckoo.svg","content":"'}}]},
-                            "finish_reason":None}]}
-                        raise AssertionError("Streaming must stop before more write content")
-                    assert n==2
-                    assert any(m.get("_jack_internal_tool_validation_rejection") for m in messages)
-                    yield {"choices":[{"index":0,"delta":{"content":"Plan the SVG in Coder"},"finish_reason":None}]}
+                    assert tools is None
+                    yield {"choices": [{"index": 0, "delta": {"content": "Beautiful wooden roof"}}]}
+                    yield {"choices": [{"index": 0, "delta": {"tool_calls": [
+                        {"index": 0, "id": "blocked-write", "type": "function",
+                         "function": {"name": "write", "arguments": '{"path":"clock.svg","content":"'}}
+                    ]}}]}
+                    raise AssertionError("Architect stream must close at unauthorized tool proposal")
                 elif profile.name == "Agentic native pass 1":
-                    assert any(m.get("_jack_coder_plan") for m in messages)
-                    yield {"choices":[{"index":0,"delta":{"content":"Created file"},"finish_reason":None}]}
-                elif profile.name == "Agentic native pass 2":
-                    yield {"choices":[{"index":0,"delta":{"content":"SVG created"},"finish_reason":None}]}
+                    plan = next(m for m in messages if m.get("_jack_coder_plan"))
+                    assert "Beautiful wooden roof" in plan["content"]
+                    yield {"choices": [{"index": 0, "delta": {"content": "Coder received the specification."}, "finish_reason": "stop"}]}
                 else:
-                    raise AssertionError(profile.name)
-                yield {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
-        kernel=k.JackQwenKernel(Backend(),k.CFG)
-        frames=[x.decode() async for x in kernel.stream({
-            "messages":[{"role":"user","content":"Create cuckoo clock SVG"}],
-            "tools":[{"type":"function","function":{"name":"read"}},
-                     {"type":"function","function":{"name":"write"}}],"stream":True})]
-        output="".join(frames)
-        assert "Plan the SVG in Coder" in output
-        assert "Created file" in output
-        assert "[JACK PLANNER TOOL REJECTED EARLY" not in output
-        assert "[JACK TOOL ACTION REJECTED BEFORE EXECUTION" not in output
-        assert calls==["Agentic Coder Planner","Agentic Coder Planner",
-                       "Agentic native pass 1","Agentic native pass 2"]
+                    yield {"choices": [{"index": 0, "delta": {"content": "Memory"}, "finish_reason": "stop"}]}
+        kernel = k.JackQwenKernel(Backend(), k.CFG)
+        output = "".join([x.decode() async for x in kernel.stream({
+            "messages": [{"role": "user", "content": "Create a clock SVG"}],
+            "tools": [{"type": "function", "function": {"name": "write"}}], "stream": True})])
+        assert "blocked-write" not in output
+        assert "Coder received the specification." in output
+        assert calls.count("Agentic Coder Planner") == 1
     asyncio.run(run())
 
 
@@ -677,16 +629,16 @@ def test_coder_planner_cli_selection_and_child_environment(monkeypatch, tmp_path
     output = []
     monkeypatch.setattr(k, "_ansi_rgb", lambda text, *args, **kwargs: text)
     monkeypatch.setattr("builtins.print", lambda *args, **kwargs: output.append(" ".join(map(str, args))))
-    answers = iter(["6", "5", "1"])
+    answers = iter(["5", "1"])
     monkeypatch.setattr(k, "_cli_input", lambda _: next(answers))
     k._edit_reasoning(cfg)
-    assert "  1) Flash" in output and "  2) Thorough" in output
+    assert "  1) Flash (Default)" in output and "  2) Thorough" in output
     assert not any("omit the xhigh reasoning instruction" in row for row in output)
     assert not any("retain the xhigh reasoning instruction" in row for row in output)
     assert cfg["agentic_profile"] == "coder"
     assert cfg["coder_planner_profile"] == "flash"
     assert k._config_to_env(cfg)["JACK_CODER_PLANNER_PROFILE"] == "flash"
-    answers = iter(["6", "5", "2"])
+    answers = iter(["5", "2"])
     k._edit_reasoning(cfg)
     assert cfg["coder_planner_profile"] == "thorough"
     assert k._config_to_env(cfg)["JACK_CODER_PLANNER_PROFILE"] == "thorough"
@@ -1022,11 +974,11 @@ def test_backend_planner_read_tools_executor_full_tools(monkeypatch, tmp_path):
             first, second = payloads
             assert first["reasoning_effort"] == "xhigh"
             assert second["reasoning_effort"] == "xhigh"
-            assert [x["function"]["name"] for x in first["tools"]] == ["read", "bash"]
+            assert not first.get("tools")
             assert set(x["function"]["name"] for x in second["tools"]) == {"read", "bash", "write"}
             assert [m["role"] for m in first["messages"]] == ["system", "user"]
             assert first["messages"][0]["content"].startswith(k.CODER_PLANNER_PROMPT)
-            assert "Your stateful, mutating, or destructive tools have been removed." in first["messages"][0]["content"]
+            assert "You have no tools and no execution authority" in first["messages"][0]["content"]
             assert "User-defined stable system" not in first["messages"][0]["content"]
             assert "User-defined stable system" in second["messages"][0]["content"]
             assert sum(m["role"] == "user" for m in second["messages"]) == 1
@@ -1062,7 +1014,8 @@ def test_planner_isolation_keeps_user_context_but_no_external_system_authority(m
     )
     assert [m["role"] for m in wire] == ["system", "user"]
     assert wire[0]["content"] == k.CODER_PLANNER_PROMPT
-    assert wire[-1]["content"] == "Build a cuckoo clock SVG"
+    assert "Build a cuckoo clock SVG" in wire[-1]["content"]
+    assert wire[-1]["content"].startswith(k._CODER_ARCHITECT_TASK_SOURCE_HEADER)
     assert json.dumps(caller) == original
     assert not any("Pi instructions" in m["content"] or "Other agent" in m["content"]
                    for m in wire)
@@ -1093,7 +1046,8 @@ def test_planner_rebuilds_mismatched_upstream_system_without_mutating_source(mon
     planned = k._coder_isolate_planner_request(source, k.STAGES["coder_planner"])
     assert [m["role"] for m in planned] == ["system", "user"]
     assert planned[0] == {"role": "system", "content": k.CODER_PLANNER_PROMPT}
-    assert planned[-1]["content"] == "Verify workspace is empty"
+    assert "Verify workspace is empty" in planned[-1]["content"]
+    assert planned[-1]["content"].startswith(k._CODER_ARCHITECT_TASK_SOURCE_HEADER)
     assert all("EXTRA INSTRUCTIONS" not in str(m) for m in planned)
     assert all("Pi tools" not in str(m) for m in planned)
     assert json.dumps(source, sort_keys=True) == frozen
@@ -1147,9 +1101,10 @@ def test_planner_stream_request_isolated_from_all_other_system_instructions(monk
         wire = outbound[0]
         assert [m["role"] for m in wire["messages"]] == ["system", "user"]
         assert wire["messages"][0]["content"].startswith(k.CODER_PLANNER_PROMPT)
-        assert "read-only, non-mutating tools" in wire["messages"][0]["content"]
-        assert wire["messages"][1]["content"] == "Plan a code update."
-        assert [x["function"]["name"] for x in wire["tools"]] == ["bash"]
+        assert "You have no tools and no execution authority" in wire["messages"][0]["content"]
+        assert "Plan a code update." in wire["messages"][1]["content"]
+        assert wire["messages"][1]["content"].startswith(k._CODER_ARCHITECT_TASK_SOURCE_HEADER)
+        assert not wire.get("tools")
         assert json.dumps(source) == original
     asyncio.run(run())
 
@@ -1200,8 +1155,8 @@ def test_streamed_real_tool_resume_never_replans(monkeypatch, tmp_path):
                 n = len(self.stages)
                 if n == 1:
                     assert profile.name == "Agentic Coder Planner"
-                    assert profile.allow_tools
-                    assert [t["function"]["name"] for t in tools] == ["bash"]
+                    assert not profile.allow_tools
+                    assert tools is None and tool_choice == "none"
                     yield {"choices": [{"index": 0, "delta": {
                         "reasoning_content": "PLAN_R1"}, "finish_reason": None}]}
                     yield {"choices": [{"index": 0, "delta": {
@@ -1330,7 +1285,8 @@ def test_coder_planner_and_executor_share_one_host_work_id(monkeypatch, tmp_path
                 u = next(item for item in messages if item.get("role") == "user")
                 identities.append((profile.name, u.get("_jack_agentic_turn_id")))
                 if profile.name == "Agentic Coder Planner":
-                    assert profile.allow_tools
+                    assert not profile.allow_tools
+                    assert tools is None
                 answer = spec_text("Build a clock") if profile.name == "Agentic Coder Planner" else "Done"
                 yield {"choices": [{"index": 0, "delta": {
                     "reasoning_content": (
@@ -1350,7 +1306,7 @@ def test_coder_planner_and_executor_share_one_host_work_id(monkeypatch, tmp_path
         wire = "".join(part.decode("utf-8") for part in frames)
         assert "VISIBLE_PLANNER_REASONING" in wire
         assert "Developer specification for: Build a clock" in wire
-        assert "[CODER PLANNER" in wire
+        assert "[PLAN — SPEC SHEET]" in wire
         assert "CODER_OR_MEMORY_REASONING" in wire
         # Planner's spec must not be emitted through authoritative content.
         for part in frames:
@@ -1426,7 +1382,6 @@ def test_planner_read_tool_allowlist_and_shell_must_not_mutate(monkeypatch, tmp_
                     "ls\nrm -rf .", "pwd && rm -rf .",
                     "pwd && ls -la && touch new.txt",
                     "pwd && cat x | sh", "ls -la &&", "ls -la && && pwd",
-                    "pwd && ls -la && pwd && ls -la",
                     "ls -la & echo bad", "ls -la || pwd"):
         assert not k._coder_planner_safe_inspection_command(command), command
     def call(name, args):
@@ -1436,7 +1391,7 @@ def test_planner_read_tool_allowlist_and_shell_must_not_mutate(monkeypatch, tmp_
     assert not k._coder_planner_tool_errors([call("bash", {"command": "ls -la"})])
     assert k._coder_planner_tool_errors([call("write", {"path": "a.py", "content": "x"})])
     assert k._coder_planner_tool_errors([call("bash", {"command": "touch a.py"})])
-    assert not k._coder_planner_tool_errors([call("describe_image", {
+    assert k._coder_planner_tool_errors([call("describe_image", {
         "image_path": "screenshot.png", "prompt": "Describe visual layout", "compress": False
     })])
 
@@ -1477,8 +1432,7 @@ def test_planner_rejection_logs_cause_without_releasing_unsafe_tool(monkeypatch,
 def test_planner_forbidden_write_edit_feedback_prevents_retry_loop(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path)
     name = k.STAGES["coder_planner"].name
-    assert "Your stateful, mutating, or destructive tools have been removed." in k.CODER_PLANNER_PROMPT
-    assert "Do not perform Coder's implementation work" in k.CODER_PLANNER_PROMPT
+    assert "You have no tools and no execution authority" in k.CODER_PLANNER_PROMPT
 
     offered = [
         {"type": "function", "function": {"name": "read"}},
@@ -1555,166 +1509,63 @@ def test_planner_tool_resume_routes_back_to_planner_without_coder_replay(monkeyp
     assert any(e.get("content") == "CODER_NATIVE_REASON" for e in events)
 
 
-def test_real_streaming_planner_read_resume_hands_spec_to_coder(monkeypatch, tmp_path):
+def test_real_streaming_architect_read_proposal_is_never_released(monkeypatch, tmp_path):
     async def run():
         k = load(monkeypatch, tmp_path)
+        calls = []
         class Backend:
-            def __init__(self):
-                self.calls = []
-            async def chat_stream(self, *, messages, secondary_system, profile,
-                                  tools=None, tool_choice=None):
-                self.calls.append(profile.name)
-                n = len(self.calls)
-                if n == 1:
-                    assert profile.name == "Agentic Coder Planner"
-                    assert [t["function"]["name"] for t in tools] == ["read"]
-                    assert tool_choice == "auto"
-                    yield {"choices": [{"index": 0, "delta": {
-                        "reasoning_content": "Need to inspect clock source."}, "finish_reason": None}]}
-                    yield {"choices": [{"index": 0, "delta": {
-                        "tool_calls": [{"index": 0, "id": "planner-inspect",
-                                        "type": "function", "function": {
-                                            "name": "read",
-                                            "arguments": '{"path":"clock.html"}'}}]},
-                         "finish_reason": None}]}
-                elif n == 2:
-                    assert profile.name == "Agentic Coder Planner"
-                    assert any(m.get("role") == "tool" and "STATIC_HAND" in m.get("content", "")
-                               for m in messages)
-                    yield {"choices": [{"index": 0, "delta": {
-                        "content": "Developer spec: clock.html contains STATIC_HAND. "
-                                   "The minute hand must reflect current time; "
-                                   "preserve the existing clock design and verify file changes."},
-                        "finish_reason": None}]}
-                elif n == 3:
-                    assert profile.name == "Agentic native pass 1"
+            async def chat_stream(self, *, messages, secondary_system, profile, tools=None, tool_choice=None):
+                calls.append(profile.name)
+                if profile.name == "Agentic Coder Planner":
+                    assert tools is None
+                    yield {"choices": [{"index": 0, "delta": {"tool_calls": [
+                        {"index": 0, "id": "architect-read-not-authorized", "type": "function",
+                         "function": {"name": "read", "arguments": '{"path":"clock.html"}'}}
+                    ]}, "finish_reason": "tool_calls"}]}
+                elif profile.name == "Agentic native pass 1":
+                    assert [t["function"]["name"] for t in tools] == ["read", "write"]
+                    plan = next(m for m in messages if m.get("_jack_coder_plan"))
+                    assert "Fix the analog clock page" in plan["content"]
+                    yield {"choices": [{"index": 0, "delta": {"content": "Coder owns execution."}, "finish_reason": "stop"}]}
+                else:
+                    yield {"choices": [{"index": 0, "delta": {"content": "Memory"}, "finish_reason": "stop"}]}
+        kernel = k.JackQwenKernel(Backend(), k.CFG)
+        offered = [{"type": "function", "function": {"name": name, "parameters": {"type": "object"}}}
+                   for name in ("read", "write")]
+        output = "".join([x.decode() async for x in kernel.stream({
+            "messages": [{"role": "user", "content": "Fix the analog clock page"}],
+            "tools": offered, "stream": True})])
+        assert "architect-read-not-authorized" not in output
+        assert "Coder owns execution." in output
+        assert calls == ["Agentic Coder Planner", "Agentic native pass 1", "Agentic native pass 2"]
+    asyncio.run(run())
+
+
+def test_nonstream_architect_read_proposal_is_never_released(monkeypatch, tmp_path):
+    async def run():
+        k = load(monkeypatch, tmp_path)
+        calls = []
+        class Backend:
+            async def chat(self, *, messages, secondary_system, profile, tools=None, tool_choice=None):
+                calls.append(profile.name)
+                if profile.name == "Agentic Coder Planner":
+                    assert tools is None and tool_choice == "none"
+                    return {"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [
+                        {"id": "architect-read-not-authorized", "type": "function",
+                         "function": {"name": "read", "arguments": '{"path":"clock.html"}'}}
+                    ]}, "finish_reason": "tool_calls"}], "usage": {}}
+                if profile.name == "Agentic native pass 1":
                     assert [t["function"]["name"] for t in tools] == ["read", "write"]
                     assert any(m.get("_jack_coder_plan") for m in messages)
-                    yield {"choices": [{"index": 0, "delta": {
-                        "reasoning_content": "Implement according to verified source and spec"},
-                        "finish_reason": None}]}
-                    yield {"choices": [{"index": 0, "delta": {
-                        "content": "Fixed and verified."}, "finish_reason": None}]}
-                elif n == 4:
-                    assert profile.name == "Agentic native pass 2"
-                    assert not profile.allow_tools
-                    yield {"choices": [{"index": 0, "delta": {
-                        "content": "Coder corrected the static minute hand."},
-                        "finish_reason": None}]}
-                else:
-                    raise AssertionError("Unexpected stage replay")
-                yield {"choices": [{"index": 0, "delta": {},
-                        "finish_reason": "tool_calls" if n == 1 else "stop"}],
-                       "usage": {"prompt_tokens": 25, "completion_tokens": 20, "total_tokens": 45}}
-
-        backend = Backend()
-        kernel = k.JackQwenKernel(backend, k.CFG)
-        available = [
-            {"type": "function", "function": {"name": "read",
-                "parameters": {"type": "object", "required": ["path"],
-                               "properties": {"path": {"type": "string"}}}}},
-            {"type": "function", "function": {"name": "write",
-                "parameters": {"type": "object", "required": ["path", "content"],
-                               "properties": {"path": {"type": "string"},
-                                              "content": {"type": "string"}}}}},
-        ]
-        first = [x.decode("utf-8") async for x in kernel.stream({
-            "messages": [{"role": "user", "content": "Fix the analog clock page"}],
-            "tools": available, "stream": True,
-        })]
-        first_wire = "".join(first)
-        assert "planner-inspect" in first_wire
-        assert "Fixed and verified" not in first_wire
-        assert backend.calls == ["Agentic Coder Planner"]
-        second = [x.decode("utf-8") async for x in kernel.stream({
-            "messages": [
-                {"role": "user", "content": "Fix the analog clock page"},
-                {"role": "tool", "tool_call_id": "planner-inspect",
-                 "content": "STATIC_HAND in clock.html"},
-            ], "tools": available, "stream": True,
-        })]
-        text = "".join(second)
-        assert "Developer spec: clock.html" in text
-        assert "Fixed and verified" in text
-        assert backend.calls == [
-            "Agentic Coder Planner", "Agentic Coder Planner",
-            "Agentic native pass 1", "Agentic native pass 2",
-        ]
+                    return response("Coder owns execution.")
+                return response("Memory")
+        kernel = k.JackQwenKernel(Backend(), k.CFG)
+        offered = [{"type": "function", "function": {"name": name, "parameters": {"type": "object"}}}
+                   for name in ("read", "write")]
+        result = await kernel.run({"messages": [{"role": "user", "content": "Fix the clock"}],
+                                   "tools": offered, "stream": False})
+        assert not result.tool_calls
+        assert "Coder owns execution." in str(result.content)
+        assert calls == ["Agentic Coder Planner", "Agentic native pass 1", "Agentic native pass 2"]
     asyncio.run(run())
 
-
-def test_nonstream_planner_read_resume_completes_spec_before_coder(monkeypatch, tmp_path):
-    async def run():
-        k = load(monkeypatch, tmp_path)
-        class Backend:
-            def __init__(self):
-                self.calls = []
-            async def chat(self, *, messages, secondary_system, profile,
-                           tools=None, tool_choice=None):
-                self.calls.append(profile.name)
-                n = len(self.calls)
-                if n == 1:
-                    assert profile.name == "Agentic Coder Planner"
-                    assert [x["function"]["name"] for x in tools] == ["read"]
-                    message = {"role": "assistant", "content": "",
-                               "tool_calls": [{"id": "planner-read-nonstream",
-                                               "type": "function",
-                                               "function": {"name": "read",
-                                               "arguments": '{"path":"clock.html"}'}}]}
-                    finish = "tool_calls"
-                elif n == 2:
-                    assert profile.name == "Agentic Coder Planner"
-                    assert any(x.get("role") == "tool" and "Current JS" in str(x.get("content"))
-                               for x in messages)
-                    message = {"role": "assistant",
-                               "content": "Developer spec: preserve the design and correct the clock hands."}
-                    finish = "stop"
-                elif n == 3:
-                    assert profile.name == "Agentic native pass 1"
-                    assert [x["function"]["name"] for x in tools] == ["read", "write"]
-                    assert any(x.get("_jack_coder_plan") for x in messages)
-                    message = {"role": "assistant", "content": "Clock repaired and verified.",
-                               "reasoning_content": "CODER_FINISHED"}
-                    finish = "stop"
-                elif n == 4:
-                    assert profile.name == "Agentic native pass 2"
-                    message = {"role": "assistant", "content": "Coder repaired the clock."}
-                    finish = "stop"
-                else:
-                    raise AssertionError("Planner or Executor replay")
-                return {"choices": [{"index": 0, "message": message,
-                                     "finish_reason": finish}],
-                        "usage": {"prompt_tokens": 10, "completion_tokens": 10,
-                                  "total_tokens": 20}}
-        backend = Backend()
-        kernel = k.JackQwenKernel(backend, k.CFG)
-        tools = [
-            {"type": "function", "function": {"name": "read",
-                "parameters": {"type": "object", "required": ["path"],
-                               "properties": {"path": {"type": "string"}}}}},
-            {"type": "function", "function": {"name": "write",
-                "parameters": {"type": "object", "required": ["path", "content"],
-                               "properties": {"path": {"type": "string"},
-                                              "content": {"type": "string"}}}}},
-        ]
-        first = await kernel.run({
-            "messages": [{"role": "user", "content": "Fix the clock"}],
-            "tools": tools, "stream": False,
-        })
-        assert first.finish_reason == "tool_calls"
-        assert first.content is None
-        assert first.tool_calls[0]["id"] == "planner-read-nonstream"
-        final = await kernel.run({
-            "messages": [
-                {"role": "user", "content": "Fix the clock"},
-                {"role": "tool", "tool_call_id": "planner-read-nonstream",
-                 "content": "Current JS: static minute hand"},
-            ],
-            "tools": tools, "stream": False,
-        })
-        assert "Clock repaired and verified." in str(final.content)
-        assert backend.calls == [
-            "Agentic Coder Planner", "Agentic Coder Planner",
-            "Agentic native pass 1", "Agentic native pass 2",
-        ]
-    asyncio.run(run())

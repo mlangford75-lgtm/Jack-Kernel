@@ -116,6 +116,11 @@ def test_fresh_user_turn_ignores_old_tool_result(monkeypatch, tmp_path):
             secondary_system="", usage={}, tools=None, tool_choice=None,
             expected_tool_call_ids=("old-tool-123",), created_at=__import__("time").time(),
         )
+        state.history.append({"role": "assistant", "content": "", "tool_calls": [
+            {"id": "old-tool-123", "type": "function", "function": {
+                "name": "bash", "arguments": '{"command":"ls"}'}}
+        ]})
+        kernel._pending_authority.register(state)
         kernel._pending_tool_resumes["old-tool-123"] = state
         incoming = [
             {"role": "user", "content": "original work"},
@@ -138,6 +143,11 @@ def test_cancelled_resumed_checkpoint_is_retired(monkeypatch, tmp_path):
             secondary_system="", usage={}, tools=None, tool_choice=None,
             expected_tool_call_ids=("tool-interrupted",), created_at=0.0,
         )
+        state.history.append({"role": "assistant", "content": "", "tool_calls": [
+            {"id": "tool-interrupted", "type": "function", "function": {
+                "name": "bash", "arguments": '{"command":"ls"}'}}
+        ]})
+        kernel._pending_authority.register(state)
         kernel._pending_tool_resumes["tool-interrupted"] = state
         scope = {"stage1_frozen": False, "bridge_messages": [], "pending_state": state}
         token = k._AGENTIC_DELAY_R2_SCOPE.set(scope)

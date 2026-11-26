@@ -83,7 +83,7 @@ from jack_agentic_forensics import AgenticForensicJournal, ForensicConflict, att
 from jack_loop_detector import (ReasoningLoopDetector, RepeatedReasoningLoop, RepeatedLoopInterrupt, PartialOutputLoopInterrupt, LOOP_THRESHOLDS)
 from jack_loop_shadow import LongCycleShadowDetector, LongCycleRepeatedReasoningLoop, source_texts_from_history
 from jack_tool_outcomes import reported_tool_outcome, SUCCESS as TOOL_SUCCESS, FAILED as TOOL_FAILED, UNKNOWN as TOOL_UNKNOWN
-from jack_tool_recovery import ToolRecoveryState, ToolRecoveryExhausted, operation_key
+from jack_tool_recovery import ToolRecoveryState, ToolRecoveryExhausted, operation_key, POLICY_REPEAT_LIMIT
 from jack_tool_lifecycle import ToolLifecycleObserver
 from jack_phase10_dynamic_authority import PendingAuthority, DynamicAuthorityUnavailable
 from jack_cache_orchestrator import CacheOrchestrator
@@ -145,7 +145,7 @@ class Phase4RestrictedPathInterrupt(RuntimeError):
     security_outcome = SecurityOutcome.HARD_INTERRUPT
 
     def __init__(self) -> None:
-        super().__init__("Phase-4 restricted-path hard interrupt")
+        super().__init__("Restricted Paths hard interrupt")
 
 
 # ---------------------------------------------------------------------------
@@ -5225,7 +5225,7 @@ def _phase4_partition_structured_tool_calls(
             is jack_path_policy.PathAuthorizationOutcome.DENY_AND_CONTINUE
         ):
             errors.append(
-                f"tool call {index}: host-owned Phase-4 path policy denied "
+                f"tool call {index}: host-owned Restricted Paths / Workspace Lock path policy denied "
                 "the represented filesystem target"
             )
             continue
@@ -5256,7 +5256,7 @@ def _phase4_executor_admission_decision(
     if not isinstance(payload, dict):
         raise HTTPException(
             status_code=400,
-            detail="Phase-4 executor admission body must be an object",
+            detail="Executor admission body must be an object",
         )
 
     allowed = {
@@ -5273,55 +5273,55 @@ def _phase4_executor_admission_decision(
     if set(payload) - allowed:
         raise HTTPException(
             status_code=400,
-            detail="Phase-4 executor admission contains unsupported fields",
+            detail="Executor admission contains unsupported fields",
         )
 
     if payload.get("protocol_version") != PHASE4_EXECUTOR_ADMISSION_PROTOCOL_VERSION:
         raise HTTPException(
             status_code=400,
-            detail="Unsupported Phase-4 executor admission protocol version",
+            detail="Unsupported executor admission protocol version",
         )
 
     runtime_id = str(payload.get("runtime_id") or "").strip()
     if runtime_id != RUNTIME_ID:
         raise HTTPException(
             status_code=409,
-            detail="Phase-4 executor admission runtime identity mismatch",
+            detail="Executor admission runtime identity mismatch",
         )
 
     lane_id = str(payload.get("lane_id") or "").strip()
     if lane_id != LANE_ID:
         raise HTTPException(
             status_code=409,
-            detail="Phase-4 executor admission lane identity mismatch",
+            detail="Executor admission lane identity mismatch",
         )
 
     tool_call_id = str(payload.get("tool_call_id") or "").strip()
     if not tool_call_id:
         raise HTTPException(
             status_code=400,
-            detail="Phase-4 executor admission requires tool_call_id",
+            detail="Executor admission requires tool_call_id",
         )
 
     tool_name = str(payload.get("tool_name") or "").strip()
     if not tool_name:
         raise HTTPException(
             status_code=400,
-            detail="Phase-4 executor admission requires tool_name",
+            detail="Executor admission requires tool_name",
         )
 
     arguments = payload.get("arguments")
     if not isinstance(arguments, dict):
         raise HTTPException(
             status_code=400,
-            detail="Phase-4 executor admission arguments must be an object",
+            detail="Executor admission arguments must be an object",
         )
 
     executor_cwd = payload.get("executor_cwd")
     if not isinstance(executor_cwd, str) or not executor_cwd.strip():
         raise HTTPException(
             status_code=400,
-            detail="Phase-4 executor admission requires executor_cwd",
+            detail="Executor admission requires executor_cwd",
         )
 
     executor_platform = str(
@@ -5330,7 +5330,7 @@ def _phase4_executor_admission_decision(
     if not executor_platform:
         raise HTTPException(
             status_code=400,
-            detail="Phase-4 executor admission requires executor_platform",
+            detail="Executor admission requires executor_platform",
         )
 
     command_dialect = payload.get("command_dialect")
@@ -5341,32 +5341,32 @@ def _phase4_executor_admission_decision(
     ):
         raise HTTPException(
             status_code=400,
-            detail="Unsupported Phase-4 command dialect",
+            detail="Unsupported executor command dialect",
         )
 
     if expected_call is not None:
         if not isinstance(expected_call, dict):
             raise HTTPException(
                 status_code=409,
-                detail="Phase-4 executor admission has no valid pending call",
+                detail="Executor admission has no valid pending call",
             )
         if str(expected_call.get("id") or "").strip() != tool_call_id:
             raise HTTPException(
                 status_code=409,
-                detail="Phase-4 executor admission tool-call identity mismatch",
+                detail="Executor admission tool-call identity mismatch",
             )
 
         expected_function = expected_call.get("function")
         if not isinstance(expected_function, dict):
             raise HTTPException(
                 status_code=409,
-                detail="Phase-4 executor admission pending call is malformed",
+                detail="Executor admission pending call is malformed",
             )
 
         if str(expected_function.get("name") or "").strip() != tool_name:
             raise HTTPException(
                 status_code=409,
-                detail="Phase-4 executor admission tool identity mismatch",
+                detail="Executor admission tool identity mismatch",
             )
 
         expected_arguments = expected_function.get("arguments")
@@ -5376,13 +5376,13 @@ def _phase4_executor_admission_decision(
             except Exception as exc:
                 raise HTTPException(
                     status_code=409,
-                    detail="Phase-4 executor admission pending arguments are malformed",
+                    detail="Executor admission pending arguments are malformed",
                 ) from exc
 
         if not isinstance(expected_arguments, dict) or expected_arguments != arguments:
             raise HTTPException(
                 status_code=409,
-                detail="Phase-4 executor admission arguments do not match the released call",
+                detail="Executor admission arguments do not match the released call",
             )
 
     import jack_path_policy
@@ -9078,8 +9078,6 @@ class OpenAICompatibleBackend:
         shape = self.cfg.qwen_control_shape
         if shape in {"template_kwargs", "hybrid"} or (
             native_control is not None and self.cfg.backend_profile == "lmstudio"
-        ) or (
-            zero_reasoning_budget and self.cfg.backend_profile == "lmstudio"
         ):
             payload["chat_template_kwargs"] = kwargs
         if shape in {"top_level", "hybrid"}:
@@ -10838,7 +10836,8 @@ class JackQwenKernel:
                 tools=tools, tool_choice=tool_choice,
                 append=append, same_stage_resume=True,
                 tool_validation_repair_depth=tool_validation_repair_depth + 1,
-            correction_loop_detector=detector,
+                correction_loop_detector=detector,
+                loop_retry_depth=loop_retry_depth,
             )) as retry_packets:
                 async for packet in retry_packets:
                     yield packet
@@ -11016,7 +11015,7 @@ class JackQwenKernel:
                 async for packet in self._run_stage_streamed(
                     repair_history, secondary_system, stage_key, usage, tools=tools, tool_choice=tool_choice,
                     append=append, same_stage_resume=True, tool_validation_repair_depth=tool_validation_repair_depth + 1,
-                correction_loop_detector=detector,
+                    correction_loop_detector=detector,
                     loop_retry_depth=loop_retry_depth,
                 ):
                     yield packet
@@ -11145,7 +11144,7 @@ class JackQwenKernel:
                         append=append,
                         same_stage_resume=True,
                         tool_validation_repair_depth=tool_validation_repair_depth + 1,
-                    correction_loop_detector=detector,
+                        correction_loop_detector=detector,
                         loop_retry_depth=loop_retry_depth,
                     ):
                         yield packet
@@ -12070,7 +12069,7 @@ class JackQwenKernel:
         if not call_id:
             raise HTTPException(
                 status_code=400,
-                detail="Phase-4 executor admission requires tool_call_id",
+                detail="Executor admission requires tool_call_id",
             )
 
         async with self._pending_tool_resume_lock:
@@ -12083,7 +12082,7 @@ class JackQwenKernel:
             if state is None:
                 raise HTTPException(
                     status_code=409,
-                    detail="Phase-4 executor admission does not match a pending Jack tool call",
+                    detail="Executor admission does not match a pending Jack tool call",
                 )
 
             for message in reversed(state.history):
@@ -13314,6 +13313,14 @@ class JackQwenKernel:
         if exc.pending_state is not None:
             await self._retire_pending_tool_resume(exc.pending_state)
         record = exc.state.host_report()
+        if exc.state.consecutive_policy_denials >= POLICY_REPEAT_LIMIT:
+            return KernelResult(
+                content=record + "The security-denied operation will not be retried. "
+                        "Completed tool results remain in the existing evidence.\n"
+                        "[END RECOVERY HANDOFF — TASK INCOMPLETE]",
+                tool_calls=None, finish_reason="stop",
+                usage=normalize_usage(dict(exc.usage)),
+            )
         answer = ""
         try:
             profile = replace(STAGES[exc.stage_key], allow_tools=False)
@@ -13351,6 +13358,13 @@ class JackQwenKernel:
             }, ensure_ascii=False) + "\n\n").encode("utf-8")
         yield chunk({"role": "assistant"})
         yield chunk({"content": exc.state.host_report()})
+        if exc.state.consecutive_policy_denials >= POLICY_REPEAT_LIMIT:
+            yield chunk({"content": "The security-denied operation will not be retried. "
+                         "Completed tool results remain in the existing evidence.\n"
+                         "[END RECOVERY HANDOFF — TASK INCOMPLETE]"})
+            yield chunk({}, "stop")
+            yield b"data: [DONE]\n\n"
+            return
         emitted = False
         try:
             profile = replace(STAGES[exc.stage_key], allow_tools=False)
@@ -15867,14 +15881,14 @@ def _phase4_executor_context_from_request(
     if any(not values[key] for key in required_keys):
         raise HTTPException(
             status_code=400,
-            detail="Incomplete Phase-4 executor transport context",
+            detail="Incomplete executor transport context",
         )
 
     command_dialect = values["command_dialect"].casefold() or None
     if command_dialect not in {None, "bash", "powershell"}:
         raise HTTPException(
             status_code=400,
-            detail="Unsupported Phase-4 executor transport command dialect",
+            detail="Unsupported executor transport command dialect",
         )
 
     try:
@@ -15882,25 +15896,25 @@ def _phase4_executor_context_from_request(
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
-            detail="Invalid Phase-4 executor transport protocol version",
+            detail="Invalid executor transport protocol version",
         ) from exc
 
     if version != PHASE4_EXECUTOR_ADMISSION_PROTOCOL_VERSION:
         raise HTTPException(
             status_code=400,
-            detail="Unsupported Phase-4 executor transport protocol version",
+            detail="Unsupported executor transport protocol version",
         )
 
     if values["runtime_id"] != RUNTIME_ID:
         raise HTTPException(
             status_code=409,
-            detail="Phase-4 executor transport runtime identity mismatch",
+            detail="Executor transport runtime identity mismatch",
         )
 
     if values["lane_id"] != LANE_ID:
         raise HTTPException(
             status_code=409,
-            detail="Phase-4 executor transport lane identity mismatch",
+            detail="Executor transport lane identity mismatch",
         )
 
     return Phase4ExecutorRequestContext(
@@ -16234,14 +16248,14 @@ async def phase4_executor_path_admission(request: Request) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         raise HTTPException(
             status_code=400,
-            detail="Phase-4 executor admission body must be an object",
+            detail="Executor admission body must be an object",
         )
 
     tool_call_id = str(payload.get("tool_call_id") or "").strip()
     if not tool_call_id:
         raise HTTPException(
             status_code=400,
-            detail="Phase-4 executor admission requires tool_call_id",
+            detail="Executor admission requires tool_call_id",
         )
 
     expected_call = await KERNEL._phase4_pending_tool_call_snapshot(
@@ -16404,7 +16418,18 @@ async def _safe_public_stream(
             return ("data: " + json.dumps(obj, ensure_ascii=False) + "\n\n").encode("utf-8")
 
         import jack_evidence_guard
-        if isinstance(exc, Phase4RestrictedPathInterrupt):
+        from jack_policy_integrity import PolicyIntegrityUnavailable
+        from jack_runtime_code_guard import RuntimeCodeIntegrityUnavailable
+        from jack_source_drift_guard import SourceAuthorityUnavailable
+        if isinstance(exc, PolicyIntegrityUnavailable):
+            failure_text = "\n\n[JACK SECURITY — STATIC POLICY INTEGRITY: AUTHORITY UNAVAILABLE]"
+        elif isinstance(exc, DynamicAuthorityUnavailable):
+            failure_text = "\n\n[JACK SECURITY — DYNAMIC AUTHORITY INTEGRITY: AUTHORITY UNAVAILABLE]"
+        elif isinstance(exc, RuntimeCodeIntegrityUnavailable):
+            failure_text = "\n\n[JACK SECURITY — RUNTIME CODE INTEGRITY: AUTHORITY UNAVAILABLE]"
+        elif isinstance(exc, SourceAuthorityUnavailable):
+            failure_text = "\n\n[JACK SECURITY — SOURCE DRIFT GUARD: AUTHORITY UNAVAILABLE]"
+        elif isinstance(exc, Phase4RestrictedPathInterrupt):
             failure_text = "\n\n[JACK SECURITY — RESTRICTED PATHS: HARD INTERRUPT]"
         elif isinstance(exc, jack_evidence_guard.StreamingIRQCanaryInterrupt):
             failure_text = "\n\n[JACK SECURITY — STREAMINGIRQ: CANARY HARD INTERRUPT]"

@@ -253,11 +253,22 @@ class DeterministicCanarySet:
                 end = len(data) - width
                 if best is not None:
                     end = min(end, best[0][0])
-                index = next(
-                    (i for i in range(end + 1)
-                     if data[i:i + width] in pattern.value),
-                    -1,
-                )
+                candidates = len(pattern.value) - width + 1
+                if end + 1 <= candidates:
+                    index = next(
+                        (i for i in range(end + 1)
+                         if data[i:i + width] in pattern.value),
+                        -1,
+                    )
+                else:
+                    index = -1
+                    for offset in range(candidates):
+                        stop = end + width if index < 0 else index + width
+                        position = data.find(pattern.value[offset:offset + width], 0, stop)
+                        if position >= 0 and (index < 0 or position < index):
+                            index = position
+                            if index == 0:
+                                break
             if index < 0:
                 continue
 

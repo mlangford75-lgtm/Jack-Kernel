@@ -16,3 +16,5 @@ has not been weakened.
 
 User-facing hard Restricted Paths and Canary interrupts are security events,
 not internal stage failures. Internal legacy class and protocol names remain.
+
+Permanent denial exhaustion now emits the deterministic host record without another model generation. The regular tool-error handoff still uses its bounded tools-off summary. NEVER hard-interrupt scope is intentionally retained; recoverable denials allow independent sibling calls. No new inference or cache-prefix rewriting is needed for these controls.

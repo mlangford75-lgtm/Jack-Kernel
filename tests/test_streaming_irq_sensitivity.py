@@ -92,3 +92,37 @@ def test_sensitivity_integrity():
     object.__setattr__(policy.canaries._patterns[0], "sensitivity_percent", 100)
     with pytest.raises(PolicyIntegrityUnavailable):
         authority.verify_for("test")
+
+@pytest.mark.parametrize("percent", [1, 5, 9, 10, 25, 50, 99, 100])
+def test_partial_match_matches_exhaustive_oracle(percent):
+    import random
+    rng = random.Random(116)
+    for length in (8, 19, 128, 1024):
+        value = "".join(rng.choice("ABCD0123456789") for _ in range(length))
+        policy = make([pattern(value)], percent)
+        width = (length * percent + 99) // 100
+        for size in (width - 1, width, width + 1, length * 2):
+            text = "".join(rng.choice("ABCD0123456789") for _ in range(size))
+            expected = next((i for i in range(len(text) - width + 1)
+                             if text[i:i + width] in value), None)
+            found = policy.canaries._find_with_position(text)
+            assert (found[1] if found else None) == expected
+
+
+def test_long_mixed_length_canaries_with_partial_matching():
+    short = "A" * 128
+    long = "".join(chr(0x500 + i) for i in range(1024))
+    policy = make([pattern(short, sensitivity_percent=100),
+                   {"id": "long", "tier": "B", "value": long, "sensitivity_percent": 9}])
+    assert policy.canaries.required_window == 127
+    detector = guard.StreamingCanaryDetector(policy.canaries)
+    fragment = long[600:693]
+    output = ""
+    for i, ch in enumerate("safe:" + fragment):
+        part, match = detector.feed_guarded(ch)
+        output += part
+        if i < len("safe:" + fragment) - 1:
+            assert match is None
+        else:
+            assert match.match.canary_id == "long"
+    assert output == "safe:"
