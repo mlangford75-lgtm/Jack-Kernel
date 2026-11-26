@@ -166,7 +166,9 @@ def test_shared_stream_guard_recovers_by_changing_action(monkeypatch, tmp_path):
         assert len(requests) == 2
         assert any(x.get("_jack_internal_tool_validation_rejection")
                    for x in requests[1]["messages"])
-        assert not any(x.get("_jack_internal_tool_validation_rejection") for x in h)
+        # The corrected active-stage checkpoint is now deliberately retained
+        # for tool resume/Stage 2, rather than being lost with a retry copy.
+        assert any(x.get("_jack_internal_tool_validation_rejection") for x in h)
     asyncio.run(run())
 
 
@@ -219,3 +221,84 @@ def test_audit_m11_translation_preserves_peak_stage_context(
         draft["total_tokens"] if draft_reported else 0)
     assert k._agentic_peak_stage_usage(result.get("usage"), memory) == (
         draft if draft_reported else None)
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("finish_with_tool", [False, True])
+def test_audit_m9_recovery_checkpoint_survives_stage_return(
+        monkeypatch, tmp_path, streaming, finish_with_tool):
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "balanced")
+    k = load(monkeypatch, tmp_path, mode="agentic")
+    h = [{"role": "user", "content": "Inspect the project."}]
+    tools = [{"type": "function", "function": {"name": "bash", "parameters": {
+        "type": "object", "properties": {"command": {"type": "string"}},
+        "required": ["command"]}}}]
+    bad = call(801, "not_advertised", {"command": "inspect"})
+    good = call(802, "bash", {"command": "pwd"})
+    usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    calls = []
+
+    class Backend:
+        def sample(self, kwargs):
+            calls.append([dict(m) for m in kwargs["messages"]])
+            if len(calls) == 1:
+                return ({"role": "assistant", "content": "",
+                         "reasoning_content": "Initial inspection reasoning.",
+                         "tool_calls": [bad]}, "tool_calls")
+            if finish_with_tool:
+                return ({"role": "assistant", "content": "",
+                         "reasoning_content": "Corrected inspection reasoning.",
+                         "tool_calls": [good]}, "tool_calls")
+            return ({"role": "assistant", "content": "Inspection complete.",
+                     "reasoning_content": "Corrected inspection reasoning."}, "stop")
+
+        async def chat(self, **kwargs):
+            message, finish = self.sample(kwargs)
+            return {"choices": [{"message": message, "finish_reason": finish}]}
+
+        async def chat_stream(self, **kwargs):
+            message, finish = self.sample(kwargs)
+            delta = {k: v for k, v in message.items() if k != "tool_calls"}
+            if message.get("tool_calls"):
+                delta["tool_calls"] = [dict(item, index=i)
+                                       for i, item in enumerate(message["tool_calls"])]
+            yield {"choices": [{"delta": delta, "finish_reason": None}]}
+            yield {"choices": [{"delta": {}, "finish_reason": finish}]}
+
+    k.KERNEL.backend = Backend()
+    monkeypatch.setattr(k, "_phase4_partition_structured_tool_calls",
+                        lambda calls: (calls, []))
+
+    async def run():
+        if streaming:
+            packets = [packet async for packet in k.KERNEL._run_stage_streamed(
+                h, "", "extended_initial", usage, tools=tools, tool_choice="auto",
+                append=False)]
+            result = next(packet["data"] for packet in packets if packet["kind"] == "result")
+        else:
+            result = await k.KERNEL._run_stage(
+                h, "", "extended_initial", usage, tools=tools, tool_choice="auto",
+                append=False)
+        assert len(calls) == 2
+        checkpoint = next(x for x in h if x.get("_jack_internal_tool_validation_checkpoint"))
+        notice = next(x for x in h if x.get("_jack_internal_tool_validation_rejection"))
+        assert checkpoint["reasoning_content"] == "Initial inspection reasoning."
+        assert "not_advertised" in notice["content"]
+        assert not checkpoint.get("tool_calls")
+        if finish_with_tool:
+            await k.KERNEL._register_stage_tool_resume(
+                stage_key="extended_initial", history=h, secondary_system="",
+                usage=usage, tools=tools, tool_choice="auto", data=result)
+            pending = k.KERNEL._pending_tool_resumes[good["id"]]
+            assert checkpoint in pending.history and notice in pending.history
+            assert bad["id"] not in k.KERNEL._pending_tool_resumes
+        else:
+            message = result["choices"][0]["message"]
+            h.append({**message, "_jack_extended_candidate_response": True})
+            events = k._agentic_stage2_chronological_source(h)
+            assert any(e["type"] == "reasoning_segment"
+                       and e["content"] == "Initial inspection reasoning." for e in events)
+            assert any(e["type"] == "host_tool_rejection"
+                       and "not_advertised" in e["content"] for e in events)
+
+    asyncio.run(run())

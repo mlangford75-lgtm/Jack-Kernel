@@ -14,7 +14,7 @@ Draft PR: #179. Main is not a target. No item is closed solely on static analysi
 | M-6 | Candidate patch present | Mixed authorized/invalid sibling release |
 | M-7 | Pi cancellation patch and harness; independent Pi CI passed | Retain physical settlement |
 | M-8 | Provider refresh serialization; Pi CI passed | Concurrent refresh, mismatch fail-closed |
-| M-9 | Open; recursive history copies confirmed | Retry checkpoints retained in pending state and Stage 2 without restoring retired history |
+| M-9 | Candidate patch retains recovered stage history and host rejection events; four deterministic tests | Retry checkpoints retained in pending state and Stage 2 without restoring retired history |
 | M-10 | Partial terminal classification; public parity not qualified | Both APIs, buffered/streamed canonical security disposition |
 | M-11 | Candidate translation peak-context patch and deterministic tests in this revision | Windows regression and actual Pi usage, aggregate remains separate |
 | M-12 | Existing app_lifespan closes ledger through asyncio.to_thread | Lifespan drain and shutdown failure qualification |

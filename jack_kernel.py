@@ -1578,6 +1578,15 @@ def _agentic_stage2_chronological_source(history: List[Dict[str, Any]]) -> List[
                     "cwd_source": "executor_transport_unverified",
                 } if item.get("_jack_executor_reported_cwd") else {}),
             })
+        if (
+            item.get("role") == "user"
+            and item.get("_jack_internal_tool_validation_rejection") is True
+        ):
+            # A denial is host evidence, never an executed tool or new task.
+            events.append({
+                "type": "host_tool_rejection",
+                "content": _content_to_text(item.get("content")),
+            })
         if item.get("_jack_tool_evidence_receipt") is True:
             events.append({
                 "type": "host_retired_tool_receipt",
@@ -10263,8 +10272,12 @@ class JackQwenKernel:
                     LOG.warning("Planner repeated a denied operation; handing task to Coder")
                     return _coder_planner_host_handoff_result(history, str(msg.get("content") or ""))
                 repair_history = _tool_recovery_check(history, msg, validation_errors, stage_key, secondary_system, usage)
+                # The stage's caller owns this list. Keep the recovered
+                # checkpoint in that same stage-local history so downstream
+                # tool suspension and memory projection cannot lose it.
+                history[:] = repair_history
                 return await self._run_stage(
-                    repair_history, secondary_system, stage_key, usage, tools=tools, tool_choice=tool_choice,
+                    history, secondary_system, stage_key, usage, tools=tools, tool_choice=tool_choice,
                     append=append, same_stage_resume=True, tool_validation_repair_depth=tool_validation_repair_depth + 1,
                 )
 
@@ -10306,8 +10319,9 @@ class JackQwenKernel:
                         history, msg, path_authorization_errors,
                         stage_key, secondary_system, usage, path_denial=True,
                     )
+                    history[:] = repair_history
                     return await self._run_stage(
-                        repair_history,
+                        history,
                         secondary_system,
                         stage_key,
                         usage,
@@ -10931,8 +10945,10 @@ class JackQwenKernel:
                 LOG.warning("Stage %s ended without an answer/tool call (finish=%s, reasoning=%s); "
                             "one same-stage streamed recovery", profile.name, finish_reason,
                             bool(reasoning_content_parts or reasoning_parts))
-                recovery_history = list(history)
-                recovery_history.append({
+                # Keep the host's continuation in the owned stage history.
+                # Incomplete reasoning-only generations are not committed
+                # as answers or executable calls.
+                history.append({
                     "role": "user",
                     "content": (
                         "Jack protocol continuation: The prior backend generation produced "
@@ -10944,7 +10960,7 @@ class JackQwenKernel:
                     "_jack_internal_protocol_recovery": True,
                 })
                 async with contextlib.aclosing(self._run_stage_streamed(
-                    recovery_history, secondary_system, stage_key, usage,
+                    history, secondary_system, stage_key, usage,
                     tools=tools, tool_choice=tool_choice,
                     append=append, same_stage_resume=True,
                     tool_validation_repair_depth=tool_validation_repair_depth,
@@ -11025,8 +11041,9 @@ class JackQwenKernel:
                 repair_history = _tool_recovery_check(history, message, validation_errors, stage_key, secondary_system, usage)
                 if stage_key != "coder_planner":
                     yield {"kind": "reasoning", "text": "\n[JACK TOOL ACTION REJECTED BEFORE EXECUTION — CORRECTING IN SAME STAGE]\n"}
+                history[:] = repair_history
                 async for packet in self._run_stage_streamed(
-                    repair_history, secondary_system, stage_key, usage, tools=tools, tool_choice=tool_choice,
+                    history, secondary_system, stage_key, usage, tools=tools, tool_choice=tool_choice,
                     append=append, same_stage_resume=True, tool_validation_repair_depth=tool_validation_repair_depth + 1,
                     correction_loop_detector=detector,
                     loop_retry_depth=loop_retry_depth,
@@ -11073,9 +11090,10 @@ class JackQwenKernel:
                  "Do not repeat it; continue with a new authorized operation or finish."],
                 stage_key, secondary_system, usage,
             )
+            history[:] = repair_history
             yield {"kind": "reasoning", "text": "\n[JACK COMPLETED MUTATION NOT REPLAYED — CORRECTING SAME STAGE]\n"}
             async with contextlib.aclosing(self._run_stage_streamed(
-                repair_history, secondary_system, stage_key, usage,
+                history, secondary_system, stage_key, usage,
                 tools=tools, tool_choice=tool_choice,
                 append=append, same_stage_resume=True,
                 tool_validation_repair_depth=tool_validation_repair_depth + 1,
@@ -11106,8 +11124,9 @@ class JackQwenKernel:
                      "no tool was executed. Use a different operation or finish the task."],
                     STAGES[stage_key].name,
                 )
+                history[:] = repair_history
                 async with contextlib.aclosing(self._run_stage_streamed(
-                    repair_history, secondary_system, stage_key, usage,
+                    history, secondary_system, stage_key, usage,
                     tools=tools, tool_choice=tool_choice,
                     append=append, same_stage_resume=True,
                     tool_validation_repair_depth=tool_validation_repair_depth,
@@ -11147,8 +11166,9 @@ class JackQwenKernel:
                             "EXECUTION; CONTINUING AUTHORIZED WORK]\n"
                         ),
                     }
+                    history[:] = repair_history
                     async for packet in self._run_stage_streamed(
-                        repair_history,
+                        history,
                         secondary_system,
                         stage_key,
                         usage,
