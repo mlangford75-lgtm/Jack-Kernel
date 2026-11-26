@@ -355,6 +355,10 @@ def test_resume_rejects_extra_result_for_withheld_sibling():
         created_at=10**12,
         withheld_tool_call_ids=("call-denied",),
     )
+    state.history.append({"role": "assistant", "content": "", "tool_calls": [
+        call("call-safe", "read", {"path": r"D:\Projects\Jack\README.md"})
+    ]})
+    jack._pending_authority.register(state)
     jack._pending_tool_resumes["call-safe"] = state
 
     messages = [

@@ -284,7 +284,7 @@ def test_nonstream_never_target_hard_interrupts_without_model_retry_or_checkpoin
         asyncio.run(jack.run(request()))
 
     assert caught.value.security_outcome is kernel.SecurityOutcome.HARD_INTERRUPT
-    assert str(caught.value) == "Phase-4 restricted-path hard interrupt"
+    assert str(caught.value) == "Restricted Paths hard interrupt"
     assert "Windows" not in str(caught.value)
     assert "System32" not in str(caught.value)
 

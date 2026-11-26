@@ -523,3 +523,13 @@ def test_model_sanitizer_rebinding_denies_model_but_preserves_verified_observati
         assert result.json() == {"ready": True}
     assert guard.state == "INVALIDATED"
     assert calls["run"] == 0
+
+
+def test_mandatory_phase9_install_seals_new_guard_and_enforcement_source(tmp_path):
+    host, _calls = _integrated_host(tmp_path)
+    authority = install(host)
+    expected = {"source-phase9-code-guard", "source-phase9-enforcement"}
+    observed = {entry.label for entry in authority._sources}
+    assert expected.issubset(observed)
+    authority.verify_for("model")
+    authority.verify_for("observation")

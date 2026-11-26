@@ -316,6 +316,7 @@ def test_streamed_authenticated_tool_resume_is_terminal_only_on_enforced_cycle(
             tool_choice="auto", expected_tool_call_ids=("write-5",),
             created_at=time.time(),
         )
+        k.KERNEL._pending_authority.register(state)
         k.KERNEL._pending_tool_resumes["write-5"] = state
 
         class StreamedBackend:

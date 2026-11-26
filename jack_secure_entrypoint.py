@@ -356,6 +356,21 @@ def main() -> None:
         # runtime configuration must never downgrade executable integrity.
         # Install after Phase 8 and before Uvicorn/ASGI middleware startup.
         # Failure to seal the required manifest aborts secure-child startup.
+        # Compose Phase 10 path enforcement before Phase 9B seals dispatch.
+        import jack_phase10_path_enforcement
+
+        jack_phase10_path_enforcement.install(jk)
+
+        import jack_phase10_canary_enforcement
+        import jack_phase10_credential_enforcement
+
+        jack_phase10_canary_enforcement.install(jk)
+        jack_phase10_credential_enforcement.install(jk)
+
+        import jack_phase11_privacy
+
+        jack_phase11_privacy.install(jk)
+
         import jack_phase9b_enforcement
 
         jack_phase9b_enforcement.install(jk)

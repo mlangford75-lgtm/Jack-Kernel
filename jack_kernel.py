@@ -83,8 +83,9 @@ from jack_agentic_forensics import AgenticForensicJournal, ForensicConflict, att
 from jack_loop_detector import (ReasoningLoopDetector, RepeatedReasoningLoop, RepeatedLoopInterrupt, PartialOutputLoopInterrupt, LOOP_THRESHOLDS)
 from jack_loop_shadow import LongCycleShadowDetector, LongCycleRepeatedReasoningLoop, source_texts_from_history
 from jack_tool_outcomes import reported_tool_outcome, SUCCESS as TOOL_SUCCESS, FAILED as TOOL_FAILED, UNKNOWN as TOOL_UNKNOWN
-from jack_tool_recovery import ToolRecoveryState, ToolRecoveryExhausted, operation_key
+from jack_tool_recovery import ToolRecoveryState, ToolRecoveryExhausted, operation_key, POLICY_REPEAT_LIMIT
 from jack_tool_lifecycle import ToolLifecycleObserver
+from jack_phase10_dynamic_authority import PendingAuthority, DynamicAuthorityUnavailable
 from jack_cache_orchestrator import CacheOrchestrator
 from jack_cache_prefix_diagnostics import CacheBytePrefixProbe
 from jack_stage1_cache_stability import Stage1CacheStabilizer
@@ -144,7 +145,7 @@ class Phase4RestrictedPathInterrupt(RuntimeError):
     security_outcome = SecurityOutcome.HARD_INTERRUPT
 
     def __init__(self) -> None:
-        super().__init__("Phase-4 restricted-path hard interrupt")
+        super().__init__("Restricted Paths hard interrupt")
 
 
 # ---------------------------------------------------------------------------
@@ -376,7 +377,7 @@ class KernelConfig:
     log_level: str = os.getenv("JACK_LOG_LEVEL", "INFO").upper()
     log_reasoning: bool = os.getenv("JACK_LOG_REASONING", "0") == "1"
     loop_detector_enabled: bool = os.getenv("JACK_LOOP_DETECTOR", "1").strip().lower() not in {"0", "false", "no", "off"}
-    loop_detector_repetitions: int = int(os.getenv("JACK_LOOP_REPETITIONS", "24"))
+    loop_detector_repetitions: int = int(os.getenv("JACK_LOOP_REPETITIONS", "12"))
     # Deterministic, host-only Agentic tool-cycle gate. Unlike the native
     # reasoning loop detector, this compares consecutive completed tool
     # transactions across backend generations. No model-facing prompt changes.
@@ -5224,7 +5225,7 @@ def _phase4_partition_structured_tool_calls(
             is jack_path_policy.PathAuthorizationOutcome.DENY_AND_CONTINUE
         ):
             errors.append(
-                f"tool call {index}: host-owned Phase-4 path policy denied "
+                f"tool call {index}: host-owned Restricted Paths / Workspace Lock path policy denied "
                 "the represented filesystem target"
             )
             continue
@@ -5255,7 +5256,7 @@ def _phase4_executor_admission_decision(
     if not isinstance(payload, dict):
         raise HTTPException(
             status_code=400,
-            detail="Phase-4 executor admission body must be an object",
+            detail="Executor admission body must be an object",
         )
 
     allowed = {
@@ -5272,55 +5273,55 @@ def _phase4_executor_admission_decision(
     if set(payload) - allowed:
         raise HTTPException(
             status_code=400,
-            detail="Phase-4 executor admission contains unsupported fields",
+            detail="Executor admission contains unsupported fields",
         )
 
     if payload.get("protocol_version") != PHASE4_EXECUTOR_ADMISSION_PROTOCOL_VERSION:
         raise HTTPException(
             status_code=400,
-            detail="Unsupported Phase-4 executor admission protocol version",
+            detail="Unsupported executor admission protocol version",
         )
 
     runtime_id = str(payload.get("runtime_id") or "").strip()
     if runtime_id != RUNTIME_ID:
         raise HTTPException(
             status_code=409,
-            detail="Phase-4 executor admission runtime identity mismatch",
+            detail="Executor admission runtime identity mismatch",
         )
 
     lane_id = str(payload.get("lane_id") or "").strip()
     if lane_id != LANE_ID:
         raise HTTPException(
             status_code=409,
-            detail="Phase-4 executor admission lane identity mismatch",
+            detail="Executor admission lane identity mismatch",
         )
 
     tool_call_id = str(payload.get("tool_call_id") or "").strip()
     if not tool_call_id:
         raise HTTPException(
             status_code=400,
-            detail="Phase-4 executor admission requires tool_call_id",
+            detail="Executor admission requires tool_call_id",
         )
 
     tool_name = str(payload.get("tool_name") or "").strip()
     if not tool_name:
         raise HTTPException(
             status_code=400,
-            detail="Phase-4 executor admission requires tool_name",
+            detail="Executor admission requires tool_name",
         )
 
     arguments = payload.get("arguments")
     if not isinstance(arguments, dict):
         raise HTTPException(
             status_code=400,
-            detail="Phase-4 executor admission arguments must be an object",
+            detail="Executor admission arguments must be an object",
         )
 
     executor_cwd = payload.get("executor_cwd")
     if not isinstance(executor_cwd, str) or not executor_cwd.strip():
         raise HTTPException(
             status_code=400,
-            detail="Phase-4 executor admission requires executor_cwd",
+            detail="Executor admission requires executor_cwd",
         )
 
     executor_platform = str(
@@ -5329,7 +5330,7 @@ def _phase4_executor_admission_decision(
     if not executor_platform:
         raise HTTPException(
             status_code=400,
-            detail="Phase-4 executor admission requires executor_platform",
+            detail="Executor admission requires executor_platform",
         )
 
     command_dialect = payload.get("command_dialect")
@@ -5340,32 +5341,32 @@ def _phase4_executor_admission_decision(
     ):
         raise HTTPException(
             status_code=400,
-            detail="Unsupported Phase-4 command dialect",
+            detail="Unsupported executor command dialect",
         )
 
     if expected_call is not None:
         if not isinstance(expected_call, dict):
             raise HTTPException(
                 status_code=409,
-                detail="Phase-4 executor admission has no valid pending call",
+                detail="Executor admission has no valid pending call",
             )
         if str(expected_call.get("id") or "").strip() != tool_call_id:
             raise HTTPException(
                 status_code=409,
-                detail="Phase-4 executor admission tool-call identity mismatch",
+                detail="Executor admission tool-call identity mismatch",
             )
 
         expected_function = expected_call.get("function")
         if not isinstance(expected_function, dict):
             raise HTTPException(
                 status_code=409,
-                detail="Phase-4 executor admission pending call is malformed",
+                detail="Executor admission pending call is malformed",
             )
 
         if str(expected_function.get("name") or "").strip() != tool_name:
             raise HTTPException(
                 status_code=409,
-                detail="Phase-4 executor admission tool identity mismatch",
+                detail="Executor admission tool identity mismatch",
             )
 
         expected_arguments = expected_function.get("arguments")
@@ -5375,13 +5376,13 @@ def _phase4_executor_admission_decision(
             except Exception as exc:
                 raise HTTPException(
                     status_code=409,
-                    detail="Phase-4 executor admission pending arguments are malformed",
+                    detail="Executor admission pending arguments are malformed",
                 ) from exc
 
         if not isinstance(expected_arguments, dict) or expected_arguments != arguments:
             raise HTTPException(
                 status_code=409,
-                detail="Phase-4 executor admission arguments do not match the released call",
+                detail="Executor admission arguments do not match the released call",
             )
 
     import jack_path_policy
@@ -5411,6 +5412,14 @@ def _phase4_executor_admission_decision(
         "outcome": decision.outcome.value,
         "contract_applied": contract_applied,
     }
+
+
+def _immutable_path_denial(errors: Iterable[str]) -> bool:
+    """Only host-generated represented-target denials, not schema corrections."""
+    items = list(errors)
+    return bool(items) and all(
+        "path policy denied the represented filesystem target" in item for item in items
+    )
 
 
 def _tool_rejection_notice(
@@ -5444,6 +5453,13 @@ def _tool_rejection_notice(
                 "developer specification for Coder. If further inspection is "
                 "needed, use an authorized read-only tool; otherwise finish the spec."
             )
+    elif _immutable_path_denial(items):
+        guidance = (
+            "This is an immutable host security denial, not a correctable tool error. "
+            "Do not retry the denied target or seek alternate access. "
+            "Preserve completed evidence; continue independent authorized work "
+            "or finish with a clear denial report."
+        )
     else:
         guidance = (
             "Preserve the useful analysis that led here. If this stage has tool "
@@ -5480,7 +5496,7 @@ _TOOL_RECOVERY_PENDING: contextvars.ContextVar[Optional["PendingToolResume"]] = 
 def _tool_recovery_check(
     history: List[Dict[str, Any]], message: Dict[str, Any],
     errors: List[str], stage_key: str, secondary_system: str,
-    usage: Dict[str, int],
+    usage: Dict[str, int], *, path_denial: bool = False,
 ) -> List[Dict[str, Any]]:
     """Preserve reasoning and prior tool results, rejecting only invalid actions."""
     repaired = _tool_rejection_history(history, message, errors, STAGES[stage_key].name)
@@ -5491,7 +5507,25 @@ def _tool_recovery_check(
     calls = message.get("tool_calls")
     operations = [operation_key(item) for item in calls if isinstance(item, dict)] if isinstance(calls, list) else []
     operation = operations[0] if operations else "rejected_tool_operation"
-    count = tracker.fail(operation, "; ".join(errors))
+    immutable_denial = path_denial and _immutable_path_denial(errors)
+    policy_key = ""
+    if immutable_denial and isinstance(calls, list):
+        # Exact complete proposal identity, not the truncated diagnostic
+        # operation name; call IDs do not distinguish repeated proposals.
+        signatures = []
+        for call in calls:
+            function = call.get("function") if isinstance(call, dict) else None
+            if not isinstance(function, dict):
+                continue
+            args = function.get("arguments")
+            try:
+                args = json.loads(args) if isinstance(args, str) else args
+            except (TypeError, ValueError):
+                pass
+            signatures.append([function.get("name"), args])
+        policy_key = _sha256_text(json.dumps(signatures, sort_keys=True, ensure_ascii=True))
+    count = tracker.fail(operation, "; ".join(errors),
+                         policy_denial=immutable_denial, policy_key=policy_key)
     advisory = tracker.advice()
     if advisory:
         repaired[-1]["content"] += "\n[JACK TOOL RECOVERY GUIDANCE]\n" + advisory
@@ -5811,6 +5845,29 @@ def extended_stage1_reasoning_trace(
     return "\n\n".join(parts).strip()
 
 
+def _diagnostic_archive_allowed(value: Any) -> bool:
+    boundary = globals().get("_JACK_DIAGNOSTIC_PRIVACY")
+    return boundary is None or boundary.permits_archive(value)
+
+
+def _diagnostic_text(value: Any) -> str:
+    boundary = globals().get("_JACK_DIAGNOSTIC_PRIVACY")
+    if boundary is None:
+        return str(value)
+    if isinstance(value, (dict, list, tuple, bytes)) and not boundary.permits_diagnostic(value):
+        return "protected diagnostic withheld"
+    return boundary.redact(str(value))
+
+
+def _upstream_diagnostic(value: Any, *, safe: str = "upstream diagnostic withheld", limit: int = 4000) -> str:
+    # Provider error bodies may contain private infrastructure, escaped
+    # credentials, or partial secrets. Do not echo arbitrary upstream text
+    # through secured public diagnostics. Status and stage are kept by callers.
+    if globals().get("_JACK_DIAGNOSTIC_PRIVACY") is not None:
+        return safe
+    return str(value)[:limit]
+
+
 def _json_forensic_copy(value: Any) -> Any:
     """Return a JSON-safe deep copy for out-of-band forensic persistence."""
     return json.loads(json.dumps(value, ensure_ascii=False, default=str))
@@ -5905,6 +5962,10 @@ def _archive_agentic_stage1_forensic(
     record["archived_at_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     record["frozen_stage1_answer_sha256"] = _sha256_text(str(frozen_stage1_answer or ""))
     record["jack_xml_sha256"] = _sha256_text(str(frozen_jack_xml or ""))
+    if not _diagnostic_archive_allowed(record):
+        _discard_agentic_stage1_forensic_snapshot(history)
+        LOG.warning("Optional Stage-1 archive withheld by privacy boundary")
+        return None
     canonical = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
     record["record_sha256"] = _sha256_text(canonical)
 
@@ -5995,6 +6056,9 @@ def _archive_extended_forensic(
         "transaction_trajectory": trajectory,
         "archived_at_utc": time.strftime("%Y-%m-%dT%H%M%SZ", time.gmtime()),
     }
+    if not _diagnostic_archive_allowed(record):
+        LOG.warning("Optional Deep Research archive withheld by privacy boundary")
+        return None
     canonical = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
     record["record_sha256"] = _sha256_text(canonical)
     target_meta = record.get("active_response_target") or {}
@@ -8449,7 +8513,7 @@ class OpenAICompatibleBackend:
             except Exception as exc:
                 raise HTTPException(
                     status_code=502,
-                    detail=f"Cannot query backend models at {url}: {exc}",
+                    detail=_upstream_diagnostic(f"Cannot query backend models at {url}: {exc}", safe="Cannot query backend models"),
                 ) from exc
             self._model_metadata_checked = True
             ids = [str(item.get("id", "")) for item in data if isinstance(item, dict) and item.get("id")]
@@ -9014,8 +9078,6 @@ class OpenAICompatibleBackend:
         shape = self.cfg.qwen_control_shape
         if shape in {"template_kwargs", "hybrid"} or (
             native_control is not None and self.cfg.backend_profile == "lmstudio"
-        ) or (
-            zero_reasoning_budget and self.cfg.backend_profile == "lmstudio"
         ):
             payload["chat_template_kwargs"] = kwargs
         if shape in {"top_level", "hybrid"}:
@@ -9397,7 +9459,7 @@ class OpenAICompatibleBackend:
             response = await self._client.post(url, headers=self._headers(), json=current_payload)
         except httpx.ConnectError as exc:
             if not cache_decision.alternate_endpoint:
-                raise HTTPException(status_code=502, detail=f"Backend connection failed: {exc}") from exc
+                raise HTTPException(status_code=502, detail=_upstream_diagnostic(f"Backend connection failed: {exc}", safe="Backend connection failed")) from exc
             LOG.warning("Optional auxiliary cache endpoint unavailable; falling back to primary backend")
             self._cache_router.disable_unavailable_aux()
             url = primary_url
@@ -9405,7 +9467,7 @@ class OpenAICompatibleBackend:
         except Exception as exc:
             raise HTTPException(
                 status_code=502,
-                detail=f"Backend request failed during {profile.name}: {exc}",
+                detail=_upstream_diagnostic(f"Backend request failed during {profile.name}: {exc}", safe=f"Backend request failed during {profile.name}"),
             ) from exc
 
         # Only retry before generation when an OPTIONAL cache feature is rejected.
@@ -9444,7 +9506,7 @@ class OpenAICompatibleBackend:
                 status_code=502,
                 detail=(
                     f"Backend rejected stage {profile.name} with HTTP "
-                    f"{response.status_code}: {response.text[:4000]}"
+                    f"{response.status_code}: {_upstream_diagnostic(response.text)}"
                 ),
             )
 
@@ -9647,7 +9709,7 @@ class OpenAICompatibleBackend:
             else:
                 raise HTTPException(
                     status_code=502,
-                    detail=f"Backend rejected streaming stage {profile.name}: {raw[:4000]}",
+                    detail=f"Backend rejected streaming stage {profile.name}: {_upstream_diagnostic(raw)}",
                 )
 
         if response.status_code >= 500:
@@ -9665,7 +9727,7 @@ class OpenAICompatibleBackend:
                 status_code=502,
                 detail=(
                     f"Backend rejected streaming stage {profile.name} with HTTP "
-                    f"{response.status_code}: {raw[:4000]}"
+                    f"{response.status_code}: {_upstream_diagnostic(raw)}"
                 ),
             )
 
@@ -9978,6 +10040,7 @@ class JackQwenKernel:
         self._activity_telemetry_degraded = False
         self._pending_tool_resumes: Dict[str, PendingToolResume] = {}
         self._pending_tool_resume_lock = asyncio.Lock()
+        self._pending_authority = PendingAuthority(Phase4ExecutorRequestContext)
         self._pending_debugging_intake_resumes: Dict[str, PendingDebuggingIntakeResume] = {}
         self._pending_debugging_intake_resume_lock = asyncio.Lock()
         self._pending_debugging_user_resumes: Dict[str, PendingDebuggingUserResume] = {}
@@ -10237,7 +10300,7 @@ class JackQwenKernel:
                     )
                     repair_history = _tool_recovery_check(
                         history, msg, path_authorization_errors,
-                        stage_key, secondary_system, usage,
+                        stage_key, secondary_system, usage, path_denial=True,
                     )
                     return await self._run_stage(
                         repair_history,
@@ -10369,6 +10432,7 @@ class JackQwenKernel:
         loop_retry_depth: int = 0,
         empty_stream_retry_depth: int = 0,
         tool_cycle_recovery_depth: int = 0,
+        correction_loop_detector: Optional[ReasoningLoopDetector] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """Run one Jack stage with backend streaming and reconstruct its message.
 
@@ -10430,7 +10494,12 @@ class JackQwenKernel:
             if AGENTIC_MODE and stage_key == "extended_reflection"
             else self.cfg.loop_detector_repetitions
         )
-        detector = ReasoningLoopDetector(loop_repetitions) if self.cfg.loop_detector_enabled else None
+        detector = (
+            correction_loop_detector or ReasoningLoopDetector(loop_repetitions)
+            if self.cfg.loop_detector_enabled else None
+        )
+        if correction_loop_detector is not None and detector is not None:
+            detector.generation_boundary()
         # Diagnostic only. The long-cycle observer never interrupts, retries,
         # alters model requests, or changes any existing budget/loop decisions.
         # Enabled only when the user has enabled the Loop Detector.
@@ -10767,6 +10836,8 @@ class JackQwenKernel:
                 tools=tools, tool_choice=tool_choice,
                 append=append, same_stage_resume=True,
                 tool_validation_repair_depth=tool_validation_repair_depth + 1,
+                correction_loop_detector=detector,
+                loop_retry_depth=loop_retry_depth,
             )) as retry_packets:
                 async for packet in retry_packets:
                     yield packet
@@ -10813,6 +10884,7 @@ class JackQwenKernel:
                         tools=tools, tool_choice=tool_choice,
                         append=append, same_stage_resume=True,
                         tool_validation_repair_depth=tool_validation_repair_depth,
+                        correction_loop_detector=detector,
                         loop_retry_depth=loop_retry_depth,
                         empty_stream_retry_depth=1,
                     )) as retry_packets:
@@ -10863,6 +10935,7 @@ class JackQwenKernel:
                     tools=tools, tool_choice=tool_choice,
                     append=append, same_stage_resume=True,
                     tool_validation_repair_depth=tool_validation_repair_depth,
+                    correction_loop_detector=detector,
                     loop_retry_depth=loop_retry_depth,
                     empty_stream_retry_depth=1,
                 )) as retry_packets:
@@ -10942,6 +11015,8 @@ class JackQwenKernel:
                 async for packet in self._run_stage_streamed(
                     repair_history, secondary_system, stage_key, usage, tools=tools, tool_choice=tool_choice,
                     append=append, same_stage_resume=True, tool_validation_repair_depth=tool_validation_repair_depth + 1,
+                    correction_loop_detector=detector,
+                    loop_retry_depth=loop_retry_depth,
                 ):
                     yield packet
                 return
@@ -10968,6 +11043,7 @@ class JackQwenKernel:
                     tools=tools, tool_choice=tool_choice,
                     append=append, same_stage_resume=True,
                     tool_validation_repair_depth=tool_validation_repair_depth,
+                    correction_loop_detector=detector,
                     loop_retry_depth=loop_retry_depth,
                 )) as retry_packets:
                     async for packet in retry_packets:
@@ -10990,6 +11066,7 @@ class JackQwenKernel:
                 tools=tools, tool_choice=tool_choice,
                 append=append, same_stage_resume=True,
                 tool_validation_repair_depth=tool_validation_repair_depth + 1,
+                correction_loop_detector=detector,
                 loop_retry_depth=loop_retry_depth,
                 empty_stream_retry_depth=empty_stream_retry_depth,
                 tool_cycle_recovery_depth=tool_cycle_recovery_depth,
@@ -11021,6 +11098,7 @@ class JackQwenKernel:
                     tools=tools, tool_choice=tool_choice,
                     append=append, same_stage_resume=True,
                     tool_validation_repair_depth=tool_validation_repair_depth,
+                    correction_loop_detector=detector,
                     loop_retry_depth=loop_retry_depth,
                     empty_stream_retry_depth=empty_stream_retry_depth,
                     tool_cycle_recovery_depth=1,
@@ -11047,13 +11125,13 @@ class JackQwenKernel:
                     )
                     repair_history = _tool_recovery_check(
                         history, message, path_authorization_errors,
-                        stage_key, secondary_system, usage,
+                        stage_key, secondary_system, usage, path_denial=True,
                     )
                     yield {
                         "kind": "reasoning",
                         "text": (
-                            "\n[JACK PHASE-4 FILESYSTEM ACTION REJECTED BEFORE "
-                            "EXECUTION — CORRECTING IN SAME STAGE]\n"
+                            "\n[JACK SECURITY — RESTRICTED PATHS: ACTION DENIED BEFORE "
+                            "EXECUTION; CONTINUING AUTHORIZED WORK]\n"
                         ),
                     }
                     async for packet in self._run_stage_streamed(
@@ -11066,6 +11144,8 @@ class JackQwenKernel:
                         append=append,
                         same_stage_resume=True,
                         tool_validation_repair_depth=tool_validation_repair_depth + 1,
+                        correction_loop_detector=detector,
+                        loop_retry_depth=loop_retry_depth,
                     ):
                         yield packet
                     return
@@ -11235,17 +11315,9 @@ class JackQwenKernel:
     async def _expire_pending_tool_resumes_locked(self, now: Optional[float] = None) -> None:
         now = time.time() if now is None else now
         cutoff = now - (6 * 60 * 60)
-        stale = {
-            state.resume_id
-            for state in self._pending_tool_resumes.values()
-            if state.created_at < cutoff and not state.in_flight
-        }
-        if not stale:
-            return
-        for call_id, state in list(self._pending_tool_resumes.items()):
-            if state.resume_id in stale:
-                self._pending_tool_resumes.pop(call_id, None)
-        LOG.info("Expired %d stale Jack tool-resume transaction(s)", len(stale))
+        expired = self._pending_authority.expire(cutoff, self._pending_tool_resumes)
+        if expired:
+            LOG.info("Expired %d stale Jack tool-resume transaction(s)", expired)
 
     @staticmethod
     def _tool_result_explicitly_failed(message: Dict[str, Any]) -> bool:
@@ -11967,6 +12039,7 @@ class JackQwenKernel:
                     status_code=409,
                     detail=f"{STAGES[stage_key].name} tool_call_id collision with an existing pending transaction: " + ", ".join(collision),
                 )
+            self._pending_authority.register(state)
             for call_id in call_ids:
                 self._pending_tool_resumes[call_id] = state
         LOG.info(
@@ -11996,16 +12069,20 @@ class JackQwenKernel:
         if not call_id:
             raise HTTPException(
                 status_code=400,
-                detail="Phase-4 executor admission requires tool_call_id",
+                detail="Executor admission requires tool_call_id",
             )
 
         async with self._pending_tool_resume_lock:
             await self._expire_pending_tool_resumes_locked()
+            try:
+                self._pending_authority.verify_request((call_id,), self._pending_tool_resumes)
+            except DynamicAuthorityUnavailable:
+                raise HTTPException(status_code=503, detail="Pending tool authority unavailable") from None
             state = self._pending_tool_resumes.get(call_id)
             if state is None:
                 raise HTTPException(
                     status_code=409,
-                    detail="Phase-4 executor admission does not match a pending Jack tool call",
+                    detail="Executor admission does not match a pending Jack tool call",
                 )
 
             for message in reversed(state.history):
@@ -12082,16 +12159,12 @@ class JackQwenKernel:
             # checkpoints remain pending for transport retry, have no authority
             # to select or reject the current transaction. They are not appended
             # to the resumed stage; independent historical evidence remains intact.
-            live_states = {
-                id(pending_state): pending_state
-                for pending_state in self._pending_tool_resumes.values()
-            }
-            withheld_live_ids = {
-                call_id
-                for pending_state in live_states.values()
-                for call_id in pending_state.withheld_tool_call_ids
-            }
-            returned_withheld = set(ids_in_request) & withheld_live_ids
+            try:
+                returned_withheld = self._pending_authority.verify_request(
+                    ids_in_request, self._pending_tool_resumes
+                )
+            except DynamicAuthorityUnavailable:
+                raise HTTPException(status_code=503, detail="Pending tool authority unavailable") from None
             if returned_withheld:
                 raise HTTPException(
                     status_code=409,
@@ -12123,6 +12196,10 @@ class JackQwenKernel:
                     detail="Tool-result request matches multiple pending Jack stage transactions.",
                 )
             state = matched[0]
+            try:
+                self._pending_authority.verify(state)
+            except DynamicAuthorityUnavailable:
+                raise HTTPException(status_code=503, detail="Pending tool authority unavailable") from None
             if state.in_flight:
                 raise HTTPException(
                     status_code=409,
@@ -12153,14 +12230,16 @@ class JackQwenKernel:
                 key=lambda m: m["tool_call_id"],
             ))
             if state.accepted_tool_results is None:
-                state.accepted_tool_results = tuple(copy.deepcopy(matched_messages))
-                state.accepted_executor_context = _phase4_current_executor_context()
+                self._pending_authority.transition(state, in_flight=True,
+                    accept=tuple(copy.deepcopy(matched_messages)),
+                    context=_phase4_current_executor_context())
             elif state.accepted_tool_results != matched_messages:
                 raise HTTPException(
                     status_code=409,
                     detail="Retried tool results differ from authenticated results already accepted by Jack.",
                 )
-            state.in_flight = True
+            else:
+                self._pending_authority.transition(state, in_flight=True)
 
         matched_messages = list(copy.deepcopy(state.accepted_tool_results))
         executor = state.accepted_executor_context
@@ -12203,6 +12282,7 @@ class JackQwenKernel:
                     tracker.fail(
                         "phase4_withheld_action", error,
                         call_id=f"{state.resume_id}:withheld:{index}",
+                        policy_denial=_immutable_path_denial([error]),
                     )
                 if tracker.exhausted:
                     raise ToolRecoveryExhausted(
@@ -12217,7 +12297,7 @@ class JackQwenKernel:
                 )
             )
         tracker = state.tool_recovery
-        if tracker is not None and tracker.consecutive_failures:
+        if tracker is not None and tracker.consecutive_failures and not state.deferred_tool_rejection_errors:
             advisory = tracker.advice()
             if advisory:
                 history.append({
@@ -12229,15 +12309,18 @@ class JackQwenKernel:
 
     async def _retire_pending_tool_resume(self, state: PendingToolResume) -> None:
         async with self._pending_tool_resume_lock:
-            for call_id in state.expected_tool_call_ids:
+            for call_id in self._pending_authority.retire(state):
                 if self._pending_tool_resumes.get(call_id) is state:
                     self._pending_tool_resumes.pop(call_id, None)
             state.in_flight = False
 
     async def _rearm_pending_tool_resume(self, state: PendingToolResume) -> None:
         async with self._pending_tool_resume_lock:
-            if any(self._pending_tool_resumes.get(call_id) is state for call_id in state.expected_tool_call_ids):
-                state.in_flight = False
+            if any(value is state for value in self._pending_tool_resumes.values()):
+                try:
+                    self._pending_authority.transition(state, in_flight=False)
+                except DynamicAuthorityUnavailable:
+                    LOG.warning("Pending authority rearm withheld")
 
     async def _rearm_pending_tool_resume_for_messages(self, messages: Any) -> None:
         if not isinstance(messages, list):
@@ -12252,7 +12335,10 @@ class JackQwenKernel:
         async with self._pending_tool_resume_lock:
             states = {id(self._pending_tool_resumes[call_id]): self._pending_tool_resumes[call_id] for call_id in ids if call_id in self._pending_tool_resumes}
             for state in states.values():
-                state.in_flight = False
+                try:
+                    self._pending_authority.transition(state, in_flight=False)
+                except DynamicAuthorityUnavailable:
+                    LOG.warning("Pending authority rearm withheld")
 
     @staticmethod
     def _required_completed_answer_from_stage(data: Dict[str, Any], stage_name: str) -> str:
@@ -12779,7 +12865,7 @@ class JackQwenKernel:
             except Exception as exc:
                 if isinstance(exc, GenerationBudgetExceeded):
                     raise
-                detail = str(exc.detail) if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
+                detail = _diagnostic_text(exc.detail if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}")
                 completed = self._agentic_degraded_result(history, usage, frozen_stage1_answer, detail)
             await self._retire_pending_tool_resume(state)
             return completed
@@ -12860,7 +12946,7 @@ class JackQwenKernel:
         except Exception as exc:
             if isinstance(exc, GenerationBudgetExceeded):
                 raise
-            detail = str(exc.detail) if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
+            detail = _diagnostic_text(exc.detail if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}")
             return self._agentic_degraded_result(history, usage, frozen_answer, detail)
 
     async def _prepare_commit(
@@ -12995,7 +13081,7 @@ class JackQwenKernel:
             except Exception as exc:
                 if isinstance(exc, GenerationBudgetExceeded):
                     raise
-                detail = str(exc.detail) if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
+                detail = _diagnostic_text(exc.detail if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}")
                 return self._agentic_degraded_result(history, usage, frozen_stage1_answer, detail)
 
         if CODE_DEBUGGING_MODE:
@@ -13227,6 +13313,14 @@ class JackQwenKernel:
         if exc.pending_state is not None:
             await self._retire_pending_tool_resume(exc.pending_state)
         record = exc.state.host_report()
+        if exc.state.consecutive_policy_denials >= POLICY_REPEAT_LIMIT:
+            return KernelResult(
+                content=record + "The security-denied operation will not be retried. "
+                        "Completed tool results remain in the existing evidence.\n"
+                        "[END RECOVERY HANDOFF — TASK INCOMPLETE]",
+                tool_calls=None, finish_reason="stop",
+                usage=normalize_usage(dict(exc.usage)),
+            )
         answer = ""
         try:
             profile = replace(STAGES[exc.stage_key], allow_tools=False)
@@ -13264,6 +13358,13 @@ class JackQwenKernel:
             }, ensure_ascii=False) + "\n\n").encode("utf-8")
         yield chunk({"role": "assistant"})
         yield chunk({"content": exc.state.host_report()})
+        if exc.state.consecutive_policy_denials >= POLICY_REPEAT_LIMIT:
+            yield chunk({"content": "The security-denied operation will not be retried. "
+                         "Completed tool results remain in the existing evidence.\n"
+                         "[END RECOVERY HANDOFF — TASK INCOMPLETE]"})
+            yield chunk({}, "stop")
+            yield b"data: [DONE]\n\n"
+            return
         emitted = False
         try:
             profile = replace(STAGES[exc.stage_key], allow_tools=False)
@@ -13918,7 +14019,7 @@ class JackQwenKernel:
                         if AGENTIC_MODE and stage_key == "extended_reflection" and agentic_frozen_stage1_answer is not None:
                             # An interrupted Stage 2 never commits M. Explicitly
                             # mark memory failure and deliver byte-exact frozen A1.
-                            detail = str(exc.detail) if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
+                            detail = _diagnostic_text(exc.detail if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}")
                             degraded = self._agentic_degraded_result(history, usage, agentic_frozen_stage1_answer, detail)
                             if pending_state is not None:
                                 await self._retire_pending_tool_resume(pending_state)
@@ -13979,8 +14080,10 @@ class JackQwenKernel:
                             self._agentic_require_completed_stage(stage_result, "Agentic Stage 1")
                             agentic_frozen_stage1_answer = append_extended_candidate_response(history, first_msg)
                             if pending_state is not None and pending_state.accepted_tool_results is not None:
-                                pending_state.frozen_stage1_history = copy.deepcopy(history)
-                                pending_state.frozen_stage1_answer = agentic_frozen_stage1_answer
+                                async with self._pending_tool_resume_lock:
+                                    self._pending_authority.freeze(
+                                        pending_state, history, agentic_frozen_stage1_answer
+                                    )
                             yield event({"reasoning_content": "\n[END STAGE 1 — A1 FROZEN]\n"})
                     elif ULTRA_MODE and stage_key == "extended_reflection":
                         anti_msg = ((stage_result.get("choices") or [{}])[0].get("message") or {})
@@ -13997,7 +14100,7 @@ class JackQwenKernel:
                     except Exception as exc:
                         if isinstance(exc, GenerationBudgetExceeded):
                             raise
-                        detail = str(exc.detail) if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
+                        detail = _diagnostic_text(exc.detail if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}")
                         completed = self._agentic_degraded_result(
                             history, usage, agentic_frozen_stage1_answer, detail
                         )
@@ -14088,7 +14191,7 @@ class JackQwenKernel:
                         raise
                     if agentic_frozen_stage1_answer is None:
                         raise
-                    detail = str(exc.detail) if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
+                    detail = _diagnostic_text(exc.detail if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}")
                     degraded = self._agentic_degraded_result(history, usage, agentic_frozen_stage1_answer, detail)
                     if pending_state is not None:
                         await self._retire_pending_tool_resume(pending_state)
@@ -14821,7 +14924,7 @@ class OrchestrationEventHub:
             if response.status_code >= 500:
                 raise HTTPException(status_code=502, detail="Pi control bridge is unavailable")
             if response.status_code >= 400:
-                raise HTTPException(status_code=response.status_code, detail=response.text)
+                raise HTTPException(status_code=response.status_code, detail=_upstream_diagnostic(response.text, safe="Pi control bridge rejected status request"))
         except HTTPException:
             raise
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout) as exc:
@@ -15006,7 +15109,7 @@ class OrchestrationEventHub:
                     ) as upstream:
                         if upstream.status_code != 200:
                             body = await upstream.aread()
-                            self._last_error = f"Pi SSE status {upstream.status_code}: {body[:200]!r}"
+                            self._last_error = _upstream_diagnostic(f"Pi SSE status {upstream.status_code}: {body[:200]!r}", safe=f"Pi SSE status {upstream.status_code}")
                             await asyncio.sleep(1.0)
                             continue
                         self._last_error = None
@@ -15014,7 +15117,7 @@ class OrchestrationEventHub:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self._last_error = str(exc)
+                self._last_error = _upstream_diagnostic(exc, safe=f"Pi SSE failure: {type(exc).__name__}")
                 if self._stopping:
                     return
                 await asyncio.sleep(1.0)
@@ -15778,14 +15881,14 @@ def _phase4_executor_context_from_request(
     if any(not values[key] for key in required_keys):
         raise HTTPException(
             status_code=400,
-            detail="Incomplete Phase-4 executor transport context",
+            detail="Incomplete executor transport context",
         )
 
     command_dialect = values["command_dialect"].casefold() or None
     if command_dialect not in {None, "bash", "powershell"}:
         raise HTTPException(
             status_code=400,
-            detail="Unsupported Phase-4 executor transport command dialect",
+            detail="Unsupported executor transport command dialect",
         )
 
     try:
@@ -15793,25 +15896,25 @@ def _phase4_executor_context_from_request(
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
-            detail="Invalid Phase-4 executor transport protocol version",
+            detail="Invalid executor transport protocol version",
         ) from exc
 
     if version != PHASE4_EXECUTOR_ADMISSION_PROTOCOL_VERSION:
         raise HTTPException(
             status_code=400,
-            detail="Unsupported Phase-4 executor transport protocol version",
+            detail="Unsupported executor transport protocol version",
         )
 
     if values["runtime_id"] != RUNTIME_ID:
         raise HTTPException(
             status_code=409,
-            detail="Phase-4 executor transport runtime identity mismatch",
+            detail="Executor transport runtime identity mismatch",
         )
 
     if values["lane_id"] != LANE_ID:
         raise HTTPException(
             status_code=409,
-            detail="Phase-4 executor transport lane identity mismatch",
+            detail="Executor transport lane identity mismatch",
         )
 
     return Phase4ExecutorRequestContext(
@@ -16145,14 +16248,14 @@ async def phase4_executor_path_admission(request: Request) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         raise HTTPException(
             status_code=400,
-            detail="Phase-4 executor admission body must be an object",
+            detail="Executor admission body must be an object",
         )
 
     tool_call_id = str(payload.get("tool_call_id") or "").strip()
     if not tool_call_id:
         raise HTTPException(
             status_code=400,
-            detail="Phase-4 executor admission requires tool_call_id",
+            detail="Executor admission requires tool_call_id",
         )
 
     expected_call = await KERNEL._phase4_pending_tool_call_snapshot(
@@ -16300,7 +16403,7 @@ async def _safe_public_stream(
         if not isinstance(exc, (RepeatedLoopInterrupt, RepeatedToolCycleInterrupt)):
             await KERNEL._rearm_pending_tool_resume_for_messages(body.get("messages"))
         await KERNEL._rearm_pending_debugging_resumes_for_messages(body.get("messages"))
-        detail = str(exc.detail) if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}"
+        detail = _diagnostic_text(exc.detail if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}")
         response_id = f"chatcmpl-jack-error-{uuid.uuid4().hex}"
         created = int(time.time())
 
@@ -16314,7 +16417,23 @@ async def _safe_public_stream(
             }
             return ("data: " + json.dumps(obj, ensure_ascii=False) + "\n\n").encode("utf-8")
 
-        if isinstance(exc, RepeatedLoopInterrupt):
+        import jack_evidence_guard
+        from jack_policy_integrity import PolicyIntegrityUnavailable
+        from jack_runtime_code_guard import RuntimeCodeIntegrityUnavailable
+        from jack_source_drift_guard import SourceAuthorityUnavailable
+        if isinstance(exc, PolicyIntegrityUnavailable):
+            failure_text = "\n\n[JACK SECURITY — STATIC POLICY INTEGRITY: AUTHORITY UNAVAILABLE]"
+        elif isinstance(exc, DynamicAuthorityUnavailable):
+            failure_text = "\n\n[JACK SECURITY — DYNAMIC AUTHORITY INTEGRITY: AUTHORITY UNAVAILABLE]"
+        elif isinstance(exc, RuntimeCodeIntegrityUnavailable):
+            failure_text = "\n\n[JACK SECURITY — RUNTIME CODE INTEGRITY: AUTHORITY UNAVAILABLE]"
+        elif isinstance(exc, SourceAuthorityUnavailable):
+            failure_text = "\n\n[JACK SECURITY — SOURCE DRIFT GUARD: AUTHORITY UNAVAILABLE]"
+        elif isinstance(exc, Phase4RestrictedPathInterrupt):
+            failure_text = "\n\n[JACK SECURITY — RESTRICTED PATHS: HARD INTERRUPT]"
+        elif isinstance(exc, jack_evidence_guard.StreamingIRQCanaryInterrupt):
+            failure_text = "\n\n[JACK SECURITY — STREAMINGIRQ: CANARY HARD INTERRUPT]"
+        elif isinstance(exc, RepeatedLoopInterrupt):
             failure_text = "Jack Kernel interrupt - Repeated Loop Failure"
         elif isinstance(exc, RepeatedToolCycleInterrupt):
             failure_text = str(exc.detail)
@@ -16327,7 +16446,7 @@ async def _safe_public_stream(
             )
         else:
             failure_text = "\n\n[Jack Kernel internal stage failure: " + detail[:2000] + "]"
-        yield event({"content": failure_text})
+        yield event({"content": _diagnostic_text(failure_text)})
         yield event({}, "stop")
         yield b"data: [DONE]\n\n"
     finally:
@@ -16640,9 +16759,11 @@ CLI_DEFAULTS: Dict[str, Any] = {
     "log_level": "INFO",
     "log_reasoning": False,
     "loop_detector_enabled": True,
-    "loop_detector_repetitions": 24,
+    "loop_detector_repetitions": 12,
     "forensic_archive_mode": "stage",
     "forensic_archive_dir": "",
+    "security_path_policy": None,
+    "security_irq_settings": None,
     "thinking_temperature": 1.0,
     "thinking_top_p": 0.95,
     "thinking_top_k": 20,
@@ -16687,6 +16808,8 @@ def _load_cli_config() -> Dict[str, Any]:
             source_path = legacy
     try:
         loaded = json.loads(source_path.read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict):
+            raise ValueError("configuration must be an object")
         if isinstance(loaded, dict):
             prior_schema = str(loaded.get("config_schema_version") or "")
             if prior_schema != str(CONFIG_SCHEMA_VERSION):
@@ -16727,8 +16850,8 @@ def _load_cli_config() -> Dict[str, Any]:
                 cfg["qwen_control_shape"] = "template_kwargs"
     except FileNotFoundError:
         pass
-    except Exception as exc:
-        print(f"Warning: could not read {source_path}: {exc}")
+    except Exception:
+        raise RuntimeError("Launcher configuration unavailable; repair before startup.") from None
 
     # Startup invariant: every new launcher session begins on X-High.
     # A user may select Deep Research, Agentic, or either Code Debugging profile for the current session before starting
@@ -16749,12 +16872,15 @@ def _load_cli_config() -> Dict[str, Any]:
             "Note: legacy Jack secondary prompt file is preserved but ignored: "
             f"{legacy_prompt}. Configure the agent system contract in Pi/the caller."
         )
+    _security_center_policies(cfg)
     return cfg
 
 
 def _save_cli_config(cfg: Dict[str, Any]) -> None:
     config_path, _ = _config_paths()
+    _security_center_policies(cfg)
     config_path.parent.mkdir(parents=True, exist_ok=True)
+    # Session Canary values are deliberately not in CLI_DEFAULTS.
     safe = {k: cfg[k] for k in CLI_DEFAULTS if k in cfg}
     config_path.write_text(
         json.dumps(safe, indent=2, ensure_ascii=False) + "\n",
@@ -16850,6 +16976,227 @@ def _run_transactional_editor(editor: Any, cfg: Dict[str, Any]) -> None:
     editor(candidate)
     cfg.clear()
     cfg.update(candidate)
+
+
+def _security_center_policies(cfg: Dict[str, Any]):
+    """Validate local startup configuration using the existing policy owners."""
+    import jack_path_policy as paths
+    import jack_evidence_guard as evidence
+    try:
+        saved = cfg.get("security_path_policy")
+        session = cfg.get("_security_session_canaries")
+        saved_raw = "" if saved is None else json.dumps(saved, ensure_ascii=False)
+        irq = cfg.get("security_irq_settings")
+        if irq is not None:
+            if not isinstance(irq, dict) or set(irq) != {"sensitivity_percent", "max_window"}:
+                raise ValueError("Invalid StreamingIRQ settings")
+        session_payload = copy.deepcopy(session) if session is not None else {"version": 1, "patterns": []}
+        if irq is not None or session is not None:
+            session_payload.update(irq if irq is not None else {"sensitivity_percent": 100, "max_window": 4096})
+            session_raw = json.dumps(session_payload, ensure_ascii=False)
+        else:
+            session_raw = ""
+        paths.build_runtime_path_policy(runtime_id=RUNTIME_ID, lane_id=LANE_ID, raw_json=saved_raw)
+        evidence.build_static_runtime_canary_policy(runtime_id=RUNTIME_ID, lane_id=LANE_ID, raw_json=session_raw)
+        path_raw = os.getenv(paths.STATIC_PATH_POLICY_ENV, "").strip() or saved_raw
+        canary_raw = os.getenv(evidence.STATIC_CANARY_POLICY_ENV, "").strip() or session_raw
+        path_policy = paths.build_runtime_path_policy(runtime_id=RUNTIME_ID, lane_id=LANE_ID, raw_json=path_raw)
+        canary_policy = evidence.build_static_runtime_canary_policy(runtime_id=RUNTIME_ID, lane_id=LANE_ID, raw_json=canary_raw)
+    except Exception:
+        raise RuntimeError("Invalid security policy; Kernel start refused. Correct local settings or environment.") from None
+    return path_policy, canary_policy, path_raw, canary_raw
+
+
+def _security_center_summary(cfg: Dict[str, Any]) -> None:
+    paths, canaries, _, _ = _security_center_policies(cfg)
+    print(_status_value("Workspace Lock", "ON" if paths.workspace_root is not None else "OFF"))
+    print(_status_value("Restricted roots", str(len(paths.never_roots))))
+    print(_status_value("Startup Canaries", str(canaries.canaries.count)))
+    print(_status_value("StreamingIRQ sensitivity", str(canaries.sensitivity_percent) + "% consecutive match"))
+    print(_status_value("Custom Canary quarantine", f"{canaries.canaries.required_window} active / {canaries.canaries.max_window} ceiling"))
+    print(_status_value("Core security", "REQUIRED AT SECURED STARTUP"))
+
+
+def _edit_security_center(cfg: Dict[str, Any]) -> None:
+    """Edit local startup policy only; never expose a runtime mutation API."""
+    import jack_path_policy as paths
+    import jack_evidence_guard as evidence
+
+    def override(name):
+        if os.getenv(name, "").strip():
+            print("Administrator environment override is active. Change it outside Jack and restart the launcher.")
+            return True
+        return False
+
+    def apply_candidate(key, candidate):
+        trial = dict(cfg)
+        trial[key] = candidate
+        try:
+            _security_center_policies(trial)
+        except RuntimeError:
+            print("Invalid or conflicting security setting; previous setting retained.")
+            return
+        cfg[key] = candidate
+        print("Setting accepted for the next Kernel start.")
+
+    def remove_index(items, label):
+        try:
+            index = int(_cli_input(label + " number to remove (0 cancels): "))
+        except ValueError:
+            return False
+        if not 1 <= index <= len(items):
+            return False
+        if _cli_input("Remove this restriction? [y/N]: ").strip().lower() != "y":
+            return False
+        items.pop(index - 1)
+        return True
+
+    while True:
+        print()
+        print("JACK KERNEL - SECURITY CENTER")
+        _security_center_summary(cfg)
+        print("1  Set or change Workspace Lock directory")
+        print("2  Disable Workspace Lock (explicit confirmation)")
+        print("3  Add a restricted NEVER path")
+        print("4  Remove a user-defined NEVER path")
+        print("5  Add a custom Canary (hidden, launcher session only)")
+        print("6  Remove a session Canary")
+        print("7  View effective startup policy and core protections")
+        print("8  Forensic archive settings")
+        print("9  StreamingIRQ sensitivity and quarantine ceiling")
+        print("10 Set or clear an individual Canary sensitivity override")
+        print("S  Save and apply settings    M  Discard and return")
+        choice = _cli_input("Security > ").strip().lower()
+        if choice == "s":
+            try:
+                _save_cli_config(cfg)
+            except (OSError, RuntimeError):
+                print("Settings could not be saved; no successful save is claimed.")
+                continue
+            print("Settings saved. Session Canaries are not written to disk.")
+            return
+        if choice == "m":
+            raise _ReturnToMainMenu()
+        if choice in {"1", "2", "3", "4"}:
+            if override(paths.STATIC_PATH_POLICY_ENV):
+                continue
+            candidate = copy.deepcopy(cfg.get("security_path_policy") or {
+                "version": 1, "workspace_root": None, "never_paths": [],
+            })
+            if choice in {"1", "3"}:
+                root = _cli_input("Absolute Windows path (blank cancels): ").strip()
+                if not root:
+                    continue
+                if choice == "1":
+                    candidate["workspace_root"] = root
+                else:
+                    candidate["never_paths"].append(root)
+            elif choice == "2":
+                if _cli_input("Disable Workspace Lock? [y/N]: ").strip().lower() != "y":
+                    continue
+                candidate["workspace_root"] = None
+            else:
+                for index, root in enumerate(candidate["never_paths"], 1):
+                    print(f"  {index}: {root!r}")
+                if not remove_index(candidate["never_paths"], "Path"):
+                    continue
+            apply_candidate("security_path_policy", candidate)
+        elif choice in {"5", "6"}:
+            if override(evidence.STATIC_CANARY_POLICY_ENV):
+                continue
+            candidate = copy.deepcopy(cfg.get("_security_session_canaries") or {"version": 1, "patterns": []})
+            if choice == "5":
+                value = _cli_input("Protected value (hidden; blank cancels): ", secret=True)
+                if not value:
+                    continue
+                candidate["patterns"].append({"id": "custom-" + uuid.uuid4().hex, "tier": "B", "value": value})
+            else:
+                for index, item in enumerate(candidate["patterns"], 1):
+                    print(f"  {index}: {len(item['value'])} characters / {item.get('sensitivity_percent', 'inherit')}% sensitivity (value hidden)")
+                if not remove_index(candidate["patterns"], "Canary"):
+                    continue
+            apply_candidate("_security_session_canaries", candidate)
+        elif choice == "9":
+            if override(evidence.STATIC_CANARY_POLICY_ENV):
+                continue
+            current = cfg.get("security_irq_settings") or {"sensitivity_percent": 100, "max_window": 4096}
+            print("Maximum 5%, High 10%, Standard 25%, Low 50%, Exact 100%, or Custom 1-100%.")
+            raw = _cli_input(f"Consecutive match percentage [{current['sensitivity_percent']}]: ").strip().lower()
+            presets = {"maximum": 5, "high": 10, "standard": 25, "low": 50, "exact": 100}
+            try:
+                if raw == "custom":
+                    percent = int(_cli_input("Custom percentage (1-100): "))
+                else:
+                    percent = presets[raw] if raw in presets else int(raw) if raw else current["sensitivity_percent"]
+                ceiling = _cli_input(f"Custom Canary quarantine ceiling (0-16384 chars) [{current['max_window']}]: ").strip()
+                ceiling = int(ceiling) if ceiling else current["max_window"]
+            except ValueError:
+                print("Invalid number; previous setting retained.")
+                continue
+            if percent < 100:
+                print("Partial matching can interrupt benign text that shares a key fragment.")
+                if _cli_input("Apply this sensitivity, including automatic credential Canaries? [y/N]: ").strip().lower() != "y":
+                    continue
+            apply_candidate("security_irq_settings", {"sensitivity_percent": percent, "max_window": ceiling})
+        elif choice == "10":
+            if override(evidence.STATIC_CANARY_POLICY_ENV):
+                continue
+            candidate = copy.deepcopy(cfg.get("_security_session_canaries") or {"version": 1, "patterns": []})
+            if not candidate["patterns"]:
+                print("No session Canaries configured.")
+                continue
+            for index, item in enumerate(candidate["patterns"], 1):
+                print(f"  {index}: {len(item['value'])} characters / {item.get('sensitivity_percent', 'inherit')}% sensitivity (value hidden)")
+            try:
+                index = int(_cli_input("Canary number (0 cancels): "))
+                if not 1 <= index <= len(candidate["patterns"]):
+                    continue
+                raw = _cli_input("Sensitivity percentage (1-100) or inherit: ").strip().lower()
+                item = candidate["patterns"][index - 1]
+                if raw == "inherit":
+                    item.pop("sensitivity_percent", None)
+                else:
+                    percent = int(raw)
+                    if (len(item["value"]) * percent + 99) // 100 < 8:
+                        print("Warning: effective match is shorter than eight characters; false positives likely.")
+                        if _cli_input("Apply anyway? [y/N]: ").strip().lower() != "y":
+                            continue
+                    item["sensitivity_percent"] = percent
+            except ValueError:
+                print("Invalid selection; previous setting retained.")
+                continue
+            apply_candidate("_security_session_canaries", candidate)
+        elif choice == "7":
+            path_policy, canary_policy, _, _ = _security_center_policies(cfg)
+            print("Custom Canary active quarantine:", canary_policy.canaries.required_window, "characters")
+            print("Global sensitivity:", canary_policy.sensitivity_percent, "%")
+            # The immutable matcher sorts its patterns for deterministic
+            # precedence; the editor uses insertion order. Keep UI numbers
+            # aligned to the removal/override menus, not the matcher order.
+            effective = {item.canary_id: item for item in canary_policy.canaries._patterns}
+            if os.getenv(evidence.STATIC_CANARY_POLICY_ENV, "").strip():
+                ordered = list(canary_policy.canaries._patterns)
+            else:
+                ordered = [effective[item["id"]] for item in
+                           (cfg.get("_security_session_canaries") or {}).get("patterns", [])]
+            for index, item in enumerate(ordered, 1):
+                print(f"  Canary {index}: {len(item.value)} characters / {item.sensitivity_percent}% / {item.match_chars} consecutive characters (value hidden)")
+            print("Workspace directory:", repr(path_policy.workspace_root) if path_policy.workspace_root else "NOT CONFIGURED")
+            print("Path policy source:", "ADMIN ENVIRONMENT" if os.getenv(paths.STATIC_PATH_POLICY_ENV, "").strip() else "LOCAL SETTINGS / DEFAULTS")
+            print("Canary policy source:", "ADMIN ENVIRONMENT" if os.getenv(evidence.STATIC_CANARY_POLICY_ENV, "").strip() else "LAUNCHER SESSION")
+            print("Effective restricted roots (default and user-defined):")
+            for root in path_policy.never_roots:
+                print("  " + repr(root))
+            print("Credential protection: automatic known-value isolation; values hidden.")
+            print("Mandatory at secured startup: StreamingIRQ / Reasoning Airlock, Canary enforcement,")
+            print("Consequence Gate, Authority Ledger, Credential Isolation & DLP, Source Drift Guard,")
+            print("Runtime Code Integrity, Static Policy Integrity, Dynamic Authority Integrity, Diagnostic Privacy.")
+            print("Configuration validation passed; this is not a live serving-process attestation.")
+            print("Path checks cover represented targets, not universal final filesystem-object identity.")
+        elif choice == "8":
+            _edit_forensic_archive(cfg)
+        else:
+            print("Unknown security selection.")
 
 
 def _prompt_value(label: str, current: Any, cast=str, *, allow_empty: bool = False) -> Any:
@@ -17069,7 +17416,8 @@ def _print_header(
     print(_status_value("Virtual model", cfg['virtual_model']))
     print(_status_value("Preserve thinking", "ON" if cfg.get("preserve_thinking", True) else "OFF"))
     print(_status_value("Forensic archive", str(cfg.get("forensic_archive_mode", "stage")).upper()))
-    loop_n = cfg.get("loop_detector_repetitions", 24)
+    _security_center_summary(cfg)
+    loop_n = cfg.get("loop_detector_repetitions", 12)
     print(_status_value("Loop Detector", f"ON / {loop_n} repetitions" if cfg.get("loop_detector_enabled", True) else "OFF"))
     active_mode = _REASONING_LEVEL_ALIASES.get(str(cfg.get("reasoning_level", "x-high")).lower(), str(cfg.get("reasoning_level", "x-high")).lower())
     print(_status_value("Live stage streaming", "BUFFERED  [stream=true; Pi-compatible]" if active_mode == "deep-reasoning" else "ON  [stream=true]"))
@@ -17252,8 +17600,8 @@ def _edit_loop_detector(cfg: Dict[str, Any]) -> None:
     if not cfg.get("loop_detector_enabled", True):
         print("Loop Detector disabled; backend limits and agent cancellation unchanged.")
         return
-    print("Native reasoning repetitions: 12, 16, 24 (Default), 32, 48, 64, 128")
-    current = int(cfg.get("loop_detector_repetitions", 24))
+    print("Native reasoning repetitions: 4, 6, 8, 12 (Default), 16, 24, 32, 48, 64, 128")
+    current = int(cfg.get("loop_detector_repetitions", 12))
     selected = _cli_input(f"Select repetition threshold [{current}]: ").strip()
     if selected:
         try:
@@ -17622,7 +17970,7 @@ def _config_to_env(cfg: Dict[str, Any]) -> Dict[str, str]:
         "JACK_LOG_LEVEL": cfg["log_level"],
         "JACK_LOG_REASONING": "1" if cfg["log_reasoning"] else "0",
         "JACK_LOOP_DETECTOR": "1" if cfg.get("loop_detector_enabled", True) else "0",
-        "JACK_LOOP_REPETITIONS": cfg.get("loop_detector_repetitions", 24),
+        "JACK_LOOP_REPETITIONS": cfg.get("loop_detector_repetitions", 12),
         "JACK_FORENSIC_ARCHIVE_MODE": cfg.get("forensic_archive_mode", "stage"),
         "JACK_FORENSIC_ARCHIVE_DIR": cfg.get("forensic_archive_dir", ""),
         "JACK_THINKING_TEMPERATURE": cfg["thinking_temperature"],
@@ -17640,6 +17988,9 @@ def _config_to_env(cfg: Dict[str, Any]) -> Dict[str, str]:
     }
     for key, value in values.items():
         env[key] = str(value)
+    _, _, path_raw, canary_raw = _security_center_policies(cfg)
+    env["JACK_PATH_POLICY_JSON"] = path_raw
+    env["JACK_CANARY_POLICY_JSON"] = canary_raw
     return env
 
 
@@ -17654,10 +18005,15 @@ def _start_server_from_cli(cfg: Dict[str, Any]) -> None:
         print()
         print("Backend endpoint is not configured. Use option 2 first.")
         return
-    _save_cli_config(cfg)
-    env = _config_to_env(cfg)
+    try:
+        env = _config_to_env(cfg)
+        _save_cli_config(cfg)
+    except (RuntimeError, OSError):
+        print("Security configuration could not be validated or saved; Kernel start refused.")
+        return
     print()
     print("Starting Jack Kernel...")
+    _security_center_summary(cfg)
     print(f"Backend        : {_backend_name(cfg)}")
     print(f"Backend URL    : {cfg.get('backend_base_url')}")
     print(f"Backend model  : {_backend_model_status(cfg)}")
@@ -17684,7 +18040,7 @@ def _start_server_from_cli(cfg: Dict[str, Any]) -> None:
         print(f"Target language  : {TRANSLATOR_LANGUAGES[lang]}")
     print(f"Preserve thinking: {'ON' if cfg.get('preserve_thinking', True) else 'OFF'}")
     print(f"Forensic archive : {str(cfg.get('forensic_archive_mode', 'stage')).upper()}")
-    print(f"Loop Detector    : {'ON' if cfg.get('loop_detector_enabled', True) else 'OFF'} / {cfg.get('loop_detector_repetitions', 32)} repetitions")
+    print(f"Loop Detector    : {'ON' if cfg.get('loop_detector_enabled', True) else 'OFF'} / {cfg.get('loop_detector_repetitions', 12)} repetitions")
     print(f"Reasoning budget : {cfg.get('reasoning_budget_tokens', 100000):,} estimated tokens" if cfg.get("reasoning_budget_tokens", 100000) else "Reasoning budget : OFF")
     print(f"Output budget    : {cfg.get('output_budget_tokens', 100000):,} estimated tokens" if cfg.get("output_budget_tokens", 100000) else "Output budget    : OFF")
     print("Press Ctrl+C to stop the server and return to the launcher.")
@@ -17709,6 +18065,7 @@ def _print_main_menu_options() -> None:
     print(_ansi_rgb("  L", _JACK_STEEL, bold=True) + "  Loop Detector")
     print(_ansi_rgb("  B", _JACK_STEEL, bold=True) + "  Generation budgets")
     print(_ansi_rgb("  C", _JACK_STEEL, bold=True) + "  Context monitor (separate window)")
+    print(_ansi_rgb("  K", _JACK_STEEL, bold=True) + "  Security Center")
     print(_ansi_rgb("  S", _JACK_STEEL, bold=True) + "  Save settings")
     print(_ansi_rgb("  M", _JACK_STEEL, bold=True) + "  Main screen / refresh")
     print(_ansi_rgb("  Q", _JACK_STEEL, bold=True) + "  Quit")
@@ -17720,7 +18077,7 @@ def _print_compact_main_commands() -> None:
     print()
     print(_ansi_rgb("Main:", _JACK_MUTED) +
           " 1 Start  2 Models  3 Reasoning  4 Sampling  5 Endpoint  6 Advanced")
-    print("      7 Test  8 Reset  P Thinking  F Forensic  L Loop  B Budgets  C Context  S Save  M Main screen  Q Quit")
+    print("      7 Test  8 Reset  P Thinking  F Forensic  L Loop  B Budgets  C Context  K Security  S Save  M Main screen  Q Quit")
     print(_ansi_rgb("Use M only when you want the full status screen redrawn.", _JACK_MUTED))
     print()
 
@@ -17736,8 +18093,12 @@ def _render_full_main_screen(cfg: Dict[str, Any], *, preserve_intro: bool = Fals
 def run_cli() -> None:
     _enable_cli_branding()
     intro_shown = _show_brand_intro()
-    cfg = _load_cli_config()
-    _save_cli_config(cfg)
+    try:
+        cfg = _load_cli_config()
+        _save_cli_config(cfg)
+    except (RuntimeError, OSError):
+        print("Launcher configuration unavailable or invalid; Kernel start refused.")
+        return
 
     # Render the complete branded main screen once.  Normal actions deliberately
     # do not repaint it; their results remain visible and control returns to the
@@ -17767,8 +18128,15 @@ def run_cli() -> None:
             elif choice == "8":
                 confirm = _cli_input("Reset all settings to Jack defaults? [y/N]: ").strip().lower()
                 if confirm in {"y", "yes"}:
+                    saved_security = cfg.get("security_path_policy")
+                    saved_irq = cfg.get("security_irq_settings")
+                    session_canaries = cfg.get("_security_session_canaries")
                     cfg = copy.deepcopy(CLI_DEFAULTS)
-                    print("Defaults restored.")
+                    cfg["security_path_policy"] = saved_security
+                    cfg["security_irq_settings"] = saved_irq
+                    if session_canaries is not None:
+                        cfg["_security_session_canaries"] = session_canaries
+                    print("Defaults restored; security policy retained. Use Security Center to change it.")
             elif choice == "p":
                 _run_transactional_editor(_edit_preserve_thinking, cfg)
             elif choice == "f":
@@ -17780,6 +18148,8 @@ def run_cli() -> None:
             elif choice == "c":
                 cfg["context_monitor_enabled"] = not bool(cfg.get("context_monitor_enabled", True))
                 print("Context monitor: " + ("ON (next kernel start)" if cfg["context_monitor_enabled"] else "OFF (next kernel start)"))
+            elif choice == "k":
+                _run_transactional_editor(_edit_security_center, cfg)
             elif choice == "s":
                 _save_cli_config(cfg)
                 print("Settings saved.")
@@ -17899,6 +18269,11 @@ def run_server() -> None:
         port=actual_port,
         log_level=CFG.log_level.lower(),
     )
+    # Uvicorn configures its handlers after secure startup; cover the final handlers.
+    privacy = globals().get("_JACK_DIAGNOSTIC_PRIVACY")
+    if privacy is not None:
+        from jack_phase11_privacy import protect_logging_handlers
+        protect_logging_handlers(privacy)
     server = uvicorn.Server(config)
     # Spawn a separate, fully optional process after the actual port is bound.
     # It cannot block the server startup or influence cognition/execution.

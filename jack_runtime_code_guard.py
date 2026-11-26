@@ -10,6 +10,7 @@ import hashlib
 import sys
 import threading
 import types
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Any
 
@@ -194,6 +195,24 @@ class _ModuleIdentity:
 
 
 @dataclass(frozen=True)
+class _HolderIdentity:
+    label: str
+    owner: Any
+    attribute: str
+    original: Any
+    scope: str = "shared"
+
+
+@dataclass(frozen=True)
+class _SourceIdentity:
+    label: str
+    path: Path
+    canonical_path: str
+    sha256: str
+    scope: str = "shared"
+
+
+@dataclass(frozen=True)
 class _RouteIdentity:
     route: Any
     path: Any
@@ -236,6 +255,8 @@ class RuntimeCodeAuthority:
         self._lock = threading.RLock()
         self._slots: list[ExecutableSlot] = []
         self._modules: list[_ModuleIdentity] = []
+        self._sources: list[_SourceIdentity] = []
+        self._holders: list[_HolderIdentity] = []
         self._route_tables: list[_RouteTableIdentity] = []
         self._state = "INITIALIZING"
         # Pin the method that performs actual measurement. Checking it before
@@ -285,6 +306,43 @@ class RuntimeCodeAuthority:
             if not isinstance(module, types.ModuleType):
                 raise RuntimeCodeIntegrityUnavailable("required module not loaded")
             self._modules.append(_ModuleIdentity(name, module_name, module, scope))
+
+    def register_holder(self, *, name: str, owner: Any, attribute: str, scope: str = "shared") -> None:
+        """Pin an existing authority holder, not its legitimate dynamic contents."""
+        with self._lock:
+            if self._state != "INITIALIZING":
+                raise RuntimeError("protected holder manifest is sealed")
+            if any(item.label == name for item in self._holders):
+                raise ValueError("duplicate protected holder label")
+            original = getattr(owner, attribute, None)
+            if original is None:
+                raise RuntimeCodeIntegrityUnavailable("required authority holder unavailable")
+            self._holders.append(_HolderIdentity(name, owner, attribute, original, scope))
+
+    def register_source(self, *, name: str, path: Path, scope: str = "shared") -> None:
+        """Seal exact source bytes for new Phase 9 modules absent from Phase 8.
+
+        Reuse Phase 8's already validated regular-file identity measurement
+        without changing its historical required-source manifest.
+        """
+        if not isinstance(name, str) or not name or not isinstance(scope, str) or not scope:
+            raise ValueError("protected source label and scope must be nonempty")
+        import jack_source_drift_guard as source
+        with self._lock:
+            if self._state != "INITIALIZING":
+                raise RuntimeError("protected source manifest is sealed")
+            if any(x.label == name for x in self._sources):
+                raise ValueError("duplicate protected source label")
+            try:
+                p = Path(path)
+                measured = source._measure_regular_file(p)
+            except Exception as exc:
+                raise RuntimeCodeIntegrityUnavailable(
+                    "required protected source could not be sealed"
+                ) from exc
+            self._sources.append(_SourceIdentity(
+                name, p, measured.canonical_path, measured.sha256, scope,
+            ))
 
     def register_route_table(self, *, name: str, app: Any, scope: str = "shared") -> None:
         """Pin a completed HTTP route table; middleware warm-up is out-of-scope."""
@@ -341,6 +399,47 @@ class RuntimeCodeAuthority:
             if sys.modules.get(module.module_name) is not module.original:
                 mismatches.append(module.label)
                 mismatch_scopes.add(module.scope)
+        for holder in self._holders:
+            if not selected(holder.scope):
+                continue
+            try:
+                current = getattr(holder.owner, holder.attribute, None)
+            except Exception:
+                record_unavailable(holder.scope, RuntimeCodeIntegrityUnavailable(
+                    "authority holder measurement unavailable"))
+                continue
+            if current is not holder.original:
+                mismatches.append(holder.label)
+                mismatch_scopes.add(holder.scope)
+        if self._sources:
+            import jack_source_drift_guard as source
+        for item in self._sources:
+            if not selected(item.scope):
+                continue
+            try:
+                observed = source._measure_regular_file(item.path)
+            except (source._SourceComponentMissing, source._SourceComponentKindChanged):
+                mismatches.append(item.label)
+                mismatch_scopes.add(item.scope)
+                continue
+            except source.SourceMeasurementUnavailable as exc:
+                record_unavailable(
+                    item.scope, RuntimeCodeIntegrityUnavailable(
+                        "required protected source measurement unavailable"
+                    ),
+                )
+                continue
+            except Exception as exc:
+                record_unavailable(
+                    item.scope, RuntimeCodeIntegrityUnavailable(
+                        "required protected source measurement unavailable"
+                    ),
+                )
+                continue
+            if (observed.canonical_path != item.canonical_path
+                    or observed.sha256 != item.sha256):
+                mismatches.append(item.label)
+                mismatch_scopes.add(item.scope)
         for table in self._route_tables:
             if not selected(table.scope):
                 continue

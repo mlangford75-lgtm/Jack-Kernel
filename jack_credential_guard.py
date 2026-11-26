@@ -259,11 +259,13 @@ def _credential_resource_paths() -> Tuple[str, ...]:
         appdata = os.getenv("APPDATA", "").strip()
         root = Path(appdata) if appdata else home / "AppData" / "Roaming"
         jack_config = root / "JackKernelLMStudio" / "config.json"
+        current_jack_config = root / "JackKernel" / "config.json"
     else:
         jack_config = home / ".jack-kernel-lm-studio" / "config.json"
+        current_jack_config = home / ".jack-kernel" / "config.json"
 
     pi_config = home / ".pi" / "agent" / "jack-kernel.json"
-    return (str(jack_config), str(pi_config))
+    return (str(jack_config), str(current_jack_config), str(pi_config))
 
 
 def _logical_sources(jk: Any) -> Tuple[tuple, ...]:
@@ -446,7 +448,12 @@ def merge_runtime_canary_policy(canary_policy: Any, credential_policy: RuntimeCr
         raise RuntimeError("Phase-7 credential/Canary runtime ownership mismatch")
     if canary_policy.lane_id != credential_policy.lane_id:
         raise RuntimeError("Phase-7 credential/Canary lane ownership mismatch")
-    if credential_policy.required_window > CREDENTIAL_CANARY_MAX_WINDOW:
+    sensitivity = canary_policy.sensitivity_percent
+    credential_window = max(
+        ((len(item.value) * sensitivity + 99) // 100 - 1
+         for item in credential_policy.credentials), default=0,
+    )
+    if credential_window > max(CREDENTIAL_CANARY_MAX_WINDOW, canary_policy.canaries.max_window):
         raise RuntimeError(
             "Phase-7 credential Canary merge exceeds the bounded output-DLP ceiling"
         )
@@ -464,18 +471,20 @@ def merge_runtime_canary_policy(canary_policy: Any, credential_policy: RuntimeCr
                 canary_id=credential.credential_id,
                 tier=CanaryTier.A,
                 value=credential.value,
+                sensitivity_percent=sensitivity,
             )
         )
 
     combined = existing + tuple(additions)
     max_window = max(
         int(getattr(canary_policy.canaries, "max_window", 0) or 0),
-        credential_policy.required_window,
+        credential_window,
     )
     return RuntimeCanaryPolicy(
         runtime_id=credential_policy.runtime_id,
         lane_id=credential_policy.lane_id,
         canaries=DeterministicCanarySet(combined, max_window=max_window),
+        sensitivity_percent=sensitivity,
     )
 
 

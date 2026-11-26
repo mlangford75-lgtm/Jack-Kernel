@@ -44,7 +44,13 @@ async def install_pending(k, call_id):
         expected_tool_call_ids=(call_id,),
         created_at=time.time(),
     )
-    k.KERNEL._pending_tool_resumes[call_id] = state
+    state.history.append({"role": "assistant", "tool_calls": [{
+        "id": call_id, "type": "function", "function": {
+            "name": "read", "arguments": '{"path":"clock.py"}'},
+    }], "_jack_internal_tool_exchange": True})
+    async with k.KERNEL._pending_tool_resume_lock:
+        k.KERNEL._pending_authority.register(state)
+        k.KERNEL._pending_tool_resumes[call_id] = state
     return state
 
 

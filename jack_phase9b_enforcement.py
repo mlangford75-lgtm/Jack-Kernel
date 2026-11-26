@@ -9,6 +9,7 @@ can rewrite all interpreter state or replace the outer ASGI call chain.
 from __future__ import annotations
 
 from functools import wraps
+from pathlib import Path
 from typing import Any
 
 from jack_runtime_code_guard import (
@@ -365,6 +366,93 @@ def install(jk: Any) -> RuntimeCodeAuthority:
         if dependency is not None and callable(getattr(dependency, "call", None)):
             guard.register(name=f"route-observation-{safe_name}-dependent",
                            owner=dependency, attribute="call", scope="observation")
+
+    guard.register_source(name="source-phase9-code-guard",
+                          path=Path(code_guard.__file__).resolve(), scope="shared")
+    guard.register_source(name="source-phase9-enforcement",
+                          path=Path(__file__).resolve(), scope="shared")
+    # The experimental policy gates are composed before sealing. Keep the
+    # historical Phase 8 manifest frozen and extend this selected manifest.
+    if getattr(jk, "_JACK_PHASE10_PATH_AUTHORITY", None) is not None:
+        import jack_policy_integrity as static
+        import jack_phase10_path_enforcement as path_gate
+        import jack_phase10_canary_enforcement as canary_gate
+        import jack_phase10_credential_enforcement as credential_gate
+        import jack_phase10_dynamic_authority as dynamic
+        import jack_phase11_privacy as privacy
+        import jack_credential_guard as credential
+        for module, scope in (
+            (static, "shared"), (path_gate, "shared"),
+            (canary_gate, "model"), (credential_gate, "authority"),
+            (dynamic, "authority"), (privacy, "shared"),
+            (credential, "authority"),
+        ):
+            guard.register_module(name="module-" + module.__name__,
+                                  module_name=module.__name__, scope=scope)
+            guard.register_source(name="source-" + module.__name__,
+                                  path=Path(module.__file__).resolve(), scope=scope)
+        for name, owner, attr, scope in (
+            ("pending-authority-holder", jk.KERNEL, "_pending_authority", "authority"),
+            ("pending-live-map-holder", jk.KERNEL, "_pending_tool_resumes", "authority"),
+            ("pending-lock-holder", jk.KERNEL, "_pending_tool_resume_lock", "authority"),
+            ("privacy-holder", jk, "_JACK_DIAGNOSTIC_PRIVACY", "shared"),
+            ("privacy-values", jk._JACK_DIAGNOSTIC_PRIVACY, "_values", "shared"),
+            ("path-authority-holder", jk, "_JACK_PHASE10_PATH_AUTHORITY", "shared"),
+            ("canary-authority-holder", jk, "_JACK_PHASE10_CANARY_AUTHORITY", "model"),
+            ("credential-authority-holder", jk, "_JACK_PHASE10_CREDENTIAL_AUTHORITY", "authority"),
+        ):
+            guard.register_holder(name=name, owner=owner, attribute=attr, scope=scope)
+        for name, owner, attr in (
+            ("canary-pattern-class", evidence, "CanaryPattern"),
+            ("canary-set-class", evidence, "DeterministicCanarySet"),
+            ("canary-detector-class", evidence, "StreamingCanaryDetector"),
+            ("canary-threshold-property", evidence.CanaryPattern, "match_chars"),
+        ):
+            guard.register_holder(name=name, owner=owner, attribute=attr, scope="model")
+        for label, owner, attr, scope in (
+            ("canary-threshold", evidence.CanaryPattern.match_chars, "fget", "model"),
+            ("canary-search", evidence.DeterministicCanarySet, "_find_with_position", "model"),
+            ("canary-find", evidence.DeterministicCanarySet, "find", "model"),
+            ("canary-stream-feed", evidence.StreamingCanaryDetector, "feed_guarded", "model"),
+            ("canary-stream-detect", evidence.StreamingCanaryDetector, "feed_detection", "model"),
+            ("canary-stream-flush", evidence.StreamingCanaryDetector, "flush_safe", "model"),
+            ("canary-stream-guard", evidence, "_guarded_stream", "model"),
+            ("canary-release-value", evidence, "_find_canary_in_release_value", "model"),
+            ("canary-nonstream-result", evidence, "_find_canary_in_nonstream_result", "model"),
+            ("policy-verify", static.RuntimePolicyAuthority, "verify_for", "shared"),
+            ("policy-check", static.RuntimePolicyAuthority, "_check_locked", "shared"),
+            ("policy-read", static.RuntimePolicyAuthority, "_read", "shared"),
+            ("policy-digest", static, "_digest", "shared"),
+            ("policy-material", static, "_canonical_material", "shared"),
+            ("pending-verify", dynamic.PendingAuthority, "verify", "authority"),
+            ("pending-digest", dynamic.PendingAuthority, "_digest", "authority"),
+            ("pending-material", dynamic, "_material", "authority"),
+            ("pending-register", dynamic.PendingAuthority, "register", "authority"),
+            ("pending-transition", dynamic.PendingAuthority, "transition", "authority"),
+            ("pending-retire", dynamic.PendingAuthority, "retire", "authority"),
+            ("pending-request", dynamic.PendingAuthority, "verify_request", "authority"),
+            ("pending-expire", dynamic.PendingAuthority, "expire", "authority"),
+            ("pending-freeze", dynamic.PendingAuthority, "freeze", "authority"),
+            ("pending-ids", dynamic, "_ids", "authority"),
+            ("pending-index-verify", dynamic.PendingAuthority, "_verify_index", "authority"),
+            ("pending-index-transition", dynamic.PendingAuthority, "_replace_index", "authority"),
+            ("pending-admission", jk.KERNEL, "_phase4_pending_tool_call_snapshot", "executor"),
+            ("pending-consume", jk.KERNEL, "_consume_pending_tool_resume", "model"),
+            ("pending-create", jk.KERNEL, "_register_stage_tool_resume", "model"),
+            ("credential-post", jk.BACKEND._client, "post", "model"),
+            ("credential-build", jk.BACKEND._client, "build_request", "model"),
+            ("credential-publish", jk.OrchestrationEventHub, "_publish", "orchestration"),
+            ("privacy-redact", privacy.PrivacyBoundary, "redact", "shared"),
+            ("privacy-match", privacy.PrivacyBoundary, "_contains", "shared"),
+            ("privacy-archive", privacy.PrivacyBoundary, "permits_archive", "shared"),
+            ("privacy-diagnostic", privacy.PrivacyBoundary, "permits_diagnostic", "shared"),
+            ("privacy-text-sink", jk, "_diagnostic_text", "shared"),
+            ("privacy-upstream-sink", jk, "_upstream_diagnostic", "shared"),
+            ("privacy-archive-sink", jk, "_diagnostic_archive_allowed", "shared"),
+            ("privacy-log-install", privacy, "protect_logging_handlers", "shared"),
+            ("privacy-formatter", privacy.ProtectedDiagnosticFormatter, "format", "shared"),
+        ):
+            guard.register(name=label, owner=owner, attribute=attr, scope=scope)
 
     guard.register_route_table(name="all-http-routes", app=jk.APP)
     guard.seal()

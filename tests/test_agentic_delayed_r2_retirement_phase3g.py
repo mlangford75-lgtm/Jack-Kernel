@@ -197,6 +197,10 @@ def test_pending_checkpoint_retired_on_terminal_scope():
             expected_tool_call_ids=("tool-3g",),
             created_at=0.0,
         )
+        checkpoint.history.append({"role": "assistant", "content": "", "tool_calls": [
+            {"id": "tool-3g", "type": "function", "function": {"name": "read", "arguments": '{"path":"test.txt"}'}}
+        ], "_jack_internal_tool_exchange": True})
+        k.KERNEL._pending_authority.register(checkpoint)
         k.KERNEL._pending_tool_resumes["tool-3g"] = checkpoint
         scope["pending_state"] = checkpoint
         await k.KERNEL._agentic_phase3g_close_scope(token)
