@@ -1568,4 +1568,3 @@ def test_nonstream_architect_read_proposal_is_never_released(monkeypatch, tmp_pa
         assert "Coder owns execution." in str(result.content)
         assert calls == ["Agentic Coder Planner", "Agentic native pass 1", "Agentic native pass 2"]
     asyncio.run(run())
-

@@ -74,3 +74,36 @@ def test_splash_menu_names_feature_not_build_phase(capsys):
     out = capsys.readouterr().out
     assert "Security Center" in out and "K Security" in out
     assert "Phase" not in out
+
+def test_irq_settings_persist_but_values_and_overrides_do_not(cfg, monkeypatch, capsys):
+    long_value = "a" * 1024
+    short_value = "b" * 128
+    inputs = iter(["9", "custom", "9", "4096", "y",
+                   "5", long_value, "5", short_value, "10", "1", "25",
+                   "7", "s"])
+    monkeypatch.setattr(jk, "_cli_input", lambda *a, **k: next(inputs))
+    jk._run_transactional_editor(jk._edit_security_center, cfg)
+    policy = jk._security_center_policies(cfg)[1]
+    assert policy.sensitivity_percent == 9
+    assert policy.canaries.required_window == 255
+    by_length = {len(item.value): item for item in policy.canaries._patterns}
+    assert by_length[1024].sensitivity_percent == 25
+    assert by_length[128].sensitivity_percent == 9
+    out = capsys.readouterr().out
+    assert "Canary 1: 1024 characters / 25% / 256 consecutive characters" in out
+    assert "Canary 2: 128 characters / 9% / 12 consecutive characters" in out
+    saved = jk._config_paths()[0].read_text(encoding="utf-8")
+    assert long_value not in out and long_value not in saved
+    assert short_value not in out and short_value not in saved
+    restored = jk._load_cli_config()
+    assert restored["security_irq_settings"] == {"sensitivity_percent": 9, "max_window": 4096}
+    assert jk._security_center_policies(restored)[1].canaries.count == 0
+
+
+def test_irq_admin_override_keeps_resolved_settings_authoritative(cfg, monkeypatch):
+    cfg["security_irq_settings"] = {"sensitivity_percent": 9, "max_window": 4096}
+    admin = json.dumps({"version": 1, "patterns": [], "sensitivity_percent": 100, "max_window": 2048})
+    monkeypatch.setenv("JACK_CANARY_POLICY_JSON", admin)
+    policy = jk._security_center_policies(cfg)[1]
+    assert policy.sensitivity_percent == 100
+    assert jk._config_to_env(cfg)["JACK_CANARY_POLICY_JSON"] == admin

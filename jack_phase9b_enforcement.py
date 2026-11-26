@@ -402,7 +402,23 @@ def install(jk: Any) -> RuntimeCodeAuthority:
             ("credential-authority-holder", jk, "_JACK_PHASE10_CREDENTIAL_AUTHORITY", "authority"),
         ):
             guard.register_holder(name=name, owner=owner, attribute=attr, scope=scope)
+        for name, owner, attr in (
+            ("canary-pattern-class", evidence, "CanaryPattern"),
+            ("canary-set-class", evidence, "DeterministicCanarySet"),
+            ("canary-detector-class", evidence, "StreamingCanaryDetector"),
+            ("canary-threshold-property", evidence.CanaryPattern, "match_chars"),
+        ):
+            guard.register_holder(name=name, owner=owner, attribute=attr, scope="model")
         for label, owner, attr, scope in (
+            ("canary-threshold", evidence.CanaryPattern.match_chars, "fget", "model"),
+            ("canary-search", evidence.DeterministicCanarySet, "_find_with_position", "model"),
+            ("canary-find", evidence.DeterministicCanarySet, "find", "model"),
+            ("canary-stream-feed", evidence.StreamingCanaryDetector, "feed_guarded", "model"),
+            ("canary-stream-detect", evidence.StreamingCanaryDetector, "feed_detection", "model"),
+            ("canary-stream-flush", evidence.StreamingCanaryDetector, "flush_safe", "model"),
+            ("canary-stream-guard", evidence, "_guarded_stream", "model"),
+            ("canary-release-value", evidence, "_find_canary_in_release_value", "model"),
+            ("canary-nonstream-result", evidence, "_find_canary_in_nonstream_result", "model"),
             ("policy-verify", static.RuntimePolicyAuthority, "verify_for", "shared"),
             ("policy-check", static.RuntimePolicyAuthority, "_check_locked", "shared"),
             ("policy-read", static.RuntimePolicyAuthority, "_read", "shared"),

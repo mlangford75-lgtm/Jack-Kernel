@@ -17106,12 +17106,13 @@ def _edit_security_center(cfg: Dict[str, Any]) -> None:
                 continue
             candidate = copy.deepcopy(cfg.get("_security_session_canaries") or {"version": 1, "patterns": []})
             if choice == "5":
-                value = _cli_input("Protected exact string (hidden; blank cancels): ", secret=True)
+                value = _cli_input("Protected value (hidden; blank cancels): ", secret=True)
                 if not value:
                     continue
                 candidate["patterns"].append({"id": "custom-" + uuid.uuid4().hex, "tier": "B", "value": value})
             else:
-                print(f"{len(candidate['patterns'])} session Canaries; values hidden.")
+                for index, item in enumerate(candidate["patterns"], 1):
+                    print(f"  {index}: {len(item['value'])} characters / {item.get('sensitivity_percent', 'inherit')}% sensitivity (value hidden)")
                 if not remove_index(candidate["patterns"], "Canary"):
                     continue
             apply_candidate("_security_session_canaries", candidate)
@@ -17145,7 +17146,7 @@ def _edit_security_center(cfg: Dict[str, Any]) -> None:
                 print("No session Canaries configured.")
                 continue
             for index, item in enumerate(candidate["patterns"], 1):
-                print(f"  {index}: {item.get('sensitivity_percent', 'inherit')} (value hidden)")
+                print(f"  {index}: {len(item['value'])} characters / {item.get('sensitivity_percent', 'inherit')}% sensitivity (value hidden)")
             try:
                 index = int(_cli_input("Canary number (0 cancels): "))
                 if not 1 <= index <= len(candidate["patterns"]):
@@ -17169,8 +17170,17 @@ def _edit_security_center(cfg: Dict[str, Any]) -> None:
             path_policy, canary_policy, _, _ = _security_center_policies(cfg)
             print("Custom Canary active quarantine:", canary_policy.canaries.required_window, "characters")
             print("Global sensitivity:", canary_policy.sensitivity_percent, "%")
-            for index, item in enumerate(canary_policy.canaries._patterns, 1):
-                print(f"  Canary {index}: {item.sensitivity_percent}% / {item.match_chars} consecutive characters (value hidden)")
+            # The immutable matcher sorts its patterns for deterministic
+            # precedence; the editor uses insertion order. Keep UI numbers
+            # aligned to the removal/override menus, not the matcher order.
+            effective = {item.canary_id: item for item in canary_policy.canaries._patterns}
+            if os.getenv(evidence.STATIC_CANARY_POLICY_ENV, "").strip():
+                ordered = list(canary_policy.canaries._patterns)
+            else:
+                ordered = [effective[item["id"]] for item in
+                           (cfg.get("_security_session_canaries") or {}).get("patterns", [])]
+            for index, item in enumerate(ordered, 1):
+                print(f"  Canary {index}: {len(item.value)} characters / {item.sensitivity_percent}% / {item.match_chars} consecutive characters (value hidden)")
             print("Workspace directory:", repr(path_policy.workspace_root) if path_policy.workspace_root else "NOT CONFIGURED")
             print("Path policy source:", "ADMIN ENVIRONMENT" if os.getenv(paths.STATIC_PATH_POLICY_ENV, "").strip() else "LOCAL SETTINGS / DEFAULTS")
             print("Canary policy source:", "ADMIN ENVIRONMENT" if os.getenv(evidence.STATIC_CANARY_POLICY_ENV, "").strip() else "LAUNCHER SESSION")

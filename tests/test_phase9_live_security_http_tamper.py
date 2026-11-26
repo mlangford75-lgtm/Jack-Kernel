@@ -17,6 +17,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import pytest
 
 
 _CHILD = r'''
@@ -49,7 +50,7 @@ jk.KERNEL._pending_tool_resumes["qualified-safe-read"] = pending
 
 def adversarial_watcher():
     while True:
-        for target in ("model", "authentication", "path-policy"):
+        for target in ("model", "canary-matcher", "authentication", "path-policy"):
             request = signals / (target + ".request")
             receipt = signals / (target + ".ack")
             if not request.exists() or receipt.exists():
@@ -61,6 +62,14 @@ def adversarial_watcher():
                     )
                     return {"unauthorized": True}
                 jk.KERNEL.run = unauthorized_model
+            elif target == "canary-matcher":
+                import jack_evidence_guard as evidence
+                def unauthorized_match(*_args, **_kwargs):
+                    (signals / "unauthorized_model_executed").write_text(
+                        "EXECUTED", encoding="utf-8"
+                    )
+                    return None
+                evidence.DeterministicCanarySet._find_with_position = unauthorized_match
             elif target == "path-policy":
                 jk._RUNTIME_PATH_POLICY = None
             else:
@@ -113,7 +122,8 @@ def _signal(signals: Path, name: str, process: subprocess.Popen, log: Path) -> N
     )
 
 
-def test_live_secure_http_detects_post_start_model_and_shared_auth_tamper(tmp_path):
+@pytest.mark.parametrize("model_target", ["model", "canary-matcher"])
+def test_live_secure_http_detects_post_start_model_and_shared_auth_tamper(tmp_path, model_target):
     """Attack actual loaded callables, then assert consequence non-execution."""
     root = Path(__file__).resolve().parents[1]
     signals = tmp_path / "signals"
@@ -197,7 +207,7 @@ def test_live_secure_http_detects_post_start_model_and_shared_auth_tamper(tmp_pa
             # First executable attack: replace the actual effective run binding while
             # Phase 8 has verified unchanged source files. Phase 9B must
             # prevent any HTTP dispatch to this unauthorized function.
-            _signal(signals, "model", child, output)
+            _signal(signals, model_target, child, output)
             code, response = _http(base, "/v1/chat/completions", post=True)
             assert code == 503, (code, response)
             assert b"jack_runtime_code_integrity_unavailable" in response
