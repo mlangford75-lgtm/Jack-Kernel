@@ -1211,3 +1211,62 @@ def test_text_canary_preserves_prior_safe_tool_tail_but_blocks_current_tool():
     ) == "benign-tool-args"
 
     assert 1 not in streamed_tool_indexes(chunks)
+
+
+def test_audit_m2_malformed_frame_does_not_release_held_canary_tail():
+    secret = "SYNTHETIC-AUDIT!"
+    tail = secret[:-1]
+    canaries = make_canaries(secret)
+    assert canaries.required_window == len(tail)
+
+    async def source(_body):
+        yield event({"content": "benign:" + tail})
+        yield b"data: {malformed-json\n\n"
+
+    async def run():
+        chunks = []
+        try:
+            async for chunk in guard._guarded_stream(source, {}, canaries=canaries):
+                chunks.append(chunk)
+        except guard.StreamingIRQProtocolError:
+            pass
+        else:
+            raise AssertionError("Expected guarded protocol failure")
+        return visible_text(chunks)
+
+    assert asyncio.run(run()) == "benign:"
+
+
+def test_audit_m2_incomplete_eof_does_not_release_held_canary_tail():
+    secret = "SYNTHETIC-AUDIT!"
+    tail = secret[:-1]
+    canaries = make_canaries(secret)
+    assert canaries.required_window == len(tail)
+
+    async def source(_body):
+        yield event({"content": "benign:" + tail})
+
+    async def run():
+        chunks = []
+        try:
+            async for chunk in guard._guarded_stream(source, {}, canaries=canaries):
+                chunks.append(chunk)
+        except guard.StreamingIRQProtocolError:
+            pass
+        return visible_text(chunks)
+
+    assert asyncio.run(run()) == "benign:"
+
+
+def test_audit_m2_normal_completion_preserves_below_threshold_tail():
+    secret = "SYNTHETIC-AUDIT!"
+    tail = secret[:-1]
+    canaries = make_canaries(secret)
+    assert canaries.required_window == len(tail)
+
+    async def source(_body):
+        yield event({"content": "benign:" + tail})
+        yield event({}, finish_reason="stop")
+        yield b"data: [DONE]\n\n"
+
+    assert visible_text(collect(source, window=0, maximum=0, canaries=canaries)) == "benign:" + tail
