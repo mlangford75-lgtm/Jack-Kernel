@@ -168,3 +168,54 @@ def test_shared_stream_guard_recovers_by_changing_action(monkeypatch, tmp_path):
                    for x in requests[1]["messages"])
         assert not any(x.get("_jack_internal_tool_validation_rejection") for x in h)
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("draft_reported", [True, False])
+def test_audit_m11_translation_preserves_peak_stage_context(
+        monkeypatch, tmp_path, streaming, draft_reported):
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "translated")
+    monkeypatch.setenv("JACK_TRANSLATED_LANGUAGE", "en")
+    k = load(monkeypatch, tmp_path, mode="agentic")
+    draft = {"prompt_tokens": 20000, "completion_tokens": 20, "total_tokens": 20020}
+    translated = {"prompt_tokens": 400, "completion_tokens": 10, "total_tokens": 410}
+    memory = {"prompt_tokens": 1500, "completion_tokens": 10, "total_tokens": 1510}
+    samples = [draft if draft_reported else None, translated]
+    calls = []
+
+    class Backend:
+        def sample(self, kwargs):
+            index = len(calls)
+            calls.append(kwargs)
+            return ("Draft answer." if index == 0 else "Translated answer.", samples[index])
+
+        async def chat(self, **kwargs):
+            answer, usage = self.sample(kwargs)
+            return {"choices": [{"message": {"role": "assistant", "content": answer},
+                                 "finish_reason": "stop"}], "usage": usage}
+
+        async def chat_stream(self, **kwargs):
+            answer, usage = self.sample(kwargs)
+            yield {"choices": [{"delta": {"content": answer}, "finish_reason": None}]}
+            yield {"choices": [{"delta": {}, "finish_reason": "stop"}]}
+            if usage is not None:
+                yield {"choices": [], "usage": usage}
+
+    k.KERNEL.backend = Backend()
+    usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    h = [{"role": "user", "content": "Answer this task."}]
+
+    async def run():
+        if streaming:
+            packets = [packet async for packet in k.KERNEL._run_stage_streamed(
+                h, "", "extended_initial", usage, append=False)]
+            return next(packet["data"] for packet in packets if packet["kind"] == "result")
+        return await k.KERNEL._run_stage(h, "", "extended_initial", usage, append=False)
+
+    result = asyncio.run(run())
+    assert len(calls) == 2
+    assert result["choices"][0]["message"]["content"] == "Translated answer."
+    assert usage["total_tokens"] == translated["total_tokens"] + (
+        draft["total_tokens"] if draft_reported else 0)
+    assert k._agentic_peak_stage_usage(result.get("usage"), memory) == (
+        draft if draft_reported else None)

@@ -10348,12 +10348,21 @@ class JackQwenKernel:
                 _agentic_translated_guard_literal_tool_call(history, msg)
             if AGENTIC_MODE and self.cfg.agentic_final_review and stage_key == "extended_initial" and not _agentic_final_review_is_pending(history):
                 _agentic_begin_final_review(history, data)
-                return await self._run_stage(
+                reviewed = await self._run_stage(
                     history, secondary_system, stage_key, usage,
                     tools=(None if AGENTIC_TRANSLATED_MODE else tools),
                     tool_choice=("none" if AGENTIC_TRANSLATED_MODE else tool_choice),
                     append=append, same_stage_resume=True,
                 )
+                if AGENTIC_TRANSLATED_MODE:
+                    # Aggregate accounting already includes both requests.
+                    # The enclosing stage's context sample must represent the
+                    # larger single request, not just the short translation.
+                    reviewed = dict(reviewed)
+                    reviewed["usage"] = _agentic_peak_stage_usage(
+                        data.get("usage"), reviewed.get("usage")
+                    )
+                return reviewed
             if SELF_ADVERSARIAL_MODE and stage_key == "extended_initial":
                 if AGENTIC_MODE and CFG.forensic_archive_mode == "stage":
                     msg["_jack_agentic_stage1_forensic_snapshot"] = _capture_agentic_stage1_forensic_snapshot(
@@ -11262,6 +11271,12 @@ class JackQwenKernel:
                     append=append, same_stage_resume=True,
                 )) as review_packets:
                     async for packet in review_packets:
+                        if AGENTIC_TRANSLATED_MODE and packet.get("kind") == "result":
+                            reviewed = dict(packet["data"])
+                            reviewed["usage"] = _agentic_peak_stage_usage(
+                                data.get("usage"), reviewed.get("usage")
+                            )
+                            packet = {**packet, "data": reviewed}
                         yield packet
             except HTTPException as exc:
                 if AGENTIC_TRANSLATED_MODE or not recover_optional_empty_stream(exc):
