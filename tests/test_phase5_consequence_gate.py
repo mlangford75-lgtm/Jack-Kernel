@@ -157,7 +157,11 @@ def test_audit_m4_default_windows_read_passes_live_consequence_and_ledger(
     monkeypatch.setattr(path_policy, "authorize_represented_path",
                         getattr(original, "_jack_phase5_legacy_authorizer", original))
     gate._install_represented_path_gate(gate._bound_evaluator(kernel.SecurityOutcome), ledger=ledger)
-    args = {"path": target} if tool_name == "read" else {"command": 'cat "' + target + '"'}
+    # Bash expands $DATA inside double quotes; use the exact protected
+    # filename for this operation-aware gate test. Literal ADS normalization
+    # remains covered by the structured case and Phase-4 identity tests.
+    command_target = target.removesuffix(":$DATA")
+    args = {"path": target} if tool_name == "read" else {"command": 'cat "' + command_target + '"'}
     call = {"function": {"name": tool_name, "arguments": json.dumps(args)}}
     try:
         with authority.live_ledger_scope(ledger):

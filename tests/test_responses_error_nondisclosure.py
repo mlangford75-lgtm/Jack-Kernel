@@ -19,7 +19,7 @@ spec.loader.exec_module(compat)
 CANARY = "confidential-internal-exception-canary-734a"
 
 
-def test_stream_error_hides_internal_exception_and_rearms_pending_state():
+def test_stream_error_hides_internal_exception_without_message_based_rearming():
     class Kernel:
         def __init__(self):
             self.rearmed_tool = 0
@@ -57,8 +57,8 @@ def test_stream_error_hides_internal_exception_and_rearms_pending_state():
         "message": "Jack Responses stream failed",
     }
     assert payloads[-1]["response"]["error"] == payloads[-1]["error"]
-    assert kernel.rearmed_tool == 1
-    assert kernel.rearmed_debug == 1
+    assert kernel.rearmed_tool == 0
+    assert kernel.rearmed_debug == 0
 
 
 async def _no_auth(_request):

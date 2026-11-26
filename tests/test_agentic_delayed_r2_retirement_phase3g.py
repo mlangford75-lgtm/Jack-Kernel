@@ -202,6 +202,7 @@ def test_pending_checkpoint_retired_on_terminal_scope():
         ], "_jack_internal_tool_exchange": True})
         k.KERNEL._pending_authority.register(checkpoint)
         k.KERNEL._pending_tool_resumes["tool-3g"] = checkpoint
+        k.KERNEL._pending_authority.transition(checkpoint, in_flight=True)
         scope["pending_state"] = checkpoint
         await k.KERNEL._agentic_phase3g_close_scope(token)
         assert "tool-3g" not in k.KERNEL._pending_tool_resumes

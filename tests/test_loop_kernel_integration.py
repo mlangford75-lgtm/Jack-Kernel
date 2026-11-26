@@ -149,6 +149,7 @@ def test_cancelled_resumed_checkpoint_is_retired(monkeypatch, tmp_path):
         ]})
         kernel._pending_authority.register(state)
         kernel._pending_tool_resumes["tool-interrupted"] = state
+        kernel._pending_authority.transition(state, in_flight=True)
         scope = {"stage1_frozen": False, "bridge_messages": [], "pending_state": state}
         token = k._AGENTIC_DELAY_R2_SCOPE.set(scope)
         await kernel._agentic_phase3g_close_scope(token)

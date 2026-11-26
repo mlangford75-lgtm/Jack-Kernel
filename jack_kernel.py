@@ -5506,7 +5506,7 @@ _TOOL_RECOVERY_PENDING: contextvars.ContextVar[Optional["PendingToolResume"]] = 
 )
 # Only successful admission can populate this request-local ownership slot.
 # Never infer ownership from caller-replayed message IDs or assistant prose.
-_REQUEST_RESUME_OWNER: contextvars.ContextVar[Optional[Tuple[Any, Any]]] = (
+_REQUEST_RESUME_OWNER: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
     contextvars.ContextVar("jack_request_resume_owner", default=None)
 )
 
@@ -13245,9 +13245,13 @@ class JackQwenKernel:
     def _claim_request_resume(self, state: Any) -> None:
         """Record the exact checkpoint acquired under its admission lock."""
         owner = _REQUEST_RESUME_OWNER.get()
-        if owner is not None:
+        # Direct internal/test admissions may explicitly manage their own
+        # checkpoint. Only a live request scope has automatic cleanup rights.
+        if owner is None or owner["task"] is not asyncio.current_task():
+            return
+        if owner["kernel"] is not self or owner["state"] is not None:
             raise RuntimeError("Request attempted to acquire more than one resume checkpoint")
-        _REQUEST_RESUME_OWNER.set((self, state))
+        owner["state"] = state
         scope = _AGENTIC_DELAY_R2_SCOPE.get() if AGENTIC_MODE else None
         if scope is not None and isinstance(state, PendingToolResume):
             scope["pending_state"] = state
@@ -13259,7 +13263,8 @@ class JackQwenKernel:
         Queued or rejected requests never acquire a checkpoint. Cleanup cannot
         unlock another request by scanning its historical messages.
         """
-        token = _REQUEST_RESUME_OWNER.set(None)
+        owner = {"kernel": self, "task": asyncio.current_task(), "state": None}
+        token = _REQUEST_RESUME_OWNER.set(owner)
         scope = _AGENTIC_DELAY_R2_SCOPE.get() if AGENTIC_MODE else None
         if scope is not None:
             scope["entered"] = True
@@ -13271,8 +13276,7 @@ class JackQwenKernel:
             raise
         finally:
             try:
-                owner = _REQUEST_RESUME_OWNER.get()
-                state = owner[1] if owner is not None and owner[0] is self else None
+                state = owner["state"]
                 terminal = isinstance(failure, (
                     GenerationBudgetExceeded, ToolRecoveryExhausted,
                 )) or (isinstance(failure, Exception) and terminal_stream_failure(failure))
@@ -13318,8 +13322,11 @@ class JackQwenKernel:
             state = scope.get("pending_state")
             if scope.get("stage1_frozen"):
                 _agentic_retire_consumed_one_hop(scope.get("bridge_messages", []))
-                if state is not None and state.in_flight:
+                if state is not None:
+                    # This exact history alias belongs to this scope, even
+                    # after its checkpoint has been retired.
                     _agentic_retire_consumed_one_hop(state.history)
+                if state is not None and state.in_flight:
                     record = _agentic_forensic_turn(
                         state.frozen_stage1_history or state.history
                     )
@@ -13365,7 +13372,10 @@ class JackQwenKernel:
         """Reset request context; settlement occurs under the semaphore."""
         try:
             scope = _AGENTIC_DELAY_R2_SCOPE.get()
-            if scope is not None and scope.get("entered") and not scope.get("settled"):
+            if scope is not None and not scope.get("settled") and (
+                scope.get("entered") or scope.get("stage1_frozen")
+                or scope.get("pending_state") is not None
+            ):
                 await self._agentic_phase3g_settle_scope(scope)
         finally:
             _AGENTIC_DELAY_R2_SCOPE.reset(scope_token)
