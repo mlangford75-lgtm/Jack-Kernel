@@ -30,3 +30,30 @@ Example startup JSON (synthetic values only):
 
 This protects represented native text streams and tool arguments, not all possible
 encodings, transformations, or aggregate disclosures across separate channels.
+
+## Qualification benchmark
+
+Windows GitHub Actions run [45759464785](https://github.com/mlangford75-lgtm/Jack-Kernel/actions/runs/45759464785),
+commit `3bdeb78e46821e0a8245c7ccb15830a1e8850892`, passed all 27 isolated
+matcher configurations and the combined security qualification.
+
+Representative median processing times for 4,096 synthetic output characters:
+
+| Key length | Sensitivity | Key count | Chunk characters | Held characters | Median ms |
+|---:|---:|---:|---:|---:|---:|
+| 128 | 5% | 1 | 16 | 6 | 1.000 |
+| 256 | 5% | 1 | 16 | 12 | 0.988 |
+| 1024 | 5% | 1 | 16 | 51 | 1.143 |
+| 1024 | 25% | 1 | 16 | 255 | 1.612 |
+| 1024 | 100% | 1 | 16 | 1023 | 0.463 |
+| 1024 | 5% | 128 | 64 | 51 | 95.350 |
+| 1024 | 25% | 128 | 64 | 255 | 155.244 |
+| 1024 | 100% | 128 | 64 | 1023 | 6.188 |
+
+These numbers isolate the matcher, with a synthetic clean-output workload
+and a separate positive detection check. They do not measure policy construction,
+full-process memory, real-model latency, token-cache reuse, provider prefill,
+or total executable/policy-integrity verification costs. The benchmark's
+traced peak measures temporary Python allocations during scanning, excluding
+already-registered values. Retain the current design pending live acceptance;
+do not infer universal throughput from this one runner.

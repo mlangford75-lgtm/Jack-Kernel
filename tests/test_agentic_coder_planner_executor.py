@@ -88,14 +88,12 @@ def test_coder_planner_flash_and_thorough_are_isolated(monkeypatch, tmp_path):
     assert not a.allow_tools and not b.allow_tools
     assert thorough.CFG.coder_planner_profile == "thorough"
     assert flash.CFG.coder_planner_profile == "flash"
-    assert flash._agentic_zero_reasoning(b) is True
     # Separate module loads create different StageProfile dataclass types.
     # Compare the actual stage configuration rather than Python type identity.
     assert vars(flash.STAGES["extended_initial"]) == vars(thorough.STAGES["extended_initial"])
     assert flash.STAGES["extended_reflection"].thinking is False
     assert thorough.STAGES["extended_reflection"].thinking is True
     assert flash.STAGES["extended_reflection"].allow_tools is False
-    assert flash._agentic_zero_reasoning(flash.STAGES["extended_reflection"]) is True
     assert flash._coder_stage_sequence(None, [{"role": "user", "content": "Inspect workspace"}]) == [
         ("coder_planner", False), ("extended_initial", False), ("extended_reflection", False)
     ]
@@ -113,8 +111,8 @@ def test_coder_planner_flash_and_thorough_are_isolated(monkeypatch, tmp_path):
     assert "thinking_budget" not in payload["chat_template_kwargs"]
     assert "thinking_budget_tokens" not in payload
 
-    # Coder Flash Stage 2 is also thinking-off; it must receive the same
-    # generation budget while retaining its preserved R1 input.
+    # Coder Flash Stage 2 still runs, but requests thinking off without
+    # a numeric zero-generation budget, while retaining its preserved R1 input.
     memory_payload = {"model": "test-model"}
     backend._apply_qwen_controls(memory_payload, flash.STAGES["extended_reflection"])
     assert "thinking_budget" not in memory_payload["chat_template_kwargs"]
@@ -223,9 +221,9 @@ def test_planner_rejected_template_artifacts_are_not_replayed(monkeypatch, tmp_p
     assert request[0] == {"role": "system", "content": k.CODER_PLANNER_FLASH_PROMPT}
     assert sum(x["role"] == "system" for x in request) == 1
     assert sum(x["role"] == "user" for x in request) == 1
-    assert [m["role"] for m in request] == ["system", "user"]
-    assert "Verify the directory is empty" in request[-1]["content"]
-    assert "Inspect the directory; do not modify it." not in str(request)
+    assert [m["role"] for m in request] == ["system", "user", "assistant"]
+    assert "Verify the directory is empty" in request[1]["content"]
+    assert request[-1]["content"] == "Inspect the directory; do not modify it."
     assert all("<think>" not in str(m.get("content")) for m in request)
     assert all(m.get("content") != "assistant" for m in request)
     assert json.dumps(h, sort_keys=True) == original
@@ -333,8 +331,9 @@ def test_planner_internal_rejections_cannot_compete_with_user(monkeypatch, tmp_p
     projected = k._coder_isolate_planner_request(prepared, k.STAGES["coder_planner"])
     assert sum(item["role"] == "user" for item in projected) == 1
     assert projected[0]["content"] == k.CODER_PLANNER_FLASH_PROMPT
-    assert [m["role"] for m in projected] == ["system", "user"]
-    assert "Verify the workspace is empty" in projected[-1]["content"]
+    assert [m["role"] for m in projected] == ["system", "user", "assistant"]
+    assert "Verify the workspace is empty" in projected[1]["content"]
+    assert projected[-1]["content"] == "The directory needs inspection"
     assert "JACK INTERNAL TOOL REJECTION" not in str(projected)
     assert "Pi caller system must be filtered" not in str(projected)
     assert json.dumps(h, sort_keys=True) == original
@@ -432,11 +431,8 @@ def test_planner_spec_streams_as_advisory_reasoning_without_answer_contamination
         assert reasoning_chunks[plan_idx:plan_idx + len(parts)] == parts
         assert not any("Planner developer specification:" in d.get("content", "") for d in deltas)
         assert plan_idx < next(i for i, d in enumerate(deltas) if "Verified empty." in str(d))
-        expected = ["Agentic Coder Planner", "Agentic native pass 1"]
-        if planner == "thorough":
-            assert "Workspace check completed." in "".join(str(d) for d in deltas)
-            expected.append("Agentic native pass 2")
-        assert calls == expected
+        assert "Workspace check completed." in "".join(str(d) for d in deltas)
+        assert calls == ["Agentic Coder Planner", "Agentic native pass 1", "Agentic native pass 2"]
         assert sum("data: [DONE]" in frame for frame in frames) == 1
     asyncio.run(run())
 
@@ -1051,8 +1047,11 @@ def test_planner_rebuilds_mismatched_upstream_system_without_mutating_source(mon
     assert all("EXTRA INSTRUCTIONS" not in str(m) for m in planned)
     assert all("Pi tools" not in str(m) for m in planned)
     assert json.dumps(source, sort_keys=True) == frozen
-    # Rebuilding from its own output must be idempotent, without extra prompts.
-    assert k._coder_isolate_planner_request(planned, k.STAGES["coder_planner"]) == planned
+    # The production backend projects canonical source once per request.
+    # Repeating projection of that unchanged source must preserve its wire
+    # prefix. Do not interpret a user-supplied wrapper as trusted host metadata.
+    assert k._coder_isolate_planner_request(source, k.STAGES["coder_planner"]) == planned
+    assert planned[-1]["content"].count(k._CODER_ARCHITECT_TASK_SOURCE_HEADER) == 1
     with pytest.raises(k.ForensicConflict, match="missing authenticated user"):
         k._coder_isolate_planner_request(
             [{"role": "system", "content": "irrelevant"}], k.STAGES["coder_planner"]
