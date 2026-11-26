@@ -104,6 +104,35 @@ def terminal_stream_failure(exc: Exception) -> bool:
     )
 
 
+def public_security_failure(exc: Exception) -> Optional[Tuple[int, str, str]]:
+    """Map host-owned security failures to fixed, non-disclosing public outcomes.
+
+    The HTTP and SSE adapters share this classification, not exception text.
+    Existing authority-specific HTTP handlers remain authoritative where installed.
+    """
+    from jack_credential_guard import ProtectedCredentialInterrupt
+    from jack_phase10_dynamic_authority import DynamicAuthorityUnavailable
+    from jack_policy_integrity import PolicyIntegrityUnavailable
+    from jack_runtime_code_guard import RuntimeCodeIntegrityUnavailable
+    from jack_source_drift_guard import SourceAuthorityUnavailable
+
+    if isinstance(exc, PolicyIntegrityUnavailable):
+        return 503, "jack_static_policy_unavailable", "[JACK SECURITY — STATIC POLICY INTEGRITY: AUTHORITY UNAVAILABLE]"
+    if isinstance(exc, DynamicAuthorityUnavailable):
+        return 503, "jack_dynamic_authority_unavailable", "[JACK SECURITY — DYNAMIC AUTHORITY INTEGRITY: AUTHORITY UNAVAILABLE]"
+    if isinstance(exc, RuntimeCodeIntegrityUnavailable):
+        return 503, "jack_runtime_code_unavailable", "[JACK SECURITY — RUNTIME CODE INTEGRITY: AUTHORITY UNAVAILABLE]"
+    if isinstance(exc, SourceAuthorityUnavailable):
+        return 503, "jack_source_authority_unavailable", "[JACK SECURITY — SOURCE DRIFT GUARD: AUTHORITY UNAVAILABLE]"
+    if isinstance(exc, StreamingIRQCanaryInterrupt):
+        return 403, "jack_canary_hard_interrupt", "[JACK SECURITY — STREAMINGIRQ: CANARY HARD INTERRUPT]"
+    if isinstance(exc, ProtectedCredentialInterrupt):
+        return 403, "jack_credential_hard_interrupt", "[JACK SECURITY — PROTECTED CREDENTIAL: HARD INTERRUPT]"
+    if getattr(exc, "security_outcome", None) == "HARD_INTERRUPT":
+        return 403, "jack_restricted_path_hard_interrupt", "[JACK SECURITY — RESTRICTED PATHS: HARD INTERRUPT]"
+    return None
+
+
 class CanaryTier(str, Enum):
     """Deterministic canary ownership tier."""
 

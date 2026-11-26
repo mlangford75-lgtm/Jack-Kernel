@@ -89,7 +89,7 @@ from jack_phase10_dynamic_authority import PendingAuthority, DynamicAuthorityUna
 from jack_cache_orchestrator import CacheOrchestrator
 from jack_cache_prefix_diagnostics import CacheBytePrefixProbe
 from jack_stage1_cache_stability import Stage1CacheStabilizer
-from jack_evidence_guard import TOOL_RESUME_PROVENANCE_NOTE, terminal_stream_failure
+from jack_evidence_guard import TOOL_RESUME_PROVENANCE_NOTE, terminal_stream_failure, public_security_failure
 import os
 import shutil
 import socket
@@ -16479,8 +16479,13 @@ async def _safe_public_stream(
     except Exception as exc:
         if AGENTIC_MODE:
             _agentic_mark_stage1_failure(type(exc).__name__)
-        LOG.exception("Jack streamed request failed; closing SSE cleanly")
-        detail = _diagnostic_text(exc.detail if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}")
+        security = public_security_failure(exc)
+        if security is not None:
+            LOG.warning("Jack streamed security outcome: %s", security[1])
+            detail = ""
+        else:
+            LOG.exception("Jack streamed request failed; closing SSE cleanly")
+            detail = _diagnostic_text(exc.detail if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}")
         response_id = f"chatcmpl-jack-error-{uuid.uuid4().hex}"
         created = int(time.time())
 
@@ -16494,22 +16499,8 @@ async def _safe_public_stream(
             }
             return ("data: " + json.dumps(obj, ensure_ascii=False) + "\n\n").encode("utf-8")
 
-        import jack_evidence_guard
-        from jack_policy_integrity import PolicyIntegrityUnavailable
-        from jack_runtime_code_guard import RuntimeCodeIntegrityUnavailable
-        from jack_source_drift_guard import SourceAuthorityUnavailable
-        if isinstance(exc, PolicyIntegrityUnavailable):
-            failure_text = "\n\n[JACK SECURITY — STATIC POLICY INTEGRITY: AUTHORITY UNAVAILABLE]"
-        elif isinstance(exc, DynamicAuthorityUnavailable):
-            failure_text = "\n\n[JACK SECURITY — DYNAMIC AUTHORITY INTEGRITY: AUTHORITY UNAVAILABLE]"
-        elif isinstance(exc, RuntimeCodeIntegrityUnavailable):
-            failure_text = "\n\n[JACK SECURITY — RUNTIME CODE INTEGRITY: AUTHORITY UNAVAILABLE]"
-        elif isinstance(exc, SourceAuthorityUnavailable):
-            failure_text = "\n\n[JACK SECURITY — SOURCE DRIFT GUARD: AUTHORITY UNAVAILABLE]"
-        elif isinstance(exc, Phase4RestrictedPathInterrupt):
-            failure_text = "\n\n[JACK SECURITY — RESTRICTED PATHS: HARD INTERRUPT]"
-        elif isinstance(exc, jack_evidence_guard.StreamingIRQCanaryInterrupt):
-            failure_text = "\n\n[JACK SECURITY — STREAMINGIRQ: CANARY HARD INTERRUPT]"
+        if security is not None:
+            failure_text = "\n\n" + security[2]
         elif isinstance(exc, RepeatedLoopInterrupt):
             failure_text = "Jack Kernel interrupt - Repeated Loop Failure"
         elif isinstance(exc, RepeatedToolCycleInterrupt):
@@ -16615,6 +16606,13 @@ async def chat_completions(request: Request):
     except Exception as exc:
         if AGENTIC_MODE:
             _agentic_mark_stage1_failure(type(exc).__name__)
+        security = public_security_failure(exc)
+        if security is not None and not isinstance(exc, HTTPException):
+            status, code, message = security
+            if not any(cls in APP.exception_handlers for cls in type(exc).__mro__):
+                raise HTTPException(status_code=status, detail={
+                    "error": code, "security_outcome": "HARD_INTERRUPT", "message": message,
+                }) from None
         raise
     finally:
         if tas_token is not None:

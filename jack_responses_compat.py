@@ -10,6 +10,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from jack_evidence_guard import public_security_failure
 
 
 def _text(value: Any) -> str:
@@ -298,7 +299,9 @@ async def _stream(
     except Exception as exc:
         # Preserve Phase-7's canonical, already-sanitized credential interrupt
         # markers. Never forward arbitrary exception text or dictionary values.
-        message = "Jack Responses stream failed"
+        security = public_security_failure(exc)
+        code = security[1] if security is not None else "jack_responses_stream_error"
+        message = security[2] if security is not None else "Jack Responses stream failed"
         if isinstance(exc, HTTPException):
             detail = exc.detail
             if (
@@ -313,7 +316,7 @@ async def _stream(
                     "(diagnostic_stream_exception_release)"
                 )
         failed = {"id": rid, "object": "response", "created_at": created, "completed_at": int(time.time()), "status": "failed",
-                  "error": {"code": "jack_responses_stream_error", "message": message}, "model": jk.CFG.virtual_model, "output": []}
+                  "error": {"code": code, "message": message}, "model": jk.CFG.virtual_model, "output": []}
         yield _sse("response.failed", {"response": failed, "error": failed["error"]}); return
 
     output: List[Dict[str, Any]] = []; oi = 0
@@ -466,6 +469,14 @@ def register(jk: Any) -> None:
                 )
         except HTTPException: raise
         except Exception as exc:
+            security = public_security_failure(exc)
+            if security is not None:
+                status, code, message = security
+                if any(cls in jk.APP.exception_handlers for cls in type(exc).__mro__):
+                    raise
+                raise HTTPException(status_code=status, detail={
+                    "error": code, "security_outcome": "HARD_INTERRUPT", "message": message,
+                }) from None
             jk.LOG.exception("Responses compatibility request failed")
             raise HTTPException(status_code=500, detail="Jack Responses compatibility failure") from exc
         return JSONResponse(_nonstream(jk, result, kinds))
