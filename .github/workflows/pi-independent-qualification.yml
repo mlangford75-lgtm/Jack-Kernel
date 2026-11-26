@@ -1,0 +1,39 @@
+name: Independent Pi bridge qualification
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  pi-bridge:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "24.16.0"
+      - name: Run all eight Pi harnesses independently
+        shell: pwsh
+        run: |
+          $failed = 0
+          node tests/pi_control_bridge_v2_harness.mjs
+          if ($LASTEXITCODE -ne 0) { $failed++ }
+          node tests/pi_control_bridge_cancel_ownership_harness.mjs
+          if ($LASTEXITCODE -ne 0) { $failed++ }
+          node tests/pi_control_bridge_deferred_dispatch_harness.mjs
+          if ($LASTEXITCODE -ne 0) { $failed++ }
+          node tests/pi_control_bridge_retry_recovery_harness.mjs
+          if ($LASTEXITCODE -ne 0) { $failed++ }
+          node tests/pi_control_bridge_multi_endpoint_harness.mjs
+          if ($LASTEXITCODE -ne 0) { $failed++ }
+          node tests/pi_provider_runtime_binding_harness.mjs
+          if ($LASTEXITCODE -ne 0) { $failed++ }
+          node tests/pi_phase4_executor_admission_harness.mjs
+          if ($LASTEXITCODE -ne 0) { $failed++ }
+          node tests/pi_edit_origin_policy_harness.mjs
+          if ($LASTEXITCODE -ne 0) { $failed++ }
+          if ($failed -ne 0) { throw "$failed Pi harnesses failed" }
