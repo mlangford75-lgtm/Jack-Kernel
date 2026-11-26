@@ -1210,6 +1210,12 @@ async def streaming_public_retry_recovers_pending_pass_without_regeneration():
         wire = b"".join(chunks)
         assert b"Final streamed repair specification." in wire
         assert wire.endswith(b"data: [DONE]\n\n")
+        assert sum(
+            choice.get("delta", {}).get("role") == "assistant"
+            for line in wire.decode("utf-8").splitlines()
+            if line.startswith("data: ") and line != "data: [DONE]"
+            for choice in __import__("json").loads(line[6:]).get("choices", [])
+        ) == 1
 
 
 async def final_report_durability_retry_does_not_regenerate_report():

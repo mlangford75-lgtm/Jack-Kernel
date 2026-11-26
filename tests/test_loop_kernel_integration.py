@@ -301,3 +301,54 @@ def test_same_stage_correction_keeps_native_loop_state(monkeypatch, tmp_path):
     assert backend.calls == 5
     assert "Loop Detected" in " ".join(p.get("text", "") for p in packets)
     assert packets[-1]["kind"] == "result"
+
+
+def test_outer_release_failure_retires_only_owned_checkpoint(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path, mode="off")
+
+    async def go():
+        import time
+        kernel = k.KERNEL
+
+        def pending(call_id):
+            state = k.PendingToolResume(
+                resume_id=call_id, stage_key="thesis",
+                history=[{"role": "user", "content": "inspect"}, {
+                    "role": "assistant", "content": "", "tool_calls": [{
+                        "id": call_id, "type": "function",
+                        "function": {"name": "read", "arguments": "{}"},
+                    }],
+                }],
+                secondary_system="", usage={}, tools=None, tool_choice=None,
+                expected_tool_call_ids=(call_id,), created_at=time.time(),
+            )
+            kernel._pending_authority.register(state)
+            kernel._pending_tool_resumes[call_id] = state
+            return state
+
+        owned, unrelated = pending("owned"), pending("unrelated")
+        kernel._pending_authority.transition(owned, in_flight=True)
+        kernel._pending_authority.transition(unrelated, in_flight=True)
+
+        async def source():
+            async with kernel._semaphore, kernel._request_resume_scope():
+                kernel._claim_request_resume(owned)
+                yield b"safe"
+
+        stream = source()
+        assert await anext(stream) == b"safe"
+
+        # ContextVar inheritance is not ownership. A child/queued task must
+        # not be allowed to mark a different task's suspended checkpoint.
+        async def other_task():
+            kernel._note_outer_stream_failure(k.Phase4RestrictedPathInterrupt())
+        await asyncio.create_task(other_task())
+        assert k._REQUEST_RESUME_OWNER.get().get("outer_failure") is None
+
+        kernel._note_outer_stream_failure(k.Phase4RestrictedPathInterrupt())
+        await stream.aclose()
+        assert "owned" not in kernel._pending_tool_resumes
+        assert kernel._pending_tool_resumes["unrelated"] is unrelated
+        assert unrelated.in_flight is True
+
+    asyncio.run(go())

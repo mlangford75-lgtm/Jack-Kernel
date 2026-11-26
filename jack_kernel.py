@@ -13256,6 +13256,21 @@ class JackQwenKernel:
         if scope is not None and isinstance(state, PendingToolResume):
             scope["pending_state"] = state
 
+    def _note_outer_stream_failure(self, failure: Exception) -> None:
+        """Record a terminal release failure while its exact owner is suspended.
+
+        Only the task and kernel that acquired the checkpoint can alter its
+        settlement. A queued or unrelated request has no cleanup authority.
+        """
+        owner = _REQUEST_RESUME_OWNER.get()
+        if (
+            owner is not None
+            and owner["kernel"] is self
+            and owner["task"] is asyncio.current_task()
+            and terminal_stream_failure(failure)
+        ):
+            owner["outer_failure"] = failure
+
     @asynccontextmanager
     async def _request_resume_scope(self) -> AsyncIterator[None]:
         """Settle the acquired checkpoint before releasing the request semaphore.
@@ -13277,6 +13292,10 @@ class JackQwenKernel:
         finally:
             try:
                 state = owner["state"]
+                # An outer release guard may reject a yielded chunk while
+                # the source generator is suspended. Its subsequent aclose()
+                # delivers GeneratorExit, not the original security exception.
+                failure = owner.get("outer_failure") or failure
                 terminal = isinstance(failure, (
                     GenerationBudgetExceeded, ToolRecoveryExhausted,
                 )) or (isinstance(failure, Exception) and terminal_stream_failure(failure))
@@ -14290,6 +14309,7 @@ class JackQwenKernel:
                 # The user's supplied message is already sufficient intake. Optional
                 # conversation may add diagnostic context, but it must never become a
                 # prerequisite for starting the forensic passes.
+                intake_role_emitted = not debugging_run.intake_frozen
                 if not debugging_run.intake_frozen:
                     intake_proceed = bool(
                         pending_debugging_intake_state is not None
@@ -14415,7 +14435,8 @@ class JackQwenKernel:
                         raise HTTPException(status_code=500, detail="Invalid Code Debugging pending stage")
                     start_pass = resumed_pass
 
-                yield event({"role": "assistant"})
+                if not intake_role_emitted:
+                    yield event({"role": "assistant"})
                 for pass_number in range(start_pass, DEBUGGING_PASS_COUNT + 1):
                     stage_key = _debugging_stage_key(pass_number)
                     same_stage_resume = bool(resume_stage_key == stage_key)

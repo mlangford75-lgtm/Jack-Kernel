@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 from dataclasses import dataclass, field
 from enum import Enum
@@ -2128,20 +2129,25 @@ def install(
         *args: Any,
         **kwargs: Any,
     ):
-        async def bound_stream(body: Dict[str, Any]):
-            async for chunk in original_stream(
-                body,
-                *args,
-                **kwargs,
-            ):
-                yield chunk
-
-        async for chunk in _guarded_stream(
-            bound_stream,
+        source = original_stream(request_body, *args, **kwargs)
+        guarded = _guarded_stream(
+            lambda _body: source,
             request_body,
             canaries=canary_policy.canaries,
-        ):
-            yield chunk
+        )
+        # Keep a strong reference to the original generator. Report a terminal
+        # release failure before closing it, while request ownership is live.
+        try:
+            async with contextlib.aclosing(guarded):
+                async for chunk in guarded:
+                    yield chunk
+        except Exception as exc:
+            note = getattr(kernel, "_note_outer_stream_failure", None)
+            if callable(note):
+                note(exc)
+            raise
+        finally:
+            await source.aclose()
 
     kernel.run = guarded_run
     kernel.stream = guarded_stream
