@@ -152,7 +152,7 @@ def test_audit_m4_default_windows_read_passes_live_consequence_and_ledger(
                           "SystemDrive": "C:", "USERPROFILE": r"C:\Users\Test"},
     )
     ledger = authority.AuthorityLedger(runtime_id="audit-m4", lane_id="test",
-                                      projection_root=tmp_path)
+                                      projection_root=tmp_path, queue_capacity=64)
     original = path_policy.authorize_represented_path
     monkeypatch.setattr(path_policy, "authorize_represented_path",
                         getattr(original, "_jack_phase5_legacy_authorizer", original))

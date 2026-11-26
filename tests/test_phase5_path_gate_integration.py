@@ -37,8 +37,9 @@ def installed_path_gate():
 
 
 def test_path_policy_owns_single_raw_fact_producer():
-    assert "inspect_represented_path(" in inspect.getsource(path_policy.authorize_represented_path)
-    assert "path_policy.inspect_represented_path(" in inspect.getsource(gate._install_represented_path_gate)
+    assert "inspect_operation_path(" in inspect.getsource(path_policy.authorize_represented_path)
+    assert "path_policy.inspect_operation_path(" in inspect.getsource(gate._install_represented_path_gate)
+    assert "inspect_represented_path(" in inspect.getsource(path_policy.inspect_operation_path)
 
 
 def test_raw_facts_have_no_outcome():
