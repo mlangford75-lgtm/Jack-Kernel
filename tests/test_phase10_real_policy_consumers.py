@@ -170,6 +170,7 @@ import dataclasses
 import json
 import jack_kernel as jk
 from jack_phase10_path_enforcement import install
+from jack_policy_integrity import PolicyIntegrityCompromised
 
 jk._install_bundled_runtime_extensions()
 original = jk._RUNTIME_PATH_POLICY
@@ -198,9 +199,12 @@ payload = {
 }
 # Removing the optional holder would bypass the legacy partition's None branch.
 jk._RUNTIME_PATH_POLICY = None
-allowed, errors = jk._phase4_partition_structured_tool_calls([outside])
-assert not allowed and errors
-assert "AUTHORITY_POLICY_INTEGRITY_COMPROMISED" in errors[0]
+try:
+    jk._phase4_partition_structured_tool_calls([outside])
+except PolicyIntegrityCompromised:
+    pass
+else:
+    raise AssertionError("policy loss must terminate tool release, not request model repair")
 try:
     jk._phase4_executor_admission_decision(payload)
 except jk.HTTPException as exc:
@@ -210,8 +214,12 @@ else:
     raise AssertionError("executor admission did not reject missing policy")
 assert jk._phase4_partition_structured_tool_calls([]) == ([], [])
 jk._RUNTIME_PATH_POLICY = original
-allowed, errors = jk._phase4_partition_structured_tool_calls([safe])
-assert not allowed and errors
+try:
+    jk._phase4_partition_structured_tool_calls([safe])
+except PolicyIntegrityCompromised:
+    pass
+else:
+    raise AssertionError("restoring the policy cannot clear terminal invalidation")
 assert guard.invalidated_labels == ("path-consumer",)
 jk._JACK_AUTHORITY_LEDGER.close()
 '''

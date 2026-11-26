@@ -34,15 +34,13 @@ def install(jk):
         # No consequential proposal: preserve the predecessor's empty result.
         if not isinstance(calls, list) or not calls:
             return partition(calls)
-        try:
-            verify()
-            result = partition(calls)
-            verify()
-            return result
-        except PolicyIntegrityCompromised:
-            return [], ["AUTHORITY_POLICY_INTEGRITY_COMPROMISED: tool release withheld"]
-        except PolicyIntegrityUnavailable:
-            return [], ["Authority policy measurement unavailable: tool release withheld"]
+        # Loss of policy authority is terminal, not a repairable model
+        # proposal error. Preserve the typed exception for runtime recovery
+        # and diagnostic guards instead of entering same-stage correction.
+        verify()
+        result = partition(calls)
+        verify()
+        return result
 
     @wraps(admission)
     def guarded_admission(payload, *, expected_call=None):
