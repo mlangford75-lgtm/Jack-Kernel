@@ -444,7 +444,7 @@ async def completed_runs_leave_live_memory():
             start_pass=1,
         )
         assert "no material findings" in (result.content or "").lower()
-        assert run.run_id in m._DEBUGGING_RUNS
+        assert run.run_id not in m._DEBUGGING_RUNS
         assert run.final_report_committed is True
         assert run.final_report == (result.content or "")
 
@@ -454,8 +454,10 @@ async def completed_runs_leave_live_memory():
             {"role": "user", "content": "Where is the report saved?"},
         ]
         matched = m._debugging_completed_run_for_history(followup_messages)
-        assert matched is run
-        projected = m._debugging_followup_history(run, followup_messages)
+        assert matched is not None
+        assert matched.run_id == run.run_id
+        assert matched.report_path == run.report_path
+        projected = m._debugging_followup_history(matched, followup_messages)
         assert str(run.report_path) in projected[-1]["content"]
         assert "Where is the report saved?" in projected[-1]["content"]
 
@@ -466,7 +468,7 @@ async def completed_runs_leave_live_memory():
             "tool_choice": "auto",
         })
         assert "still available" in (followup.content or "")
-        assert set(m._DEBUGGING_RUNS) == {run.run_id}
+        assert not m._DEBUGGING_RUNS
 
 
 async def evidence_scan_runs_off_event_loop():
@@ -703,8 +705,13 @@ async def public_run_retry_recovers_pending_pass_without_starting_new_run():
         # rerun intake, or regenerate Pass 1.
         result = await kernel.run(request_body)
 
-        assert len(m._DEBUGGING_RUNS) == 1
-        assert next(iter(m._DEBUGGING_RUNS.values())) is run
+        assert not m._DEBUGGING_RUNS
+        matched = m._debugging_completed_run_for_history([
+            {"role": "assistant", "content": run.final_report},
+            {"role": "user", "content": "Where is the report saved?"},
+        ])
+        assert matched is not None and matched.run_id == run.run_id
+        assert matched.report_path == run.report_path
 
         assert run.summaries[1] == original_pass_1
         assert 1 not in run.pending_summaries
@@ -1195,8 +1202,13 @@ async def streaming_public_retry_recovers_pending_pass_without_regeneration():
         async for chunk in kernel.stream(request_body):
             chunks.append(chunk)
 
-        assert len(m._DEBUGGING_RUNS) == 1
-        assert next(iter(m._DEBUGGING_RUNS.values())) is run
+        assert not m._DEBUGGING_RUNS
+        matched = m._debugging_completed_run_for_history([
+            {"role": "assistant", "content": run.final_report},
+            {"role": "user", "content": "Where is the report saved?"},
+        ])
+        assert matched is not None and matched.run_id == run.run_id
+        assert matched.report_path == run.report_path
 
         assert run.summaries[1] == original_pass_1
         assert 1 not in run.pending_summaries
@@ -1401,8 +1413,13 @@ async def public_retry_recovers_pending_final_report_without_regeneration():
         # invoking any model stage.
         result = await kernel.run(request_body)
 
-        assert len(m._DEBUGGING_RUNS) == 1
-        assert next(iter(m._DEBUGGING_RUNS.values())) is run
+        assert not m._DEBUGGING_RUNS
+        matched = m._debugging_completed_run_for_history([
+            {"role": "assistant", "content": run.final_report},
+            {"role": "user", "content": "Where is the report saved?"},
+        ])
+        assert matched is not None and matched.run_id == run.run_id
+        assert matched.report_path == run.report_path
 
         assert run.final_report_committed is True
         assert run.final_report == original_final
@@ -1512,8 +1529,13 @@ async def streaming_retry_recovers_pending_final_report_without_regeneration():
 
         # Exact public streaming retry must recover the original transaction,
         # not create another debugging run.
-        assert len(m._DEBUGGING_RUNS) == 1
-        assert next(iter(m._DEBUGGING_RUNS.values())) is run
+        assert not m._DEBUGGING_RUNS
+        matched = m._debugging_completed_run_for_history([
+            {"role": "assistant", "content": run.final_report},
+            {"role": "user", "content": "Where is the report saved?"},
+        ])
+        assert matched is not None and matched.run_id == run.run_id
+        assert matched.report_path == run.report_path
 
         assert run.final_report_committed is True
         assert run.final_report == original_final

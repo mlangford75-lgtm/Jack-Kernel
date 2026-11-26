@@ -18,7 +18,7 @@ Draft PR: #179. Main is not a target. No item is closed solely on static analysi
 | M-10 | Partial terminal classification; public parity not qualified | Both APIs, buffered/streamed canonical security disposition |
 | M-11 | Candidate translation peak-context patch and deterministic tests in this revision | Windows regression and actual Pi usage, aggregate remains separate |
 | M-12 | Existing app_lifespan closes ledger through asyncio.to_thread | Lifespan drain and shutdown failure qualification |
-| M-13 | Partial; report atomicity, Responses indexes, SQLite DDL changes present | CLI defaults, run retirement, SSE roles and concurrency |
+| M-13 | Candidate completed-run retirement and exact request-scoped orphan/expiry cleanup; report atomicity, Responses indexes, SQLite DDL and CLI defaults already present | Debugging durability, exact completed follow-up, active/resumable ownership, expiry, SSE roles and full regression |
 | P-1 | Open; benchmark before redesign | Secured per-chunk runtime-integrity overhead; preserve check timing |
 | P-2 | Open; benchmark before redesign | Coder 3-turn backend prefill/cache evidence |
 | P-3 | Open; benchmark before redesign | 64/128 KiB serialization and event-loop/RSS measurement |
@@ -52,3 +52,7 @@ Full Windows CI: 1597 passed, 229 failed. Compared with fd53d7b's 220 distinct f
 
 ### Qualification at 0139e9694367198789109ef9737fd84de8eb0d26
 Windows full CI: 1597 passed, 230 failed. Eight prior M-4 fixture/structural failures resolved, one M-4 bash ADS fixture remains (double quotes allowed expansion of $DATA). This revision keeps the structured literal ADS test and uses the exact explicit protected path for the bash gate case. Nine further failures concern request scope cleanup fixtures and prior adapter rearm expectations; changes distinguish explicit in-flight checkpoint ownership from bare registration, restore exact frozen-bridge cleanup and preserve no-rearm behavior for unowned API requests. Combined security still fails Phase 7 safe-prefix preservation. No test has been disabled.
+
+### Qualification at c6323613dc7fc9adfbe1ca3ad56c6ff6b51d8541
+
+Full Windows CI: 1,614 passed, 218 failed. Exact comparison with main 9a6fe53d (1,585 passed, 219 failed): zero new failed test identities and one resolved inherited failure, `tests/test_phase7_output_dlp.py::test_live_release_barrier_uses_credential_tier_a_and_preserves_safe_work`. Pi bridge, tool-free Coder Architect, combined security and isolated Phase 9B qualification all passed. No measured performance conclusions from CI runtime differences. This revision's debugging lifecycle changes require qualification. Completed report follow-up remains process-local and tools-off; the secondary temporary index retains only digest and identity, never report cognition. Pending durability is not arbitrarily expired, and index failures retain the completed identity rather than lose a valid follow-up.

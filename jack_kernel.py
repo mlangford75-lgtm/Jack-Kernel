@@ -93,7 +93,9 @@ from jack_evidence_guard import TOOL_RESUME_PROVENANCE_NOTE, terminal_stream_fai
 import os
 import shutil
 import socket
+import sqlite3
 import subprocess
+import threading
 import sys
 import time
 import uuid
@@ -2443,12 +2445,95 @@ class DebuggingRunState:
     final_report_committed: bool = False
     final_report: str = ""
     pending_final_report: str = ""
+    registration_order: int = field(default_factory=time.monotonic_ns)
+    active_request: Optional[object] = field(default=None, repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class CompletedDebuggingRun:
+    run_id: str
+    report_path: Path
+    registration_order: int
 
 
 _DEBUGGING_RUNS: Dict[str, DebuggingRunState] = {}
+# Completed reports are durable already. Keep only a process-local, disk-backed
+# digest-to-identity index, not the report, intake or pass cognition in RAM.
+# The temporary SQLite database is removed on connection close; it confers no
+# execution authority and does not alter the report's existing durability gate.
+_DEBUGGING_COMPLETED_INDEX: Optional[sqlite3.Connection] = None
+_DEBUGGING_COMPLETED_INDEX_LOCK = threading.RLock()
+
+
+def _debugging_completed_index() -> sqlite3.Connection:
+    global _DEBUGGING_COMPLETED_INDEX
+    if _DEBUGGING_COMPLETED_INDEX is None:
+        connection = sqlite3.connect("", check_same_thread=False)
+        try:
+            connection.execute("PRAGMA temp_store = FILE")
+            connection.execute("PRAGMA cache_size = -256")
+            connection.execute(
+                "CREATE TABLE completed_debugging ("
+                "digest TEXT PRIMARY KEY, run_id TEXT NOT NULL, "
+                "report_path TEXT NOT NULL, registration_order INTEGER NOT NULL)"
+            )
+            connection.commit()
+        except BaseException:
+            connection.close()
+            raise
+        _DEBUGGING_COMPLETED_INDEX = connection
+    return _DEBUGGING_COMPLETED_INDEX
+
+
+def _debugging_close_completed_index() -> None:
+    global _DEBUGGING_COMPLETED_INDEX
+    with _DEBUGGING_COMPLETED_INDEX_LOCK:
+        connection = _DEBUGGING_COMPLETED_INDEX
+        _DEBUGGING_COMPLETED_INDEX = None
+        if connection is not None:
+            try:
+                connection.close()
+            except sqlite3.Error:
+                LOG.warning("Code Debugging completion index close failed")
+
+
+def _debugging_claim_run(run: DebuggingRunState) -> None:
+    """Bind only the exact live run to the request already inside its semaphore."""
+    owner = _REQUEST_RESUME_OWNER.get()
+    if owner is None or owner["task"] is not asyncio.current_task():
+        return
+    prior = owner.get("debugging_run")
+    token = owner["debugging_token"]
+    if (prior is not None and prior is not run) or (
+        run.active_request is not None and run.active_request is not token
+    ):
+        raise HTTPException(status_code=409, detail="Code Debugging run is already owned by a different request.")
+    owner["debugging_run"] = run
+    run.active_request = token
 
 
 def _debugging_retire_run(run: DebuggingRunState) -> None:
+    if _DEBUGGING_RUNS.get(run.run_id) is not run:
+        return
+    if run.final_report_committed:
+        try:
+            with _DEBUGGING_COMPLETED_INDEX_LOCK:
+                connection = _debugging_completed_index()
+                with connection:
+                    connection.execute(
+                        "INSERT INTO completed_debugging VALUES (?, ?, ?, ?) "
+                        "ON CONFLICT(digest) DO UPDATE SET run_id=excluded.run_id, "
+                        "report_path=excluded.report_path, registration_order=excluded.registration_order "
+                        "WHERE excluded.registration_order >= completed_debugging.registration_order",
+                        (_sha256_text(run.final_report.strip()), run.run_id,
+                         str(run.report_path), run.registration_order),
+                    )
+        except sqlite3.Error:
+            # The report is already durable. Never convert a secondary-index
+            # failure into lost cognition or an apparently failed report.
+            # Keep the exact identity available and retry retirement on lookup.
+            LOG.warning("Code Debugging completion index unavailable; retaining completed run identity")
+            return
     if _DEBUGGING_RUNS.get(run.run_id) is run:
         _DEBUGGING_RUNS.pop(run.run_id, None)
 
@@ -2469,32 +2554,59 @@ def _debugging_user_requests_new_run(text: str) -> bool:
 
 def _debugging_completed_run_for_history(
     messages: Iterable[Dict[str, Any]],
-) -> Optional[DebuggingRunState]:
-    """Positive-match a follow-up to an exact completed final report in history."""
+) -> Optional[CompletedDebuggingRun]:
+    """Positive-match an exact completed report digest, preserving newest-run identity."""
     items = [item for item in messages if isinstance(item, dict)]
     target = active_response_target(items)
     current_user = _content_to_text((target or {}).get("content")).strip()
     if _debugging_user_requests_new_run(current_user):
         return None
 
-    completed = [
-        run for run in _DEBUGGING_RUNS.values()
-        if run.final_report_committed and str(run.final_report or "").strip()
-    ]
-    for item in reversed(items):
-        if item.get("role") != "assistant":
-            continue
-        assistant_content = _content_to_text(item.get("content")).strip()
-        if not assistant_content:
-            continue
-        for run in reversed(completed):
-            if assistant_content == run.final_report.strip():
-                return run
+    # Only index failures can leave completed heavy state in the live registry.
+    # Retry retirement, preserving a fallback if the temporary index is unavailable.
+    fallback: Dict[str, CompletedDebuggingRun] = {}
+    for run in tuple(_DEBUGGING_RUNS.values()):
+        if run.final_report_committed and run.final_report.strip():
+            _debugging_retire_run(run)
+            if _DEBUGGING_RUNS.get(run.run_id) is run:
+                digest = _sha256_text(run.final_report.strip())
+                prior = fallback.get(digest)
+                if prior is None or run.registration_order >= prior.registration_order:
+                    fallback[digest] = CompletedDebuggingRun(
+                        run.run_id, run.report_path, run.registration_order
+                    )
+    if _DEBUGGING_COMPLETED_INDEX is None and not fallback:
+        return None
+
+    with _DEBUGGING_COMPLETED_INDEX_LOCK:
+        for item in reversed(items):
+            if item.get("role") != "assistant":
+                continue
+            assistant_content = _content_to_text(item.get("content")).strip()
+            if not assistant_content:
+                continue
+            digest = _sha256_text(assistant_content)
+            matched = fallback.get(digest)
+            if _DEBUGGING_COMPLETED_INDEX is not None:
+                try:
+                    row = _DEBUGGING_COMPLETED_INDEX.execute(
+                        "SELECT run_id, report_path, registration_order "
+                        "FROM completed_debugging WHERE digest = ?", (digest,)
+                    ).fetchone()
+                except sqlite3.Error as exc:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Code Debugging completion lookup unavailable; will not restart a potentially completed audit.",
+                    ) from exc
+                if row is not None and (matched is None or row[2] >= matched.registration_order):
+                    matched = CompletedDebuggingRun(row[0], Path(row[1]), row[2])
+            if matched is not None:
+                return matched
     return None
 
 
 def _debugging_followup_history(
-    run: DebuggingRunState, messages: Iterable[Dict[str, Any]]
+    run: CompletedDebuggingRun, messages: Iterable[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
     """Keep completed-work conversation and inject exact host-owned run metadata."""
     history = [copy.deepcopy(item) for item in messages if isinstance(item, dict)]
@@ -2632,8 +2744,9 @@ def _debugging_create_run(
         summaries={},
         request_fingerprint=str(request_fingerprint or ""),
     )
-    _DEBUGGING_RUNS[run_id] = run
     _debugging_write_open_intake_report(run)
+    _debugging_claim_run(run)
+    _DEBUGGING_RUNS[run_id] = run
     LOG.info("Created Code Debugging run %s report=%s", run.run_id, run.report_path)
     return run
 
@@ -2641,7 +2754,9 @@ def _debugging_create_run(
 def _debugging_get_run(run_id: Optional[str]) -> DebuggingRunState:
     if not run_id or run_id not in _DEBUGGING_RUNS:
         raise HTTPException(status_code=500, detail="Code Debugging run state is unavailable or expired.")
-    return _DEBUGGING_RUNS[run_id]
+    run = _DEBUGGING_RUNS[run_id]
+    _debugging_claim_run(run)
+    return run
 
 
 def _debugging_append_intake_turn(run: DebuggingRunState, role: str, content: str) -> None:
@@ -3231,6 +3346,7 @@ def _debugging_retry_pending_final_report(run: DebuggingRunState) -> str:
         run.run_id,
         run.report_path,
     )
+    _debugging_retire_run(run)
     return final_report
 
 
@@ -11356,12 +11472,37 @@ class JackQwenKernel:
             )
         return tuple(ids)
 
+    def _debugging_retire_unreferenced_run(
+        self, run_id: Optional[str], *, discard_pending: bool = False,
+    ) -> None:
+        """Retire only an unowned run with no live checkpoint or recoverable commit."""
+        run = _DEBUGGING_RUNS.get(run_id or "")
+        if run is None or run.active_request is not None:
+            return
+        if not discard_pending and (run.pending_summaries or run.pending_final_report):
+            return
+        if (
+            any(state.run_id == run_id for state in self._pending_debugging_intake_resumes.values())
+            or any(state.debugging_run_id == run_id for state in self._pending_debugging_user_resumes.values())
+            or any(state.debugging_run_id == run_id for state in self._pending_tool_resumes.values())
+        ):
+            return
+        _debugging_retire_run(run)
+
     async def _expire_pending_tool_resumes_locked(self, now: Optional[float] = None) -> None:
         now = time.time() if now is None else now
         cutoff = now - (6 * 60 * 60)
+        debugging_ids = {
+            state.debugging_run_id for state in self._pending_tool_resumes.values()
+            if state.debugging_run_id
+        } if CODE_DEBUGGING_MODE else set()
         expired = self._pending_authority.expire(cutoff, self._pending_tool_resumes)
         if expired:
             LOG.info("Expired %d stale Jack tool-resume transaction(s)", expired)
+            # The authority owns expiry; only examine the resulting live index.
+            remaining = {state.debugging_run_id for state in self._pending_tool_resumes.values()}
+            for run_id in debugging_ids - remaining:
+                self._debugging_retire_unreferenced_run(run_id)
 
     @staticmethod
     def _tool_result_explicitly_failed(message: Dict[str, Any]) -> bool:
@@ -11473,7 +11614,9 @@ class JackQwenKernel:
             if state.created_at < cutoff and not state.in_flight
         ]
         for resume_id in stale:
-            self._pending_debugging_intake_resumes.pop(resume_id, None)
+            state = self._pending_debugging_intake_resumes.pop(resume_id, None)
+            if state is not None:
+                self._debugging_retire_unreferenced_run(state.run_id)
         if stale:
             LOG.info("Expired %d stale Code Debugging intake transaction(s)", len(stale))
 
@@ -11672,7 +11815,9 @@ class JackQwenKernel:
             if state.created_at < cutoff and not state.in_flight
         ]
         for resume_id in stale:
-            self._pending_debugging_user_resumes.pop(resume_id, None)
+            state = self._pending_debugging_user_resumes.pop(resume_id, None)
+            if state is not None:
+                self._debugging_retire_unreferenced_run(state.debugging_run_id)
         if stale:
             LOG.info("Expired %d stale Code Debugging user-clarification transaction(s)", len(stale))
 
@@ -12580,6 +12725,7 @@ class JackQwenKernel:
         start_pass: int = 1,
     ) -> KernelResult:
         """Run fresh debugging passes with exact user authority plus host-derived prior-outcome registry state."""
+        _debugging_claim_run(run)
         debug_tools, debug_tool_choice = _debugging_report_only_tool_surface(tools, tool_choice)
         for pass_number in range(start_pass, DEBUGGING_PASS_COUNT + 1):
             if pass_number in run.pending_summaries:
@@ -13278,7 +13424,10 @@ class JackQwenKernel:
         Queued or rejected requests never acquire a checkpoint. Cleanup cannot
         unlock another request by scanning its historical messages.
         """
-        owner = {"kernel": self, "task": asyncio.current_task(), "state": None}
+        owner = {
+            "kernel": self, "task": asyncio.current_task(), "state": None,
+            "debugging_token": object(), "debugging_run": None,
+        }
         token = _REQUEST_RESUME_OWNER.set(owner)
         scope = _AGENTIC_DELAY_R2_SCOPE.get() if AGENTIC_MODE else None
         if scope is not None:
@@ -13290,6 +13439,7 @@ class JackQwenKernel:
             failure = exc
             raise
         finally:
+            terminal = False
             try:
                 state = owner["state"]
                 # An outer release guard may reject a yielded chunk while
@@ -13331,7 +13481,22 @@ class JackQwenKernel:
                 if scope is not None:
                     await self._agentic_phase3g_settle_scope(scope)
             finally:
-                _REQUEST_RESUME_OWNER.reset(token)
+                try:
+                    run = owner["debugging_run"]
+                    if run is not None and run.active_request is owner["debugging_token"]:
+                        run.active_request = None
+                        self._debugging_retire_unreferenced_run(
+                            run.run_id, discard_pending=terminal
+                        )
+                    elif CODE_DEBUGGING_MODE and owner["state"] is not None:
+                        state = owner["state"]
+                        run_id = (state.run_id if isinstance(state, PendingDebuggingIntakeResume)
+                                  else getattr(state, "debugging_run_id", None))
+                        self._debugging_retire_unreferenced_run(
+                            run_id, discard_pending=terminal
+                        )
+                finally:
+                    _REQUEST_RESUME_OWNER.reset(token)
 
     async def _agentic_phase3g_settle_scope(self, scope: Dict[str, Any]) -> None:
         if scope.get("settled"):
@@ -13729,7 +13894,7 @@ class JackQwenKernel:
             pending_debugging_intake_state: Optional[PendingDebuggingIntakeResume] = None
             pending_debugging_user_state: Optional[PendingDebuggingUserResume] = None
             debugging_run: Optional[DebuggingRunState] = None
-            debugging_followup_run: Optional[DebuggingRunState] = None
+            debugging_followup_run: Optional[CompletedDebuggingRun] = None
             pending_debugging_durability_pass: Optional[int] = None
             pending_debugging_final_report = False
             pending_tool_messages: List[Dict[str, Any]] = []
@@ -13902,6 +14067,9 @@ class JackQwenKernel:
                             history = [
                                 {"role": "user", "content": initial_request}
                             ]
+
+            if CODE_DEBUGGING_MODE and debugging_run is not None:
+                _debugging_claim_run(debugging_run)
 
             if CODE_DEBUGGING_MODE and debugging_followup_run is not None:
                 yield event({"role": "assistant"})
@@ -15241,8 +15409,11 @@ async def app_lifespan(_: FastAPI):
                     if ledger is not None:
                         await asyncio.to_thread(ledger.close)
                 finally:
-                    if claimed:
-                        _remove_runtime_manifest()
+                    try:
+                        _debugging_close_completed_index()
+                    finally:
+                        if claimed:
+                            _remove_runtime_manifest()
 
 
 APP = FastAPI(title="Jack Kernel", version=PUBLIC_VERSION, lifespan=app_lifespan)
