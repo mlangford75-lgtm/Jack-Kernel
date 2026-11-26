@@ -1798,7 +1798,12 @@ async def _guarded_stream(
             )
 
     except Exception as exc:
-        if terminal_stream_failure(exc):
+        if isinstance(exc, StreamingIRQProtocolError):
+            # Parsed text already admitted by Canary detection is distinct
+            # from raw detector carry. Preserve the former, not the latter.
+            for detector in (*canary_detectors.values(), *tool_canary_detectors.values()):
+                detector.flush()
+        elif terminal_stream_failure(exc):
             raise
         # Ordinary transport/stage failure is not itself a
         # security violation. Preserve deterministically safe
@@ -1820,8 +1825,10 @@ async def _guarded_stream(
     if not done_seen:
         # A terminal choice already finalized its own fields. Any remaining
         # Canary carry at EOF belongs to an incomplete choice.
-        if any(d.held_length for d in (*canary_detectors.values(), *tool_canary_detectors.values())):
-            raise StreamingIRQProtocolError("Incomplete guarded model stream")
+        incomplete = any(d.held_length for d in (*canary_detectors.values(), *tool_canary_detectors.values()))
+        if incomplete:
+            for detector in (*canary_detectors.values(), *tool_canary_detectors.values()):
+                detector.flush()
         flushed = _flush_event(
             last_template,
             filters,
@@ -1832,6 +1839,8 @@ async def _guarded_stream(
 
         if flushed is not None:
             yield flushed
+        if incomplete:
+            raise StreamingIRQProtocolError("Incomplete guarded model stream")
 
 
 def _normalized_evidence_origin(value: Any) -> str:
