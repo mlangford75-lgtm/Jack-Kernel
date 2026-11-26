@@ -202,6 +202,8 @@ async def pending_debugging_resumes_require_positive_identity():
             await kernel._rearm_pending_debugging_resumes_for_messages(unrelated)
             assert intake_state.in_flight is True
             await kernel._rearm_pending_debugging_resumes_for_messages(intake_reply)
+            assert intake_state.in_flight is True
+            await kernel._rearm_pending_debugging_intake_resume(intake_state)
             assert intake_state.in_flight is False
 
             clarification_run = m._debugging_create_run("Audit project C.")
@@ -237,6 +239,8 @@ async def pending_debugging_resumes_require_positive_identity():
             await kernel._rearm_pending_debugging_resumes_for_messages(unrelated)
             assert clarification_state.in_flight is True
             await kernel._rearm_pending_debugging_resumes_for_messages(clarification_reply)
+            assert clarification_state.in_flight is True
+            await kernel._rearm_pending_debugging_user_resume(clarification_state)
             assert clarification_state.in_flight is False
 
 
@@ -538,15 +542,12 @@ async def stream_rearm_helper_restores_retryability():
             data=response("What happened?"),
         )
         state = next(iter(kernel._pending_debugging_intake_resumes.values()))
-        matched = await kernel._consume_pending_debugging_intake_resume([
-            {"role": "assistant", "content": state.user_visible_response},
-            {"role": "user", "content": "It disconnected."},
-        ])
-        assert matched is not None and state.in_flight
-        await kernel._rearm_pending_debugging_resumes_for_messages([
-            {"role": "assistant", "content": state.user_visible_response},
-            {"role": "user", "content": "It disconnected."},
-        ])
+        async with kernel._request_resume_scope():
+            matched = await kernel._consume_pending_debugging_intake_resume([
+                {"role": "assistant", "content": state.user_visible_response},
+                {"role": "user", "content": "It disconnected."},
+            ])
+            assert matched is not None and state.in_flight
         assert state.in_flight is False
 
 

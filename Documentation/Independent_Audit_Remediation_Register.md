@@ -6,7 +6,7 @@ Draft PR: #179. Main is not a target. No item is closed solely on static analysi
 
 | Finding | Disposition at this revision | Required acceptance evidence |
 |---|---|---|
-| M-1 | Partial; message-scanned cleanup remains | Exact owner, queued cancellation, terminal retirement, normal recovery, both APIs |
+| M-1 | Core ownership candidate: exact acquired checkpoint, settlement under semaphore, adapters no longer scan messages; outer release-barrier terminal propagation still needs qualification | Exact owner, queued cancellation, terminal retirement, normal recovery, both APIs |
 | M-2 | Partial; malformed/EOF tests present; Phase 7 safe-prefix failure inherited per handoff | Logical SSE reconstruction; hard stops and benign completion |
 | M-3 | Candidate patch present | Structured and command Windows ADS tests |
 | M-4 | Candidate patch integrates operation-aware default Windows read facts into shared gate; live ledger regression cases added | Read exemption through shared gate and ledgers |

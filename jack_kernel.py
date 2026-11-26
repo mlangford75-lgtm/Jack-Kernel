@@ -5504,6 +5504,11 @@ _TOOL_RECOVERY_STATE: contextvars.ContextVar[Optional[ToolRecoveryState]] = (
 _TOOL_RECOVERY_PENDING: contextvars.ContextVar[Optional["PendingToolResume"]] = (
     contextvars.ContextVar("jack_tool_recovery_pending", default=None)
 )
+# Only successful admission can populate this request-local ownership slot.
+# Never infer ownership from caller-replayed message IDs or assistant prose.
+_REQUEST_RESUME_OWNER: contextvars.ContextVar[Optional[Tuple[Any, Any]]] = (
+    contextvars.ContextVar("jack_request_resume_owner", default=None)
+)
 
 
 def _tool_recovery_check(
@@ -11564,6 +11569,7 @@ class JackQwenKernel:
             if state.in_flight:
                 raise HTTPException(status_code=409, detail="Code Debugging intake transaction is already being resumed.")
             state.in_flight = True
+            self._claim_request_resume(state)
 
         run = _debugging_get_run(state.run_id)
         user_message = {
@@ -11776,6 +11782,7 @@ class JackQwenKernel:
             if state.in_flight:
                 raise HTTPException(status_code=409, detail="Code Debugging clarification transaction is already being resumed.")
             state.in_flight = True
+            self._claim_request_resume(state)
 
         user_message = {
             "role": "user",
@@ -11798,37 +11805,8 @@ class JackQwenKernel:
                 state.in_flight = False
 
     async def _rearm_pending_debugging_resumes_for_messages(self, messages: Any) -> None:
-        if not CODE_DEBUGGING_MODE or not isinstance(messages, list) or not messages:
-            return
-        last_user_index = None
-        for index in range(len(messages) - 1, -1, -1):
-            item = messages[index]
-            if isinstance(item, dict) and item.get("role") == "user":
-                last_user_index = index
-                break
-            if isinstance(item, dict) and item.get("role") == "tool":
-                return
-        if last_user_index is None:
-            return
-        prior_assistant_contents = {
-            _content_to_text(item.get("content")).strip()
-            for item in messages[:last_user_index]
-            if isinstance(item, dict) and item.get("role") == "assistant"
-        }
-        async with self._pending_debugging_intake_resume_lock:
-            candidates = [
-                state for state in self._pending_debugging_intake_resumes.values()
-                if state.in_flight and state.user_visible_response in prior_assistant_contents
-            ]
-            for state in candidates:
-                state.in_flight = False
-        async with self._pending_debugging_user_resume_lock:
-            candidates = [
-                state for state in self._pending_debugging_user_resumes.values()
-                if state.in_flight and state.user_visible_question in prior_assistant_contents
-            ]
-            for state in candidates:
-                state.in_flight = False
+        """Legacy compatibility seam; messages confer no cleanup authority."""
+        return None
 
     async def _resume_debugging_user_stage_nonstream(
         self, state: PendingDebuggingUserResume, user_message: Dict[str, Any]
@@ -12279,6 +12257,7 @@ class JackQwenKernel:
                 )
             else:
                 self._pending_authority.transition(state, in_flight=True)
+            self._claim_request_resume(state)
 
         matched_messages = list(copy.deepcopy(state.accepted_tool_results))
         executor = state.accepted_executor_context
@@ -12362,22 +12341,8 @@ class JackQwenKernel:
                     LOG.warning("Pending authority rearm withheld")
 
     async def _rearm_pending_tool_resume_for_messages(self, messages: Any) -> None:
-        if not isinstance(messages, list):
-            return
-        ids = {
-            str(item.get("tool_call_id") or "").strip()
-            for item in messages
-            if isinstance(item, dict) and item.get("role") == "tool" and str(item.get("tool_call_id") or "").strip()
-        }
-        if not ids:
-            return
-        async with self._pending_tool_resume_lock:
-            states = {id(self._pending_tool_resumes[call_id]): self._pending_tool_resumes[call_id] for call_id in ids if call_id in self._pending_tool_resumes}
-            for state in states.values():
-                try:
-                    self._pending_authority.transition(state, in_flight=False)
-                except DynamicAuthorityUnavailable:
-                    LOG.warning("Pending authority rearm withheld")
+        """Legacy compatibility seam; messages confer no cleanup authority."""
+        return None
 
     @staticmethod
     def _required_completed_answer_from_stage(data: Dict[str, Any], stage_name: str) -> str:
@@ -13277,20 +13242,83 @@ class JackQwenKernel:
             reasoning_content=str(reasoning) if reasoning else None,
         )
 
-    async def _agentic_phase3g_close_scope(self, scope_token: contextvars.Token) -> None:
-        """Close exactly the consuming turn, including an aliased tool checkpoint.
+    def _claim_request_resume(self, state: Any) -> None:
+        """Record the exact checkpoint acquired under its admission lock."""
+        owner = _REQUEST_RESUME_OWNER.get()
+        if owner is not None:
+            raise RuntimeError("Request attempted to acquire more than one resume checkpoint")
+        _REQUEST_RESUME_OWNER.set((self, state))
+        scope = _AGENTIC_DELAY_R2_SCOPE.get() if AGENTIC_MODE else None
+        if scope is not None and isinstance(state, PendingToolResume):
+            scope["pending_state"] = state
 
-        Stage-1 tool suspensions never freeze A1, so they remain resumable.
-        A terminal Stage-2 path cannot rearm a completed Stage-1 checkpoint.
+    @asynccontextmanager
+    async def _request_resume_scope(self) -> AsyncIterator[None]:
+        """Settle the acquired checkpoint before releasing the request semaphore.
+
+        Queued or rejected requests never acquire a checkpoint. Cleanup cannot
+        unlock another request by scanning its historical messages.
         """
+        token = _REQUEST_RESUME_OWNER.set(None)
+        scope = _AGENTIC_DELAY_R2_SCOPE.get() if AGENTIC_MODE else None
+        if scope is not None:
+            scope["entered"] = True
+        failure = None
         try:
-            scope = _AGENTIC_DELAY_R2_SCOPE.get()
-            if scope is None:
-                return
+            yield
+        except BaseException as exc:
+            failure = exc
+            raise
+        finally:
+            try:
+                owner = _REQUEST_RESUME_OWNER.get()
+                state = owner[1] if owner is not None and owner[0] is self else None
+                terminal = isinstance(failure, (
+                    GenerationBudgetExceeded, ToolRecoveryExhausted,
+                )) or (isinstance(failure, Exception) and terminal_stream_failure(failure))
+                if terminal:
+                    if isinstance(state, PendingToolResume):
+                        await self._retire_pending_tool_resume(state)
+                    elif isinstance(state, PendingDebuggingIntakeResume):
+                        await self._retire_pending_debugging_intake_resume(state)
+                    elif isinstance(state, PendingDebuggingUserResume):
+                        await self._retire_pending_debugging_user_resume(state)
+                    if AGENTIC_MODE:
+                        record = (
+                            _agentic_forensic_turn(state.frozen_stage1_history or state.history)
+                            if isinstance(state, PendingToolResume)
+                            else _AGENTIC_TURN_LIFECYCLES.get(_AGENTIC_ACTIVE_TURN.get() or "")
+                        )
+                        if record is not None and record.status not in {
+                            "complete", "memory_failed", "stage1_failed",
+                        }:
+                            reason = type(failure).__name__
+                            attempt = record.stage2_attempt_id or record.stage1_attempt_id
+                            if attempt:
+                                _agentic_forensic_journal().fail(record.turn_id, attempt, reason)
+                            record.status = "memory_failed" if record.frozen_a1_sha256 else "stage1_failed"
+                            record.failure = reason
+                elif state is not None and state.in_flight:
+                    if isinstance(state, PendingDebuggingIntakeResume):
+                        await self._rearm_pending_debugging_intake_resume(state)
+                    elif isinstance(state, PendingDebuggingUserResume):
+                        await self._rearm_pending_debugging_user_resume(state)
+                    elif isinstance(state, PendingToolResume) and scope is None:
+                        await self._rearm_pending_tool_resume(state)
+                if scope is not None:
+                    await self._agentic_phase3g_settle_scope(scope)
+            finally:
+                _REQUEST_RESUME_OWNER.reset(token)
+
+    async def _agentic_phase3g_settle_scope(self, scope: Dict[str, Any]) -> None:
+        if scope.get("settled"):
+            return
+        scope["settled"] = True
+        try:
             state = scope.get("pending_state")
             if scope.get("stage1_frozen"):
                 _agentic_retire_consumed_one_hop(scope.get("bridge_messages", []))
-                if state is not None:
+                if state is not None and state.in_flight:
                     _agentic_retire_consumed_one_hop(state.history)
                     record = _agentic_forensic_turn(
                         state.frozen_stage1_history or state.history
@@ -13310,7 +13338,7 @@ class JackQwenKernel:
                         )
                     else:
                         await self._retire_pending_tool_resume(state)
-            elif state is not None:
+            elif state is not None and state.in_flight:
                 # Disconnect is not invalidation of accepted tool evidence.
                 # The backend stream is closed before this scope runs; re-arm
                 # only a checkpoint with authenticated, immutable tool results.
@@ -13331,10 +13359,16 @@ class JackQwenKernel:
                 else:
                     await self._retire_pending_tool_resume(state)
         finally:
-            try:
-                _agentic_forensic_close_request()
-            finally:
-                _AGENTIC_DELAY_R2_SCOPE.reset(scope_token)
+            _agentic_forensic_close_request()
+
+    async def _agentic_phase3g_close_scope(self, scope_token: contextvars.Token) -> None:
+        """Reset request context; settlement occurs under the semaphore."""
+        try:
+            scope = _AGENTIC_DELAY_R2_SCOPE.get()
+            if scope is not None and scope.get("entered") and not scope.get("settled"):
+                await self._agentic_phase3g_settle_scope(scope)
+        finally:
+            _AGENTIC_DELAY_R2_SCOPE.reset(scope_token)
 
     @staticmethod
     def _tool_recovery_handoff_history(exc: ToolRecoveryExhausted) -> List[Dict[str, Any]]:
@@ -13474,7 +13508,7 @@ class JackQwenKernel:
 
     async def _run_impl(self, request_body: Dict[str, Any]) -> KernelResult:
         request_body = sanitize_agent_request(request_body)
-        async with self._semaphore:
+        async with self._semaphore, self._request_resume_scope():
             await self._activity_update(state="running")
             messages = request_body.get("messages")
             pending = None
@@ -13494,37 +13528,23 @@ class JackQwenKernel:
                 run.request_fingerprint = _debugging_request_fingerprint(request_body)
                 history = list(state.history)
                 history.append(user_message)
-                try:
-                    prepared = await self._run_debugging_intake_nonstream(
-                        run=run,
-                        history=history,
-                        secondary_system=state.secondary_system,
-                        usage=dict(state.usage),
-                        tools=state.tools,
-                        tool_choice=state.tool_choice,
-                        same_stage_resume=True,
-                        pending_resume=state,
-                    )
-                except Exception as exc:
-                    if terminal_stream_failure(exc):
-                        await self._retire_pending_debugging_intake_resume(state)
-                    else:
-                        await self._rearm_pending_debugging_intake_resume(state)
-                    raise
+                prepared = await self._run_debugging_intake_nonstream(
+                    run=run,
+                    history=history,
+                    secondary_system=state.secondary_system,
+                    usage=dict(state.usage),
+                    tools=state.tools,
+                    tool_choice=state.tool_choice,
+                    same_stage_resume=True,
+                    pending_resume=state,
+                )
             elif debugging_user_pending is not None:
                 state, user_message = debugging_user_pending
                 response_usage_baseline = normalize_usage(dict(state.usage))
                 _debugging_get_run(
                     state.debugging_run_id
                 ).request_fingerprint = _debugging_request_fingerprint(request_body)
-                try:
-                    prepared = await self._resume_debugging_user_stage_nonstream(state, user_message)
-                except Exception as exc:
-                    if terminal_stream_failure(exc):
-                        await self._retire_pending_debugging_user_resume(state)
-                    else:
-                        await self._rearm_pending_debugging_user_resume(state)
-                    raise
+                prepared = await self._resume_debugging_user_stage_nonstream(state, user_message)
             elif pending is not None:
                 state, tool_messages = pending
                 response_usage_baseline = normalize_usage(dict(state.usage))
@@ -13532,14 +13552,7 @@ class JackQwenKernel:
                     _debugging_get_run(
                         state.debugging_run_id
                     ).request_fingerprint = _debugging_request_fingerprint(request_body)
-                try:
-                    prepared = await self._resume_tool_stage_nonstream(state, tool_messages)
-                except Exception as exc:
-                    if terminal_stream_failure(exc):
-                        await self._retire_pending_tool_resume(state)
-                    else:
-                        await self._rearm_pending_tool_resume(state)
-                    raise
+                prepared = await self._resume_tool_stage_nonstream(state, tool_messages)
             else:
                 if isinstance(messages, list) and messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "tool":
                     raise HTTPException(
@@ -13678,7 +13691,7 @@ class JackQwenKernel:
         if not has_user_message(messages):
             raise HTTPException(status_code=400, detail="At least one user message is required")
 
-        async with self._semaphore:
+        async with self._semaphore, self._request_resume_scope():
             await self._activity_update(state="running")
             debugging_intake_pending = await self._consume_pending_debugging_intake_resume(messages)
             debugging_user_pending = None if debugging_intake_pending is not None else await self._consume_pending_debugging_user_resume(messages)
@@ -16442,7 +16455,6 @@ async def _safe_public_stream(
     executor_context: Optional[Phase4ExecutorRequestContext] = None,
 ) -> AsyncIterator[bytes]:
     """Convert internal stage failures into a clean OpenAI SSE termination."""
-    allow_rearm = True
     try:
         if executor_context is None:
             stream = KERNEL.stream(body)
@@ -16458,7 +16470,6 @@ async def _safe_public_stream(
         if AGENTIC_MODE:
             _agentic_mark_stage1_failure(type(exc).__name__)
         LOG.exception("Jack streamed request failed; closing SSE cleanly")
-        allow_rearm = not terminal_stream_failure(exc)
         detail = _diagnostic_text(exc.detail if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}")
         response_id = f"chatcmpl-jack-error-{uuid.uuid4().hex}"
         created = int(time.time())
@@ -16506,9 +16517,6 @@ async def _safe_public_stream(
         yield event({}, "stop")
         yield b"data: [DONE]\n\n"
     finally:
-        if allow_rearm:
-            await KERNEL._rearm_pending_tool_resume_for_messages(body.get("messages"))
-            await KERNEL._rearm_pending_debugging_resumes_for_messages(body.get("messages"))
         if AGENTIC_MODE:
             _AGENTIC_ACTIVE_TURN.set(None)
 
