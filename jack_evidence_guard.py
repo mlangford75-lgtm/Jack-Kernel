@@ -1774,9 +1774,9 @@ async def _guarded_stream(
                 else chunk
             )
 
-    except StreamingIRQHardInterrupt:
-        # A confirmed hard security interruption must not release
-        # any remaining affected quarantine state.
+    except (StreamingIRQHardInterrupt, StreamingIRQProtocolError):
+        # Protocol failure is not successful completion. Never finalize
+        # an unevaluated suffix after a malformed frame or hard interrupt.
         raise
 
     except Exception:
@@ -1798,6 +1798,10 @@ async def _guarded_stream(
         raise
 
     if not done_seen:
+        # A terminal choice already finalized its own fields. Any remaining
+        # Canary carry at EOF belongs to an incomplete choice.
+        if any(d.held_length for d in (*canary_detectors.values(), *tool_canary_detectors.values())):
+            raise StreamingIRQProtocolError("Incomplete guarded model stream")
         flushed = _flush_event(
             last_template,
             filters,
