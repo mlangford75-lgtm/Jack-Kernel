@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
+import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -176,3 +179,151 @@ def test_committed_projection_bytes_are_immutable_after_authority_transition(tmp
     assert persisted["payload"]["canary_id"] == "kernel:original"
     assert ledger._digest_record_material(persisted) == stored_digest == record.record_digest
     active.close()
+
+
+def test_close_drains_projection_committed_before_writer_start(tmp_path, monkeypatch):
+    active = make(tmp_path, instance="close-before-start")
+    monkeypatch.setattr(active, "_ensure_writer", lambda: None)
+    first = active.record_reserved_evidence_namespace_block()
+    second = active.record_canary_match(canary_id="close:second", tier="A")
+    assert active._projection_queue.qsize() == 2
+    assert active._writer is None
+
+    active.close()
+    assert active._closed
+    assert active._writer is not None and not active._writer.is_alive()
+    assert active._projection_queue.unfinished_tasks == 0
+    projected = json.loads(active.projection_head_path.read_text(encoding="utf-8"))
+    assert projected["last_projected_sequence"] == second.sequence
+    assert projected["last_projected_digest"] == second.record_digest
+    assert projected["projection_complete"] is True
+    assert len(list(active.records_dir.glob("*.json"))) == first.sequence + 1
+    # Closing twice must not leave another unfinished stop sentinel.
+    active.close()
+    assert active._projection_queue.unfinished_tasks == 0
+
+
+def test_close_timeout_reports_incomplete_drain_and_retry_preserves_records(
+    tmp_path, monkeypatch, caplog,
+):
+    active = make(tmp_path, instance="close-timeout", capacity=1)
+    entered = threading.Event()
+    release = threading.Event()
+    original_project = active._project_one
+
+    def blocked_project(item):
+        entered.set()
+        if not release.wait(10):
+            raise AssertionError("test did not release projection writer")
+        original_project(item)
+
+    monkeypatch.setattr(active, "_project_one", blocked_project)
+    try:
+        active.record_reserved_evidence_namespace_block()
+        assert entered.wait(5)
+        second = active.record_canary_match(canary_id="close:queued", tier="B")
+        assert active._projection_queue.full()
+        active.close(timeout=0)
+        assert "shutdown did not finish" in caplog.text
+        assert active._writer.is_alive()
+        assert active._projection_queue.qsize() == 1
+        assert active.active_head.record_digest == second.record_digest
+    finally:
+        release.set()
+        active.close()
+
+    assert not active._writer.is_alive()
+    assert active._projection_queue.unfinished_tasks == 0
+    assert active.projection_status().last_projected_sequence == 2
+    assert active.projection_status().lost_projection_count == 0
+
+
+def test_kernel_lifespan_drains_ledger_on_normal_and_failed_shutdown(tmp_path):
+    """Execute the real lifespan in an isolated process, not a copied hook."""
+    script = r'''
+import asyncio
+import json
+import os
+import threading
+from pathlib import Path
+from types import SimpleNamespace
+
+import jack_authority_ledger as ledger
+import jack_kernel as jk
+
+
+async def scenario(failing):
+    calls = []
+    event_loop_thread = threading.get_ident()
+    active = ledger.AuthorityLedger(
+        runtime_id="runtime-shutdown",
+        lane_id="lane-shutdown",
+        projection_root=Path(os.environ["JACK_AUTHORITY_LEDGER_DIR"]),
+        queue_capacity=8,
+    )
+    # Force the real lifespan to drain queued records before any ordinary
+    # writer startup; close owns the final projection transition.
+    active._ensure_writer = lambda: None
+    original_close = active.close
+
+    def observed_close():
+        assert threading.get_ident() != event_loop_thread
+        calls.append("ledger")
+        original_close()
+
+    active.close = observed_close
+    jk._JACK_AUTHORITY_LEDGER = active
+    jk._write_runtime_manifest = lambda state, **kw: calls.append(state)
+    jk._remove_runtime_manifest = lambda: calls.append("remove")
+
+    async def events_close():
+        calls.append("events")
+
+    async def backend_close():
+        calls.append("backend")
+        if failing:
+            raise RuntimeError("synthetic backend shutdown failure")
+
+    jk.ORCHESTRATION_EVENTS = SimpleNamespace(close=events_close)
+    jk.BACKEND = SimpleNamespace(close=backend_close)
+    try:
+        async with jk.app_lifespan(jk.APP):
+            active.record_reserved_evidence_namespace_block()
+            second = active.record_canary_match(canary_id="lifespan:second", tier="A")
+    except RuntimeError as exc:
+        assert failing and str(exc) == "synthetic backend shutdown failure"
+    else:
+        assert not failing
+
+    assert calls == ["ready", "stopping", "events", "backend", "ledger", "remove"]
+    assert active._closed
+    assert active._projection_queue.unfinished_tasks == 0
+    assert active._writer is not None and not active._writer.is_alive()
+    projected = json.loads(active.projection_head_path.read_text(encoding="utf-8"))
+    assert projected["last_projected_sequence"] == 2
+    assert projected["last_projected_digest"] == second.record_digest
+    assert projected["projection_complete"] is True
+
+
+async def main():
+    await scenario(False)
+    await scenario(True)
+
+asyncio.run(main())
+'''
+    env = dict(os.environ)
+    env.update({
+        "HOME": str(tmp_path / "home"),
+        "USERPROFILE": str(tmp_path / "home"),
+        "JACK_BACKEND_MODEL": "test-model",
+        "JACK_BACKEND_PROFILE": "custom",
+        "JACK_REASONING_LEVEL": "off",
+        "JACK_FORENSIC_ARCHIVE_MODE": "off",
+        "JACK_AUTHORITY_LEDGER_DIR": str(tmp_path / "ledger"),
+    })
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env, capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr

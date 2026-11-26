@@ -279,6 +279,7 @@ class AuthorityLedger:
         self._writer_start_lock = threading.Lock()
         self._writer: Optional[threading.Thread] = None
         self._closed = False
+        self._writer_stop_enqueued = False
 
         self._last_projected_sequence = 0
         self._last_projected_digest: Optional[str] = None
@@ -557,18 +558,20 @@ class AuthorityLedger:
             payload=asdict(payload),
         )
 
-    def _ensure_writer(self) -> None:
-        if self._closed:
+    def _start_writer_locked(self) -> None:
+        if self._writer is not None and self._writer.is_alive():
             return
+        self._writer = threading.Thread(
+            target=self._writer_loop,
+            name=f"jack-phase6-ledger-{_safe_component(self.ledger_instance_id, 'instance')[:24]}",
+            daemon=True,
+        )
+        self._writer.start()
+
+    def _ensure_writer(self) -> None:
         with self._writer_start_lock:
-            if self._writer is not None and self._writer.is_alive():
-                return
-            self._writer = threading.Thread(
-                target=self._writer_loop,
-                name=f"jack-phase6-ledger-{_safe_component(self.ledger_instance_id, 'instance')[:24]}",
-                daemon=True,
-            )
-            self._writer.start()
+            if not self._closed:
+                self._start_writer_locked()
 
     def _enqueue_projection_locked(self, projection: ProjectionRequest) -> bool:
         """Queue one immutable projection while the authority transition is serialized.
@@ -723,17 +726,43 @@ class AuthorityLedger:
         return self._projection_queue.unfinished_tasks == 0
 
     def close(self, timeout: float = 5.0) -> None:
-        self.wait_for_projection(timeout=timeout)
-        with self._writer_start_lock:
+        """Close projection admission, drain committed records, and bound shutdown.
+
+        Projection failure remains separate from predecessor security authority.
+        A timed-out drain is explicitly reported, never advertised as success.
+        """
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        # Serialize closure with the same authority transition that enqueues
+        # immutable projection bytes. No disk I/O is performed under this lock.
+        with self._authority_lock:
             self._closed = True
+
+        with self._writer_start_lock:
+            # An enqueue may have committed just before closure, while its
+            # caller has not yet reached _ensure_writer(). Drain it here.
+            if not self._projection_queue.empty() and not self._writer_stop_enqueued:
+                self._start_writer_locked()
             writer = self._writer
-            if writer is None or not writer.is_alive():
-                return
-            try:
-                self._projection_queue.put_nowait(None)
-            except queue.Full:
-                return
-        writer.join(timeout=max(0.0, float(timeout)))
+
+        drained = self.wait_for_projection(timeout=max(0.0, deadline - time.monotonic()))
+        if writer is not None and writer.is_alive():
+            with self._writer_start_lock:
+                if writer.is_alive() and not self._writer_stop_enqueued:
+                    try:
+                        self._projection_queue.put_nowait(None)
+                    except queue.Full:
+                        # Never discard queued records to make space for a sentinel.
+                        # A subsequent close can retry the bounded drain.
+                        pass
+                    else:
+                        self._writer_stop_enqueued = True
+            writer.join(timeout=max(0.0, deadline - time.monotonic()))
+
+        if not drained or (writer is not None and writer.is_alive()):
+            LOG.warning(
+                "Phase-6 authority-ledger shutdown did not finish within the "
+                "projection drain budget; queued evidence may remain unprojected"
+            )
 
 
 def _safe_record(ledger: AuthorityLedger, method_name: str, /, **kwargs: Any) -> bool:
