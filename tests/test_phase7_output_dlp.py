@@ -179,6 +179,28 @@ async def collect_until_interrupt():
     raise AssertionError("credential stream was not interrupted")
 
 
+def logical_delta(wire, field):
+    # SSE boundaries are transport boundaries, not text boundaries.
+    parts = []
+    for line in wire.decode("utf-8").splitlines():
+        if not line.startswith("data: ") or line == "data: [DONE]":
+            continue
+        obj = json.loads(line[6:])
+        for choice in obj.get("choices", []):
+            if choice.get("index") != 0:
+                continue
+            delta = choice.get("delta", {})
+            if field == "arguments":
+                parts.extend(
+                    call.get("function", {}).get("arguments", "")
+                    for call in delta.get("tool_calls", [])
+                    if call.get("index") == 0
+                )
+            else:
+                parts.append(delta.get(field) or "")
+    return "".join(parts)
+
+
 async def exercise_streams():
     split = max(1, len(secret) // 2)
     for field in ("content", "reasoning_content", "reasoning", "thinking"):
@@ -188,7 +210,7 @@ async def exercise_streams():
         ]
         released = await collect_until_interrupt()
         assert secret.encode() not in released
-        assert b"safe-prefix-" in released
+        assert logical_delta(released, field) == "safe-prefix-"
 
     state["events"] = [
         tool_frame('{"value":"safe-prefix-' + secret[:split]),
@@ -196,7 +218,7 @@ async def exercise_streams():
     ]
     released = await collect_until_interrupt()
     assert secret.encode() not in released
-    assert b"safe-prefix-" in released
+    assert logical_delta(released, "arguments") == '{"value":"safe-prefix-'
 
     # Unregistered secret-looking text remains useful ordinary model output.
     benign = "sk-not-registered eyJ.fake.jwt highEntropyLooking1234567890"
@@ -208,7 +230,7 @@ async def exercise_streams():
     async for chunk in kernel.KERNEL.stream({"model": "jack-kernel"}):
         released.append(chunk)
     joined = b"".join(released)
-    assert benign.encode() in joined
+    assert logical_delta(joined, "content") == benign
 
 
 asyncio.run(exercise_streams())
