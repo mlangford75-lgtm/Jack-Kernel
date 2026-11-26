@@ -193,6 +193,27 @@ try {
   assert.equal(finalStatus.runOpen, false);
   assert.ok(finalStatus.settledAt);
 
+  // Pi accepted the marked input, but has not yet announced agent_start.
+  const submit = (prompt) => fetch(`http://127.0.0.1:${port}/v1/tasks`, {
+    method: "POST", headers, body: JSON.stringify({ prompt }),
+  });
+  assert.equal((await submit("cancel before start")).status, 202);
+  const input = await emit("input", {
+    text: sent.at(-1).content, source: "extension", streamingBehavior: "followUp",
+  }, controlledContext);
+  await emit("before_agent_start", { prompt: input.text }, controlledContext);
+  const cancelled = await fetch(`http://127.0.0.1:${port}/v1/tasks/cancel`, {
+    method: "POST", headers,
+  });
+  assert.equal(cancelled.status, 202);
+  await emit("agent_start", {}, controlledContext);
+  assert.equal(controlledAbortCount, 2);
+  assert.equal((await submit("overlap")).status, 409);
+  await emit("agent_end", { messages: [] }, controlledContext);
+  await emit("agent_settled", {}, idleContext);
+  const settled = await (await fetch(`http://127.0.0.1:${port}/v1/status`, { headers })).json();
+  assert.equal(settled.status, "cancelled");
+  assert.ok(settled.settledAt);
   console.log("PI CONTROL BRIDGE CANCEL OWNERSHIP: PASS");
 } finally {
   await emit("session_shutdown", { reason: "test-complete" }, idleContext);

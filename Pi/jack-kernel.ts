@@ -235,10 +235,18 @@ export default async function (pi) {
   let tasSessionId = null;
   let tasSessionCapability = null;
 
-  async function syncProvider() {
-    const { url, token, expectedRuntimeId } = resolveJackTarget();
+  let providerRefresh = null;
+  function syncProvider() {
+    if (!providerRefresh) {
+      providerRefresh = refreshProvider().finally(() => { providerRefresh = null; });
+    }
+    return providerRefresh;
+  }
+
+  async function refreshProvider() {
     activeRuntimeBinding = null;
     try {
+      const { url, token, expectedRuntimeId } = resolveJackTarget();
       const health = await verifyRuntimeIdentity(url, token, expectedRuntimeId);
       const models = await fetchJackModels(url, token, health);
       if (!models.length) return;
@@ -554,7 +562,8 @@ export default async function (pi) {
     return undefined;
   });
 
-  pi.on("before_provider_headers", (event, ctx) => {
+  pi.on("before_provider_headers", async (event, ctx) => {
+    if (providerRefresh) await providerRefresh;
     const binding = activeRuntimeBinding;
     if (!binding || String(ctx?.model?.provider || "") !== PROVIDER_NAME) {
       return;
@@ -598,6 +607,7 @@ export default async function (pi) {
       return undefined;
     }
 
+    if (providerRefresh) await providerRefresh;
     const binding = activeRuntimeBinding;
     if (!binding) {
       return {

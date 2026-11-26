@@ -502,7 +502,7 @@ export default async function (pi) {
     if (armedAgentStart) {
       const binding = cloneBinding(armedAgentStart);
       armedAgentStart = null;
-      if (controlledTask?.id !== binding.taskId || controlledTask?.status !== "queued") {
+      if (controlledTask?.id !== binding.taskId || !["queued", "cancelled"].includes(controlledTask.status)) {
         failCorrelation("controlled task/run binding became invalid before agent_start");
         activeRun = null;
         return;
@@ -515,7 +515,11 @@ export default async function (pi) {
       activeRun = binding;
       controlledTask.runId = binding.runId;
       controlledTask.runEpoch = 1;
-      controlledTask.status = "running";
+      if (controlledTask.status === "cancelled") {
+        ctx.abort?.();
+      } else {
+        controlledTask.status = "running";
+      }
       emitTask(binding);
       return;
     }
@@ -533,7 +537,9 @@ export default async function (pi) {
         runEpoch: nextEpoch,
       };
       controlledTask.runEpoch = nextEpoch;
-      if (controlledTask.status !== "cancelled") {
+      if (controlledTask.status === "cancelled") {
+        ctx.abort?.();
+      } else {
         controlledTask.status = "running";
       }
       emitTask(activeRun);
