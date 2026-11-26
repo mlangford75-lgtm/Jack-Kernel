@@ -58,24 +58,28 @@ before public release, detecting contiguous protected values across chunk
 boundaries. The Reasoning Airlock covers represented native reasoning fields;
 it cannot inspect hidden provider reasoning that is not supplied to Kernel.
 
-Sensitivity is the percentage of consecutive matching characters within a
-registered value. The threshold is ceil(length * percentage / 100). Any
-contiguous fragment meeting that threshold triggers a hard interrupt before
-the matching fragment is released. A longer registered key does not require
-the entire key to be matched if partial sensitivity has been selected.
+Sensitivity determines how many consecutive matching characters within a
+registered value trigger a hard interrupt before the fragment is released.
+The Adaptive default uses `min(L, max(16, ceil(L/4)))`, where L is the value
+length. Values of 16 characters or fewer match exactly, medium-length values
+require at least 16, and values of 64 characters or more use 25% (rounded up).
+Explicit percentages use `ceil(L * percentage / 100)` without that floor.
 
 | Preset | Required match | 256-character value | 1024-character value |
 |---|---:|---:|---:|
+| Adaptive (default) | 25%, minimum 16, short values exact | 64 | 256 |
 | Maximum | 5% | 13 | 52 |
 | High | 10% | 26 | 103 |
 | Standard | 25% | 64 | 256 |
 | Low | 50% | 128 | 512 |
-| Exact (default) | 100% | 256 | 1024 |
+| Exact | 100% | 256 | 1024 |
 | Custom example | 9% | 24 | 93 |
 
-Option 9 accepts a preset name, an integer percentage, or Custom followed by
-an integer 1–100. Option 10 allows different values to inherit or override
-the global setting. The active quarantine is the largest effective threshold
+Option 9 accepts Adaptive, a preset name, an integer percentage, or Custom
+followed by an integer 1–100. Existing explicitly saved percentages and
+administrator overrides remain authoritative. Option 10 allows different
+values to inherit or override the global setting. Adaptive is distinct from
+explicit Standard 25%; only Adaptive enforces the 16-character floor. The active quarantine is the largest effective threshold
 minus one across the registered values. The custom ceiling is configurable
 to 16,384 characters. Values are limited to 16,385 characters; the minimum
 custom value length is eight. The default local custom ceiling is 4096.
@@ -84,7 +88,7 @@ to the configured ceiling. Legacy environment JSON without a ceiling keeps
 its former 256-character custom ceiling. Invalid policies fail closed.
 
 Low percentages can match ordinary text, especially for short, repetitive,
-or predictable values. Global sensitivity includes automatically registered
+or predictable values. Adaptive reduces but does not eliminate false positives. Global sensitivity includes automatically registered
 credential Canaries. Use an appropriately conservative threshold. The exact
 case-sensitive matcher does not claim encoded, fuzzy, case-insensitive or
 cross-channel aggregate leakage detection. Known credential input isolation

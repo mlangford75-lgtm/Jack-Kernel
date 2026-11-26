@@ -449,15 +449,6 @@ def merge_runtime_canary_policy(canary_policy: Any, credential_policy: RuntimeCr
     if canary_policy.lane_id != credential_policy.lane_id:
         raise RuntimeError("Phase-7 credential/Canary lane ownership mismatch")
     sensitivity = canary_policy.sensitivity_percent
-    credential_window = max(
-        ((len(item.value) * sensitivity + 99) // 100 - 1
-         for item in credential_policy.credentials), default=0,
-    )
-    if credential_window > max(CREDENTIAL_CANARY_MAX_WINDOW, canary_policy.canaries.max_window):
-        raise RuntimeError(
-            "Phase-7 credential Canary merge exceeds the bounded output-DLP ceiling"
-        )
-
     existing = tuple(getattr(canary_policy.canaries, "_patterns", ()))
     existing_ids = {item.canary_id for item in existing}
     existing_values = {item.value for item in existing}
@@ -475,6 +466,12 @@ def merge_runtime_canary_policy(canary_policy: Any, credential_policy: RuntimeCr
             )
         )
 
+    # Derive quarantine from the same authoritative threshold used by detection.
+    credential_window = max((item.match_chars - 1 for item in additions), default=0)
+    if credential_window > max(CREDENTIAL_CANARY_MAX_WINDOW, canary_policy.canaries.max_window):
+        raise RuntimeError(
+            "Phase-7 credential Canary merge exceeds the bounded output-DLP ceiling"
+        )
     combined = existing + tuple(additions)
     max_window = max(
         int(getattr(canary_policy.canaries, "max_window", 0) or 0),

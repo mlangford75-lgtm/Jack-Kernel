@@ -1044,6 +1044,7 @@ def test_static_policy_rejects_value_beyond_fixed_lookbehind_ceiling():
     raw = json.dumps(
         {
             "version": 1,
+            "sensitivity_percent": 100,
             "patterns": [
                 {
                     "id": "over.window",

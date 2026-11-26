@@ -1,19 +1,25 @@
 # StreamingIRQ sensitivity
 
-Security Center option 9 sets the global percentage of consecutive matching
-characters required to interrupt a model-output stream. Presets: Maximum 5%,
-High 10%, Standard 25%, Low 50%, Exact 100% (default), or Custom 1–100%.
+Security Center option 9 sets the global sensitivity for consecutive matching
+characters required to interrupt a model-output stream. Adaptive is the default:
+25%, with a minimum of 16 matching characters (exact for shorter values).
+Explicit presets: Maximum 5%, High 10%, Standard 25%, Low 50%, Exact 100%,
+or Custom 1–100%.
 Option 10 sets or clears a session Canary's individual override. Global settings
 persist; custom Canary values and overrides stay in the launcher session.
 An administrator-provided JACK_CANARY_POLICY_JSON overrides local settings.
 
-For a value of length L and sensitivity P, the threshold is ceil(L*P/100).
+For a value of length L, Adaptive uses `min(L, max(16, ceil(L/4)))`.
+Explicit sensitivity P uses `ceil(L*P/100)` without the adaptive floor.
+For example, a 10-character value matches exactly, a 32-character value requires
+16 characters, a 64-character value requires 16, and a 1024-character value
+requires 256. An explicitly selected 10% on a 1024-character value requires 103.
 Matching is case-sensitive and covers contiguous fragments at any position
-inside the protected value. A 1024-character value at 10% requires 103 matching
-characters. The active look-behind is the largest threshold minus one across
-registered values. Confirmed matches hard-interrupt before the fragment is
-released. Exact matching remains the default. Smaller thresholds can match
-ordinary output, including common key prefixes; use partial matching deliberately.
+inside the protected value. The active look-behind is the largest effective
+threshold minus one across registered values. Confirmed matches hard-interrupt
+before the fragment is released. Shorter thresholds can match ordinary output,
+including common key prefixes. The adaptive floor reduces false positives but
+does not eliminate them.
 
 The custom quarantine ceiling is configurable to 16,384 characters, and custom
 values may be up to 16,385 characters (minimum eight). Local session policy defaults
@@ -21,9 +27,22 @@ to a ceiling of 4096; legacy JSON without a ceiling retains 256. Existing automa
 credential output-DLP ceiling is at least 4096 and may expand to the configured
 ceiling. Global sensitivity also applies to automatic credential-derived Canaries;
 credential input isolation remains exact and independent. No secret values are
-saved in launcher settings. Static Policy Integrity seals the resolved percentages.
+saved in launcher settings. Static Policy Integrity seals the adaptive/explicit
+selection, resolved per-value sensitivities, effective thresholds and quarantine.
 
-Example startup JSON (synthetic values only):
+Omit the global `sensitivity_percent` field to select Adaptive in startup JSON;
+explicit integer percentages (including saved settings from older versions)
+remain authoritative. A missing per-value override inherits the global policy.
+An explicit `null` is invalid rather than an alternative configuration spelling.
+The low-level exact-match Canary constructor remains available for internal callers;
+resolved runtime policies and automatic credentials use Adaptive by default.
+
+Example startup JSON (synthetic values only; Adaptive with an exact override):
+```json
+{"version":1,"max_window":4096,"patterns":[{"id":"synthetic","tier":"B","value":"SYNTHETIC-EXAMPLE-ONLY","sensitivity_percent":100}]}
+```
+
+Explicit global sensitivity example:
 ```json
 {"version":1,"sensitivity_percent":10,"max_window":4096,"patterns":[{"id":"synthetic","tier":"B","value":"SYNTHETIC-EXAMPLE-ONLY","sensitivity_percent":100}]}
 ```
