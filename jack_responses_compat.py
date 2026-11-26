@@ -7,6 +7,8 @@ import uuid
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
+from jack_evidence_guard import terminal_stream_failure
+
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -252,7 +254,8 @@ async def _stream(
     yield _sse("response.in_progress", {"response": stub})
     msg_id, rs_id = f"msg_{uuid.uuid4().hex}", f"rs_{uuid.uuid4().hex}"
     visible: List[str] = []; reasoning: List[str] = []; tool_acc: Dict[int, Dict[str, Any]] = {}; usage = None
-    msg_open = rs_open = False
+    allow_rearm = True
+    msg_index = rs_index = None
     try:
         if executor_context is None:
             source_stream = jk.KERNEL.stream(chat)
@@ -271,21 +274,20 @@ async def _stream(
                 if not isinstance(delta, dict): continue
                 r = delta.get("reasoning_content") if delta.get("reasoning_content") is not None else delta.get("reasoning")
                 if r:
-                    if not rs_open:
-                        rs_open = True
-                        yield _sse("response.output_item.added", {"output_index": 0, "item": {"id": rs_id, "type": "reasoning", "summary": [], "content": [], "status": "in_progress"}})
+                    if rs_index is None:
+                        rs_index = int(msg_index is not None)
+                        yield _sse("response.output_item.added", {"output_index": rs_index, "item": {"id": rs_id, "type": "reasoning", "summary": [], "content": [], "status": "in_progress"}})
                     r = str(r); reasoning.append(r)
                     # Codex consumes reasoning_summary_text.delta as live reasoning telemetry.
-                    yield _sse("response.reasoning_summary_text.delta", {"item_id": rs_id, "output_index": 0, "summary_index": 0, "delta": r})
-                    yield _sse("response.reasoning_text.delta", {"item_id": rs_id, "output_index": 0, "content_index": 0, "delta": r})
+                    yield _sse("response.reasoning_summary_text.delta", {"item_id": rs_id, "output_index": rs_index, "summary_index": 0, "delta": r})
+                    yield _sse("response.reasoning_text.delta", {"item_id": rs_id, "output_index": rs_index, "content_index": 0, "delta": r})
                 c = delta.get("content")
                 if c:
-                    oi = 1 if rs_open else 0
-                    if not msg_open:
-                        msg_open = True
-                        yield _sse("response.output_item.added", {"output_index": oi, "item": {"id": msg_id, "type": "message", "role": "assistant", "status": "in_progress", "content": []}})
+                    if msg_index is None:
+                        msg_index = int(rs_index is not None)
+                        yield _sse("response.output_item.added", {"output_index": msg_index, "item": {"id": msg_id, "type": "message", "role": "assistant", "status": "in_progress", "content": []}})
                     c = str(c); visible.append(c)
-                    yield _sse("response.output_text.delta", {"item_id": msg_id, "output_index": oi, "content_index": 0, "delta": c, "logprobs": []})
+                    yield _sse("response.output_text.delta", {"item_id": msg_id, "output_index": msg_index, "content_index": 0, "delta": c, "logprobs": []})
                 for tc in delta.get("tool_calls") or []:
                     if not isinstance(tc, dict): continue
                     idx = int(tc.get("index") or 0)
@@ -295,6 +297,7 @@ async def _stream(
                     if fn.get("name"): acc["function"]["name"] += str(fn["name"])
                     if fn.get("arguments"): acc["function"]["arguments"] += str(fn["arguments"])
     except Exception as exc:
+        allow_rearm = not terminal_stream_failure(exc)
         # Preserve Phase-7's canonical, already-sanitized credential interrupt
         # markers. Never forward arbitrary exception text or dictionary values.
         message = "Jack Responses stream failed"
@@ -315,21 +318,25 @@ async def _stream(
                   "error": {"code": "jack_responses_stream_error", "message": message}, "model": jk.CFG.virtual_model, "output": []}
         yield _sse("response.failed", {"response": failed, "error": failed["error"]}); return
     finally:
-        await jk.KERNEL._rearm_pending_tool_resume_for_messages(chat.get("messages"))
-        await jk.KERNEL._rearm_pending_debugging_resumes_for_messages(chat.get("messages"))
+        if allow_rearm:
+            await jk.KERNEL._rearm_pending_tool_resume_for_messages(chat.get("messages"))
+            await jk.KERNEL._rearm_pending_debugging_resumes_for_messages(chat.get("messages"))
 
     output: List[Dict[str, Any]] = []; oi = 0
-    if rs_open:
+    completed_items = {}
+    if rs_index is not None:
         text = "".join(reasoning)
         item = {"id": rs_id, "type": "reasoning", "summary": [{"type": "summary_text", "text": text}], "content": [{"type": "reasoning_text", "text": text}], "status": "completed"}
-        output.append(item)
-        yield _sse("response.reasoning_summary_text.done", {"item_id": rs_id, "output_index": oi, "summary_index": 0, "text": text})
-        yield _sse("response.output_item.done", {"output_index": oi, "item": item}); oi += 1
-    if msg_open:
+        completed_items[rs_index] = item
+        yield _sse("response.reasoning_summary_text.done", {"item_id": rs_id, "output_index": rs_index, "summary_index": 0, "text": text})
+    if msg_index is not None:
         text = "".join(visible)
         item = {"id": msg_id, "type": "message", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": text, "annotations": []}]}
+        completed_items[msg_index] = item
+    for oi, item in sorted(completed_items.items()):
         output.append(item)
-        yield _sse("response.output_item.done", {"output_index": oi, "item": item}); oi += 1
+        yield _sse("response.output_item.done", {"output_index": oi, "item": item})
+    oi = len(output)
     for idx in sorted(tool_acc):
         item = _tool_item(tool_acc[idx], kinds); output.append(item)
         yield _sse("response.output_item.done", {"output_index": oi, "item": item}); oi += 1

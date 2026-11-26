@@ -89,7 +89,7 @@ from jack_phase10_dynamic_authority import PendingAuthority, DynamicAuthorityUna
 from jack_cache_orchestrator import CacheOrchestrator
 from jack_cache_prefix_diagnostics import CacheBytePrefixProbe
 from jack_stage1_cache_stability import Stage1CacheStabilizer
-from jack_evidence_guard import TOOL_RESUME_PROVENANCE_NOTE
+from jack_evidence_guard import TOOL_RESUME_PROVENANCE_NOTE, terminal_stream_failure
 import os
 import shutil
 import socket
@@ -2678,7 +2678,7 @@ def _debugging_render_open_intake_report(run: DebuggingRunState) -> str:
 
 def _debugging_write_open_intake_report(run: DebuggingRunState) -> None:
     run.report_path.parent.mkdir(parents=True, exist_ok=True)
-    run.report_path.write_text(_debugging_render_open_intake_report(run), encoding="utf-8")
+    _debugging_atomic_replace_report(run.report_path, _debugging_render_open_intake_report(run))
 
 
 def _debugging_pass0_summary(run: DebuggingRunState) -> str:
@@ -2733,7 +2733,7 @@ def _debugging_freeze_intake(run: DebuggingRunState) -> None:
         if str(item.get("role") or "").lower() == "user" and str(item.get("content") or "").strip()
     ]
     run.intake_frozen = True
-    run.report_path.write_text(_debugging_render_report_through(run, 0), encoding="utf-8")
+    _debugging_atomic_replace_report(run.report_path, _debugging_render_report_through(run, 0))
     _debugging_validate_report_through(run, 0)
     LOG.info("Code Debugging user-origin intake frozen as Pass 0: run=%s report=%s", run.run_id, run.report_path)
 
@@ -4525,6 +4525,8 @@ def _tool_call_artifact_effect(tool_name: str, arguments_text: str) -> Tuple[str
 class RepeatedToolCycleInterrupt(HTTPException):
     """A completed-tool sequence would repeat again without new tool evidence."""
 
+    terminal_tool_cycle = True
+
     def __init__(self, cycle_length: int, repetitions: int):
         self.cycle_length = int(cycle_length)
         self.repetitions = int(repetitions)
@@ -5175,12 +5177,14 @@ def _phase4_partition_structured_tool_calls(
         )
 
         if structured.applicable:
-            candidate = (
-                jack_path_policy.rewrite_structured_tool_call_for_workspace_release(
+            try:
+                candidate = jack_path_policy.rewrite_structured_tool_call_for_workspace_release(
                     active_policy,
                     call,
                 )
-            )
+            except jack_path_policy.RepresentedPathError:
+                errors.append(f"tool call {index}: workspace path could not be resolved")
+                continue
             decision = jack_path_policy.authorize_structured_tool_call(
                 active_policy,
                 candidate,
@@ -13466,8 +13470,11 @@ class JackQwenKernel:
                         same_stage_resume=True,
                         pending_resume=state,
                     )
-                except Exception:
-                    await self._rearm_pending_debugging_intake_resume(state)
+                except Exception as exc:
+                    if terminal_stream_failure(exc):
+                        await self._retire_pending_debugging_intake_resume(state)
+                    else:
+                        await self._rearm_pending_debugging_intake_resume(state)
                     raise
             elif debugging_user_pending is not None:
                 state, user_message = debugging_user_pending
@@ -13477,8 +13484,11 @@ class JackQwenKernel:
                 ).request_fingerprint = _debugging_request_fingerprint(request_body)
                 try:
                     prepared = await self._resume_debugging_user_stage_nonstream(state, user_message)
-                except Exception:
-                    await self._rearm_pending_debugging_user_resume(state)
+                except Exception as exc:
+                    if terminal_stream_failure(exc):
+                        await self._retire_pending_debugging_user_resume(state)
+                    else:
+                        await self._rearm_pending_debugging_user_resume(state)
                     raise
             elif pending is not None:
                 state, tool_messages = pending
@@ -13489,8 +13499,11 @@ class JackQwenKernel:
                     ).request_fingerprint = _debugging_request_fingerprint(request_body)
                 try:
                     prepared = await self._resume_tool_stage_nonstream(state, tool_messages)
-                except Exception:
-                    await self._rearm_pending_tool_resume(state)
+                except Exception as exc:
+                    if terminal_stream_failure(exc):
+                        await self._retire_pending_tool_resume(state)
+                    else:
+                        await self._rearm_pending_tool_resume(state)
                     raise
             else:
                 if isinstance(messages, list) and messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "tool":
@@ -15138,10 +15151,19 @@ async def app_lifespan(_: FastAPI):
                 _write_runtime_manifest("stopping")
             except Exception:
                 pass
-        await ORCHESTRATION_EVENTS.close()
-        await BACKEND.close()
-        if claimed:
-            _remove_runtime_manifest()
+        try:
+            await ORCHESTRATION_EVENTS.close()
+        finally:
+            try:
+                await BACKEND.close()
+            finally:
+                try:
+                    ledger = globals().get("_JACK_AUTHORITY_LEDGER")
+                    if ledger is not None:
+                        await asyncio.to_thread(ledger.close)
+                finally:
+                    if claimed:
+                        _remove_runtime_manifest()
 
 
 APP = FastAPI(title="Jack Kernel", version=PUBLIC_VERSION, lifespan=app_lifespan)
@@ -16385,6 +16407,7 @@ async def _safe_public_stream(
     executor_context: Optional[Phase4ExecutorRequestContext] = None,
 ) -> AsyncIterator[bytes]:
     """Convert internal stage failures into a clean OpenAI SSE termination."""
+    allow_rearm = True
     try:
         if executor_context is None:
             stream = KERNEL.stream(body)
@@ -16400,9 +16423,7 @@ async def _safe_public_stream(
         if AGENTIC_MODE:
             _agentic_mark_stage1_failure(type(exc).__name__)
         LOG.exception("Jack streamed request failed; closing SSE cleanly")
-        if not isinstance(exc, (RepeatedLoopInterrupt, RepeatedToolCycleInterrupt)):
-            await KERNEL._rearm_pending_tool_resume_for_messages(body.get("messages"))
-        await KERNEL._rearm_pending_debugging_resumes_for_messages(body.get("messages"))
+        allow_rearm = not terminal_stream_failure(exc)
         detail = _diagnostic_text(exc.detail if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}")
         response_id = f"chatcmpl-jack-error-{uuid.uuid4().hex}"
         created = int(time.time())
@@ -16450,8 +16471,9 @@ async def _safe_public_stream(
         yield event({}, "stop")
         yield b"data: [DONE]\n\n"
     finally:
-        await KERNEL._rearm_pending_tool_resume_for_messages(body.get("messages"))
-        await KERNEL._rearm_pending_debugging_resumes_for_messages(body.get("messages"))
+        if allow_rearm:
+            await KERNEL._rearm_pending_tool_resume_for_messages(body.get("messages"))
+            await KERNEL._rearm_pending_debugging_resumes_for_messages(body.get("messages"))
         if AGENTIC_MODE:
             _AGENTIC_ACTIVE_TURN.set(None)
 
@@ -16727,7 +16749,7 @@ CLI_DEFAULTS: Dict[str, Any] = {
     "config_schema_version": CONFIG_SCHEMA_VERSION,
     "backend_profile": "lmstudio",
     "backend_base_url": "http://127.0.0.1:1234/v1",
-    "backend_model": "qwen3.6-35b-a3b",
+    "backend_model": "",
     "backend_auth_mode": "none",
     "backend_api_key": "",
     "backend_header_name": "",
@@ -16742,7 +16764,7 @@ CLI_DEFAULTS: Dict[str, Any] = {
     "agent_base_url": "",
     "api_key": "",
     "virtual_model": "jack-kernel",
-    "reasoning_level": "Local Agentic (Preserve Thinking)",
+    "reasoning_level": "x-high",
     "agentic_profile": "balanced",
     "coder_planner_profile": "flash",
     "translator_language": "en",
@@ -18042,7 +18064,7 @@ def _start_server_from_cli(cfg: Dict[str, Any]) -> None:
         if str(cfg.get("agentic_profile", "balanced")).lower() != "coder":
             print(f"Agentic profile  : {str(cfg.get('agentic_profile', 'balanced')).capitalize()}")
         if str(cfg.get("agentic_profile", "")).lower() == "coder":
-            print(f"Planner reasoning: {str(cfg.get('coder_planner_profile', 'thorough')).capitalize()}")
+            print(f"Planner reasoning: {str(cfg.get('coder_planner_profile', 'flash')).capitalize()}")
         if str(cfg.get("agentic_profile", "balanced")).lower() == "translated":
             language = _TRANSLATOR_LANGUAGE_ALIASES.get(str(cfg.get("translated_language", "en")).lower(), "en")
             print(f"Translated target: {TRANSLATOR_LANGUAGES[language]}")

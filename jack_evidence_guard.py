@@ -81,6 +81,29 @@ class StreamingIRQProtocolError(RuntimeError):
     """Ordinary stream-protocol failure at the guarded release boundary."""
 
 
+def terminal_stream_failure(exc: Exception) -> bool:
+    """Return whether stream quarantine and recovery must stop at this boundary."""
+    from jack_credential_guard import ProtectedCredentialInterrupt
+    from jack_loop_detector import PartialOutputLoopInterrupt, RepeatedLoopInterrupt
+    from jack_phase10_dynamic_authority import DynamicAuthorityUnavailable
+    from jack_policy_integrity import PolicyIntegrityUnavailable
+    from jack_runtime_code_guard import RuntimeCodeIntegrityUnavailable
+    from jack_source_drift_guard import SourceAuthorityUnavailable
+
+    detail = getattr(exc, "detail", None)
+    return (
+        isinstance(exc, (
+            StreamingIRQHardInterrupt, StreamingIRQProtocolError,
+            ProtectedCredentialInterrupt, PartialOutputLoopInterrupt, RepeatedLoopInterrupt,
+            DynamicAuthorityUnavailable, PolicyIntegrityUnavailable,
+            RuntimeCodeIntegrityUnavailable, SourceAuthorityUnavailable,
+        ))
+        or getattr(exc, "security_outcome", None) == "HARD_INTERRUPT"
+        or getattr(exc, "terminal_tool_cycle", False)
+        or (isinstance(detail, dict) and detail.get("security_outcome") == "HARD_INTERRUPT")
+    )
+
+
 class CanaryTier(str, Enum):
     """Deterministic canary ownership tier."""
 
@@ -1774,12 +1797,9 @@ async def _guarded_stream(
                 else chunk
             )
 
-    except (StreamingIRQHardInterrupt, StreamingIRQProtocolError):
-        # Protocol failure is not successful completion. Never finalize
-        # an unevaluated suffix after a malformed frame or hard interrupt.
-        raise
-
-    except Exception:
+    except Exception as exc:
+        if terminal_stream_failure(exc):
+            raise
         # Ordinary transport/stage failure is not itself a
         # security violation. Preserve deterministically safe
         # unreleased work before Jack's existing outer failure

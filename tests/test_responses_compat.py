@@ -148,3 +148,36 @@ def test_stream_emits_live_reasoning_text_tool_call_and_required_completed_event
     assert completed["output_text"] == "OK"
     assert completed["usage"]["total_tokens"] == 5
     assert any(item["type"] == "function_call" for item in completed["output"])
+
+
+@pytest.mark.parametrize("fields", [
+    ("content", "reasoning_content"), ("reasoning_content", "content")
+])
+def test_stream_item_index_stays_with_item(fields):
+    from types import SimpleNamespace
+
+    async def stream(_):
+        for field in fields + fields:
+            payload = {"choices": [{"delta": {field: "sample"}}]}
+            yield ("data: " + json.dumps(payload) + "\n\n").encode()
+
+    async def cleanup(_):
+        pass
+
+    kernel = SimpleNamespace(stream=stream, _rearm_pending_tool_resume_for_messages=cleanup,
+                             _rearm_pending_debugging_resumes_for_messages=cleanup)
+    jk = SimpleNamespace(CFG=SimpleNamespace(virtual_model="test"), KERNEL=kernel)
+
+    async def run():
+        return [json.loads(next(line[6:] for line in chunk.decode().splitlines()
+                                if line.startswith("data: ")))
+                async for chunk in compat._stream(jk, {}, {})]
+
+    events = asyncio.run(run())
+    output = events[-1]["response"]["output"]
+    expected = ["message" if field == "content" else "reasoning" for field in fields]
+    assert [item["type"] for item in output] == expected
+    for event in events:
+        if "output_index" in event:
+            item_id = event.get("item_id") or event["item"]["id"]
+            assert output[event["output_index"]]["id"] == item_id

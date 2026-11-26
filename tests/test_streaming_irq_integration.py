@@ -1270,3 +1270,24 @@ def test_audit_m2_normal_completion_preserves_below_threshold_tail():
         yield b"data: [DONE]\n\n"
 
     assert visible_text(collect(source, window=0, maximum=0, canaries=canaries)) == "benign:" + tail
+
+
+def test_terminal_stage_interrupt_discards_outstanding_quarantine():
+    from jack_loop_detector import RepeatedLoopInterrupt
+
+    async def source(_body):
+        yield event({"content": "ordinary sample"})
+        raise RepeatedLoopInterrupt()
+
+    async def run():
+        chunks = []
+        try:
+            async for chunk in guard._guarded_stream(
+                source, {}, quarantine_window=8, quarantine_max_window=8
+            ):
+                chunks.append(chunk)
+        except RepeatedLoopInterrupt:
+            return visible_text(chunks)
+        raise AssertionError("terminal failure must propagate")
+
+    assert asyncio.run(run()) == "ordinary sample"[:-8]

@@ -1780,13 +1780,14 @@ def _safe_default_windows_read(
         canonical_system = normalize_represented_windows_path(system_root, environment=environment)
     except RepresentedPathError:
         return None
-    if not path_is_within_or_equal(target, canonical_system):
+    owner = _policy_object_windows_path(target)
+    if not path_is_within_or_equal(owner, canonical_system):
         return None
 
     # User-defined NEVER paths always outrank the default read-only exception,
     # including an explicit user NEVER root nested within C:\Windows.
     default_roots = frozenset(_default_windows_never_roots(environment))
-    if any(path_is_within_or_equal(target, root) for root in policy.never_roots if root not in default_roots):
+    if any(path_is_within_or_equal(owner, root) for root in policy.never_roots if root not in default_roots):
         return None
 
     # Workspace Lock remains non-negotiable even for non-mutating inspection.
@@ -1809,7 +1810,7 @@ def _safe_default_windows_read(
     )
     if any(
         path_is_within_or_equal(
-            target, ntpath.normcase(ntpath.normpath(ntpath.join(canonical_system, suffix)))
+            owner, ntpath.normcase(ntpath.normpath(ntpath.join(canonical_system, suffix)))
         )
         for suffix in sensitive
     ):
@@ -1920,6 +1921,7 @@ def _default_windows_never_only(
         )
     except RepresentedPathError:
         return False
+    canonical_target = _policy_object_windows_path(canonical_target)
     # The operation-aware soft denial applies ONLY to the ordinary Windows
     # installation tree, not Boot, Recovery, or System Volume Information.
     return (

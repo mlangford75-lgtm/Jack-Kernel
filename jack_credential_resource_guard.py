@@ -189,7 +189,9 @@ def fact_for_canonical_target(
     if policy is None:
         return None
 
-    canonical = ntpath.normcase(ntpath.normpath(canonical_target))
+    from jack_path_policy import _policy_object_windows_path
+
+    canonical = _policy_object_windows_path(ntpath.normcase(ntpath.normpath(canonical_target)))
     for resource in policy.resources:
         if canonical == resource.canonical_path:
             return CredentialResourceAuthorityFact(
