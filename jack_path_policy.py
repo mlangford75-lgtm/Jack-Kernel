@@ -4,7 +4,7 @@ import json
 import ntpath
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Mapping, Optional, Tuple
 
@@ -98,6 +98,10 @@ class RepresentedPathAuthorityFacts:
     invalid: bool
     deferred_to_executor: bool
     reason: str
+    # None: ordinary NEVER policy. True/False: positively identified default
+    # Windows read operation is eligible/restricted. Keep the raw NEVER match
+    # separately for the authority ledger.
+    default_windows_read: Optional[bool] = None
 
 
 @dataclass(frozen=True)
@@ -1756,6 +1760,7 @@ def _safe_default_windows_read(
     *,
     executor_cwd: Optional[str] = None,
     defer_relative_without_executor: bool = False,
+    facts: Optional[RepresentedPathAuthorityFacts] = None,
 ) -> Optional[PathAuthorizationDecision]:
     """Narrow host-authoritative read exemption for the *default* Windows tree.
 
@@ -1764,11 +1769,12 @@ def _safe_default_windows_read(
     Non-Windows, dynamic, or unresolved paths do not receive this exemption.
     A None result means: apply the original path policy unchanged.
     """
-    facts = inspect_represented_path(
-        policy, represented_target,
-        executor_cwd=executor_cwd,
-        defer_relative_without_executor=defer_relative_without_executor,
-    )
+    if facts is None:
+        facts = inspect_represented_path(
+            policy, represented_target,
+            executor_cwd=executor_cwd,
+            defer_relative_without_executor=defer_relative_without_executor,
+        )
     target = facts.canonical_target
     if not facts.never_match or not facts.deterministic or not target:
         return None
@@ -2012,16 +2018,11 @@ def authorize_command_tool_call(
         # Only a single verified read-only command may inspect the default
         # Windows tree. Multi-segment or unclassified commands retain legacy
         # NEVER enforcement, including a hard interrupt for known system paths.
-        read_exception = (
-            _safe_default_windows_read(
-                policy, prepared_target, executor_cwd=canonical_cwd
-            )
-            if _safe_default_read_command(call, extraction) else None
-        )
-        decision = read_exception or authorize_represented_path(
+        decision = authorize_represented_path(
             policy,
             prepared_target,
             executor_cwd=canonical_cwd,
+            verified_default_windows_read=_safe_default_read_command(call, extraction),
         )
         if (
             decision.outcome is PathAuthorizationOutcome.HARD_INTERRUPT
@@ -2240,32 +2241,22 @@ def authorize_structured_tool_call(
             )
 
         tool_name = str(function.get("name") or "").strip().casefold()
-        read_exception = (
-            _safe_default_windows_read(policy, executor_cwd)
-            if tool_name in _SAFE_DEFAULT_READ_STRUCTURED else None
-        )
-        cwd_decision = read_exception or authorize_represented_path(
+        cwd_decision = authorize_represented_path(
             policy,
             executor_cwd,
+            verified_default_windows_read=tool_name in _SAFE_DEFAULT_READ_STRUCTURED,
         )
         if cwd_decision.outcome is not PathAuthorizationOutcome.ALLOW:
             return cwd_decision
 
     for represented_target in extraction.targets:
         tool_name = str(function.get("name") or "").strip().casefold()
-        read_exception = (
-            _safe_default_windows_read(
-                policy, represented_target,
-                executor_cwd=executor_cwd,
-                defer_relative_without_executor=defer_relative_without_executor,
-            )
-            if tool_name in _SAFE_DEFAULT_READ_STRUCTURED else None
-        )
-        decision = read_exception or authorize_represented_path(
+        decision = authorize_represented_path(
             policy,
             represented_target,
             executor_cwd=executor_cwd,
             defer_relative_without_executor=defer_relative_without_executor,
+            verified_default_windows_read=tool_name in _SAFE_DEFAULT_READ_STRUCTURED,
         )
 
         if decision.outcome is PathAuthorizationOutcome.HARD_INTERRUPT:
@@ -2436,27 +2427,61 @@ def inspect_represented_path(
     )
 
 
+def inspect_operation_path(
+    policy: RuntimePathPolicy,
+    represented_path: Any,
+    *,
+    executor_cwd: Optional[str] = None,
+    defer_relative_without_executor: bool = False,
+    verified_default_windows_read: bool = False,
+) -> RepresentedPathAuthorityFacts:
+    """Derive operation-aware facts before any consequence is selected.
+
+    The read-only flag is supplied only by Jack-owned tool/command contracts;
+    no caller field participates in this decision.
+    """
+    facts = inspect_represented_path(
+        policy, represented_path, executor_cwd=executor_cwd,
+        defer_relative_without_executor=defer_relative_without_executor,
+    )
+    if verified_default_windows_read:
+        exception = _safe_default_windows_read(
+            policy, represented_path, executor_cwd=executor_cwd,
+            defer_relative_without_executor=defer_relative_without_executor,
+            facts=facts,
+        )
+        if exception is not None:
+            facts = replace(
+                facts,
+                default_windows_read=exception.outcome is PathAuthorizationOutcome.ALLOW,
+                reason=exception.reason,
+            )
+    return facts
+
+
 def authorize_represented_path(
     policy: RuntimePathPolicy,
     represented_path: Any,
     *,
     executor_cwd: Optional[str] = None,
     defer_relative_without_executor: bool = False,
+    verified_default_windows_read: bool = False,
 ) -> PathAuthorizationDecision:
     """Legacy Phase-4 mapping from the shared raw represented-path facts."""
 
-    facts = inspect_represented_path(
+    facts = inspect_operation_path(
         policy,
         represented_path,
         executor_cwd=executor_cwd,
         defer_relative_without_executor=defer_relative_without_executor,
+        verified_default_windows_read=verified_default_windows_read,
     )
 
     if facts.deferred_to_executor:
         outcome = PathAuthorizationOutcome.ALLOW
-    elif facts.never_match:
+    elif facts.never_match and facts.default_windows_read is None:
         outcome = PathAuthorizationOutcome.HARD_INTERRUPT
-    elif facts.invalid:
+    elif facts.default_windows_read is False or facts.invalid:
         outcome = PathAuthorizationOutcome.DENY_AND_CONTINUE
     elif facts.workspace_configured and (
         not facts.deterministic or facts.inside_workspace is False

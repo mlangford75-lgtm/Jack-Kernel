@@ -186,9 +186,9 @@ def _decision_for_fact(fact: AuthorityFact, *, boundary: ConsequenceBoundary, ou
     if isinstance(fact, path_policy.RepresentedPathAuthorityFacts):
         if fact.deferred_to_executor:
             return _single(fact, allow, ContainmentScope.NONE, False)
-        if fact.never_match:
+        if fact.never_match and fact.default_windows_read is None:
             return _single(fact, hard, _path_scope(boundary, hard=True), True)
-        denied = fact.invalid or (
+        denied = fact.default_windows_read is False or fact.invalid or (
             fact.workspace_configured
             and (not fact.deterministic or fact.inside_workspace is False)
         )
@@ -324,12 +324,14 @@ def _install_represented_path_gate(
         *,
         executor_cwd: Optional[str] = None,
         defer_relative_without_executor: bool = False,
+        verified_default_windows_read: bool = False,
     ) -> Any:
-        raw = path_policy.inspect_represented_path(
+        raw = path_policy.inspect_operation_path(
             policy,
             represented_path,
             executor_cwd=executor_cwd,
             defer_relative_without_executor=defer_relative_without_executor,
+            verified_default_windows_read=verified_default_windows_read,
         )
 
         # Preserve the meaning of the frozen Phase-6 path record: it continues to
