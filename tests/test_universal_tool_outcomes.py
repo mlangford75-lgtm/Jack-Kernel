@@ -96,10 +96,14 @@ def test_shared_resume_preserves_legacy_shape_and_marks_reported_failures():
             secondary_system="",
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
             tools=None, tool_choice=None,
-            expected_tool_call_ids=[call_id],
+            expected_tool_call_ids=(call_id,),
             created_at=time.time(),
             debugging_run_id=None,
         )
+        state.history.append({"role": "assistant", "content": "", "tool_calls": [
+            {"id": call_id, "type": "function", "function": {"name": "read", "arguments": '{"path":"test.txt"}'}}
+        ], "_jack_internal_tool_exchange": True})
+        kernel.KERNEL._pending_authority.register(state)
         kernel.KERNEL._pending_tool_resumes[call_id] = state
         try:
             selected = await kernel.KERNEL._consume_pending_tool_resume([

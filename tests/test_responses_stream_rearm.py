@@ -26,12 +26,16 @@ def test_responses_stream_failure_rearms_real_pending_tool_resume_and_allows_ret
         usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         tools=None,
         tool_choice=None,
-        expected_tool_call_ids=[call_id],
+        expected_tool_call_ids=(call_id,),
         created_at=time.time(),
         debugging_run_id=None,
     )
-    state.in_flight = True
+    state.history.append({"role": "assistant", "content": "", "tool_calls": [
+        {"id": call_id, "type": "function", "function": {"name": "read", "arguments": '{"path":"test.txt"}'}}
+    ], "_jack_internal_tool_exchange": True})
+    kernel.KERNEL._pending_authority.register(state)
     kernel.KERNEL._pending_tool_resumes[call_id] = state
+    kernel.KERNEL._pending_authority.transition(state, in_flight=True)
 
     async def failing_stream(_body):
         if False:

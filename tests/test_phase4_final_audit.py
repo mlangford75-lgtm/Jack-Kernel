@@ -322,6 +322,7 @@ def test_pending_snapshot_returns_exact_released_call():
         expected_tool_call_ids=("call-read",),
         created_at=10**12,
     )
+    jack._pending_authority.register(state)
     jack._pending_tool_resumes["call-read"] = state
 
     snapshot = asyncio.run(

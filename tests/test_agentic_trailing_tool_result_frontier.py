@@ -32,7 +32,7 @@ def load(monkeypatch, tmp_path):
     return module
 
 
-def checkpoint(k, call_ids, *, suffix):
+def checkpoint(k, call_ids, *, suffix, withheld=()):
     history = [{"role": "user", "content": "Build and verify analog clock webpage."}]
     k._agentic_begin_turn(history, fresh=True)
     k._agentic_turn_status(history, "awaiting_tool")
@@ -45,7 +45,13 @@ def checkpoint(k, call_ids, *, suffix):
         tools=None, tool_choice="auto",
         expected_tool_call_ids=tuple(call_ids),
         created_at=time.time(),
+        withheld_tool_call_ids=tuple(withheld),
     )
+    state.history.append({"role": "assistant", "content": "", "tool_calls": [
+        call(call_id)["tool_calls"][0] for call_id in call_ids
+    ], "_jack_internal_tool_exchange": True})
+    # Model a released checkpoint, not an unsealed mutable index entry.
+    k.KERNEL._pending_authority.register(state)
     for call_id in call_ids:
         k.KERNEL._pending_tool_resumes[call_id] = state
     return state
@@ -142,8 +148,7 @@ def test_current_batch_rejects_missing_duplicate_and_altered_results(monkeypatch
 def test_withheld_call_in_current_batch_is_still_rejected(monkeypatch, tmp_path):
     async def run():
         k = load(monkeypatch, tmp_path)
-        state = checkpoint(k, ["allowed"], suffix="allowed")
-        state.withheld_tool_call_ids = ("denied",)
+        state = checkpoint(k, ["allowed"], suffix="allowed", withheld=("denied",))
         request = [{"role": "user", "content": "Task"}, call("allowed"),
                    tool("allowed", "ok"), tool("denied", "untrusted")]
         with pytest.raises(k.HTTPException, match="Jack-withheld"):

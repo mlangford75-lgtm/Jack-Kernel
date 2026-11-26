@@ -233,7 +233,7 @@ def test_streamed_workspace_denial_preserves_cognition_and_corrects_same_stage()
     )
     assert any(
         packet.get("kind") == "reasoning"
-        and "PHASE-4 FILESYSTEM ACTION REJECTED" in packet.get("text", "")
+        and "JACK SECURITY — RESTRICTED PATHS: ACTION DENIED BEFORE EXECUTION" in packet.get("text", "")
         for packet in packets
     )
 
