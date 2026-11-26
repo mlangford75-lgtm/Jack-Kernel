@@ -1112,6 +1112,31 @@ def _looks_path_like_cli_value(value: str) -> bool:
     )
 
 
+def _unknown_command_path_operands(args: list[str]) -> Tuple[str, ...]:
+    """Retain visible path operands without claiming unknown command semantics.
+
+    An ambiguous command is still ambiguous. Positive, represented filesystem
+    paths must nevertheless reach the same policy gate as recognized commands.
+    URI operands and arbitrary option expressions are not filesystem facts.
+    """
+    targets = []
+    for arg in args:
+        value = _strip_token_quotes(arg)
+        if not value:
+            continue
+        # Common literal option=value / name=value operands (for example,
+        # --output=path). Do not interpret arbitrary expressions as paths.
+        if "=" in value:
+            name, candidate = value.split("=", 1)
+            if re.fullmatch(r"(?:--?)?[A-Za-z][A-Za-z0-9_-]*", name):
+                value = _strip_token_quotes(candidate)
+        if value.startswith("-") or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", value):
+            continue
+        if _looks_path_like_cli_value(value):
+            targets.append(value)
+    return tuple(targets)
+
+
 def _path_operand_tokens(tokens: list[str]) -> Tuple[Tuple[str, ...], bool]:
     targets = []
     ambiguous = False
@@ -1468,6 +1493,7 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
                     targets.append(item)
             return tuple(targets), uses_cwd, ambiguous
 
+    targets.extend(_unknown_command_path_operands(args))
     return tuple(targets), False, True
 
 
@@ -1575,6 +1601,7 @@ def _powershell_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], boo
     if command in {"git", "pytest", "py.test", "python", "python3", "py", "dotnet"}:
         return _bash_segment_targets(filtered)
 
+    targets.extend(_unknown_command_path_operands(args))
     return tuple(targets), False, True
 
 

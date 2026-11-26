@@ -110,6 +110,22 @@ assert "exact protected credential resource" in protected_decision.reason
 assert parent_decision.outcome.value == "ALLOW"
 assert adjacent_decision.outcome.value == "ALLOW"
 
+# Unknown shell commands remain ambiguous, but a literal credential-resource
+# operand must still reach the shared Phase-5/6/7 represented-path authority.
+for dialect in ("bash", "powershell"):
+    for target, expected in ((protected, "DENY_AND_CONTINUE"), (adjacent, "ALLOW")):
+        represented = target.replace(chr(92), "/")
+        command = 'unknown-inspector "' + represented + '"'
+        with authority_ledger.live_ledger_scope(ledger):
+            decision = path_policy.authorize_command_tool_call(
+                runtime_path_policy,
+                {"function": {"name": dialect, "arguments": json.dumps({"command": command})}},
+                command_dialect=dialect,
+            )
+        assert decision.outcome.value == expected, decision.reason
+        if target == protected:
+            assert "exact protected credential resource" in decision.reason
+
 # Model-input isolation owns disposition at the client transport seam. The
 # backend intentionally translates that internal interrupt into a generic
 # HTTPException, while the Phase-7 ledger records the original transport fact.

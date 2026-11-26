@@ -26,7 +26,7 @@ Draft PR: #179. Main is not a target. No item is closed solely on static analysi
 | C-1 | Maintainer scope decision | Secret-header identification without false positives |
 | C-2 | Maintainer scope decision | Evidence endpoint disclosure and integrity coverage |
 | C-3 | Maintainer scope decision | Worker-event quarantine and replay semantics |
-| C-4 | Maintainer scope decision | Represented path coverage without claiming OS sandbox |
+| C-4 | Candidate narrow alignment of unknown Bash/PowerShell literal operand extraction with existing represented-path authority; no new shell sandbox claim | Positive NEVER, exact credential resource, benign unlocked commands, locked ambiguity, full regression |
 | C-5 | Maintainer scope decision | Secured operational entrypoint and test escape hatch |
 | C-6 | Maintainer scope decision | Demonstrated authority-bearing dependency inventory |
 | CL-1 | Open | Dependency proof and regression before dead code removal |
@@ -60,3 +60,9 @@ Full Windows CI: 1,614 passed, 218 failed. Exact comparison with main 9a6fe53d (
 ### M-12 shutdown qualification candidate
 
 The actual lifespan already invokes ledger.close off the event loop after orchestration and backend cleanup. Source review identified an enqueue-before-writer-start race and silent bounded-drain timeout in close itself. This revision closes projection admission under the authority lock before drain, preserves queued records, makes repeated closure safe, and logs incomplete shutdown without changing security outcomes or predecessor authority. New tests exercise real lifespan normal/backend-failure paths in an isolated process and deterministic queue-start and timeout/retry behavior. Pending CI; no closure claimed. C-1 is deliberately excluded by the existing closed-known-source credential-policy tests; a future extension must distinguish explicitly identified secret headers from ordinary header values rather than enroll all extra headers indiscriminately.
+
+### M-13 executed qualification and C-4 candidate
+
+Commit 3ce3c1e2: all four specialized workflows passed; full Windows regression 1,616 passed / 218 failed, zero new failure identities versus main 9a6fe53d. The two additional debugging durability/lifecycle tests passed. Full CI remains red due to inherited failures. Commit 83fbf1b7 qualification remains pending.
+
+C-4 scope choice for the experimental branch: extend the existing represented-path contract to obvious literal operands of otherwise unknown Bash/PowerShell commands. Keep ambiguity, existing Workspace Lock rules, and normal unlocked use for unclassified semantics without a positive prohibited path. Skip URI operands and do not evaluate arbitrary command expressions. Existing Phase-4/5/6/7 admission owns consequences; no new sandbox promise. This is a candidate for review and qualification, not an approved expansion to general command execution control.

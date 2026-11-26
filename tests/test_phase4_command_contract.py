@@ -466,3 +466,51 @@ def test_quoted_literal_parentheses_are_not_misclassified_as_expression_syntax()
     )
 
     assert decision.outcome is policy.PathAuthorizationOutcome.ALLOW
+
+
+@pytest.mark.parametrize(
+    "dialect, command",
+    (
+        ("bash", 'unknown-inspector "C:/Boot/BCD"'),
+        ("bash", 'unknown-inspector --output="D:/Sensitive/file.txt"'),
+        ("powershell", r'Unknown-Inspector -LiteralPath "C:\Boot\BCD"'),
+        ("powershell", r'Unknown-Inspector "D:\Sensitive\file.txt"'),
+    ),
+)
+def test_unknown_command_preserves_positive_never_targets_without_workspace_lock(dialect, command):
+    active = build(workspace=None, never=(r"D:\Sensitive",))
+    extraction = policy.extract_command_paths(dialect, {"command": command})
+    assert extraction.applicable and extraction.ambiguous
+    assert extraction.targets
+    decision = policy.authorize_command_tool_call(
+        active, call(dialect, command),
+        executor_cwd=r"D:\Ordinary", command_dialect=dialect,
+    )
+    assert decision.outcome is policy.PathAuthorizationOutcome.HARD_INTERRUPT
+
+
+@pytest.mark.parametrize("dialect", ("bash", "powershell"))
+def test_unknown_command_keeps_workspace_and_ambiguity_contract(dialect):
+    command = 'unknown-inspector "D:/Projects/Jack/file.txt" https://example.invalid/repo'
+    extraction = policy.extract_command_paths(dialect, {"command": command})
+    assert extraction.ambiguous
+    assert extraction.targets == ("D:/Projects/Jack/file.txt",)
+    for workspace, expected in (
+        (None, policy.PathAuthorizationOutcome.ALLOW),
+        (r"D:\Projects\Jack", policy.PathAuthorizationOutcome.DENY_AND_CONTINUE),
+    ):
+        decision = policy.authorize_command_tool_call(
+            build(workspace=workspace), call(dialect, command),
+            executor_cwd=r"D:\Projects\Jack", command_dialect=dialect,
+        )
+        assert decision.outcome is expected
+
+
+@pytest.mark.parametrize("dialect", ("bash", "powershell"))
+def test_unknown_command_with_no_visible_filesystem_operands_remains_usable_unlocked(dialect):
+    command = "unknown-inspector https://example.invalid/repo --verbose"
+    extraction = policy.extract_command_paths(dialect, {"command": command})
+    assert extraction.ambiguous and not extraction.targets
+    assert policy.authorize_command_tool_call(
+        build(workspace=None), call(dialect, command), command_dialect=dialect,
+    ).outcome is policy.PathAuthorizationOutcome.ALLOW
