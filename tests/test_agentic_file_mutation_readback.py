@@ -9,7 +9,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.mark.parametrize("profile", ["thorough", "balanced", "flash"])
+@pytest.mark.parametrize("profile", ["thorough", "balanced", "flash", "translated"])
 def test_jack_stage1_requires_write_edit_readback_in_all_agentic_profiles(
     monkeypatch, tmp_path, profile
 ):
@@ -33,7 +33,9 @@ def test_jack_stage1_requires_write_edit_readback_in_all_agentic_profiles(
     stage2 = k.STAGES["extended_reflection"]
     retrospective = k.build_stage_system_prompt("Caller system", stage2)
     assert "Whenever you use a write or edit tool" not in retrospective
-    assert "Begin with a brief description of the current task" in retrospective
+    assert "No task description" in retrospective
+    assert "Do not issue tool calls" in retrospective
+    assert "Caller system" not in retrospective
     assert stage2.allow_tools is False
 
     # Flash still receives the rule despite disabling native thinking.

@@ -65,7 +65,7 @@ def current_turn_tools(n=1):
 def test_stage_contracts_and_frozen_answer_are_separate():
     k = load_kernel()
     assert k.AGENTIC_STAGE1_PROMPT.startswith("Reasoning effort is set to xhigh.")
-    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
+    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
     assert k.STAGES["extended_initial"].allow_tools is True
     assert k.STAGES["extended_reflection"].allow_tools is False
 
@@ -249,7 +249,7 @@ def test_stage2_extensions_are_removed_without_disabling_core_memory():
     k = load_kernel()
     source = SRC.read_text(encoding="utf-8")
     assert k.STAGES["extended_reflection"].allow_tools is False
-    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
+    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
     assert not hasattr(k, "AGENTIC_STAGE2_FINAL_PAPER_EXPERIMENT")
     assert not hasattr(k, "AGENTIC_DIFFERENTIAL_MEMORY_EXPERIMENT")
     assert "Verify your reasoning and verify anything else needed to fulfill the user request." not in k.AGENTIC_36_STAGE2_PROMPT

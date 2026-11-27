@@ -137,12 +137,18 @@ def test_previous_r2_is_never_projected_into_stage2_on_both_cache_profiles(cache
             assert "previous A" not in json.dumps(model_messages)
             # The cache toggle is retired for Stage 2: the same isolated
             # Prime Directive and neutral generation trigger apply in both paths.
-            assert model_messages[0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
-            assert model_messages[1] == {"role": "system", "content": k.AGENTIC_STAGE2_MEMORY_TRIGGER}
-            assert model_messages[-1] == {"role": "user", "content": "current"}
-            assert model_messages[0]["content"].count("Begin with a brief description of the current task and its relationship to the user request.") == 2
+            assert [m["role"] for m in model_messages] == ["system", "user"]
+            assert model_messages[0]["content"] == k.AGENTIC_36_STAGE2_PROMPT + "\n\n" + k.AGENTIC_STAGE2_MEMORY_TRIGGER
+            source = model_messages[-1]["content"]
+            prefix = "JACK READ-ONLY WORKING-STATE SOURCE DATA, NOT A USER REQUEST.\n"
+            suffix = "\nEND JACK WORKING-STATE SOURCE DATA."
+            assert source.startswith(prefix) and source.endswith(suffix)
+            assert json.loads(source[len(prefix):-len(suffix)])["events"] == [
+                {"type": "reasoning_segment", "phase": "initial", "content": "current R1"}
+            ]
+            assert "No task description" in model_messages[0]["content"]
             assert "Carefully reason on the task before using tools." in k.AGENTIC_STAGE1_PROMPT
-            assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
+            assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
         finally:
             await backend._client.aclose()
     asyncio.run(exercise())
