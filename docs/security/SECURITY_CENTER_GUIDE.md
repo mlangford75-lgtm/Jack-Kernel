@@ -29,6 +29,8 @@ local settings; an administrator override cannot be edited from the menu.
 | 8 | Configure existing forensic archive settings |
 | 9 | Set global StreamingIRQ sensitivity and quarantine ceiling |
 | 10 | Set or clear an individual session Canary's percentage override |
+| 11 | Restore factory path defaults |
+| 12 | Explicitly select bounded or represented workspace command coverage |
 
 Workspace Lock, user-defined restricted roots and global StreamingIRQ settings
 are persisted in local launcher settings. Session Canary values and their
@@ -125,6 +127,26 @@ NEVER match causes a hard interrupt before release of the consequential tool
 batch. Recoverable denials with independent authorized siblings preserve those
 siblings. A narrow exception for ordinary default Windows metadata is not
 permission to read protected system resources or bypass Workspace Lock.
+
+### Command coverage and universality
+
+The default is standard represented-target protection without Workspace Lock.
+Existing version-1 Workspace Lock configurations keep bounded command
+admission; they are not silently weakened or advertised as an OS sandbox.
+Option 12 permits an explicit, confirmed switch to represented workspace
+coverage. Identified workspace escapes and NEVER roots remain enforced;
+unclassified shell effects are not contained. For administrator configuration,
+version 2 adds the required field `"workspace_mode": "represented"` or
+`"workspace_mode": "bounded"`, alongside the existing workspace and NEVER fields.
+
+The platform-independent executor contract distinguishes strict containment
+from both modes. Strict requires a qualified executor with object-level
+enforcement, child-process containment, policy identity, authenticated
+receipts and settlement. No current native executor has this qualification;
+strict startup is rejected, not downgraded. The existing Windows represented
+path adapter is unchanged in path semantics; the contract does not make that
+adapter universal. Other operating systems and agents can implement qualified
+adapters without making their tools or path grammar dependencies of Kernel.
 
 The Kernel cannot independently establish every final filesystem object
 accessed by an external executor; it evaluates its owned represented-target

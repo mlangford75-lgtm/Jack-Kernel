@@ -5350,7 +5350,7 @@ def _phase4_partition_structured_tool_calls(
 
         if (
             not contract_applied
-            and active_policy.workspace_enabled
+            and active_policy.requires_bounded_command_contract
             and jack_path_policy.is_command_capability_tool_name(function_name)
         ):
             errors.append(
@@ -17389,6 +17389,12 @@ def _security_center_policies(cfg: Dict[str, Any]):
 def _security_center_summary(cfg: Dict[str, Any]) -> None:
     paths, canaries, _, _ = _security_center_policies(cfg)
     print(_status_value("Workspace Lock", "ON" if paths.workspace_root is not None else "OFF"))
+    print(_status_value("Filesystem protection", {
+        "standard": "STANDARD (represented targets; no workspace containment)",
+        "bounded": "BOUNDED WORKSPACE (legacy parser; not OS containment)",
+        "represented": "REPRESENTED WORKSPACE (unknown command effects not contained)",
+        "strict": "STRICT EXECUTOR CONTAINMENT",
+    }[paths.filesystem_protection.value]))
     print(_status_value("Restricted roots", str(len(paths.never_roots))))
     print(_status_value("User NEVER paths", str(len(paths.user_never_roots))))
     import jack_path_policy as path_settings
@@ -17454,6 +17460,7 @@ def _edit_security_center(cfg: Dict[str, Any]) -> None:
         print("9  StreamingIRQ sensitivity and quarantine ceiling")
         print("10 Set or clear an individual Canary sensitivity override")
         print("11 Restore factory path defaults (clear optional path restrictions)")
+        print("12 Select workspace command coverage (bounded or represented)")
         print("S  Save and apply settings    M  Discard and return")
         choice = _cli_input("Security > ").strip().lower()
         if choice == "s":
@@ -17471,6 +17478,25 @@ def _edit_security_center(cfg: Dict[str, Any]) -> None:
                 continue
             if _cli_input("Clear Workspace Lock and all user-defined NEVER paths? [y/N]: ").strip().lower() == "y":
                 apply_candidate("security_path_policy", None)
+            continue
+        if choice == "12":
+            if override(paths.STATIC_PATH_POLICY_ENV):
+                continue
+            candidate = copy.deepcopy(cfg.get("security_path_policy") or {})
+            if not candidate.get("workspace_root"):
+                print("Configure a workspace directory first.")
+                continue
+            print("Bounded: rejects unclassified commands; not OS containment.")
+            print("Represented: enforces identified paths; unknown effects are not contained.")
+            selected = _cli_input("Coverage [bounded/represented] (blank cancels): ").strip().lower()
+            if selected not in {"bounded", "represented"}:
+                continue
+            if selected == "represented":
+                if _cli_input("Accept represented-only coverage, not full containment? [y/N]: ").strip().lower() != "y":
+                    continue
+            candidate["version"] = 2
+            candidate["workspace_mode"] = selected
+            apply_candidate("security_path_policy", candidate)
             continue
         if choice in {"1", "2", "3", "4"}:
             if override(paths.STATIC_PATH_POLICY_ENV):
@@ -17490,6 +17516,8 @@ def _edit_security_center(cfg: Dict[str, Any]) -> None:
                 if _cli_input("Disable Workspace Lock? [y/N]: ").strip().lower() != "y":
                     continue
                 candidate["workspace_root"] = None
+                candidate["version"] = 1
+                candidate.pop("workspace_mode", None)
             else:
                 for index, root in enumerate(candidate["never_paths"], 1):
                     print(f"  {index}: {root!r}")

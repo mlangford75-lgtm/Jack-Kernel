@@ -8,6 +8,8 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Mapping, Optional, Tuple
 
+from jack_executor_contract import FilesystemProtection, effective_protection
+
 
 STATIC_PATH_POLICY_ENV = "JACK_PATH_POLICY_JSON"
 STATIC_PATH_POLICY_VERSION = 1
@@ -210,6 +212,8 @@ class RuntimePathPolicy:
     )
     # Preserve explicit intent even when the same root also ships by default.
     user_never_roots: Tuple[str, ...] = ()
+    # Legacy locks keep bounded admission; represented coverage is opt-in.
+    workspace_mode: str = "bounded"
 
     def __post_init__(self) -> None:
         if not isinstance(self.runtime_id, str) or not self.runtime_id:
@@ -217,6 +221,11 @@ class RuntimePathPolicy:
         if not isinstance(self.lane_id, str) or not self.lane_id:
             raise ValueError("lane_id must not be empty")
 
+        protection = effective_protection(self.workspace_root is not None, self.workspace_mode)
+        if protection is FilesystemProtection.STRICT:
+            # The native runtime has no qualified containment integration.
+            # Never silently treat an unqualified executor as strict.
+            raise ValueError("strict executor containment is unavailable in the native runtime")
         if self.workspace_root is not None:
             _require_canonical_absolute(self.workspace_root, "workspace_root")
 
@@ -252,6 +261,14 @@ class RuntimePathPolicy:
     @property
     def workspace_enabled(self) -> bool:
         return self.workspace_root is not None
+
+    @property
+    def filesystem_protection(self) -> FilesystemProtection:
+        return effective_protection(self.workspace_enabled, self.workspace_mode)
+
+    @property
+    def requires_bounded_command_contract(self) -> bool:
+        return self.filesystem_protection is FilesystemProtection.BOUNDED
 
     def path_environment(self) -> Mapping[str, str]:
         # Return a new ordinary mapping so callers cannot mutate the authority
@@ -634,27 +651,33 @@ def build_runtime_path_policy(
                 f"{STATIC_PATH_POLICY_ENV} must be a JSON object"
             )
 
-        if set(payload) != {"version", "workspace_root", "never_paths"}:
+        version = payload.get("version")
+        if type(version) is not int or version not in {STATIC_PATH_POLICY_VERSION, 2}:
+            raise RuntimeError(f"{STATIC_PATH_POLICY_ENV} version must be 1 or 2")
+        fields = {"version", "workspace_root", "never_paths"}
+        if version == 2:
+            fields.add("workspace_mode")
+        if set(payload) != fields:
             raise RuntimeError(
                 f"{STATIC_PATH_POLICY_ENV} has unsupported top-level fields"
             )
 
-        version = payload.get("version")
-        if (
-            isinstance(version, bool)
-            or not isinstance(version, int)
-            or version != STATIC_PATH_POLICY_VERSION
-        ):
-            raise RuntimeError(
-                f"{STATIC_PATH_POLICY_ENV} version must be "
-                f"{STATIC_PATH_POLICY_VERSION}"
-            )
-
         raw_workspace = payload.get("workspace_root")
         raw_never = payload.get("never_paths")
+        workspace_mode = payload.get("workspace_mode", "bounded")
     else:
         raw_workspace = None
         raw_never = []
+        workspace_mode = "bounded"
+
+    if type(workspace_mode) is not str:
+        raise RuntimeError("workspace_mode must be a string")
+    try:
+        protection = effective_protection(raw_workspace is not None, workspace_mode)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from None
+    if protection is FilesystemProtection.STRICT:
+        raise RuntimeError("strict executor containment is unavailable; no qualified adapter is installed")
 
     if raw_workspace is not None and not isinstance(raw_workspace, str):
         raise RuntimeError(
@@ -708,6 +731,7 @@ def build_runtime_path_policy(
         never_roots=tuple(never_roots),
         _path_environment=snapshot,
         user_never_roots=tuple(user_never_roots),
+        workspace_mode=workspace_mode,
     )
     if workspace_root is not None and _effective_never_match(policy, workspace_root):
         raise RuntimeError(
@@ -2320,10 +2344,24 @@ def authorize_command_tool_call(
             return decision
 
     if extraction.ambiguous or extraction.error:
-        if policy.workspace_enabled:
+        if policy.requires_bounded_command_contract:
             return PathAuthorizationDecision(
                 PathAuthorizationOutcome.DENY_AND_CONTINUE,
                 "Workspace Lock requires command semantics to fit the bounded host-owned contract",
+            )
+        if policy.filesystem_protection is FilesystemProtection.REPRESENTED:
+            # A deliberate represented-only policy is not containment. The
+            # represented targets above still have full policy authority.
+            # Invalid command envelopes are not a request to execute.
+            command, error = _command_text_from_arguments(function.get("arguments"))
+            if error or not command:
+                return PathAuthorizationDecision(
+                    PathAuthorizationOutcome.DENY_AND_CONTINUE,
+                    "invalid command invocation under represented workspace protection",
+                )
+            return PathAuthorizationDecision(
+                PathAuthorizationOutcome.ALLOW,
+                "represented workspace protection: unclassified command effects are not contained",
             )
         return PathAuthorizationDecision(
             PathAuthorizationOutcome.ALLOW,
