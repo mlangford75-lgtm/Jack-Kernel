@@ -108,10 +108,22 @@ class LongCycleShadowDetector:
             snippet = b[offset:offset + _ANCHOR_WORDS]
             lower = max(0, offset - _ANCHOR_JITTER)
             upper = min(width - _ANCHOR_WORDS, offset + _ANCHOR_JITTER)
-            if any(snippet == a[i:i + _ANCHOR_WORDS] for i in range(lower, upper + 1)):
-                matched += 1
-                if matched == _MIN_ANCHOR_HITS:
-                    return True
+            # Search for the exact first word in C before allocating a slice.
+            # Every possible matching eight-word anchor starts with this word;
+            # retain the original inclusive jitter window and exact comparison.
+            if not snippet:
+                continue
+            while lower <= upper:
+                try:
+                    i = a.index(snippet[0], lower, upper + 1)
+                except ValueError:
+                    break
+                if snippet == a[i:i + _ANCHOR_WORDS]:
+                    matched += 1
+                    if matched == _MIN_ANCHOR_HITS:
+                        return True
+                    break
+                lower = i + 1
         return False
 
     @staticmethod
