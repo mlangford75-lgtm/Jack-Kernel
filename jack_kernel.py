@@ -86,7 +86,7 @@ from jack_loop_shadow import LongCycleShadowDetector, LongCycleRepeatedReasoning
 from jack_tool_outcomes import reported_tool_outcome, SUCCESS as TOOL_SUCCESS, FAILED as TOOL_FAILED, UNKNOWN as TOOL_UNKNOWN
 from jack_tool_recovery import ToolRecoveryState, ToolRecoveryExhausted, operation_key, POLICY_REPEAT_LIMIT
 from jack_tool_lifecycle import ToolLifecycleObserver
-from jack_phase10_dynamic_authority import PendingAuthority, DynamicAuthorityUnavailable
+from jack_policy_integrity_dynamic_authority import PendingAuthority, DynamicAuthorityUnavailable
 from jack_cache_orchestrator import CacheDecision, CacheOrchestrator
 from jack_cache_prefix_diagnostics import CacheBytePrefixProbe
 from jack_stage1_cache_stability import Stage1CacheStabilizer
@@ -18640,7 +18640,7 @@ def run_server() -> None:
     # Uvicorn configures its handlers after secure startup; cover the final handlers.
     privacy = globals().get("_JACK_DIAGNOSTIC_PRIVACY")
     if privacy is not None:
-        from jack_phase11_privacy import protect_logging_handlers
+        from jack_diagnostic_privacy import protect_logging_handlers
         protect_logging_handlers(privacy)
     server = uvicorn.Server(config)
     # Spawn a separate, fully optional process after the actual port is bound.

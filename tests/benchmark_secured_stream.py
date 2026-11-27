@@ -47,10 +47,10 @@ def profile_summary(profiler):
     stats = pstats.Stats(profiler)
     selected = {
         "jack_runtime_code_guard.py", "jack_source_drift_guard.py",
-        "jack_phase9b_enforcement.py", "jack_phase10_canary_enforcement.py",
-        "jack_phase10_credential_enforcement.py", "jack_phase10_dynamic_authority.py",
-        "jack_phase10_path_enforcement.py", "jack_evidence_guard.py",
-        "jack_credential_guard.py", "jack_phase11_privacy.py",
+        "jack_runtime_code_enforcement.py", "jack_policy_integrity_canary_enforcement.py",
+        "jack_policy_integrity_credential_enforcement.py", "jack_policy_integrity_dynamic_authority.py",
+        "jack_policy_integrity_path_enforcement.py", "jack_evidence_guard.py",
+        "jack_credential_guard.py", "jack_diagnostic_privacy.py",
     }
     rows = []
     modules = {}
@@ -100,11 +100,11 @@ def child(mode):
     if mode == "secured":
         import jack_secure_entrypoint as secure
         import jack_source_drift_guard as phase8
-        import jack_phase10_path_enforcement as path
-        import jack_phase10_canary_enforcement as canary
-        import jack_phase10_credential_enforcement as credential
-        import jack_phase11_privacy as privacy
-        import jack_phase9b_enforcement as phase9
+        import jack_policy_integrity_path_enforcement as path
+        import jack_policy_integrity_canary_enforcement as canary
+        import jack_policy_integrity_credential_enforcement as credential
+        import jack_diagnostic_privacy as privacy
+        import jack_runtime_code_enforcement as phase9
 
         source = phase8.install(jk, launch_entrypoint_path=Path(secure.__file__).resolve())
         secure._install_phase8_ledger_observer(jk, source)

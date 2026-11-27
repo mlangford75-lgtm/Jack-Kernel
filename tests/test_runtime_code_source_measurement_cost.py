@@ -11,7 +11,7 @@ import time
 from types import SimpleNamespace
 
 from jack_runtime_code_guard import RuntimeCodeAuthority
-import jack_phase9b_enforcement as phase9
+import jack_runtime_code_enforcement as phase9
 import jack_runtime_code_guard as code_guard
 
 

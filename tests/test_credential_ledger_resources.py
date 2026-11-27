@@ -73,7 +73,7 @@ kernel._install_bundled_runtime_extensions()
 
 assert kernel._JACK_PHASE7_LEDGER_INSTALLED is True
 assert kernel._JACK_CREDENTIAL_RESOURCE_GUARD_INSTALLED is True
-assert "jack_phase7_ledger.py" in kernel.RUNTIME_MANIFEST_COMPONENTS
+assert "jack_credential_ledger.py" in kernel.RUNTIME_MANIFEST_COMPONENTS
 assert "jack_credential_resource_guard.py" in kernel.RUNTIME_MANIFEST_COMPONENTS
 
 ledger = kernel._JACK_AUTHORITY_LEDGER
@@ -234,8 +234,8 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 import jack_kernel as jk
-import jack_phase10_canary_enforcement as canary_gate
-import jack_phase10_credential_enforcement as credential_gate
+import jack_policy_integrity_canary_enforcement as canary_gate
+import jack_policy_integrity_credential_enforcement as credential_gate
 
 secret = jk.CFG.api_key
 canary = "SYNTHETIC-CANARY-FULL-VALUE-9981"

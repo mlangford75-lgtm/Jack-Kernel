@@ -359,23 +359,23 @@ def main() -> None:
         # Install after Source Drift Protection and before Uvicorn/ASGI middleware startup.
         # Failure to seal the required manifest aborts secure-child startup.
         # Compose Policy Integrity path enforcement before Runtime Code Integrity seals dispatch.
-        import jack_phase10_path_enforcement
+        import jack_policy_integrity_path_enforcement
 
-        jack_phase10_path_enforcement.install(jk)
+        jack_policy_integrity_path_enforcement.install(jk)
 
-        import jack_phase10_canary_enforcement
-        import jack_phase10_credential_enforcement
+        import jack_policy_integrity_canary_enforcement
+        import jack_policy_integrity_credential_enforcement
 
-        jack_phase10_canary_enforcement.install(jk)
-        jack_phase10_credential_enforcement.install(jk)
+        jack_policy_integrity_canary_enforcement.install(jk)
+        jack_policy_integrity_credential_enforcement.install(jk)
 
-        import jack_phase11_privacy
+        import jack_diagnostic_privacy
 
-        jack_phase11_privacy.install(jk)
+        jack_diagnostic_privacy.install(jk)
 
-        import jack_phase9b_enforcement
+        import jack_runtime_code_enforcement
 
-        jack_phase9b_enforcement.install(jk)
+        jack_runtime_code_enforcement.install(jk)
 
     # The interactive launcher spawns a fresh serving child. Keep the bundled
     # runtime-extension path active in that child rather than falling back to a

@@ -408,11 +408,11 @@ def install(jk: Any) -> RuntimeCodeAuthority:
     # historical Source Drift Protection manifest frozen and extend this selected manifest.
     if getattr(jk, "_JACK_PHASE10_PATH_AUTHORITY", None) is not None:
         import jack_policy_integrity as static
-        import jack_phase10_path_enforcement as path_gate
-        import jack_phase10_canary_enforcement as canary_gate
-        import jack_phase10_credential_enforcement as credential_gate
-        import jack_phase10_dynamic_authority as dynamic
-        import jack_phase11_privacy as privacy
+        import jack_policy_integrity_path_enforcement as path_gate
+        import jack_policy_integrity_canary_enforcement as canary_gate
+        import jack_policy_integrity_credential_enforcement as credential_gate
+        import jack_policy_integrity_dynamic_authority as dynamic
+        import jack_diagnostic_privacy as privacy
         import jack_credential_guard as credential
         import jack_credential_resource_guard as resource
         import jack_diagnostic_guard as diagnostic

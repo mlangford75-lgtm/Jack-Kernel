@@ -15,7 +15,7 @@ import pytest
 
 import jack_source_drift_guard as phase8
 from jack_runtime_code_guard import RuntimeCodeAuthority, RuntimeCodeIntegrityCompromised
-from jack_phase9b_enforcement import Phase9BASGIGuard, install, DENIAL_BODY
+from jack_runtime_code_enforcement import Phase9BASGIGuard, install, DENIAL_BODY
 
 
 def _async_send(events):
@@ -402,7 +402,7 @@ def test_compromised_shared_path_authority_prevents_even_read_only_public_releas
 
 
 def test_compromised_pi_proxy_blocks_pi_read_only_status(tmp_path):
-    from jack_phase9b_enforcement import _http_authority_scopes
+    from jack_runtime_code_enforcement import _http_authority_scopes
     host, _calls = _integrated_host(tmp_path)
     guard = install(host)
     assert _http_authority_scopes({
@@ -466,7 +466,7 @@ def test_stream_integrity_failure_closes_predecessor_without_draining(tmp_path):
 
 
 def test_route_classification_monkeypatch_cannot_bypass_model_authority(tmp_path, monkeypatch):
-    import jack_phase9b_enforcement as phase9
+    import jack_runtime_code_enforcement as phase9
     host, calls = _integrated_host(tmp_path)
     guard = install(host)
 
@@ -496,7 +496,7 @@ def test_verifier_check_rebinding_is_a_shared_integrity_violation(tmp_path, monk
 
 
 def test_read_only_exception_set_cannot_be_expanded_after_sealing(monkeypatch):
-    import jack_phase9b_enforcement as phase9
+    import jack_runtime_code_enforcement as phase9
     monkeypatch.setattr(
         phase9, "OBSERVATION_PATHS",
         frozenset({"/jack/orchestration/events", "/v1/chat/completions"}),

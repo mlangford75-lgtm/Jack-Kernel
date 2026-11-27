@@ -96,7 +96,7 @@ class ProtectedDiagnosticFormatter(logging.Formatter):
 
 
 def install(jk):
-    from jack_phase10_canary_enforcement import policy_cells
+    from jack_policy_integrity_canary_enforcement import policy_cells
     from jack_evidence_guard import RuntimeCanaryPolicy
     cells = policy_cells(jk.KERNEL.run, RuntimeCanaryPolicy)
     if not cells:
@@ -131,7 +131,7 @@ def install_http_diagnostic_guard(jk, boundary):
     from starlette.exceptions import HTTPException as StarletteHTTPException
 
     from jack_policy_integrity import PolicyIntegrityUnavailable, PolicyIntegrityCompromised
-    from jack_phase10_dynamic_authority import DynamicAuthorityUnavailable
+    from jack_policy_integrity_dynamic_authority import DynamicAuthorityUnavailable
 
     async def authority_unavailable(request, exc):
         detail = ("AUTHORITY_POLICY_INTEGRITY_COMPROMISED"

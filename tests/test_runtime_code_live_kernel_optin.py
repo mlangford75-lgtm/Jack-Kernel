@@ -24,7 +24,7 @@ from pathlib import Path
 import httpx
 import jack_kernel as jk
 import jack_source_drift_guard as source
-import jack_phase9b_enforcement as phase9
+import jack_runtime_code_enforcement as phase9
 
 jk._install_bundled_runtime_extensions()
 src = source.install(

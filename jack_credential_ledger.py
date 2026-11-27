@@ -240,7 +240,7 @@ def _install_transport_hooks(
         return
 
     current_post = getattr(client, "post", None)
-    if callable(current_post) and not getattr(current_post, "_jack_phase7_ledger", False):
+    if callable(current_post) and not getattr(current_post, "_jack_credential_ledger", False):
         original_post = current_post
 
         @wraps(original_post)
@@ -258,12 +258,12 @@ def _install_transport_hooks(
                 )
                 raise
 
-        recorded_post._jack_phase7_ledger = True
+        recorded_post._jack_credential_ledger = True
         recorded_post._jack_phase7_original = original_post
         client.post = recorded_post
 
     current_build = getattr(client, "build_request", None)
-    if callable(current_build) and not getattr(current_build, "_jack_phase7_ledger", False):
+    if callable(current_build) and not getattr(current_build, "_jack_credential_ledger", False):
         original_build = current_build
 
         @wraps(original_build)
@@ -281,7 +281,7 @@ def _install_transport_hooks(
                 )
                 raise
 
-        recorded_build_request._jack_phase7_ledger = True
+        recorded_build_request._jack_credential_ledger = True
         recorded_build_request._jack_phase7_original = original_build
         client.build_request = recorded_build_request
 
@@ -393,7 +393,7 @@ def _install_http_diagnostic_hook(
                 )
             return response
 
-        recorded_handler._jack_phase7_ledger = True
+        recorded_handler._jack_credential_ledger = True
         recorded_handler._jack_phase7_original = current
         return recorded_handler
 
@@ -401,7 +401,7 @@ def _install_http_diagnostic_hook(
         http_exception_type, StarletteHTTPException, RequestValidationError,
     )):
         current = app.exception_handlers.get(exception_type)
-        if not callable(current) or getattr(current, "_jack_phase7_ledger", False):
+        if not callable(current) or getattr(current, "_jack_credential_ledger", False):
             continue
         app.add_exception_handler(exception_type, wrap_handler(current))
 
@@ -411,7 +411,7 @@ def _install_orchestration_hooks(
     ledger: authority_ledger.AuthorityLedger,
 ) -> None:
     current_proxy = getattr(jk, "_proxy_pi_control_request", None)
-    if callable(current_proxy) and not getattr(current_proxy, "_jack_phase7_ledger", False):
+    if callable(current_proxy) and not getattr(current_proxy, "_jack_credential_ledger", False):
         @wraps(current_proxy)
         async def recorded_proxy(*args: Any, **kwargs: Any):
             response = await current_proxy(*args, **kwargs)
@@ -424,13 +424,13 @@ def _install_orchestration_hooks(
                 )
             return response
 
-        recorded_proxy._jack_phase7_ledger = True
+        recorded_proxy._jack_credential_ledger = True
         recorded_proxy._jack_phase7_original = current_proxy
         jk._proxy_pi_control_request = recorded_proxy
 
     hub_type = getattr(jk, "OrchestrationEventHub", None)
     current_publish = getattr(hub_type, "_publish", None) if hub_type is not None else None
-    if callable(current_publish) and not getattr(current_publish, "_jack_phase7_ledger", False):
+    if callable(current_publish) and not getattr(current_publish, "_jack_credential_ledger", False):
         @wraps(current_publish)
         async def recorded_publish(self: Any, *args: Any, **kwargs: Any):
             await current_publish(self, *args, **kwargs)
@@ -439,7 +439,7 @@ def _install_orchestration_hooks(
                 return
             async with lock:
                 last_recorded = int(
-                    getattr(self, "_jack_phase7_ledger_recorded_seq", 0) or 0
+                    getattr(self, "_jack_credential_ledger_recorded_seq", 0) or 0
                 )
                 events = [
                     event for event in getattr(self, "_buffer", ())
@@ -448,7 +448,7 @@ def _install_orchestration_hooks(
                 if events:
                     setattr(
                         self,
-                        "_jack_phase7_ledger_recorded_seq",
+                        "_jack_credential_ledger_recorded_seq",
                         max(int(event.get("seq") or 0) for event in events),
                     )
             for event in events:
@@ -460,7 +460,7 @@ def _install_orchestration_hooks(
                         producer_code="phase7.orchestration_event",
                     )
 
-        recorded_publish._jack_phase7_ledger = True
+        recorded_publish._jack_credential_ledger = True
         recorded_publish._jack_phase7_original = current_publish
         hub_type._publish = recorded_publish
 
@@ -472,7 +472,7 @@ def _install_retained_diagnostic_hook(
 ) -> None:
     hub_type = getattr(jk, "OrchestrationEventHub", None)
     current = getattr(hub_type, "__setattr__", None) if hub_type is not None else None
-    if not callable(current) or getattr(current, "_jack_phase7_ledger", False):
+    if not callable(current) or getattr(current, "_jack_credential_ledger", False):
         return
 
     def recorded_setattr(self: Any, name: str, value: Any) -> None:
@@ -494,7 +494,7 @@ def _install_retained_diagnostic_hook(
                 )
         current(self, name, value)
 
-    recorded_setattr._jack_phase7_ledger = True
+    recorded_setattr._jack_credential_ledger = True
     recorded_setattr._jack_phase7_original = current
     hub_type.__setattr__ = recorded_setattr
 
@@ -507,7 +507,7 @@ def _install_log_hook(jk: Any) -> None:
     global _LOG_HOOK_LOCK
     with _LOG_HOOK_LOCK:
         current = filter_type.filter
-        if getattr(current, "_jack_phase7_ledger", False):
+        if getattr(current, "_jack_credential_ledger", False):
             return
         original = current
 
@@ -543,7 +543,7 @@ def _install_log_hook(jk: Any) -> None:
                     )
             return result
 
-        ledger_filter._jack_phase7_ledger = True
+        ledger_filter._jack_credential_ledger = True
         ledger_filter._jack_phase7_original = original
         filter_type.filter = ledger_filter
 
@@ -575,4 +575,4 @@ def install(
 
     register = getattr(jk, "_register_runtime_manifest_components", None)
     if callable(register):
-        register({"jack_phase7_ledger.py": Path(__file__).resolve()})
+        register({"jack_credential_ledger.py": Path(__file__).resolve()})

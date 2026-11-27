@@ -410,7 +410,7 @@ def test_direct_kernel_entrypoint_installs_bundled_security_and_compatibility():
         "jack_path_policy.py",
         "jack_consequence_gate.py",
         "jack_authority_ledger.py",
-        "jack_phase7_ledger.py",
+        "jack_credential_ledger.py",
         "jack_responses_compat.py",
     }
     assert all(value != "UNAVAILABLE" for value in mod.RUNTIME_MANIFEST_COMPONENTS.values())

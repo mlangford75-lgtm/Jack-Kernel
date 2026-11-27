@@ -519,7 +519,7 @@ _REQUIRED_AUTHORITY_MODULES: Tuple[Tuple[str, str], ...] = (
     ("jack_credential_guard.py", "jack_credential_guard"),
     ("jack_diagnostic_guard.py", "jack_diagnostic_guard"),
     ("jack_credential_resource_guard.py", "jack_credential_resource_guard"),
-    ("jack_phase7_ledger.py", "jack_phase7_ledger"),
+    ("jack_credential_ledger.py", "jack_credential_ledger"),
 )
 
 _REQUIRED_PREDECESSOR_MARKERS = (

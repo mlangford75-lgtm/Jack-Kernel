@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import jack_secure_entrypoint as entrypoint
 import jack_source_drift_guard as source_guard
-import jack_phase9b_enforcement as runtime_guard
-import jack_phase10_path_enforcement as policy_guard
-import jack_phase10_canary_enforcement as canary_guard
-import jack_phase10_credential_enforcement as credential_guard
-import jack_phase11_privacy as privacy_guard
+import jack_runtime_code_enforcement as runtime_guard
+import jack_policy_integrity_path_enforcement as policy_guard
+import jack_policy_integrity_canary_enforcement as canary_guard
+import jack_policy_integrity_credential_enforcement as credential_guard
+import jack_diagnostic_privacy as privacy_guard
 from jack_runtime_code_guard import RuntimeCodeIntegrityUnavailable
 
 

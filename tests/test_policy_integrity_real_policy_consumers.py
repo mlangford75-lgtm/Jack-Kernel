@@ -169,7 +169,7 @@ def test_phase10c_candidate_real_path_release_and_admission(tmp_path):
 import dataclasses
 import json
 import jack_kernel as jk
-from jack_phase10_path_enforcement import install
+from jack_policy_integrity_path_enforcement import install
 from jack_policy_integrity import PolicyIntegrityCompromised
 
 jk._install_bundled_runtime_extensions()
@@ -244,8 +244,8 @@ import asyncio
 import dataclasses
 import jack_kernel as jk
 from jack_evidence_guard import RuntimeCanaryPolicy
-from jack_phase10_canary_enforcement import install as install_canary, policy_cells
-from jack_phase10_credential_enforcement import install as install_credential
+from jack_policy_integrity_canary_enforcement import install as install_canary, policy_cells
+from jack_policy_integrity_credential_enforcement import install as install_credential
 from jack_policy_integrity import PolicyIntegrityCompromised
 
 jk._install_bundled_runtime_extensions()
@@ -321,7 +321,7 @@ def test_phase10_credential_resource_registry_binding_is_terminal(tmp_path):
 import json
 import jack_kernel as jk
 import jack_credential_resource_guard as resource
-from jack_phase10_path_enforcement import install
+from jack_policy_integrity_path_enforcement import install
 from jack_policy_integrity import PolicyIntegrityCompromised
 
 jk._install_bundled_runtime_extensions()

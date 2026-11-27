@@ -4,8 +4,8 @@ import io
 import logging
 import pytest
 
-from jack_phase10_dynamic_authority import PendingAuthority, DynamicAuthorityUnavailable
-from jack_phase11_privacy import PrivacyBoundary, ProtectedDiagnosticFormatter, protect_logging_handlers
+from jack_policy_integrity_dynamic_authority import PendingAuthority, DynamicAuthorityUnavailable
+from jack_diagnostic_privacy import PrivacyBoundary, ProtectedDiagnosticFormatter, protect_logging_handlers
 
 
 def state(call_id="call-a", withheld=("blocked-a",)):
@@ -209,7 +209,7 @@ def test_authority_holder_replacement_is_terminal_but_scoped():
 def test_http_diagnostics_keep_status_and_safe_headers():
     from fastapi import FastAPI, HTTPException
     from fastapi.testclient import TestClient
-    from jack_phase11_privacy import install_http_diagnostic_guard
+    from jack_diagnostic_privacy import install_http_diagnostic_guard
     app = FastAPI()
     b = boundary()
 
@@ -235,7 +235,7 @@ def test_http_diagnostics_keep_status_and_safe_headers():
 def test_http_authority_failure_is_not_reported_as_success_or_raw_error():
     from fastapi import FastAPI, HTTPException
     from fastapi.testclient import TestClient
-    from jack_phase11_privacy import install_http_diagnostic_guard
+    from jack_diagnostic_privacy import install_http_diagnostic_guard
     from jack_policy_integrity import PolicyIntegrityCompromised
     app = FastAPI()
 

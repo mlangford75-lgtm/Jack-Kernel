@@ -2,7 +2,7 @@
 from functools import wraps
 
 from jack_credential_guard import RuntimeCredentialPolicy
-from jack_phase10_canary_enforcement import policy_cells
+from jack_policy_integrity_canary_enforcement import policy_cells
 from jack_policy_integrity import RuntimePolicyAuthority, PolicyIntegrityUnavailable
 
 

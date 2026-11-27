@@ -194,7 +194,7 @@ Authoritative closure record:
 Key files:
 
 - `jack_runtime_code_guard.py` — selected function/descriptor/receiver, code constants/nested-code/selected delegates, imported module and FastAPI route-table identity. It distinguishes confirmed mismatch from temporary measurement unavailability; confirmed compromise is terminal within the secured child.
-- `jack_phase9b_enforcement.py` — effective post-Phase-8 Kernel wrappers plus ASGI ingress and release interception for streaming and nonstreaming responses, selected executor paths and mutating Pi control.
+- `jack_runtime_code_enforcement.py` — effective post-Phase-8 Kernel wrappers plus ASGI ingress and release interception for streaming and nonstreaming responses, selected executor paths and mutating Pi control.
 - `jack_secure_entrypoint.py` — mandatory Phase 9B installation in the actual secured serving child.
 - `tests/test_phase9_live_security_http_tamper.py` — actual secured-child post-start code replacement and blocked HTTP consequence, with explicit checks that substituted functions never ran.
 

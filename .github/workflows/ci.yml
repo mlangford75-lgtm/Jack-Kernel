@@ -53,7 +53,7 @@ jobs:
         id: compile_runtime
         shell: pwsh
         run: |
-          python -m py_compile jack_kernel.py jack_secure_entrypoint.py jack_evidence_guard.py jack_credential_guard.py jack_diagnostic_guard.py jack_credential_resource_guard.py jack_phase7_ledger.py jack_path_policy.py jack_responses_compat.py jack_consequence_gate.py jack_authority_ledger.py jack_source_drift_guard.py
+          python -m py_compile jack_kernel.py jack_secure_entrypoint.py jack_evidence_guard.py jack_credential_guard.py jack_diagnostic_guard.py jack_credential_resource_guard.py jack_credential_ledger.py jack_path_policy.py jack_responses_compat.py jack_consequence_gate.py jack_authority_ledger.py jack_source_drift_guard.py
 
       - name: Report Pi bridge identities
         shell: pwsh

@@ -17,15 +17,15 @@ on:
       - 'jack_evidence_guard.py'
       - 'tests/test_streaming_irq_sensitivity.py'
       - 'jack_runtime_code_guard.py'
-      - 'jack_phase9b_enforcement.py'
+      - 'jack_runtime_code_enforcement.py'
       - 'tests/test_runtime_code_*.py'
       - 'tests/test_agentic_interrupted_tool_recovery.py'
-      - 'jack_phase10_dynamic_authority.py'
-      - 'jack_phase11_privacy.py'
+      - 'jack_policy_integrity_dynamic_authority.py'
+      - 'jack_diagnostic_privacy.py'
       - 'tests/test_dynamic_authority_and_diagnostic_privacy.py'
-      - 'jack_phase10_path_enforcement.py'
-      - 'jack_phase10_canary_enforcement.py'
-      - 'jack_phase10_credential_enforcement.py'
+      - 'jack_policy_integrity_path_enforcement.py'
+      - 'jack_policy_integrity_canary_enforcement.py'
+      - 'jack_policy_integrity_credential_enforcement.py'
       - 'jack_secure_entrypoint.py'
       - 'tests/test_consequence_gate_secure_entrypoint.py'
       - 'tests/test_runtime_code_live_security_http_tamper.py'
@@ -54,13 +54,13 @@ jobs:
           python -m pip install pip==26.2.1
           python -m pip install -r requirements-test.txt
       - name: Compile Policy Integrity static enforcement candidate
-        run: python -m py_compile jack_secure_entrypoint.py jack_phase10_path_enforcement.py jack_phase10_canary_enforcement.py jack_phase10_credential_enforcement.py jack_policy_integrity.py tests/test_policy_integrity_policy_identity.py tests/test_policy_integrity_real_policy_consumers.py
+        run: python -m py_compile jack_secure_entrypoint.py jack_policy_integrity_path_enforcement.py jack_policy_integrity_canary_enforcement.py jack_policy_integrity_credential_enforcement.py jack_policy_integrity.py tests/test_policy_integrity_policy_identity.py tests/test_policy_integrity_real_policy_consumers.py
       - name: Run Policy Integrity static-policy identity and tamper controls
         run: python -m pytest -q tests/test_policy_integrity_policy_identity.py
       - name: Run real Jack Kernel path Canary and credential consumer identity proof
         run: python -m pytest -q tests/test_policy_integrity_real_policy_consumers.py
       - name: Compile dynamic authority and diagnostic privacy candidate
-        run: python -m py_compile jack_phase10_dynamic_authority.py jack_phase11_privacy.py tests/test_dynamic_authority_and_diagnostic_privacy.py
+        run: python -m py_compile jack_policy_integrity_dynamic_authority.py jack_diagnostic_privacy.py tests/test_dynamic_authority_and_diagnostic_privacy.py
       - name: Qualify dynamic pending authority and diagnostic privacy
         run: python -m pytest -q tests/test_dynamic_authority_and_diagnostic_privacy.py
       - name: Run previous Credential Isolation credential and Source Drift Protection policy/security controls

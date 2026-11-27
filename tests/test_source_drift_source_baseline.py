@@ -234,7 +234,7 @@ expected = {
     "jack_credential_guard.py",
     "jack_diagnostic_guard.py",
     "jack_credential_resource_guard.py",
-    "jack_phase7_ledger.py",
+    "jack_credential_ledger.py",
     "jack_source_drift_guard.py",
     "jack_secure_entrypoint.py",
 }

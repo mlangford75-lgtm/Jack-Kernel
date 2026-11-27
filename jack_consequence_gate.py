@@ -362,9 +362,9 @@ def _install_represented_path_gate(
             ledger is not None
             and final_decision.outcome.value == "DENY_AND_CONTINUE"
         ):
-            import jack_phase7_ledger
+            import jack_credential_ledger
 
-            jack_phase7_ledger.record_resource_block_failsoft(
+            jack_credential_ledger.record_resource_block_failsoft(
                 ledger,
                 resource_id=str(resource_fact.resource_id or ""),
                 containment_scope=final_decision.containment_scope.value,
@@ -399,13 +399,13 @@ def install(jk: Any) -> None:
             )
         ledger = authority_ledger.install(jk)
         if credential_policy is not None:
-            import jack_phase7_ledger
+            import jack_credential_ledger
 
             credential_resource_guard.install(
                 jk,
                 credential_policy=credential_policy,
             )
-            jack_phase7_ledger.install(
+            jack_credential_ledger.install(
                 jk,
                 ledger=ledger,
                 credential_policy=credential_policy,
