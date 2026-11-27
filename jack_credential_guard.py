@@ -590,33 +590,112 @@ def _credential_prefix_carry(policy: RuntimeCredentialPolicy, text: str) -> str:
     return best
 
 
-def _orchestration_stream_match(
-    policy: RuntimeCredentialPolicy,
-    state: dict[tuple[str, str, str, str], str],
-    source_event: Any,
-) -> Optional[CredentialMatch]:
-    if not isinstance(source_event, dict):
-        return None
+# Limit the number of simultaneously quarantined channels, not credential length.
+# Never evict a live prefix and then pretend its continuation was inspected.
+_ORCHESTRATION_CARRY_LIMIT = 256
 
+
+def _with_orchestration_delta(source_event: dict, channel: str, text: str) -> dict:
+    event = dict(source_event)
+    data = dict(event["data"])
+    event["data"] = data
+    if channel == "data.delta":
+        data["delta"] = text
+    else:
+        assistant_event = dict(data["assistantMessageEvent"])
+        assistant_event["delta"] = text
+        data["assistantMessageEvent"] = assistant_event
+    return event
+
+
+def _orchestration_delta_template(policy, source_event, channel):
+    """Retain only the routing metadata needed for a verified completion flush."""
+    event = {"type": source_event.get("type", "message"),
+             **_safe_orchestration_identity(policy, source_event)}
+    data = {}
+    event["data"] = data
+    original = source_event["data"]
+    if isinstance(original.get("type"), str):
+        data["type"] = original["type"]
+    message = original.get("message")
+    if isinstance(message, dict) and message.get("role") in ("assistant", "tool"):
+        data["message"] = {"role": message["role"]}
+    if channel == "data.delta":
+        data["delta"] = ""
+    else:
+        source = original["assistantMessageEvent"]
+        delta = {"delta": ""}
+        if isinstance(source.get("type"), str):
+            delta["type"] = source["type"]
+        if isinstance(source.get("contentIndex"), int):
+            delta["contentIndex"] = source["contentIndex"]
+        data["assistantMessageEvent"] = delta
+    return event
+
+
+def _quarantine_orchestration_snapshots(policy, source_event):
+    """Pi message updates can mirror the delta in cumulative text snapshots.
+
+    Do not publish a pending suffix via those mirrors while its delta is held.
+    The terminal message snapshot is checked separately and remains authoritative.
+    """
+    if not isinstance(source_event, dict) or not isinstance(source_event.get("data"), dict):
+        return source_event
+    def trim(node, textual=False):
+        if isinstance(node, str):
+            if not textual:
+                return node
+            carry = _credential_prefix_carry(policy, node)
+            return node[:-len(carry)] if carry else node
+        if isinstance(node, list):
+            return [trim(item, textual) for item in node]
+        if isinstance(node, dict):
+            return {
+                key: (value if key == "delta" else trim(value, key in {
+                    "content", "text", "thinking", "reasoning", "reasoning_content",
+                    "partialJson", "arguments",
+                }))
+                for key, value in node.items()
+            }
+        return node
+    result = dict(source_event)
+    result["data"] = trim(source_event["data"])
+    return result
+
+
+def _orchestration_stream_project(policy, state, source_event):
+    """Return only verified deltas; a None projection means deny publication."""
+    if not isinstance(source_event, dict):
+        return source_event, False
+    projected = source_event
+    pending = dict(state)
     for channel, fragment in _orchestration_delta_fragments(source_event):
         key = _orchestration_stream_key(source_event, channel)
-        combined = state.get(key, "") + fragment
-        match = policy.find(
-            combined,
-            boundary=BOUNDARY_ORCHESTRATION_EVENT_RELEASE,
-            direction=DIRECTION_CALLER_BOUND,
-        )
-        if match is not None:
-            state.pop(key, None)
-            return match
-
+        previous = pending.get(key)
+        combined = (previous[0] if previous else "") + fragment
+        if _release_match(policy, combined, boundary=BOUNDARY_ORCHESTRATION_EVENT_RELEASE):
+            return None, True
         carry = _credential_prefix_carry(policy, combined)
         if carry:
-            state[key] = carry
+            if key not in pending and len(pending) >= _ORCHESTRATION_CARRY_LIMIT:
+                return None, True
+            pending[key] = (carry, _orchestration_delta_template(policy, source_event, channel))
         else:
-            state.pop(key, None)
+            pending.pop(key, None)
+        verified = combined[:-len(carry)] if carry else combined
+        projected = _with_orchestration_delta(projected, channel, verified)
+    state.clear()
+    state.update(pending)
+    return projected, False
 
-    return None
+
+def _orchestration_normal_message_end(source_event):
+    if not isinstance(source_event, dict):
+        return False
+    data = source_event.get("data")
+    message = data.get("message") if isinstance(data, dict) else None
+    return (isinstance(message, dict)
+            and message.get("stopReason") in {"stop", "length", "toolUse"})
 
 
 def _clear_orchestration_stream_state(
@@ -711,22 +790,35 @@ def _install_orchestration_release_guard(
                 stream_state,
             )
 
-        match = _orchestration_stream_match(
-            policy,
-            stream_state,
-            source_event,
+        # Check the raw event before editing any of its mirrors. A full match
+        # anywhere in the payload remains a hard release interrupt.
+        match = _release_match(
+            policy, source_event, boundary=BOUNDARY_ORCHESTRATION_EVENT_RELEASE,
         )
-        if match is None:
-            match = _release_match(
-                policy,
-                source_event,
-                boundary=BOUNDARY_ORCHESTRATION_EVENT_RELEASE,
-            )
-
-        if match is None:
-            await original_publish(self, event_type, source_event)
-            if event_type in {"message_end", "agent_end", "agent_settled"}:
+        projected, denied = (None, True) if match is not None else (
+            _orchestration_stream_project(policy, stream_state, source_event)
+        )
+        if not denied:
+            if event_type == "message_end":
+                # Only explicitly successful protocol completion can release a
+                # remaining benign prefix. EOF, cancellation and errors cannot.
+                if _orchestration_normal_message_end(source_event):
+                    identity = _orchestration_stream_key(source_event, "")[:3]
+                    for key, (carry, template) in tuple(stream_state.items()):
+                        if key[:3] != identity:
+                            continue
+                        final_delta = _with_orchestration_delta(template, key[3], carry)
+                        if _release_match(policy, final_delta,
+                                          boundary=BOUNDARY_ORCHESTRATION_EVENT_RELEASE) is None:
+                            await original_publish(self, final_delta["type"], final_delta)
+                else:
+                    projected = _quarantine_orchestration_snapshots(policy, projected)
                 _clear_orchestration_stream_state(stream_state, source_event)
+            elif event_type in {"agent_end", "agent_settled"}:
+                _clear_orchestration_stream_state(stream_state, source_event)
+            elif event_type == "message" or _orchestration_delta_fragments(source_event):
+                projected = _quarantine_orchestration_snapshots(policy, projected)
+            await original_publish(self, event_type, projected)
             return
 
         _clear_orchestration_stream_state(stream_state, source_event)
@@ -746,6 +838,19 @@ def _install_orchestration_release_guard(
     guarded_proxy._jack_phase7_orchestration_credential_dlp = True
     guarded_publish._jack_phase7_orchestration_credential_dlp = True
     guarded_publish._jack_phase7_original_publish = original_publish
+
+    # A broken Pi SSE connection is not a completion boundary. Dispose held
+    # fragments on disconnect and shutdown; never inject them into replay.
+    original_consume = getattr(hub_type, "_consume_stream", None)
+    if callable(original_consume):
+        async def guarded_consume(self, *args, **kwargs):
+            try:
+                return await original_consume(self, *args, **kwargs)
+            finally:
+                state = getattr(self, "_jack_phase7_orchestration_credential_carry", None)
+                if isinstance(state, dict):
+                    state.clear()
+        hub_type._consume_stream = guarded_consume
 
     jk._proxy_pi_control_request = guarded_proxy
     hub_type._publish = guarded_publish
