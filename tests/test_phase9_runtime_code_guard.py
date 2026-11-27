@@ -477,7 +477,8 @@ def test_p1_sealed_transcripts_do_not_cache_live_dependencies(mutation):
 
     guard = _guard(SimpleNamespace(go=run))
     baseline = guard._sealed_code_transcripts
-    assert len(baseline) <= 128
+    assert len(baseline) <= 256
+    assert sum(len(entry[1]) for entry in baseline.values()) <= 128 * 65536
     if mutation == "mutable_constant":
         # A sole slot containing mutable executable constants may yield no
         # eligible startup transcripts at all. The live traversal is required.
@@ -514,3 +515,54 @@ def test_p1_unfamiliar_equivalent_code_does_not_enroll_in_sealed_memo():
     assert id(run.__code__) not in baseline
     with pytest.raises(TypeError):
         baseline[id(run.__code__)] = None
+
+
+def test_p1_sealed_memo_covers_more_small_trees_with_original_byte_budget():
+    from jack_runtime_code_guard import _function_shape
+
+    def template():
+        return None
+
+    guard = RuntimeCodeAuthority()
+    functions = [
+        types.FunctionType(template.__code__.replace(co_consts=(None, i)),
+                           template.__globals__)
+        for i in range(257)
+    ]
+    for i, fn in enumerate(functions):
+        guard.register(name=f"slot-{i}", owner=SimpleNamespace(go=fn), attribute="go")
+    guard.seal()
+    sealed = guard._sealed_code_transcripts
+    assert len(sealed) == 256
+    assert sum(len(entry[1]) for entry in sealed.values()) <= 128 * 65536
+    assert id(functions[128].__code__) in sealed
+    assert id(functions[256].__code__) not in sealed
+    for fn in functions:
+        assert _function_shape(fn, dict(sealed)) == _function_shape(fn)
+    guard.verify_for("model")
+    assert guard._sealed_code_transcripts is sealed
+    assert id(functions[256].__code__) not in sealed
+    functions[128].__code__ = functions[128].__code__.replace(co_consts=(None, "changed"))
+    with pytest.raises(RuntimeCodeIntegrityCompromised):
+        guard.verify_for("model")
+
+
+def test_p1_aggregate_transcript_byte_budget_even_with_large_constants():
+    from jack_runtime_code_guard import _function_shape
+
+    def template():
+        return None
+
+    # Each eligible transcript is smaller than the original 64 KiB entry limit
+    # but collectively they would exceed the original 8 MiB storage bound.
+    functions = [
+        types.FunctionType(template.__code__.replace(co_consts=(None, str(i) + "x" * 60000)),
+                           template.__globals__)
+        for i in range(160)
+    ]
+    memo = {}
+    for fn in functions:
+        assert _function_shape(fn, memo) == _function_shape(fn)
+    assert 128 < len(memo) < len(functions)
+    assert sum(len(entry[1]) for entry in memo.values()) <= 128 * 65536
+    assert id(functions[-1].__code__) not in memo

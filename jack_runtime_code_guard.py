@@ -17,6 +17,11 @@ from typing import Any
 
 SCHEMA = "jack.runtime-code-identity.v1"
 
+# More distinct small immutable trees may fit in the existing byte budget.
+# This is a storage bound, not a change to executable verification cadence.
+_CODE_TRANSCRIPT_MAX_ENTRIES = 256
+_CODE_TRANSCRIPT_MAX_BYTES = 128 * 65536
+
 
 class RuntimeCodeIntegrityUnavailable(RuntimeError):
     """Cannot establish a required current executable identity."""
@@ -96,7 +101,7 @@ def _function_shape(fn: types.FunctionType, code_memo: dict | None = None) -> by
                     raise RuntimeCodeIntegrityUnavailable("executable shape exceeds measurement limits")
                 digest.update(transcript)
                 return
-            if len(code_memo) >= 128:
+            if len(code_memo) >= _CODE_TRANSCRIPT_MAX_ENTRIES:
                 walk_code(obj, depth)
                 return
             start_nodes = nodes
@@ -109,7 +114,9 @@ def _function_shape(fn: types.FunctionType, code_memo: dict | None = None) -> by
                 transcript = capture
                 if transcript is not None:
                     digest.update(transcript)
-                    if capture_pure:
+                    if (capture_pure and len(transcript) + sum(
+                            len(entry[1]) for entry in code_memo.values()
+                        ) <= _CODE_TRANSCRIPT_MAX_BYTES):
                         code_memo[id(obj)] = (obj, bytes(transcript),
                                               nodes - start_nodes + 1,
                                               capture_depth - depth)
@@ -581,7 +588,8 @@ class RuntimeCodeAuthority:
         if self._state == "INITIALIZING" and scopes is None:
             # Publish only after the entire original baseline is verified.
             # Strong code references prevent identity recycling; immutable
-            # transcript records are capped at 128 x 64 KiB as before.
+            # transcript records have a 256-entry cap and the original
+            # aggregate 8 MiB transcript-byte budget.
             self._sealed_code_transcripts = types.MappingProxyType(code_memo)
         if scopes is not None:
             # Only previously uncertain measurements may recover. Confirmed
