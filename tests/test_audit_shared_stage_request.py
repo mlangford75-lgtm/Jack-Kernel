@@ -33,6 +33,7 @@ def test_buffered_and_streamed_wire_equivalence(monkeypatch, tmp_path, mode, pla
             "role": "assistant", "content": "Frozen answer.",
             "reasoning_content": "Preserve the established result.",
         })
+        k._agentic_forensic_start_stage2(history)
     original = copy.deepcopy(history)
     tools = [
         {"type": "function", "function": {"name": "inspect_example",
