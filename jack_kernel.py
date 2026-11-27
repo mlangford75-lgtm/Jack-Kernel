@@ -300,6 +300,17 @@ class KernelConfig:
     backend_password: str = os.getenv("JACK_BACKEND_PASSWORD", "")
     backend_authorization_value: str = os.getenv("JACK_BACKEND_AUTHORIZATION_VALUE", "")
     backend_extra_headers_json: str = os.getenv("JACK_BACKEND_EXTRA_HEADERS", "{}").strip() or "{}"
+    backend_secret_header_names_json: str = os.getenv("JACK_BACKEND_SECRET_HEADER_NAMES", "[]").strip() or "[]"
+
+    @property
+    def backend_secret_header_names(self) -> List[str]:
+        try:
+            names = json.loads(self.backend_secret_header_names_json)
+        except Exception:
+            raise RuntimeError("JACK_BACKEND_SECRET_HEADER_NAMES must be a JSON array of header names") from None
+        if not isinstance(names, list) or any(not isinstance(name, str) for name in names):
+            raise RuntimeError("JACK_BACKEND_SECRET_HEADER_NAMES must be a JSON array of header names")
+        return names
 
     @property
     def backend_extra_headers(self) -> Dict[str, str]:
@@ -17021,6 +17032,7 @@ CLI_DEFAULTS: Dict[str, Any] = {
     "backend_password": "",
     "backend_authorization_value": "",
     "backend_extra_headers": {},
+    "backend_secret_header_names": [],
     "host": "127.0.0.1",
     "port": 8001,
     "port_fallback": True,
@@ -17553,6 +17565,7 @@ def _clear_backend_credentials(cfg: Dict[str, Any]) -> None:
     cfg["backend_password"] = ""
     cfg["backend_authorization_value"] = ""
     cfg["backend_extra_headers"] = {}
+    cfg["backend_secret_header_names"] = []
 
 def _apply_backend_preset(cfg: Dict[str, Any], profile: str) -> None:
     key = _normalize_backend_profile(profile)
@@ -17597,6 +17610,7 @@ def _edit_generic_auth(cfg: Dict[str, Any]) -> None:
         cfg["backend_authorization_value"] = _prompt_secret("Authorization value")
 
     extra: Dict[str, str] = {}
+    secret_names: List[str] = []
     raw = _cli_input("Add an additional provider/gateway header? [y/N]: ").strip().lower()
     while raw in {"y", "yes"}:
         name = _cli_input("Header name: ").strip()
@@ -17606,8 +17620,12 @@ def _edit_generic_auth(cfg: Dict[str, Any]) -> None:
         value = _prompt_secret(f"Value for {name}")
         if value:
             extra[name] = value
+            choice = _cli_input("Protect this header value as a credential? [y/N]: ").strip().lower()
+            if choice in {"y", "yes"}:
+                secret_names.append(name)
         raw = _cli_input("Add another header? [y/N]: ").strip().lower()
     cfg["backend_extra_headers"] = extra
+    cfg["backend_secret_header_names"] = secret_names
 
 
 def _backend_headers_from_cli(cfg: Dict[str, Any]) -> Dict[str, str]:
@@ -18248,6 +18266,7 @@ def _config_to_env(cfg: Dict[str, Any]) -> Dict[str, str]:
         "JACK_BACKEND_PASSWORD": cfg.get("backend_password", ""),
         "JACK_BACKEND_AUTHORIZATION_VALUE": cfg.get("backend_authorization_value", ""),
         "JACK_BACKEND_EXTRA_HEADERS": json.dumps(cfg.get("backend_extra_headers") or {}, ensure_ascii=False),
+        "JACK_BACKEND_SECRET_HEADER_NAMES": json.dumps(cfg.get("backend_secret_header_names", []), ensure_ascii=False),
         "JACK_VIRTUAL_MODEL": cfg["virtual_model"],
         "JACK_REASONING_LEVEL": cfg["reasoning_level"],
         "JACK_AGENTIC_PROFILE": cfg.get("agentic_profile", "balanced"),

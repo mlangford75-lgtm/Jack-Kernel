@@ -282,3 +282,55 @@ def test_adaptive_credential_window_uses_effective_match_and_still_fails_closed(
         else:
             merged = guard.merge_runtime_canary_policy(initial, credentials)
             assert merged.canaries.required_window == max_window
+
+
+def test_backend_extra_header_credentials_use_explicit_or_closed_auth_names():
+    jack = _jack(
+        backend_extra_headers={
+            "X-API-Key": "extra-key-secret-123456",
+            "X-Custom-Gateway": "gateway-secret-654321",
+            "X-Org": "default",
+            "X-Ordinary": "ordinary-long-value-not-a-secret",
+        },
+        backend_secret_header_names=["x-custom-gateway"],
+    )
+    policy = guard.build_runtime_credential_policy(jack)
+    extra = [item for item in policy.credentials
+             if item.credential_class is guard.CredentialClass.BACKEND_EXTRA_HEADER]
+    assert {item.value for item in extra} == {"extra-key-secret-123456", "gateway-secret-654321"}
+    assert len({item.credential_id for item in extra}) == 2
+    initial = evidence.build_static_runtime_canary_policy(
+        runtime_id=jack.RUNTIME_ID, lane_id=jack.LANE_ID, raw_json="")
+    merged = guard.merge_runtime_canary_policy(initial, policy)
+    for item in extra:
+        assert item.value not in repr(item)
+        with pytest.raises(guard.ProtectedCredentialInterrupt):
+            policy.guard_model_payload({"messages": [{"role": "user", "content": item.value}]})
+        assert any(pattern.canary_id == item.credential_id and pattern.value == item.value
+                   for pattern in merged.canaries._patterns)
+    policy.guard_model_payload({"messages": [{"role": "user", "content": "default ordinary-long-value-not-a-secret"}]})
+
+
+def test_extra_header_alias_keeps_existing_credential_identity():
+    secret = "shared-backend-extra-secret-123"
+    policy = guard.build_runtime_credential_policy(_jack(
+        backend_api_key=secret,
+        backend_extra_headers={"X-API-Key": secret, "X-Custom": secret},
+        backend_secret_header_names=["X-Custom"],
+    ))
+    matches = [item for item in policy.credentials if item.value == secret]
+    assert len(matches) == 1
+    assert matches[0].credential_class is guard.CredentialClass.BACKEND_BEARER
+    assert len(matches[0].aliases) == 2
+    assert guard.CredentialClass.BACKEND_EXTRA_HEADER in matches[0].alias_classes
+
+
+@pytest.mark.parametrize("headers,names", [
+    ({"X-Ordinary": "default"}, ["X-Missing"]),
+    ({"X-API-Key": "first", "x-api-key": "second"}, []),
+    ({"X-Ordinary": "default"}, [""]),
+])
+def test_extra_header_ambiguous_or_missing_designation_is_rejected(headers, names):
+    with pytest.raises(RuntimeError, match="Phase-7"):
+        guard.build_runtime_credential_policy(_jack(
+            backend_extra_headers=headers, backend_secret_header_names=names))

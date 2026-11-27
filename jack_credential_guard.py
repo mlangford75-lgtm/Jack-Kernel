@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 from dataclasses import dataclass, field
@@ -36,6 +37,7 @@ class CredentialClass(str, Enum):
     JACK_API = "JACK_API"
     BACKEND_BEARER = "BACKEND_BEARER"
     BACKEND_NAMED_HEADER = "BACKEND_NAMED_HEADER"
+    BACKEND_EXTRA_HEADER = "BACKEND_EXTRA_HEADER"
     BACKEND_BASIC_PASSWORD = "BACKEND_BASIC_PASSWORD"
     BACKEND_BASIC_WIRE = "BACKEND_BASIC_WIRE"
     BACKEND_AUTHORIZATION = "BACKEND_AUTHORIZATION"
@@ -268,6 +270,49 @@ def _credential_resource_paths() -> Tuple[str, ...]:
     return (str(jack_config), str(current_jack_config), str(pi_config))
 
 
+# Closed, high-confidence authentication header names. Other headers require an
+# explicit host designation; never infer secrecy from length or entropy.
+_EXTRA_AUTH_HEADER_NAMES = frozenset({
+    "authorization", "proxy-authorization", "api-key", "x-api-key",
+    "ocp-apim-subscription-key", "cf-access-client-secret", "cookie",
+})
+
+
+def _extra_header_sources(cfg: Any) -> Tuple[tuple, ...]:
+    extra = getattr(cfg, "backend_extra_headers", {})
+    declared = getattr(cfg, "backend_secret_header_names", ())
+    if not isinstance(extra, dict) or not isinstance(declared, (list, tuple)):
+        raise RuntimeError("Phase-7 backend extra-header configuration is invalid")
+    if any(not isinstance(name, str) or not name.strip() for name in declared):
+        raise RuntimeError("Phase-7 backend secret-header designation is invalid")
+    explicit = {name.strip().lower() for name in declared}
+    selected = explicit | _EXTRA_AUTH_HEADER_NAMES
+    present = set()
+    sources = []
+    for name, value in extra.items():
+        normalized = str(name).strip().lower()
+        if normalized not in selected:
+            continue
+        if normalized in present:
+            raise RuntimeError("Phase-7 duplicate protected backend header name")
+        present.add(normalized)
+        # Stable, non-value-derived identity. Do not expose arbitrary names in
+        # ledger metadata or diagnostics, and never merge distinct values by class.
+        suffix = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        source_kind = "CFG.backend_extra_headers:" + suffix
+        secret = _validated_secret(value, source_kind=source_kind)
+        if secret is not None:
+            sources.append((
+                CredentialClass.BACKEND_EXTRA_HEADER,
+                source_kind,
+                secret,
+                frozenset({DEST_BACKEND_NAMED_AUTH_HEADER}),
+            ))
+    if not explicit.issubset(present):
+        raise RuntimeError("Phase-7 designated backend secret header is missing")
+    return tuple(sources)
+
+
 def _logical_sources(jk: Any) -> Tuple[tuple, ...]:
     cfg = getattr(jk, "CFG", None)
     if cfg is None:
@@ -360,7 +405,7 @@ def _logical_sources(jk: Any) -> Tuple[tuple, ...]:
             pi_control,
             frozenset({DEST_PI_CONTROL_AUTH_HEADER}),
         ),
-    )
+    ) + _extra_header_sources(cfg)
 
 
 def build_runtime_credential_policy(jk: Any) -> RuntimeCredentialPolicy:
@@ -378,7 +423,10 @@ def build_runtime_credential_policy(jk: Any) -> RuntimeCredentialPolicy:
     for credential_class, source_kind, value, destinations in _logical_sources(jk):
         if value is None:
             continue
-        credential_id = _CREDENTIAL_IDS[credential_class]
+        if credential_class is CredentialClass.BACKEND_EXTRA_HEADER:
+            credential_id = "credential:backend-extra:" + source_kind.rsplit(":", 1)[1]
+        else:
+            credential_id = _CREDENTIAL_IDS[credential_class]
         if value not in by_value:
             by_value[value] = {
                 "credential_id": credential_id,
