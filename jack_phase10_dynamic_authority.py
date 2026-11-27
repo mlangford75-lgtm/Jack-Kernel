@@ -11,6 +11,8 @@ import secrets
 from dataclasses import dataclass
 from types import MappingProxyType
 
+from jack_tool_recovery import ToolRecoveryState
+
 
 class DynamicAuthorityUnavailable(RuntimeError):
     pass
@@ -22,6 +24,28 @@ def _ids(value):
     if len(set(value)) != len(value):
         raise DynamicAuthorityUnavailable("pending authority unavailable")
     return value
+
+
+def _recovery_material(tracker):
+    if tracker is None:
+        return None
+    if type(tracker) is not ToolRecoveryState or type(tracker.seen_tool_ids) is not set:
+        raise DynamicAuthorityUnavailable("pending recovery authority unavailable")
+    if any(type(value) is not str for value in tracker.seen_tool_ids):
+        raise DynamicAuthorityUnavailable("pending recovery authority unavailable")
+    return {
+        "consecutive_failures": tracker.consecutive_failures,
+        "same_operation_failures": tracker.same_operation_failures,
+        "current_operation": tracker.current_operation,
+        "last_error": tracker.last_error,
+        "exhausted": tracker.exhausted,
+        "events": tracker.events,
+        "successful_calls": tracker.successful_calls,
+        "seen_tool_ids": sorted(tracker.seen_tool_ids),
+        "policy_denial_key": tracker.policy_denial_key,
+        "consecutive_policy_denials": tracker.consecutive_policy_denials,
+        "last_policy_denial": tracker.last_policy_denial,
+    }
 
 
 def _material(state, context_type):
@@ -61,6 +85,8 @@ def _material(state, context_type):
         "resume": state.resume_id, "stage": state.stage_key,
         "expected": expected, "withheld": withheld,
         "calls": calls, "results": state.accepted_tool_results,
+        "history": state.history,
+        "recovery": _recovery_material(getattr(state, "tool_recovery", None)),
         "context": context, "in_flight": state.in_flight,
         "created_at": state.created_at, "tools": state.tools,
         "tool_choice": state.tool_choice,
@@ -151,7 +177,7 @@ class PendingAuthority:
                     raise DynamicAuthorityUnavailable("pending binding integrity compromised")
         return withheld
 
-    def transition(self, state, *, in_flight, accept=None, context=None):
+    def transition(self, state, *, in_flight, accept=None, context=None, recovery=None):
         self.verify(state)
         entry = self._entries[id(state)]
         candidate = copy.copy(state)
@@ -160,11 +186,17 @@ class PendingAuthority:
                 raise DynamicAuthorityUnavailable("pending authority already accepted")
             candidate.accepted_tool_results = copy.deepcopy(accept)
             candidate.accepted_executor_context = context
+        if recovery is not None:
+            if not state.in_flight or in_flight or type(recovery) is not ToolRecoveryState:
+                raise DynamicAuthorityUnavailable("pending recovery settlement unavailable")
+            candidate.tool_recovery = copy.deepcopy(recovery)
         candidate.in_flight = in_flight
         digest = self._digest(candidate)
         state.accepted_tool_results = candidate.accepted_tool_results
         state.accepted_executor_context = candidate.accepted_executor_context
         state.in_flight = candidate.in_flight
+        if recovery is not None:
+            state.tool_recovery = candidate.tool_recovery
         successor = _Entry(state, entry.resume_id, entry.expected,
             entry.withheld, entry.created_at, in_flight, digest)
         self._replace_index({**self._entries, id(state): successor})

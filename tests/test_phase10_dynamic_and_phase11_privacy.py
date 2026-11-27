@@ -248,3 +248,49 @@ def test_http_authority_failure_is_not_reported_as_success_or_raw_error():
         response = client.get("/policy")
         assert response.status_code == 503
         assert response.json() == {"detail": "AUTHORITY_POLICY_INTEGRITY_COMPROMISED"}
+
+
+@pytest.mark.parametrize("mutation", ["user", "prior_result", "owner", "recovery_count", "recovery_seen"])
+def test_pending_full_history_and_recovery_tamper_is_terminal(mutation):
+    from jack_tool_recovery import ToolRecoveryState
+    a = PendingAuthority()
+    s = state()
+    s.history[0:0] = [
+        {"role": "user", "content": "original request", "_jack_agentic_turn_id": "original-owner"},
+        {"role": "tool", "content": "prior authenticated evidence", "tool_call_id": "earlier"},
+    ]
+    s.tool_recovery = ToolRecoveryState()
+    s.tool_recovery.fail("edit", "denied", call_id="previous", policy_denial=True, policy_key="policy")
+    a.register(s)
+    if mutation == "user":
+        s.history[0]["content"] = "substituted request"
+    elif mutation == "prior_result":
+        s.history[1]["content"] = "substituted evidence"
+    elif mutation == "owner":
+        s.history[0]["_jack_agentic_turn_id"] = "substituted owner"
+    elif mutation == "recovery_count":
+        s.tool_recovery.consecutive_policy_denials = 0
+    else:
+        s.tool_recovery.seen_tool_ids.clear()
+    with pytest.raises(DynamicAuthorityUnavailable):
+        a.verify(s)
+
+
+def test_pending_recovery_settles_only_owned_working_copy():
+    import copy
+    from jack_tool_recovery import ToolRecoveryState
+    a = PendingAuthority()
+    s = state()
+    s.tool_recovery = ToolRecoveryState()
+    a.register(s)
+    work = copy.deepcopy(s.tool_recovery)
+    work.fail("edit", "denied", call_id="first")
+    with pytest.raises(DynamicAuthorityUnavailable):
+        a.transition(s, in_flight=False, recovery=work)
+    a.transition(s, in_flight=True, accept=[{"content": "first"}])
+    a.transition(s, in_flight=False, recovery=work)
+    a.verify(s)
+    assert s.tool_recovery.consecutive_failures == 1
+    work.progress("edit", call_id="other")
+    assert s.tool_recovery.consecutive_failures == 1
+    a.verify(s)

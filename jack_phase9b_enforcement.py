@@ -415,12 +415,16 @@ def install(jk: Any) -> RuntimeCodeAuthority:
         import jack_credential_guard as credential
         import jack_credential_resource_guard as resource
         import jack_diagnostic_guard as diagnostic
+        import jack_tool_recovery as recovery
+        import jack_tool_outcomes as outcomes
+        import jack_agentic_forensics as forensics
         for module, scope in (
             (static, "shared"), (path_gate, "shared"),
             (canary_gate, "model"), (credential_gate, "authority"),
             (dynamic, "authority"), (privacy, "shared"),
             (credential, "authority"), (resource, "authority"),
             (diagnostic, "shared"),
+            (recovery, "model"), (outcomes, "model"), (forensics, "model"),
         ):
             guard.register_module(name="module-" + module.__name__,
                                   module_name=module.__name__, scope=scope)
@@ -462,6 +466,10 @@ def install(jk: Any) -> RuntimeCodeAuthority:
             ("pending-verify", dynamic.PendingAuthority, "verify", "authority"),
             ("pending-digest", dynamic.PendingAuthority, "_digest", "authority"),
             ("pending-material", dynamic, "_material", "authority"),
+            ("pending-recovery-material", dynamic, "_recovery_material", "authority"),
+            ("tool-recovery-fail", recovery.ToolRecoveryState, "fail", "model"),
+            ("tool-recovery-progress", recovery.ToolRecoveryState, "progress", "model"),
+            ("tool-outcome", jk, "reported_tool_outcome", "model"),
             ("pending-register", dynamic.PendingAuthority, "register", "authority"),
             ("pending-transition", dynamic.PendingAuthority, "transition", "authority"),
             ("pending-retire", dynamic.PendingAuthority, "retire", "authority"),

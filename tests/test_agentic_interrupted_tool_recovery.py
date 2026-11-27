@@ -280,3 +280,32 @@ def test_stage2_disconnect_reuses_frozen_stage1_without_regeneration(monkeypatch
         assert "completed, useful working memory" in wire
         assert call_id not in k.KERNEL._pending_tool_resumes
     asyncio.run(run())
+
+
+def test_real_resume_working_history_and_recovery_settlement(monkeypatch, tmp_path):
+    async def run():
+        k = load(monkeypatch, tmp_path)
+        call_id = "sealed-recovery"
+        pending = await install_pending(k, call_id)
+        messages = [
+            {"role": "user", "content": "Read the clock source."},
+            {"role": "tool", "tool_call_id": call_id, "content": "authenticated outcome"},
+        ]
+        original_history = copy.deepcopy(pending.history)
+        state, matched = await k.KERNEL._consume_pending_tool_resume(messages)
+        working = k.KERNEL._pending_tool_resume_history(state, matched)
+        tracker = k._TOOL_RECOVERY_STATE.get()
+        tracker.fail("edit", "rejected attempt", policy_denial=True, policy_key="same")
+        working[0]["content"] = "working projection only"
+        assert pending.history == original_history
+        k.KERNEL._pending_authority.verify(pending)
+        await k.KERNEL._rearm_pending_tool_resume(pending)
+        assert not pending.in_flight
+        assert pending.tool_recovery.consecutive_policy_denials == 1
+        k.KERNEL._pending_authority.verify(pending)
+        state, matched = await k.KERNEL._consume_pending_tool_resume(messages)
+        working = k.KERNEL._pending_tool_resume_history(state, matched)
+        assert working[0]["content"] == original_history[0]["content"]
+        assert k._TOOL_RECOVERY_STATE.get().consecutive_policy_denials == 1
+        await k.KERNEL._retire_pending_tool_resume(pending)
+    asyncio.run(run())

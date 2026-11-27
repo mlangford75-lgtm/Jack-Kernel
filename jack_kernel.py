@@ -5673,9 +5673,13 @@ def _tool_recovery_check(
     return repaired
 
 
-def _tool_recovery_record_results(state: "PendingToolResume", results: List[Dict[str, Any]]) -> None:
+def _tool_recovery_record_results(
+    state: "PendingToolResume", results: List[Dict[str, Any]],
+    *, tracker: Optional[ToolRecoveryState] = None,
+) -> None:
     """Count only explicit host-authenticated failures and successes."""
-    tracker = state.tool_recovery
+    if tracker is None:
+        tracker = state.tool_recovery
     if tracker is None:
         return
     calls_by_id: Dict[str, Dict[str, Any]] = {}
@@ -12180,9 +12184,9 @@ class JackQwenKernel:
             )
         state = PendingToolResume(
             resume_id=f"jack-resume-{uuid.uuid4().hex}",
-            tool_recovery=_TOOL_RECOVERY_STATE.get(),
+            tool_recovery=copy.deepcopy(_TOOL_RECOVERY_STATE.get()),
             stage_key=stage_key,
-            history=resume_history,
+            history=copy.deepcopy(resume_history),
             secondary_system=secondary_system,
             usage=dict(usage),
             tools=tools,
@@ -12424,19 +12428,21 @@ class JackQwenKernel:
         state: PendingToolResume,
         tool_messages: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
-        _TOOL_RECOVERY_STATE.set(state.tool_recovery or ToolRecoveryState())
+        # Work on request-owned copies. The registered history and recovery
+        # counters remain sealed while the model or executor is active.
+        tracker = copy.deepcopy(state.tool_recovery) if state.tool_recovery is not None else ToolRecoveryState()
+        _TOOL_RECOVERY_STATE.set(tracker)
         _TOOL_RECOVERY_PENDING.set(state)
-        _tool_recovery_record_results(state, tool_messages)
-        history = list(state.history)
+        _tool_recovery_record_results(state, tool_messages, tracker=tracker)
+        history = copy.deepcopy(state.history)
         history.extend(tool_messages)
-        if state.tool_recovery is not None and state.tool_recovery.exhausted:
+        if tracker.exhausted:
             raise ToolRecoveryExhausted(
-                state=state.tool_recovery, history=history, stage_key=state.stage_key,
+                state=tracker, history=history, stage_key=state.stage_key,
                 secondary_system=state.secondary_system, usage=state.usage,
                 pending_state=state,
             )
         if state.deferred_tool_rejection_errors:
-            tracker = state.tool_recovery
             if tracker is not None:
                 for index, error in enumerate(state.deferred_tool_rejection_errors):
                     # Mixed batches may execute authorized siblings. Count the
@@ -12459,8 +12465,7 @@ class JackQwenKernel:
                     STAGES[state.stage_key].name,
                 )
             )
-        tracker = state.tool_recovery
-        if tracker is not None and tracker.consecutive_failures and not state.deferred_tool_rejection_errors:
+        if tracker.consecutive_failures and not state.deferred_tool_rejection_errors:
             advisory = tracker.advice()
             if advisory:
                 history.append({
@@ -12481,7 +12486,11 @@ class JackQwenKernel:
         async with self._pending_tool_resume_lock:
             if any(value is state for value in self._pending_tool_resumes.values()):
                 try:
-                    self._pending_authority.transition(state, in_flight=False)
+                    recovery = (_TOOL_RECOVERY_STATE.get()
+                                if _TOOL_RECOVERY_PENDING.get() is state else None)
+                    self._pending_authority.transition(
+                        state, in_flight=False, recovery=recovery,
+                    )
                 except DynamicAuthorityUnavailable:
                     LOG.warning("Pending authority rearm withheld")
 
@@ -13506,10 +13515,8 @@ class JackQwenKernel:
             state = scope.get("pending_state")
             if scope.get("stage1_frozen"):
                 _agentic_retire_consumed_one_hop(scope.get("bridge_messages", []))
-                if state is not None:
-                    # This exact history alias belongs to this scope, even
-                    # after its checkpoint has been retired.
-                    _agentic_retire_consumed_one_hop(state.history)
+                # Do not mutate sealed pending history. The working history
+                # and retired bridge are independent of the checkpoint.
                 if state is not None and state.in_flight:
                     record = _agentic_forensic_turn(
                         state.frozen_stage1_history or state.history
