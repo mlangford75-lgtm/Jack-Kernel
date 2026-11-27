@@ -146,3 +146,46 @@ def test_adaptive_and_individual_override_round_trip(cfg, monkeypatch):
     monkeypatch.setattr(jk, "_cli_input", lambda *a, **k: next(inputs))
     jk._run_transactional_editor(jk._edit_security_center, cfg)
     assert jk._security_center_policies(cfg)[1].canaries._patterns[0].match_chars == 16
+
+
+@pytest.mark.parametrize("source", ["kernel", "backend", "alias", "extra", "pi", "basic_wire"])
+def test_v5_security_center_rejects_credential_collision_before_child(cfg, monkeypatch, capsys, source):
+    import base64
+
+    secret = "synthetic-collision-test-value"
+    monkeypatch.setattr(jk, "_load_pi_control_bridge", lambda: {"token": ""})
+    if source == "kernel":
+        cfg["api_key"] = secret
+    elif source == "backend":
+        cfg["backend_api_key"] = secret
+    elif source == "alias":
+        cfg["backend_profile"] = "lmstudio"
+        cfg["backend_api_key"] = ""
+        monkeypatch.setenv("JACK_LMSTUDIO_API_KEY", secret)
+    elif source == "extra":
+        cfg["backend_extra_headers"] = {"X-Custom-Secret": secret}
+        cfg["backend_secret_header_names"] = ["X-Custom-Secret"]
+    elif source == "pi":
+        monkeypatch.setattr(jk, "_load_pi_control_bridge", lambda: {"token": secret})
+    else:
+        cfg["backend_username"] = "user"
+        cfg["backend_password"] = "synthetic-test-password"
+        secret = "Basic " + base64.b64encode(
+            b"user:synthetic-test-password").decode("ascii")
+    # A conflicting custom value must be rejected even with a different
+    # sensitivity. The existing credential authority is not reconfigured.
+    inputs = iter(["5", secret, "s"])
+    monkeypatch.setattr(jk, "_cli_input", lambda *a, **k: next(inputs))
+    jk._run_transactional_editor(jk._edit_security_center, cfg)
+    assert jk._security_center_policies(cfg)[1].canaries.count == 0
+    output = capsys.readouterr().out
+    assert "Invalid or conflicting security setting" in output
+    assert secret not in output
+    # Environment override is checked too, without exposing the value.
+    raw = json.dumps({"version": 1, "patterns": [
+        {"id": "session:test", "tier": "B", "value": secret,
+         "sensitivity_percent": 10}], "max_window": 4096})
+    monkeypatch.setenv("JACK_CANARY_POLICY_JSON", raw)
+    with pytest.raises(RuntimeError, match="Invalid security policy") as caught:
+        jk._config_to_env(cfg)
+    assert secret not in str(caught.value)
