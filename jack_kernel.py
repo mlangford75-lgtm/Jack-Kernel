@@ -486,7 +486,7 @@ def _bind_runtime_path_policy() -> Any:
 def _runtime_path_policy() -> Any:
     """Return the already-bound runtime policy; never synthesize request-local authority."""
     if _RUNTIME_PATH_POLICY is None:
-        raise RuntimeError("Phase-4 runtime path policy is not bound")
+        raise RuntimeError("Restricted Paths / Workspace Lock runtime policy is not bound")
     return _RUNTIME_PATH_POLICY
 
 
@@ -10457,7 +10457,7 @@ class JackQwenKernel:
             if path_authorization_errors:
                 if not allowed_calls:
                     LOG.warning(
-                        "%s rejected Phase-4 filesystem action before execution",
+                        "%s rejected filesystem action under Restricted Paths / Workspace Lock before execution",
                         STAGES[stage_key].name,
                     )
                     repair_history = _tool_recovery_check(
@@ -10478,7 +10478,7 @@ class JackQwenKernel:
                     )
 
                 LOG.warning(
-                    "%s selectively withheld %d recoverably denied Phase-4 "
+                    "%s selectively withheld %d recoverably denied Restricted Paths / Workspace Lock "
                     "tool call(s) while preserving %d releasable sibling(s)",
                     STAGES[stage_key].name,
                     len(path_authorization_errors),
@@ -11271,7 +11271,7 @@ class JackQwenKernel:
             if path_authorization_errors:
                 if not allowed_calls:
                     LOG.warning(
-                        "%s rejected streamed Phase-4 filesystem action before execution",
+                        "%s rejected streamed filesystem action under Restricted Paths / Workspace Lock before execution",
                         STAGES[stage_key].name,
                     )
                     repair_history = _tool_recovery_check(
@@ -11304,7 +11304,7 @@ class JackQwenKernel:
 
                 LOG.warning(
                     "%s selectively withheld %d streamed recoverably denied "
-                    "Phase-4 tool call(s) while preserving %d releasable sibling(s)",
+                    "Restricted Paths / Workspace Lock tool call(s) while preserving %d releasable sibling(s)",
                     STAGES[stage_key].name,
                     len(path_authorization_errors),
                     len(allowed_calls),
@@ -17339,6 +17339,14 @@ def _security_center_summary(cfg: Dict[str, Any]) -> None:
     paths, canaries, _, _ = _security_center_policies(cfg)
     print(_status_value("Workspace Lock", "ON" if paths.workspace_root is not None else "OFF"))
     print(_status_value("Restricted roots", str(len(paths.never_roots))))
+    print(_status_value("User NEVER paths", str(len(paths.user_never_roots))))
+    import jack_path_policy as path_settings
+    path_source = (
+        "ADMIN ENVIRONMENT" if os.getenv(path_settings.STATIC_PATH_POLICY_ENV, "").strip()
+        else "LOCAL SETTINGS" if cfg.get("security_path_policy") is not None
+        else "FACTORY DEFAULTS"
+    )
+    print(_status_value("Path policy source", path_source))
     print(_status_value("Startup Canaries", str(canaries.canaries.count)))
     print(_status_value("StreamingIRQ sensitivity", "Adaptive (25%, minimum 16; short values exact)"
                         if canaries.sensitivity_percent is None else str(canaries.sensitivity_percent) + "% consecutive match"))
@@ -17394,6 +17402,7 @@ def _edit_security_center(cfg: Dict[str, Any]) -> None:
         print("8  Forensic archive settings")
         print("9  StreamingIRQ sensitivity and quarantine ceiling")
         print("10 Set or clear an individual Canary sensitivity override")
+        print("11 Restore factory path defaults (clear optional path restrictions)")
         print("S  Save and apply settings    M  Discard and return")
         choice = _cli_input("Security > ").strip().lower()
         if choice == "s":
@@ -17406,6 +17415,12 @@ def _edit_security_center(cfg: Dict[str, Any]) -> None:
             return
         if choice == "m":
             raise _ReturnToMainMenu()
+        if choice == "11":
+            if override(paths.STATIC_PATH_POLICY_ENV):
+                continue
+            if _cli_input("Clear Workspace Lock and all user-defined NEVER paths? [y/N]: ").strip().lower() == "y":
+                apply_candidate("security_path_policy", None)
+            continue
         if choice in {"1", "2", "3", "4"}:
             if override(paths.STATIC_PATH_POLICY_ENV):
                 continue
@@ -17521,7 +17536,8 @@ def _edit_security_center(cfg: Dict[str, Any]) -> None:
                 sensitivity_label = "Adaptive" if item.sensitivity_percent is None else f"{item.sensitivity_percent}%"
                 print(f"  Canary {index}: {len(item.value)} characters / {sensitivity_label} / {item.match_chars} consecutive characters (value hidden)")
             print("Workspace directory:", repr(path_policy.workspace_root) if path_policy.workspace_root else "NOT CONFIGURED")
-            print("Path policy source:", "ADMIN ENVIRONMENT" if os.getenv(paths.STATIC_PATH_POLICY_ENV, "").strip() else "LOCAL SETTINGS / DEFAULTS")
+            print("Path policy source:", "ADMIN ENVIRONMENT" if os.getenv(paths.STATIC_PATH_POLICY_ENV, "").strip()
+                  else "LOCAL SETTINGS" if cfg.get("security_path_policy") is not None else "FACTORY DEFAULTS")
             print("Canary policy source:", "ADMIN ENVIRONMENT" if os.getenv(evidence.STATIC_CANARY_POLICY_ENV, "").strip() else "LAUNCHER SESSION")
             print("Restricted roots (factory Windows Temp exception; explicit NEVER takes precedence):")
             for root in path_policy.never_roots:
