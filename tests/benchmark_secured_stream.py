@@ -40,7 +40,8 @@ def child(mode):
     import httpx
     import jack_kernel as jk
 
-    count = 20
+    # Fixed before authority sealing: changing the captured scalar is executable drift.
+    count = FRAMES
     content = " synthetic."
     def frame(delta, finish=None):
         return ("data: " + json.dumps({
@@ -88,7 +89,6 @@ def child(mode):
         assert not jk._secured_serving_ready()
 
     async def exercise():
-        nonlocal count
         transport = httpx.ASGITransport(app=jk.APP)
         async with jk.APP.router.lifespan_context(jk.APP):
             async with httpx.AsyncClient(
@@ -96,15 +96,16 @@ def child(mode):
                 headers={"Authorization": "Bearer " + SYNTHETIC_KEY},
                 timeout=None,
             ) as client:
-                async def request(n):
-                    nonlocal count
-                    count = n
+                async def request():
                     response = await client.post("/v1/chat/completions", json={
                         "model": jk.CFG.virtual_model,
                         "messages": [{"role": "user", "content": "Benchmark synthetic stream."}],
                         "stream": True,
                     })
-                    assert response.status_code == 200, response.status_code
+                    assert response.status_code == 200, (
+                        response.status_code, response.text[:500],
+                        guard.mismatched_slots if mode == "secured" else (),
+                    )
                     chunks = []
                     finishes = []
                     done = 0
@@ -119,11 +120,11 @@ def child(mode):
                             chunks.append(choice.get("delta", {}).get("content") or "")
                             if choice.get("finish_reason"):
                                 finishes.append(choice["finish_reason"])
-                    assert "".join(chunks) == content * n, "logical stream mismatch"
+                    assert "".join(chunks) == content * count, "logical stream mismatch"
                     assert finishes == ["stop"] and done == 1
                     return len(response.content)
 
-                await request(20)
+                await request()
                 elapsed = []
                 gaps = []
                 sizes = []
@@ -141,7 +142,7 @@ def child(mode):
                     await asyncio.sleep(0)
                     start = time.perf_counter()
                     try:
-                        sizes.append(await request(FRAMES))
+                        sizes.append(await request())
                         elapsed.append(time.perf_counter() - start)
                     finally:
                         stop = True
