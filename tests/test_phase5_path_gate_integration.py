@@ -131,3 +131,64 @@ def test_explicit_duplicate_root_is_authoritative_at_consequence_gate(installed_
             policy, r"C:\Windows\Temp\jack-test.txt", verified_default_windows_read=read,
         )
         assert result.outcome is path_policy.PathAuthorizationOutcome.HARD_INTERRUPT
+
+@pytest.mark.parametrize("command", [
+    "ls -la",
+    "ls -la .",
+    "ls -a C:/Users/Operator.DESKTOP-TEST/Desktop/clock/Agentic_Testing",
+    "ls -la C:/Users/Operator.DESKTOP-TEST/Desktop/clock/Agentic_Testing/index.html",
+])
+def test_workspace_listing_with_nested_never_at_live_release_gate(
+    installed_path_gate, monkeypatch, command,
+):
+    workspace = r"C:\Users\Operator.DESKTOP-TEST\Desktop\clock\Agentic_Testing"
+    active = path_policy.build_runtime_path_policy(
+        runtime_id=kernel.RUNTIME_ID, lane_id=kernel.LANE_ID,
+        raw_json=json.dumps({"version": 1, "workspace_root": workspace,
+                             "never_paths": [workspace + r"\JackSecurityTest\restricted"]}),
+        host_environment=HOST_ENV,
+    )
+    monkeypatch.setattr(kernel, "_RUNTIME_PATH_POLICY", active)
+    context = kernel.Phase4ExecutorRequestContext(
+        protocol_version=1, runtime_id=kernel.RUNTIME_ID, lane_id=kernel.LANE_ID,
+        cwd=workspace, platform="win32", adapter="test",
+    )
+    token = kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.set(context)
+    try:
+        call = {"id": "listing", "type": "function", "function": {
+            "name": "bash", "arguments": json.dumps({"command": command})}}
+        allowed, errors = kernel._phase4_partition_structured_tool_calls([call])
+        assert allowed == [call]
+        assert not errors
+        # Preserve explicit nested NEVER authority.
+        protected = {"id": "protected", "type": "function", "function": {
+            "name": "bash", "arguments": json.dumps({
+                "command": "ls -la " + (workspace + r"\JackSecurityTest\restricted").replace("\\", "/")
+            })}}
+        with pytest.raises(kernel.Phase4RestrictedPathInterrupt):
+            kernel._phase4_partition_structured_tool_calls([protected])
+    finally:
+        kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
+
+
+def test_missing_executor_cwd_denial_logs_only_safe_category(
+    installed_path_gate, monkeypatch, caplog,
+):
+    workspace = r"C:\Users\Operator.DESKTOP-TEST\Desktop\clock\Agentic_Testing"
+    active = path_policy.build_runtime_path_policy(
+        runtime_id=kernel.RUNTIME_ID, lane_id=kernel.LANE_ID,
+        raw_json=json.dumps({"version": 1, "workspace_root": workspace,
+                             "never_paths": []}),
+        host_environment=HOST_ENV,
+    )
+    monkeypatch.setattr(kernel, "_RUNTIME_PATH_POLICY", active)
+    token = kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.set(None)
+    try:
+        call = {"id": "listing", "type": "function", "function": {
+            "name": "bash", "arguments": json.dumps({"command": "ls -la"})}}
+        allowed, errors = kernel._phase4_partition_structured_tool_calls([call])
+        assert not allowed and errors
+        assert "reason=EXECUTOR_CWD_MISSING" in caplog.text
+        assert workspace not in caplog.text
+    finally:
+        kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)

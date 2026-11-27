@@ -5367,6 +5367,34 @@ def _phase4_partition_structured_tool_calls(
             decision.outcome
             is jack_path_policy.PathAuthorizationOutcome.DENY_AND_CONTINUE
         ):
+            # Log only host-defined categories and booleans, never raw arguments,
+            # paths, or exception text. Keep the model-facing denial unchanged.
+            reason = decision.reason
+            reason_code = "OTHER_POLICY_DENIAL"
+            for prefix, code in (
+                ("Workspace Lock requires the executor's actual cwd", "EXECUTOR_CWD_MISSING"),
+                ("executor cwd is required", "EXECUTOR_CWD_MISSING"),
+                ("executor cwd is not a deterministic", "EXECUTOR_CWD_INVALID"),
+                ("Workspace Lock requires filesystem command targets", "COMMAND_TARGET_UNRESOLVED"),
+                ("Workspace Lock requires command semantics", "COMMAND_CONTRACT_AMBIGUOUS"),
+                ("represented target is outside the configured workspace", "OUTSIDE_WORKSPACE"),
+                ("workspace membership cannot be established", "WORKSPACE_MEMBERSHIP_UNRESOLVED"),
+                ("invalid represented path", "INVALID_REPRESENTED_PATH"),
+                ("represented target is an exact protected credential resource", "PROTECTED_CREDENTIAL_RESOURCE"),
+                ("structured tool target is not authorized", "STRUCTURED_TARGET_DENIED"),
+                ("default Windows path referenced", "WINDOWS_SYSTEM_CONTRACT"),
+                ("read-only system inspection lies outside", "OUTSIDE_WORKSPACE"),
+                ("sensitive Windows resource", "WINDOWS_SYSTEM_RESOURCE"),
+            ):
+                if reason.startswith(prefix):
+                    reason_code = code
+                    break
+            LOG.warning(
+                "Restricted Paths denial: reason=%s executor_context=%s "
+                "executor_cwd_present=%s canonical_target_present=%s workspace_lock=%s",
+                reason_code, executor_context is not None, bool(executor_cwd),
+                decision.canonical_target is not None, active_policy.workspace_enabled,
+            )
             errors.append(
                 f"tool call {index}: host-owned Restricted Paths / Workspace Lock path policy denied "
                 "the represented filesystem target"
