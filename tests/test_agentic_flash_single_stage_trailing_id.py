@@ -54,6 +54,10 @@ def commit(kernel, question="Original request", answer="Exact answer\n"):
 
 
 def test_flash_commits_from_stage1_without_stage2(kernel):
+    identity = kernel._runtime_identity_details()
+    assert identity["flow"] == ["extended_initial"]
+    assert set(identity["stage_controls"]) == {"extended_initial"}
+    assert identity["authoritative_stage"] == "extended_initial"
     work_id, result = commit(kernel)
     label = kernel._agentic_visible_turn_label(work_id)
     assert result.content == "Exact answer\n" + "\n\n[Agentic Turn ID: " + label + "]"
