@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ntpath
+import jack_posix_paths
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -88,7 +89,10 @@ _RESOURCE_POLICIES: dict[tuple[str, str], RuntimeCredentialResourcePolicy] = {}
 
 
 def _canonical_resource_path(value: Any) -> str:
-    text = str(value or "").strip().replace("/", "\\")
+    text = str(value or "")
+    if text.startswith("/") and not text.startswith("//"):
+        return jack_posix_paths.normalize(text)
+    text = text.strip().replace("/", "\\")
     if not text:
         raise RuntimeError("Credential Isolation and DLP credential resource path is empty")
     canonical = ntpath.normcase(ntpath.normpath(text))
@@ -101,7 +105,7 @@ def _canonical_resource_path(value: Any) -> str:
 
 
 def _resource_id_for_path(canonical: str) -> str:
-    lowered = canonical.casefold()
+    lowered = canonical.replace("/", "\\").casefold()
     if lowered.endswith(r"\jackkernellmstudio\config.json") or lowered.endswith(
         r"\.jack-kernel-lm-studio\config.json"
     ):
@@ -189,9 +193,8 @@ def fact_for_canonical_target(
     if policy is None:
         return None
 
-    from jack_path_policy import _policy_object_windows_path
-
-    canonical = _policy_object_windows_path(ntpath.normcase(ntpath.normpath(canonical_target)))
+    # Path authority and credential identity share the selected host semantics.
+    canonical = path_policy.object_path(canonical_target)
     for resource in policy.resources:
         if canonical == resource.canonical_path:
             return CredentialResourceAuthorityFact(

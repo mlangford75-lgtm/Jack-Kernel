@@ -19,7 +19,7 @@ local settings; an administrator override cannot be edited from the menu.
 
 | Option | Function |
 |---|---|
-| 1 | Set or change the absolute Windows Workspace Lock root |
+| 1 | Set or change the absolute host Workspace Lock root |
 | 2 | Disable Workspace Lock with explicit confirmation |
 | 3 | Add a user-defined NEVER root; repeat to add more |
 | 4 | Remove a numbered user-defined NEVER root, with confirmation |
@@ -143,10 +143,14 @@ The platform-independent executor contract distinguishes strict containment
 from both modes. Strict requires a qualified executor with object-level
 enforcement, child-process containment, policy identity, authenticated
 receipts and settlement. No current native executor has this qualification;
-strict startup is rejected, not downgraded. The existing Windows represented
-path adapter is unchanged in path semantics; the contract does not make that
-adapter universal. Other operating systems and agents can implement qualified
-adapters without making their tools or path grammar dependencies of Kernel.
+strict startup is rejected, not downgraded. Host-owned path semantics select Windows or POSIX at startup. Windows factory
+roots, explicit NEVER rules and the existing Temp exception remain unchanged.
+The POSIX adapter preserves case and literal path characters and enforces
+explicitly configured roots and exact credential resources; it does not invent
+new broad system-directory blocks. This is lexical represented-path protection,
+not actual object resolution, symlink containment or cross-host enforcement.
+Other operating systems and agents can implement qualified adapters without
+making their tools or path grammar dependencies of Kernel.
 
 The Kernel cannot independently establish every final filesystem object
 accessed by an external executor; it evaluates its owned represented-target

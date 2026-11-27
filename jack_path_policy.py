@@ -9,6 +9,7 @@ from enum import Enum
 from typing import Any, Mapping, Optional, Tuple
 
 from jack_executor_contract import FilesystemProtection, effective_protection
+import jack_posix_paths
 
 
 STATIC_PATH_POLICY_ENV = "JACK_PATH_POLICY_JSON"
@@ -214,6 +215,7 @@ class RuntimePathPolicy:
     user_never_roots: Tuple[str, ...] = ()
     # Legacy locks keep bounded admission; represented coverage is opt-in.
     workspace_mode: str = "bounded"
+    path_style: str = "windows"
 
     def __post_init__(self) -> None:
         if not isinstance(self.runtime_id, str) or not self.runtime_id:
@@ -221,19 +223,21 @@ class RuntimePathPolicy:
         if not isinstance(self.lane_id, str) or not self.lane_id:
             raise ValueError("lane_id must not be empty")
 
+        if self.path_style not in {"windows", "posix"}:
+            raise ValueError("unsupported host path style")
         protection = effective_protection(self.workspace_root is not None, self.workspace_mode)
         if protection is FilesystemProtection.STRICT:
             # The native runtime has no qualified containment integration.
             # Never silently treat an unqualified executor as strict.
             raise ValueError("strict executor containment is unavailable in the native runtime")
         if self.workspace_root is not None:
-            _require_canonical_absolute(self.workspace_root, "workspace_root")
+            self.require_absolute(self.workspace_root, "workspace_root")
 
         if not isinstance(self.never_roots, tuple):
             raise TypeError("never_roots must be a tuple")
 
         for root in self.never_roots:
-            _require_canonical_absolute(root, "never root")
+            self.require_absolute(root, "never root")
 
         if len(self.never_roots) != len(set(self.never_roots)):
             raise ValueError("never_roots must not contain duplicates")
@@ -241,7 +245,7 @@ class RuntimePathPolicy:
         if not isinstance(self.user_never_roots, tuple):
             raise TypeError("user_never_roots must be a tuple")
         for root in self.user_never_roots:
-            _require_canonical_absolute(root, "user NEVER root")
+            self.require_absolute(root, "user NEVER root")
         if (len(self.user_never_roots) != len(set(self.user_never_roots))
                 or not set(self.user_never_roots).issubset(self.never_roots)):
             raise ValueError("user NEVER roots must be unique members of never_roots")
@@ -269,6 +273,27 @@ class RuntimePathPolicy:
     @property
     def requires_bounded_command_contract(self) -> bool:
         return self.filesystem_protection is FilesystemProtection.BOUNDED
+
+    def require_absolute(self, value: str, label: str) -> None:
+        if self.path_style == "posix":
+            jack_posix_paths.require_absolute(value)
+        else:
+            _require_canonical_absolute(value, label)
+
+    def normalize(self, value: Any, *, base_root: Optional[str] = None) -> str:
+        return _normalize_policy_path(self.path_style, value, base_root=base_root,
+                                      environment=self.path_environment())
+
+    def contains(self, target: str, root: str) -> bool:
+        if self.path_style == "posix":
+            return jack_posix_paths.contains(target, root)
+        return path_is_within_or_equal(target, root)
+
+    def object_path(self, canonical: str) -> str:
+        if self.path_style == "posix":
+            self.require_absolute(canonical, "canonical")
+            return canonical
+        return _policy_object_windows_path(canonical)
 
     def path_environment(self) -> Mapping[str, str]:
         # Return a new ordinary mapping so callers cannot mutate the authority
@@ -525,6 +550,19 @@ def normalize_represented_windows_path(
     return canonical
 
 
+def _normalize_policy_path(style: str, value: Any, *, base_root=None, environment=None) -> str:
+    if style == "windows":
+        return normalize_represented_windows_path(value, base_root=base_root, environment=environment)
+    try:
+        return jack_posix_paths.normalize(value, base_root=base_root)
+    except jack_posix_paths.PosixCwdRequired as exc:
+        raise RepresentedPathNeedsExecutorCwd(str(exc)) from None
+    except jack_posix_paths.UnresolvedPosixPath as exc:
+        raise RepresentedPathAmbiguous(str(exc)) from None
+    except jack_posix_paths.InvalidPosixPath as exc:
+        raise RepresentedPathInvalid(str(exc)) from None
+
+
 def path_is_within_or_equal(target: str, root: str) -> bool:
     """Component-aware Windows path containment; never a string-prefix check."""
 
@@ -594,9 +632,10 @@ def _canonical_windows_root(environment: Mapping[str, str]) -> Optional[str]:
 def _explicit_never_match(policy: RuntimePathPolicy, target: str) -> bool:
     # Retain non-default restrictions from direct/legacy policy construction
     # as well as explicit startup restrictions that duplicate factory roots.
-    defaults = frozenset(_default_windows_never_roots(policy.path_environment()))
+    defaults = (frozenset(_default_windows_never_roots(policy.path_environment()))
+                if policy.path_style == "windows" else frozenset())
     return any(
-        path_is_within_or_equal(target, root)
+        policy.contains(target, root)
         for root in policy.never_roots
         if root in policy.user_never_roots or root not in defaults
     )
@@ -609,9 +648,11 @@ def _effective_never_match(policy: RuntimePathPolicy, target: str) -> bool:
     object attestation. No exception for SystemTemp or other Windows subtrees.
     """
     matches = tuple(root for root in policy.never_roots
-                    if path_is_within_or_equal(target, root))
+                    if policy.contains(target, root))
     if not matches:
         return False
+    if policy.path_style == "posix":
+        return True
     system = _canonical_windows_root(policy.path_environment())
     if system is None or matches != (system,) or _explicit_never_match(policy, target):
         return True
@@ -625,6 +666,7 @@ def build_runtime_path_policy(
     lane_id: str,
     raw_json: str,
     host_environment: Optional[Mapping[str, Any]] = None,
+    path_style: Optional[str] = None,
 ) -> RuntimePathPolicy:
     """Build one immutable host-owned Phase-4 startup policy snapshot.
 
@@ -637,6 +679,10 @@ def build_runtime_path_policy(
 
     environment = _normalized_environment(host_environment)
     snapshot = tuple(sorted(environment.items()))
+    # Startup-owned selection, never selected by a model or tool request.
+    style = path_style or ("windows" if os.name == "nt" or environment.get("systemroot") or environment.get("windir") else "posix")
+    if style not in {"windows", "posix"}:
+        raise RuntimeError("unsupported host path style")
 
     if raw_json.strip():
         try:
@@ -693,27 +739,21 @@ def build_runtime_path_policy(
 
     try:
         workspace_root = (
-            normalize_represented_windows_path(
-                raw_workspace,
-                environment=environment,
-            )
+            _normalize_policy_path(style, raw_workspace, environment=environment)
             if raw_workspace is not None
             else None
         )
     except RepresentedPathError as exc:
         raise RuntimeError(
-            f"{STATIC_PATH_POLICY_ENV} workspace_root is not a deterministic absolute Windows path: {exc}"
+            f"{STATIC_PATH_POLICY_ENV} workspace_root is not a deterministic absolute host path: {exc}"
         ) from None
 
-    never_roots = list(_default_windows_never_roots(environment))
+    never_roots = list(_default_windows_never_roots(environment)) if style == "windows" else []
     user_never_roots = []
 
     for raw_root in raw_never:
         try:
-            canonical = normalize_represented_windows_path(
-                raw_root,
-                environment=environment,
-            )
+            canonical = _normalize_policy_path(style, raw_root, environment=environment)
         except RepresentedPathError as exc:
             raise RuntimeError(
                 f"{STATIC_PATH_POLICY_ENV} contains an invalid NEVER path: {exc}"
@@ -732,6 +772,7 @@ def build_runtime_path_policy(
         _path_environment=snapshot,
         user_never_roots=tuple(user_never_roots),
         workspace_mode=workspace_mode,
+        path_style=style,
     )
     if workspace_root is not None and _effective_never_match(policy, workspace_root):
         raise RuntimeError(
@@ -999,6 +1040,14 @@ def _prepare_command_target(
     executor_platform: Optional[str],
 ) -> str:
     environment = policy.path_environment()
+    if policy.path_style == "posix":
+        prepared = _strip_token_quotes(str(target or ""))
+        if prepared.startswith("~"):
+            # Shell-dependent home expansion must not be treated as a literal.
+            raise RepresentedPathAmbiguous("shell home expansion is executor-dependent")
+        if dialect == "bash":
+            prepared = _expand_known_bash_environment(prepared, environment)
+        return prepared
     prepared = _strip_token_quotes(str(target or "").strip())
     if dialect == "powershell":
         prepared = _normalize_powershell_filesystem_target(prepared)
@@ -2074,6 +2123,8 @@ def _safe_default_windows_read(
     Non-Windows, dynamic, or unresolved paths do not receive this exemption.
     A None result means: apply the original path policy unchanged.
     """
+    if policy.path_style != "windows":
+        return None
     if facts is None:
         facts = inspect_represented_path(
             policy, represented_target,
@@ -2218,7 +2269,7 @@ def _default_windows_never_only(
     policy: RuntimePathPolicy, canonical_target: Optional[str]
 ) -> bool:
     """Distinguish immutable default system roots from explicit user NEVERs."""
-    if not canonical_target:
+    if not canonical_target or policy.path_style != "windows":
         return False
     environment = policy.path_environment()
     system_root = environment.get("systemroot") or environment.get("windir")
@@ -2290,13 +2341,11 @@ def authorize_command_tool_call(
             canonical_cwd = cwd_decision.canonical_target
     elif executor_cwd is not None:
         try:
-            canonical_cwd = normalize_represented_windows_path(
-                executor_cwd,
-                environment=policy.path_environment(),
-            )
+            canonical_cwd = policy.normalize(executor_cwd)
         except RepresentedPathError:
             canonical_cwd = None
 
+    verified_read = _safe_default_read_command(call, extraction) if policy.path_style == "windows" else False
     for target in extraction.targets:
         try:
             prepared_target = _prepare_command_target(
@@ -2322,7 +2371,7 @@ def authorize_command_tool_call(
             policy,
             prepared_target,
             executor_cwd=canonical_cwd,
-            verified_default_windows_read=_safe_default_read_command(call, extraction),
+            verified_default_windows_read=verified_read,
         )
         if (
             decision.outcome is PathAuthorizationOutcome.HARD_INTERRUPT
@@ -2439,7 +2488,7 @@ def rewrite_literal_bash_home_call_for_workspace_release(
     """
     import shlex
 
-    if not policy.workspace_enabled or str(executor_platform or "").casefold() not in {"win32", "windows"}:
+    if policy.path_style != "windows" or not policy.workspace_enabled or str(executor_platform or "").casefold() not in {"win32", "windows"}:
         return call
     if not isinstance(call, dict) or not isinstance(call.get("function"), dict):
         return call
@@ -2534,7 +2583,6 @@ def rewrite_structured_tool_call_for_workspace_release(
     if not isinstance(arguments, dict):
         return rewritten
 
-    environment = policy.path_environment()
     saw_path = False
 
     for field_name in contract.path_fields:
@@ -2545,11 +2593,7 @@ def rewrite_structured_tool_call_for_workspace_release(
         if not isinstance(value, str) or not value.strip():
             continue
 
-        canonical = normalize_represented_windows_path(
-            value,
-            base_root=policy.workspace_root,
-            environment=environment,
-        )
+        canonical = policy.normalize(value, base_root=policy.workspace_root)
         arguments[field_name] = canonical
         saw_path = True
 
@@ -2681,15 +2725,11 @@ def inspect_represented_path(
     if not isinstance(policy, RuntimePathPolicy):
         raise TypeError("policy must be a RuntimePathPolicy")
 
-    environment = policy.path_environment()
     canonical_cwd = None
 
     if executor_cwd is not None:
         try:
-            canonical_cwd = normalize_represented_windows_path(
-                executor_cwd,
-                environment=environment,
-            )
+            canonical_cwd = policy.normalize(executor_cwd)
         except RepresentedPathError as exc:
             return RepresentedPathAuthorityFacts(
                 canonical_target=None,
@@ -2700,17 +2740,13 @@ def inspect_represented_path(
                 invalid=True,
                 deferred_to_executor=False,
                 reason=(
-                    "executor cwd is not a deterministic absolute Windows path: "
+                    "executor cwd is not a deterministic absolute host path: "
                     f"{exc}"
                 ),
             )
 
     try:
-        canonical = normalize_represented_windows_path(
-            represented_path,
-            base_root=canonical_cwd,
-            environment=environment,
-        )
+        canonical = policy.normalize(represented_path, base_root=canonical_cwd)
     except RepresentedPathNeedsExecutorCwd as exc:
         if defer_relative_without_executor:
             return RepresentedPathAuthorityFacts(
@@ -2765,7 +2801,7 @@ def inspect_represented_path(
         )
 
     try:
-        comparison_target = _policy_object_windows_path(canonical)
+        comparison_target = policy.object_path(canonical)
     except RepresentedPathAmbiguous as exc:
         return RepresentedPathAuthorityFacts(
             canonical_target=canonical,
@@ -2786,7 +2822,7 @@ def inspect_represented_path(
     inside_workspace = (
         None
         if policy.workspace_root is None
-        else path_is_within_or_equal(comparison_target, policy.workspace_root)
+        else policy.contains(comparison_target, policy.workspace_root)
     )
 
     if never_match:

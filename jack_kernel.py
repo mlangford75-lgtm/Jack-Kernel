@@ -5327,7 +5327,8 @@ def _phase4_partition_structured_tool_calls(
             decision = jack_path_policy.authorize_structured_tool_call(
                 active_policy,
                 candidate,
-                defer_relative_without_executor=False,
+                executor_cwd=executor_cwd if not active_policy.workspace_enabled else None,
+                defer_relative_without_executor=not active_policy.workspace_enabled and executor_cwd is None,
             )
             contract_applied = True
         else:
@@ -17505,7 +17506,7 @@ def _edit_security_center(cfg: Dict[str, Any]) -> None:
                 "version": 1, "workspace_root": None, "never_paths": [],
             })
             if choice in {"1", "3"}:
-                root = _cli_input("Absolute Windows path (blank cancels): ").strip()
+                root = _cli_input("Absolute host path (blank cancels): ").strip()
                 if not root:
                     continue
                 if choice == "1":
@@ -18784,6 +18785,8 @@ def _install_bundled_runtime_extensions() -> None:
         "jack_secure_entrypoint.py": root / "jack_secure_entrypoint.py",
         "jack_evidence_guard.py": Path(jack_evidence_guard.__file__).resolve(),
         "jack_path_policy.py": Path(jack_path_policy.__file__).resolve(),
+        "jack_posix_paths.py": root / "jack_posix_paths.py",
+        "jack_executor_contract.py": root / "jack_executor_contract.py",
         "jack_consequence_gate.py": Path(jack_consequence_gate.__file__).resolve(),
         "jack_authority_ledger.py": root / "jack_authority_ledger.py",
         "jack_responses_compat.py": Path(jack_responses_compat.__file__).resolve(),
