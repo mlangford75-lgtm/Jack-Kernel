@@ -29,6 +29,7 @@ jobs:
           python-version: "3.14.6"
 
       - name: Set up Node 24.16.0
+        id: setup_node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 24.16.0
@@ -98,17 +99,27 @@ jobs:
         shell: pwsh
         run: python -m pytest -q
 
-      - name: Fresh-clone Windows bootstrap and isolated subprocess regression
+      - name: Fresh-clone Windows bootstrap and targeted isolated subprocess regression
+        # Collect independent bootstrap evidence even when the full suite fails.
+        # Earlier failures still fail the job; no continue-on-error.
+        id: isolated_bootstrap
+        if: ${{ !cancelled() && steps.install_test_environment.outcome == 'success' && steps.compile_runtime.outcome == 'success' }}
         shell: pwsh
         run: |
           cmd /c setup.bat
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmd /c run-tests.bat tests/test_phase7_ledger_hooks.py tests/test_phase7_ledger_resources.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Full isolated subprocess regression
+        if: ${{ !cancelled() && steps.isolated_bootstrap.outcome == 'success' }}
+        shell: pwsh
+        run: |
           cmd /c run-tests.bat
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Run Pi control bridge harnesses
+        if: ${{ !cancelled() && steps.setup_node.outcome == 'success' && steps.compile_runtime.outcome == 'success' }}
         shell: pwsh
         run: |
           node tests/pi_control_bridge_v2_harness.mjs
