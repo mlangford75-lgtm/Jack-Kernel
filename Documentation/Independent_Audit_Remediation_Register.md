@@ -236,3 +236,44 @@ The [matched-runner qualification](https://github.com/mlangford75-lgtm/Jack-Kern
 Factory policy now permits the represented Windows Temp subtree in addition to ordinary user TEMP/TMP, with Workspace Lock off and no custom NEVER entries by default. Explicit user NEVER (even a duplicate of a factory root), enabled Workspace Lock, credential resource authority and Windows permissions remain controlling. SystemTemp and other factory OS roots stay protected. User NEVER provenance is incorporated in the static path integrity measurement. The [combined security qualification](https://github.com/mlangford75-lgtm/Jack-Kernel/actions/runs/46044510840) passed at `51337eb6f35747df2848e0ca6221e01318b4de67`, including 215 Security Center group tests. The full prior regression identified a legacy test that expected Windows Temp to remain forbidden as a workspace; that expectation is revised with explicit SystemTemp and user NEVER negative controls. Full regression qualification of this new correction is pending.
 
 The last pre-Temp complete [regression run](https://github.com/mlangford75-lgtm/Jack-Kernel/actions/runs/46043258506) recorded 1,875 passing / 82 inherited failed identities, zero added relative to the 120-failure checkpoint. The later Temp commit had 1,891 passes and 92 failures (82 inherited plus nine invalid new aggregate-result assertions and one obsolete Temp-workspace assertion). The nine assertion corrections have passed the specialized Security Center workflow; the remaining changed expectation is included in this commit. No tests have been skipped or xfailed. Main remains unchanged.
+
+
+## Release-candidate scope closure (2026-11-27)
+
+**Scope decision:** stop expanding the independent security remediation campaign. Preserve current cognitive contracts, retain the remaining historical fixtures without skips or xfails, and prioritize live acceptance rather than achieving a green historical suite by rewriting expectations. No additional runtime changes are proposed by this closure.
+
+Qualified runtime/test revision: `ee9ff318ffafb6ef14a55968188b36aff314a45c` (76 commits ahead of main; zero behind at review). Main remains `9a6fe53d02c890698724929486365f0803cc775f`.
+
+| Gate | Result |
+|---|---|
+| [Full Windows regression](https://github.com/mlangford75-lgtm/Jack-Kernel/actions/runs/46044972768) | 1,931 passed; 52 failed; 2 warnings |
+| [Combined Phase 9B/10/11 security](https://github.com/mlangford75-lgtm/Jack-Kernel/actions/runs/46044972780) | Passed |
+| [Isolated executable identity](https://github.com/mlangford75-lgtm/Jack-Kernel/actions/runs/46044972881) | Passed |
+| [Independent Pi bridge](https://github.com/mlangford75-lgtm/Jack-Kernel/actions/runs/46044972774) | Passed |
+| [Tool-free Coder Architect](https://github.com/mlangford75-lgtm/Jack-Kernel/actions/runs/46044972800) | Passed |
+
+Fresh exact pytest failure-identity comparisons against the 218-failure checkpoint (run 46030698847) and the 82-failure checkpoint (run 46043258506) show zero added identities; 166 and 30 identities respectively are absent from the final failure set. The recorded original main comparison reported 219 failures, giving a reduction of 167 failing identities across the campaign by the documented comparison chain. The original main run was not freshly retrieved (the commit-workflow lookup returned no PR-triggered runs); this is not an independent direct comparison to main or proof that every removed identity represents an actual runtime defect fixed. Full CI remains red; the post-regression fresh-clone bootstrap and Pi harness steps in that workflow were skipped after pytest failed. The separate Pi qualification passed.
+
+### Residual failure disposition
+
+| Historical fixture | Remaining |
+|---|---:|
+| tests/test_agentic_final_review_hold_on.py | 4 |
+| tests/test_agentic_optional_draft_recovery.py | 3 |
+| tests/test_agentic_reasoning_primary_memory_experiment.py | 22 |
+| tests/test_agentic_stage1_verify_then_align.py | 6 |
+| tests/test_agentic_stage2_turn_local_retention.py | 17 |
+
+Failure traces show 20 unsupported-profile configuration failures and 32 assertions about superseded cognitive source/prompt/role layouts and evidence presentation. This classification is based on the first failing assertions; it is not a proof that all downstream historical assertions would pass if translated to the new contract. The current chronological source implementation authenticates the active turn and frozen A1, excludes unrelated turns, preserves issued calls, returned results (including reported failure), host denials and orphan retired receipts, and does not assign Stage 2 tool authority. The old anchor-poisoning fixture passes its forged-ID exclusion assertion before failing the expectation that a current work ID is model-visible; authenticated IDs are now host-side. Current tests for inconsistent work binding, changed user request, unowned suffix, current-turn-only evidence and unconfirmed-history negative certification are not in the failing set. Missing-return evidence is represented by an issued call without a corresponding returned result rather than the old textual coverage label; current chronological representation should be checked in live acceptance. Do not equate a missing legacy label with proof of a safe live outcome. No new security regression identity has been identified in the qualified differential scope.
+
+### Bounded live Windows acceptance before release
+
+Use a fresh clone/checkout of the experimental candidate, a disposable workspace, synthetic canaries only, and a local supported backend. Verify the checkout revision and effective Security Center settings. Do not modify operating-system files or use real credentials as test material.
+
+1. Factory configuration: Workspace Lock off, custom NEVER list empty; ordinary user TEMP/TMP and Windows Temp allowed by Jack subject to Windows ACLs. Exercise harmless read/write/delete of a disposable file in user Temp and, only if OS permissions allow, Windows Temp. Confirm SystemTemp and protected OS roots are denied by policy using non-destructive policy checks; no elevation or destructive system operations. Confirm a user-defined NEVER rule and enabled workspace restriction override permitted defaults, then restore defaults.
+2. Run Coder Flash and Thorough on a simple workspace task: Architect supplies a plan without tools; Coder performs the authorized tool calls, reports actual outcomes, and produces a complete answer. Confirm active reasoning streams normally and Architect reasoning retirement does not stall Coder. Include a tool-free task.
+3. Run mixed permitted/denied tool requests and a recoverable tool failure. Authorized siblings must be preserved, blocked actions must not execute, and final output must not certify an unreturned or failed operation as success. Check current-turn memory/evidence attribution and no replay of previous-turn authority.
+4. With a disposable configured synthetic Canary, check streaming and nonstreaming output enforcement at the configured threshold, safe-prefix preservation where applicable, no protected disclosure, terminal security consequence, and a subsequent ordinary request. Check configured sensitivity rather than assuming a universal threshold.
+5. Confirm ordinary multi-turn work and clean startup/shutdown with the local backend/Pi path. Record unexpected stalls, transaction ownership failures, denied ordinary work, or security-policy failures as release blockers. A stochastic formatting deviation alone is not proof of a security regression.
+
+P-2 live backend prefill/KV-cache measurement remains optional performance characterization, not a reason to change Architect authority; V-6 legacy retirement and further P-1 optimization are deferred. No universal OS sandbox or Linux/macOS security qualification is claimed. The release candidate is ready for bounded live acceptance, not represented as merged, fully green, or finally approved. Documentation-only follow-up is distinguishable from the qualified runtime/test revision above.
