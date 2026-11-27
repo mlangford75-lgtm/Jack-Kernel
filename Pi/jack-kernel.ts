@@ -620,7 +620,7 @@ export default async function (pi) {
     if (!binding) {
       return {
         block: true,
-        reason: "Jack Phase-4 executor admission is unavailable.",
+        reason: "Jack Restricted Paths / Workspace Lock executor admission is unavailable.",
       };
     }
 
@@ -645,7 +645,7 @@ export default async function (pi) {
       if (decision?.contract_applied !== true) {
         return {
           block: true,
-          reason: "Jack Phase-4 executor admission found no matching host-owned contract.",
+          reason: "Jack Restricted Paths / Workspace Lock executor admission found no matching host-owned contract.",
         };
       }
       if (outcome === "ALLOW") {
@@ -655,25 +655,25 @@ export default async function (pi) {
         if (typeof ctx?.abort === "function") ctx.abort();
         return {
           block: true,
-          reason: "Blocked by Jack Phase-4 restricted-path policy.",
+          reason: "Blocked by Jack Restricted Paths policy.",
           terminate: true,
         };
       }
       if (outcome === "DENY_AND_CONTINUE") {
         return {
           block: true,
-          reason: "Blocked by Jack Phase-4 Workspace Lock.",
+          reason: "Blocked by Jack Workspace Lock.",
         };
       }
       return {
         block: true,
-        reason: "Jack Phase-4 executor admission returned an unknown outcome.",
+        reason: "Jack Restricted Paths / Workspace Lock executor admission returned an unknown outcome.",
       };
     } catch (error) {
-      console.error("[jack-kernel] Phase-4 executor admission failed:", error);
+      console.error("[jack-kernel] Restricted Paths / Workspace Lock executor admission failed:", error);
       return {
         block: true,
-        reason: "Jack Phase-4 executor admission failed closed for this filesystem action.",
+        reason: "Jack Restricted Paths / Workspace Lock executor admission failed closed for this filesystem action.",
       };
     }
   });
