@@ -69,6 +69,7 @@ def _canonical_material(kind: PolicyKind, policy: Any, key: bytes) -> bytes:
             "lane_id": _safe_scalar(policy.lane_id),
             "workspace_root": _safe_scalar(policy.workspace_root, allow_none=True),
             "never_roots": _tuple_strings(policy.never_roots),
+            "user_never_roots": _tuple_strings(policy.user_never_roots),
             "path_environment": [[k, v] for k, v in environment],
         }
     elif kind == "credential":

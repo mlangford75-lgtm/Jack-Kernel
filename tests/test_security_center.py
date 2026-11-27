@@ -19,6 +19,81 @@ def test_default_and_persisted_workspace(cfg):
     loaded = jk._load_cli_config()
     assert json.loads(jk._config_to_env(loaded)["JACK_PATH_POLICY_JSON"]) == cfg["security_path_policy"]
 
+
+@pytest.fixture
+def factory_windows(cfg, monkeypatch):
+    for name, value in {
+        "SystemRoot": r"C:\Windows", "WINDIR": r"C:\Windows",
+        "SystemDrive": "C:", "USERPROFILE": r"C:\Users\Operator",
+        "TEMP": r"C:\Users\Operator\AppData\Local\Temp", "TMP": r"D:\Scratch",
+    }.items():
+        monkeypatch.setenv(name, value)
+    return cfg
+
+
+@pytest.mark.parametrize("target", [
+    r"%TEMP%\jack-build\test.txt", r"$env:TMP\test.txt",
+    r"C:\Temp\test.txt", r"C:\Windows\Temp\test.txt",
+    r"%SystemRoot%\Temp\jack-build\test.txt", r"C:\Windows\Temp",
+    r"C:\Users\Operator\Documents\project\test.txt",
+    r"C:\Program Files\Example\test.txt", r"C:\ProgramData\Example\test.txt",
+])
+def test_factory_policy_keeps_ordinary_work_and_temp_open(factory_windows, target):
+    import jack_path_policy as paths
+    policy = jk._security_center_policies(factory_windows)[0]
+    assert policy.workspace_root is None
+    assert policy.user_never_roots == ()
+    call = {"type": "function", "function": {"name": "write",
+            "arguments": json.dumps({"path": target, "content": "synthetic"})}}
+    decision = paths.authorize_structured_tool_call(policy, call)
+    assert decision.outcome is paths.PathAuthorizationOutcome.ALLOW
+    assert decision.canonical_target is not None
+
+
+@pytest.mark.parametrize("target", [
+    r"C:\Windows\SystemTemp\test.txt", r"C:\Windows\TempOther\test.txt",
+    r"C:\Windows\Temp\..\System32\test.txt", r"C:\Windows\SysWOW64\test.txt",
+    r"C:\Windows\WinSxS\test.txt", r"C:\Windows", r"C:\Boot\BCD",
+    r"C:\Recovery\test.txt", r"C:\System Volume Information\test.txt",
+])
+def test_factory_os_protection_unchanged(factory_windows, target):
+    import jack_path_policy as paths
+    policy = jk._security_center_policies(factory_windows)[0]
+    assert paths.authorize_represented_path(policy, target).outcome is paths.PathAuthorizationOutcome.HARD_INTERRUPT
+
+
+@pytest.mark.parametrize("restriction", [r"%SystemRoot%", r"%SystemRoot%\Temp", r"%SystemRoot%\Temp\jack-build"])
+def test_explicit_never_overrides_factory_temp_exception(factory_windows, restriction):
+    import jack_path_policy as paths
+    factory_windows["security_path_policy"] = {
+        "version": 1, "workspace_root": None, "never_paths": [restriction],
+    }
+    policy = jk._security_center_policies(factory_windows)[0]
+    assert len(policy.user_never_roots) == 1
+    target = r"C:\Windows\Temp\jack-build\test.txt"
+    for read_only in (False, True):
+        assert paths.authorize_represented_path(
+            policy, target, verified_default_windows_read=read_only,
+        ).outcome is paths.PathAuthorizationOutcome.HARD_INTERRUPT
+    factory_windows["security_path_policy"]["never_paths"] = []
+    restored = jk._security_center_policies(factory_windows)[0]
+    assert paths.authorize_represented_path(restored, target).outcome is paths.PathAuthorizationOutcome.ALLOW
+
+
+def test_temp_respects_explicit_workspace_lock(factory_windows):
+    import jack_path_policy as paths
+    factory_windows["security_path_policy"] = {
+        "version": 1, "workspace_root": r"D:\Projects\Jack", "never_paths": [],
+    }
+    policy = jk._security_center_policies(factory_windows)[0]
+    assert paths.authorize_represented_path(policy, r"C:\Windows\Temp\a.txt").outcome is paths.PathAuthorizationOutcome.DENY_AND_CONTINUE
+    factory_windows["security_path_policy"]["workspace_root"] = r"C:\Windows\Temp\Jack"
+    policy = jk._security_center_policies(factory_windows)[0]
+    assert paths.authorize_represented_path(policy, r"C:\Windows\Temp\Jack\a.txt").outcome is paths.PathAuthorizationOutcome.ALLOW
+    assert paths.authorize_represented_path(policy, r"C:\Windows\Temp\Other\a.txt").outcome is paths.PathAuthorizationOutcome.DENY_AND_CONTINUE
+
+
+
 def test_admin_environment_precedence(cfg, monkeypatch):
     cfg["security_path_policy"] = {"version": 1, "workspace_root": "D:/Jack/saved", "never_paths": []}
     raw = json.dumps({"version": 1, "workspace_root": "D:/Jack/admin", "never_paths": []})

@@ -17523,9 +17523,11 @@ def _edit_security_center(cfg: Dict[str, Any]) -> None:
             print("Workspace directory:", repr(path_policy.workspace_root) if path_policy.workspace_root else "NOT CONFIGURED")
             print("Path policy source:", "ADMIN ENVIRONMENT" if os.getenv(paths.STATIC_PATH_POLICY_ENV, "").strip() else "LOCAL SETTINGS / DEFAULTS")
             print("Canary policy source:", "ADMIN ENVIRONMENT" if os.getenv(evidence.STATIC_CANARY_POLICY_ENV, "").strip() else "LAUNCHER SESSION")
-            print("Effective restricted roots (default and user-defined):")
+            print("Restricted roots (factory Windows Temp exception; explicit NEVER takes precedence):")
             for root in path_policy.never_roots:
-                print("  " + repr(root))
+                print("  " + repr(root) + (" [user NEVER]" if root in path_policy.user_never_roots else " [factory]"))
+            print("Factory policy allows ordinary user TEMP/TMP and the Windows Temp subtree.")
+            print("Workspace Lock, explicit NEVER paths and Windows permissions still apply.")
             print("Credential protection: automatic known-value isolation; values hidden.")
             print("Mandatory at secured startup: StreamingIRQ / Reasoning Airlock, Canary enforcement,")
             print("Consequence Gate, Authority Ledger, Credential Isolation & DLP, Source Drift Guard,")

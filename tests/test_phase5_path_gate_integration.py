@@ -96,3 +96,38 @@ def test_gate_preserves_executor_cwd_deferral(installed_path_gate):
     d = path_policy.authorize_represented_path(build(), r"relative\target.txt", defer_relative_without_executor=True)
     assert d.outcome is path_policy.PathAuthorizationOutcome.ALLOW
     assert "executor cwd admission" in d.reason
+
+
+@pytest.mark.parametrize("dialect, command", [
+    ("bash", r'touch "C:\Windows\Temp\jack-test.txt"'),
+    ("powershell", r'New-Item -ItemType File -Path "C:\Windows\Temp\jack-test.txt"'),
+])
+def test_factory_temp_allowed_at_consequence_and_executor_gates(installed_path_gate, dialect, command):
+    policy = build(None)
+    call = {"type": "function", "function": {"name": dialect,
+            "arguments": json.dumps({"command": command})}}
+    result, applied = path_policy.authorize_executor_tool_call(
+        policy, call, executor_cwd=r"D:\Projects\Jack", command_dialect=dialect,
+    )
+    assert applied
+    assert result.outcome is path_policy.PathAuthorizationOutcome.ALLOW
+    # The same target remains governed by an opted-in workspace lock.
+    locked, applied = path_policy.authorize_executor_tool_call(
+        build(), call, executor_cwd=r"D:\Projects\Jack", command_dialect=dialect,
+    )
+    assert applied
+    assert locked.outcome is path_policy.PathAuthorizationOutcome.DENY_AND_CONTINUE
+
+
+@pytest.mark.parametrize("explicit", [r"C:\Windows", r"C:\Windows\Temp"])
+def test_explicit_duplicate_root_is_authoritative_at_consequence_gate(installed_path_gate, explicit):
+    policy = path_policy.build_runtime_path_policy(
+        runtime_id="phase5-test-runtime", lane_id="phase5-test-lane",
+        raw_json=json.dumps({"version": 1, "workspace_root": None, "never_paths": [explicit]}),
+        host_environment=HOST_ENV,
+    )
+    for read in (False, True):
+        result = path_policy.authorize_represented_path(
+            policy, r"C:\Windows\Temp\jack-test.txt", verified_default_windows_read=read,
+        )
+        assert result.outcome is path_policy.PathAuthorizationOutcome.HARD_INTERRUPT

@@ -190,3 +190,8 @@ Port `8001` is Jack's default agent-facing listener. Port `8000` remains availab
 ```text
 agent -> Jack :8001 -> backend :8000
 ```
+
+
+### Factory Security Center path defaults
+
+Workspace Lock is off and no user NEVER paths are configured on a fresh installation. Jack protects represented Windows installation, Boot, Recovery and System Volume Information roots. Ordinary user TEMP/TMP directories and the installation's `Windows\\Temp` subtree are permitted by factory path policy; `Windows\\SystemTemp` and the rest of the Windows installation retain their existing protections. Explicit user NEVER paths (including a repeated Windows root) override the Temp exception; an enabled Workspace Lock continues to apply. Windows permissions and credential protection remain authoritative. This policy is not a filesystem-object sandbox and does not grant privileges.

@@ -206,6 +206,8 @@ class RuntimePathPolicy:
         repr=False,
         compare=True,
     )
+    # Preserve explicit intent even when the same root also ships by default.
+    user_never_roots: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.runtime_id, str) or not self.runtime_id:
@@ -224,6 +226,14 @@ class RuntimePathPolicy:
 
         if len(self.never_roots) != len(set(self.never_roots)):
             raise ValueError("never_roots must not contain duplicates")
+
+        if not isinstance(self.user_never_roots, tuple):
+            raise TypeError("user_never_roots must be a tuple")
+        for root in self.user_never_roots:
+            _require_canonical_absolute(root, "user NEVER root")
+        if (len(self.user_never_roots) != len(set(self.user_never_roots))
+                or not set(self.user_never_roots).issubset(self.never_roots)):
+            raise ValueError("user NEVER roots must be unique members of never_roots")
 
         if not isinstance(self._path_environment, tuple):
             raise TypeError("_path_environment must be a tuple")
@@ -552,6 +562,44 @@ def _default_windows_never_roots(
     return tuple(normalized)
 
 
+def _canonical_windows_root(environment: Mapping[str, str]) -> Optional[str]:
+    system_root = environment.get("systemroot") or environment.get("windir")
+    if not system_root:
+        return None
+    try:
+        return normalize_represented_windows_path(system_root, environment=environment)
+    except RepresentedPathError:
+        return None
+
+
+def _explicit_never_match(policy: RuntimePathPolicy, target: str) -> bool:
+    # Retain non-default restrictions from direct/legacy policy construction
+    # as well as explicit startup restrictions that duplicate factory roots.
+    defaults = frozenset(_default_windows_never_roots(policy.path_environment()))
+    return any(
+        path_is_within_or_equal(target, root)
+        for root in policy.never_roots
+        if root in policy.user_never_roots or root not in defaults
+    )
+
+
+def _effective_never_match(policy: RuntimePathPolicy, target: str) -> bool:
+    """Factory Windows Temp exception; user NEVER rules always take precedence.
+
+    This is represented-path policy, not a permission grant or filesystem
+    object attestation. No exception for SystemTemp or other Windows subtrees.
+    """
+    matches = tuple(root for root in policy.never_roots
+                    if path_is_within_or_equal(target, root))
+    if not matches:
+        return False
+    system = _canonical_windows_root(policy.path_environment())
+    if system is None or matches != (system,) or _explicit_never_match(policy, target):
+        return True
+    temp = ntpath.normcase(ntpath.normpath(ntpath.join(system, "Temp")))
+    return not path_is_within_or_equal(target, temp)
+
+
 def build_runtime_path_policy(
     *,
     runtime_id: str,
@@ -633,6 +681,7 @@ def build_runtime_path_policy(
         ) from None
 
     never_roots = list(_default_windows_never_roots(environment))
+    user_never_roots = []
 
     for raw_root in raw_never:
         try:
@@ -647,21 +696,22 @@ def build_runtime_path_policy(
 
         if canonical not in never_roots:
             never_roots.append(canonical)
+        if canonical not in user_never_roots:
+            user_never_roots.append(canonical)
 
-    if workspace_root is not None:
-        for never_root in never_roots:
-            if path_is_within_or_equal(workspace_root, never_root):
-                raise RuntimeError(
-                    f"{STATIC_PATH_POLICY_ENV} workspace_root cannot be inside a NEVER root"
-                )
-
-    return RuntimePathPolicy(
+    policy = RuntimePathPolicy(
         runtime_id=runtime_id,
         lane_id=lane_id,
         workspace_root=workspace_root,
         never_roots=tuple(never_roots),
         _path_environment=snapshot,
+        user_never_roots=tuple(user_never_roots),
     )
+    if workspace_root is not None and _effective_never_match(policy, workspace_root):
+        raise RuntimeError(
+            f"{STATIC_PATH_POLICY_ENV} workspace_root cannot be inside a NEVER root"
+        )
+    return policy
 
 
 def _structured_tool_path_contract(
@@ -1819,8 +1869,7 @@ def _safe_default_windows_read(
 
     # User-defined NEVER paths always outrank the default read-only exception,
     # including an explicit user NEVER root nested within C:\Windows.
-    default_roots = frozenset(_default_windows_never_roots(environment))
-    if any(path_is_within_or_equal(owner, root) for root in policy.never_roots if root not in default_roots):
+    if _explicit_never_match(policy, owner):
         return None
 
     # Workspace Lock remains non-negotiable even for non-mutating inspection.
@@ -1944,7 +1993,6 @@ def _default_windows_never_only(
     if not canonical_target:
         return False
     environment = policy.path_environment()
-    defaults = frozenset(_default_windows_never_roots(environment))
     system_root = environment.get("systemroot") or environment.get("windir")
     if not system_root:
         return False
@@ -1959,10 +2007,7 @@ def _default_windows_never_only(
     # installation tree, not Boot, Recovery, or System Volume Information.
     return (
         path_is_within_or_equal(canonical_target, canonical_system)
-        and not any(
-            path_is_within_or_equal(canonical_target, root)
-            for root in policy.never_roots if root not in defaults
-        )
+        and not _explicit_never_match(policy, canonical_target)
     )
 
 
@@ -2425,10 +2470,7 @@ def inspect_represented_path(
             ),
         )
 
-    never_match = any(
-        path_is_within_or_equal(comparison_target, never_root)
-        for never_root in policy.never_roots
-    )
+    never_match = _effective_never_match(policy, comparison_target)
     inside_workspace = (
         None
         if policy.workspace_root is None
