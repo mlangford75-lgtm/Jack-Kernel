@@ -352,3 +352,50 @@ def test_outer_release_failure_retires_only_owned_checkpoint(monkeypatch, tmp_pa
         assert unrelated.in_flight is True
 
     asyncio.run(go())
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("kind", ["reasoning", "output"])
+def test_agentic_stage2_budget_preserves_frozen_answer(monkeypatch, tmp_path, stream, kind):
+    k = load(monkeypatch, tmp_path, mode="Local Agentic (Preserve Thinking)", enabled=False)
+    cfg = replace(k.CFG, reasoning_budget_tokens=64, output_budget_tokens=64)
+
+    class BudgetBackend:
+        calls = 0
+        closed = 0
+
+        def message(self):
+            self.calls += 1
+            if self.calls == 1:
+                return {"reasoning_content": "healthy reasoning", "content": "exact frozen A1"}
+            return {"reasoning_content" if kind == "reasoning" else "content": "x" * 256}
+
+        async def chat(self, **kwargs):
+            return {"choices": [{"message": {"role": "assistant", **self.message()},
+                                 "finish_reason": "stop"}], "usage": {}}
+
+        async def chat_stream(self, **kwargs):
+            try:
+                yield {"choices": [{"delta": self.message(), "finish_reason": None}]}
+                yield {"choices": [{"delta": {}, "finish_reason": "stop"}]}
+            finally:
+                self.closed += 1
+
+    backend = BudgetBackend()
+    kernel = k.JackQwenKernel(backend, cfg)
+    request = {"messages": [{"role": "user", "content": "Build a clock"}], "stream": stream}
+
+    async def exercise():
+        if stream:
+            wire = b"".join([chunk async for chunk in kernel.stream(request)]).decode()
+            assert "exact frozen A1" in wire
+            assert "MEMORY NOT PRODUCED" in wire
+            assert "data: [DONE]" in wire
+            assert backend.closed == 2
+        else:
+            result = await kernel.run(request)
+            assert result.content == "exact frozen A1"
+            assert "MEMORY NOT PRODUCED" in result.reasoning_content
+        assert backend.calls == 2
+
+    asyncio.run(exercise())
