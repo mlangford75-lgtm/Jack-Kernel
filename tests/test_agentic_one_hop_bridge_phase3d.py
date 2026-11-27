@@ -14,6 +14,7 @@ MARKER="===== JACK AGENTIC NATIVE PASS 2 =====\n[NATIVE REASONING]\n"
 
 def load():
     os.environ["JACK_REASONING_LEVEL"]="agentic"
+    os.environ["JACK_AGENTIC_PROFILE"]="balanced"
     os.environ["JACK_FORENSIC_ARCHIVE_MODE"]="off"
     os.environ["JACK_BACKEND_MODEL"]="test-model"
     os.environ["JACK_BACKEND_PROFILE"]="lmstudio"
@@ -143,8 +144,8 @@ def test_tool_receipt_keeps_early_material_edit_over_many_reads():
 
 def test_prompt_and_client_format_not_changed():
     k=load()
-    assert k.AGENTIC_STAGE1_PROMPT.startswith("Reasoning effort is set to xhigh.")
+    assert k.AGENTIC_STAGE1_PROMPT.startswith("Please think carefully through the task")
     assert "Carefully reason on the task before using tools." in k.AGENTIC_STAGE1_PROMPT
-    assert "Do not imitate the style, format, or structure of previous turns" in k.AGENTIC_STAGE1_PROMPT
-    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
+    assert "Do not imitate the formatting of previous responses" in k.AGENTIC_STAGE1_PROMPT
+    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
     assert k._format_agentic_completed_response("M","A")=="M\n\nA"

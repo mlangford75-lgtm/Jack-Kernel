@@ -15,6 +15,7 @@ SRC = ROOT / "jack_kernel.py"
 
 def load_kernel():
     os.environ["JACK_REASONING_LEVEL"] = "agentic"
+    os.environ["JACK_AGENTIC_PROFILE"] = "balanced"
     os.environ["JACK_FORENSIC_ARCHIVE_MODE"] = "off"
     os.environ["JACK_BACKEND_MODEL"] = "test-model"
     os.environ["JACK_BACKEND_PROFILE"] = "lmstudio"
@@ -64,7 +65,8 @@ def current_turn_tools(n=1):
 
 def test_stage_contracts_and_frozen_answer_are_separate():
     k = load_kernel()
-    assert k.AGENTIC_STAGE1_PROMPT.startswith("Reasoning effort is set to xhigh.")
+    assert k.AGENTIC_STAGE1_PROMPT.startswith("Please think carefully through the task")
+    assert k.CFG.agentic_profile == "balanced"
     assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
     assert k.STAGES["extended_initial"].allow_tools is True
     assert k.STAGES["extended_reflection"].allow_tools is False

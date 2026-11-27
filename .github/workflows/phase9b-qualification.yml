@@ -50,3 +50,62 @@ jobs:
       - name: Measure P-1 actual bundled versus secured SSE release path
         timeout-minutes: 35
         run: python tests/benchmark_secured_stream.py
+
+      - name: Controlled P-1 comparison of the two qualified immutable fingerprint versions
+        timeout-minutes: 35
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $first = '753ce5c9e783b9691922870b9640fde5031e10f2'
+          $second = 'd1808d86fee2e02e9e30e17f8e25dd612140dcd7'
+          $root = Join-Path $env:RUNNER_TEMP 'jack-p1-controlled'
+          New-Item -ItemType Directory -Path $root | Out-Null
+          foreach ($ref in @($first, $second)) {
+            git fetch --no-tags --depth=1 origin $ref
+            if ($LASTEXITCODE -ne 0) { throw 'Unable to fetch exact benchmark revision' }
+            git worktree add --detach (Join-Path $root $ref) $ref
+            if ($LASTEXITCODE -ne 0) { throw 'Unable to create isolated benchmark checkout' }
+          }
+          $records = @()
+          try {
+            foreach ($ref in @($first, $second, $second, $first)) {
+              Push-Location (Join-Path $root $ref)
+              try {
+                Write-Host "Controlled P-1 revision: $ref"
+                $output = python tests/benchmark_secured_stream.py
+                if ($LASTEXITCODE -ne 0) { throw 'Benchmark qualification failed' }
+                $output | Write-Host
+                $json = @($output | Where-Object { $_ -like 'P1_BENCHMARK_JSON *' } | ForEach-Object {
+                  $_.Substring('P1_BENCHMARK_JSON '.Length) | ConvertFrom-Json
+                })
+                $secured = @($json | Where-Object { $_.mode -eq 'secured' })
+                if ($secured.Count -ne 1) { throw 'Missing secured measurement' }
+                $records += [PSCustomObject]@{ revision = $ref; secured = $secured[0] }
+              } finally {
+                Pop-Location
+              }
+            }
+            $a = @($records | Where-Object { $_.revision -eq $first } | ForEach-Object { $_.secured.seconds } | Sort-Object)
+            $b = @($records | Where-Object { $_.revision -eq $second } | ForEach-Object { $_.secured.seconds } | Sort-Object)
+            if ($a.Count -ne 6 -or $b.Count -ne 6) { throw 'Incomplete paired measurement' }
+            $am = ($a[2] + $a[3]) / 2
+            $bm = ($b[2] + $b[3]) / 2
+            $sizes = @($records | ForEach-Object { $_.secured.released_bytes } | Sort-Object -Unique)
+            if ($sizes.Count -ne 1) { throw 'Released byte count changed' }
+            $summary = [PSCustomObject]@{
+              first_revision = $first
+              second_revision = $second
+              order = 'ABBA'
+              first_seconds = $a
+              second_seconds = $b
+              first_median_seconds = $am
+              second_median_seconds = $bm
+              second_relative_change_pct = 100 * ($bm / $am - 1)
+              released_bytes = $sizes[0]
+            }
+            Write-Host ('P1_CONTROLLED_JSON ' + ($summary | ConvertTo-Json -Compress))
+          } finally {
+            foreach ($ref in @($first, $second)) {
+              git worktree remove (Join-Path $root $ref)
+            }
+          }

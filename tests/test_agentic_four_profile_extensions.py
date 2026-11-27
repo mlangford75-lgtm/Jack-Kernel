@@ -26,6 +26,9 @@ MATRIX = [
 def load(monkeypatch, tmp_path, profile, language="es"):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
     monkeypatch.setenv("JACK_AGENTIC_PROFILE", profile)
+    monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
+    monkeypatch.setenv("JACK_BACKEND_MODEL", "test-model")
+    monkeypatch.setenv("JACK_QWEN_CONTROL_SHAPE", "template_kwargs")
     monkeypatch.setenv("JACK_TRANSLATED_LANGUAGE", language)
     monkeypatch.setenv("JACK_FORENSIC_ARCHIVE_MODE", "off")
     monkeypatch.setenv("JACK_AGENTIC_FORENSIC_DB", str(tmp_path / (uuid.uuid4().hex + ".sqlite")))
@@ -44,7 +47,15 @@ def test_profile_matrix(monkeypatch, tmp_path, profile, stage1_thinking, extensi
     assert k.STAGES["extended_reflection"].thinking is stage2_thinking
     assert not k.STAGES["extended_reflection"].allow_tools
     assert k.CFG.agentic_final_review is extension
-    assert k._agentic_zero_reasoning(k.STAGES["extended_reflection"]) is (profile in {"flash", "balanced"})
+    # Test effective provider controls rather than the removed helper.
+    backend = k.OpenAICompatibleBackend(k.CFG)
+    controls = {"model": "test-model"}
+    try:
+        backend._apply_qwen_controls(controls, k.STAGES["extended_reflection"])
+        assert controls["chat_template_kwargs"]["enable_thinking"] is stage2_thinking
+        assert controls["reasoning_effort"] == ("xhigh" if stage2_thinking else "none")
+    finally:
+        asyncio.run(backend._client.aclose())
     if profile in {"thorough", "translated"}:
         assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
     if profile == "translated":
@@ -212,7 +223,10 @@ def test_translated_memory_is_english_only_and_thorough_unchanged(monkeypatch, t
     translated = load(monkeypatch, tmp_path, "translated", "fr")
     assert "Write the retained working knowledge in English" in translated.AGENTIC_36_STAGE2_PROMPT
     assert translated.STAGES["extended_reflection"].thinking is True
-    assert translated._agentic_zero_reasoning(translated.STAGES["extended_initial"]) is False
+    controls = {"model": "test-model"}
+    translated.BACKEND._apply_qwen_controls(controls, translated.STAGES["extended_initial"])
+    assert controls["chat_template_kwargs"]["enable_thinking"] is True
+    assert controls["reasoning_effort"] == "xhigh"
     thorough = load(monkeypatch, tmp_path, "thorough", "fr")
     assert "Write the retained working knowledge in English" not in thorough.AGENTIC_36_STAGE2_PROMPT
     assert thorough.STAGES["extended_reflection"].thinking is True
