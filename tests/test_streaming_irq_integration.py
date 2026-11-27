@@ -719,7 +719,7 @@ def test_evidence_filter_still_runs_on_safe_prefix_before_canary():
     assert secret not in rendered
 
 
-def test_ordinary_failure_flushes_benign_canary_lookbehind():
+def test_ordinary_failure_preserves_cleared_prefix_discards_unverified_canary_carry():
     secret = "UNSEEN-CANARY-VALUE"
 
     canaries = make_canaries(secret)
@@ -729,7 +729,7 @@ def test_ordinary_failure_flushes_benign_canary_lookbehind():
 
     async def source(_body):
         yield event(
-            {"content": "benign-tail"}
+            {"content": "verified-safe-prefix;" + secret[:-1]}
         )
         raise ExpectedFailure(
             "ordinary transport failure"
@@ -756,7 +756,7 @@ def test_ordinary_failure_flushes_benign_canary_lookbehind():
 
     chunks, exc = asyncio.run(run())
 
-    assert visible_text(chunks) == "benign-tail"
+    assert visible_text(chunks) == "verified-safe-prefix;"
     assert str(exc) == "ordinary transport failure"
 
 
@@ -1101,7 +1101,7 @@ def test_tool_argument_canary_state_is_isolated_by_tool_index():
     ) == ["tool_calls"]
 
 
-def test_ordinary_failure_flushes_benign_tool_argument_tail():
+def test_ordinary_failure_preserves_cleared_tool_prefix_discards_unverified_carry():
     secret = "UNSEEN-TOOL-CANARY"
 
     canaries = make_canaries(secret)
@@ -1119,7 +1119,7 @@ def test_ordinary_failure_flushes_benign_tool_argument_tail():
                         "type": "function",
                         "function": {
                             "name": "write_file",
-                            "arguments": "benign-tail",
+                            "arguments": "verified-safe-prefix;" + secret[:-1],
                         },
                     }
                 ]
@@ -1154,7 +1154,7 @@ def test_ordinary_failure_flushes_benign_tool_argument_tail():
     assert streamed_tool_arguments(
         chunks,
         index=0,
-    ) == "benign-tail"
+    ) == "verified-safe-prefix;"
 
     assert str(exc) == "ordinary transport failure"
 

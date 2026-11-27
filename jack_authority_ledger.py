@@ -528,7 +528,10 @@ class AuthorityLedger:
             payload=asdict(payload),
         )
 
-    def record_canary_match(self, *, canary_id: str, tier: Any) -> AuthorityRecord:
+    def record_canary_match(self, *, canary_id: str, tier: Any,
+                            boundary: str = "model_output_release") -> AuthorityRecord:
+        if boundary not in {"model_output_release", "tool_evidence_http_release"}:
+            raise ValueError("unsupported Canary release boundary")
         safe_id = str(canary_id or "")
         tier_value = _enum_value(tier)
         if _SAFE_CANARY_ID.fullmatch(safe_id) is None:
@@ -539,9 +542,9 @@ class AuthorityLedger:
         return self._advance(
             event_type=LedgerEventType.CANARY_MATCH,
             producer_code="streaming_irq.canary",
-            boundary="model_output_release",
+            boundary=boundary,
             outcome="HARD_INTERRUPT",
-            containment_scope="model_output_release",
+            containment_scope=boundary,
             fact_type="CanaryMatch",
             payload=asdict(payload),
         )
@@ -836,6 +839,16 @@ def _record_canary_failsoft(ledger: AuthorityLedger, match: Any) -> None:
     canary_id = str(getattr(match, "canary_id", "") or "")
     tier = getattr(match, "tier", "")
     _safe_record(ledger, "record_canary_match", canary_id=canary_id, tier=tier)
+
+
+def record_evidence_canary_match_failsoft(ledger: AuthorityLedger, match: Any) -> bool:
+    """Record safe Canary metadata at the caller-bound historical evidence endpoint."""
+    return _safe_record(
+        ledger, "record_canary_match",
+        canary_id=str(getattr(match, "canary_id", "") or ""),
+        tier=getattr(match, "tier", ""),
+        boundary="tool_evidence_http_release",
+    )
 
 
 def _record_reserved_block_from_filter() -> None:

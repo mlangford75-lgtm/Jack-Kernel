@@ -17356,6 +17356,32 @@ def _run_transactional_editor(editor: Any, cfg: Dict[str, Any]) -> None:
     cfg.update(candidate)
 
 
+def _security_center_effective_canaries(cfg: Dict[str, Any], canary_policy: Any):
+    """Project effective automatic and custom Canaries without exposing values."""
+    from types import SimpleNamespace
+    import jack_credential_guard as credentials
+    candidate_cfg = SimpleNamespace(
+        api_key=str(cfg.get("api_key", "")),
+        backend_api_key=(str(cfg.get("backend_api_key", ""))
+                         or _profile_env_api_key(_backend_profile_key(cfg))),
+        backend_header_value=str(cfg.get("backend_header_value", "")),
+        backend_username=str(cfg.get("backend_username", "")),
+        backend_password=str(cfg.get("backend_password", "")),
+        backend_authorization_value=str(cfg.get("backend_authorization_value", "")),
+        backend_extra_headers={str(k): str(v) for k, v in
+                               (cfg.get("backend_extra_headers") or {}).items()
+                               if str(k).strip()},
+        backend_secret_header_names=cfg.get("backend_secret_header_names", []),
+    )
+    candidate = SimpleNamespace(
+        CFG=candidate_cfg, RUNTIME_ID=RUNTIME_ID, LANE_ID=LANE_ID,
+        _load_pi_control_bridge=_load_pi_control_bridge,
+    )
+    return credentials.merge_runtime_canary_policy(
+        canary_policy, credentials.build_runtime_credential_policy(candidate)
+    )
+
+
 def _security_center_policies(cfg: Dict[str, Any]):
     """Validate local startup configuration using the existing policy owners."""
     import jack_path_policy as paths
@@ -17381,32 +17407,8 @@ def _security_center_policies(cfg: Dict[str, Any]):
         path_policy = paths.build_runtime_path_policy(runtime_id=RUNTIME_ID, lane_id=LANE_ID, raw_json=path_raw)
         canary_policy = evidence.build_static_runtime_canary_policy(runtime_id=RUNTIME_ID, lane_id=LANE_ID, raw_json=canary_raw)
         if canary_policy.canaries.count:
-            # Reject conflicting custom Canaries at configuration time using
-            # the same authority owners as secured startup. Never silently
-            # merge away Tier A or choose a weaker threshold. Mirror the child
-            # credential environment, including the backend profile fallback.
-            from types import SimpleNamespace
-            import jack_credential_guard as credentials
-            candidate_cfg = SimpleNamespace(
-                api_key=str(cfg.get("api_key", "")),
-                backend_api_key=(str(cfg.get("backend_api_key", ""))
-                                 or _profile_env_api_key(_backend_profile_key(cfg))),
-                backend_header_value=str(cfg.get("backend_header_value", "")),
-                backend_username=str(cfg.get("backend_username", "")),
-                backend_password=str(cfg.get("backend_password", "")),
-                backend_authorization_value=str(cfg.get("backend_authorization_value", "")),
-                backend_extra_headers={str(k): str(v) for k, v in
-                                       (cfg.get("backend_extra_headers") or {}).items()
-                                       if str(k).strip()},
-                backend_secret_header_names=cfg.get("backend_secret_header_names", []),
-            )
-            candidate = SimpleNamespace(
-                CFG=candidate_cfg, RUNTIME_ID=RUNTIME_ID, LANE_ID=LANE_ID,
-                _load_pi_control_bridge=_load_pi_control_bridge,
-            )
-            credentials.merge_runtime_canary_policy(
-                canary_policy, credentials.build_runtime_credential_policy(candidate)
-            )
+            # Preserve existing validation and collision semantics.
+            _security_center_effective_canaries(cfg, canary_policy)
     except Exception:
         raise RuntimeError("Invalid security policy; Kernel start refused. Correct local settings or environment.") from None
     return path_policy, canary_policy, path_raw, canary_raw
@@ -17434,6 +17436,16 @@ def _security_center_summary(cfg: Dict[str, Any]) -> None:
     print(_status_value("StreamingIRQ sensitivity", "Adaptive (25%, minimum 16; short values exact)"
                         if canaries.sensitivity_percent is None else str(canaries.sensitivity_percent) + "% consecutive match"))
     print(_status_value("Custom Canary quarantine", f"{canaries.canaries.required_window} active / {canaries.canaries.max_window} ceiling"))
+    # A warning is informational only; it cannot weaken credential authority
+    # or prevent ordinary configuration inspection.
+    try:
+        effective_canaries = _security_center_effective_canaries(cfg, canaries)
+    except Exception:
+        print("StreamingIRQ: effective credential sensitivity could not be inspected; secured startup validates it.")
+    else:
+        if effective_canaries.canaries.short_match_count():
+            print("WARNING: Canary match threshold below 8 characters may cause ordinary-text hard interrupts. "
+                  "Review sensitivity or use longer credentials. Protection remains active.")
     print(_status_value("Core security", "REQUIRED AT SECURED STARTUP"))
 
 

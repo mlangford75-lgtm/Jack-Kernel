@@ -294,3 +294,18 @@ def test_factory_path_reset_does_not_override_admin_policy(factory_windows, monk
     monkeypatch.setattr(jk, "_cli_input", lambda *a, **kw: next(inputs))
     jk._edit_security_center(factory_windows)
     assert jk._security_center_policies(factory_windows)[0].workspace_root == r"d:\admin"
+
+
+def test_short_effective_canary_warning_does_not_disclose_or_change_policy(cfg, capsys, monkeypatch):
+    import jack_evidence_guard as evidence
+    monkeypatch.setattr(jk, "_load_pi_control_bridge", lambda: {})
+    secret = "zQ7m"
+    cfg["api_key"] = secret
+    _, custom, _, _ = jk._security_center_policies(cfg)
+    effective = jk._security_center_effective_canaries(cfg, custom)
+    assert effective.canaries.short_match_count() >= 1
+    assert evidence._find_canary_in_evidence_value(effective.canaries, secret) is not None
+    jk._security_center_summary(cfg)
+    output = capsys.readouterr().out
+    assert "threshold below 8 characters" in output
+    assert secret not in output

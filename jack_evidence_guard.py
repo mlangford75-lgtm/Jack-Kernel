@@ -317,6 +317,10 @@ class DeterministicCanarySet:
     def count(self) -> int:
         return len(self._patterns)
 
+    def short_match_count(self, minimum: int = 8) -> int:
+        """Return only aggregate sensitivity metadata; never disclose values."""
+        return sum(pattern.match_chars < minimum for pattern in self._patterns)
+
     def _find_with_position(
         self,
         text: Any,
@@ -2083,6 +2087,10 @@ def _install_tool_evidence_release(jk: Any, canary_policy: RuntimeCanaryPolicy, 
             raise ProtectedCredentialInterrupt(match)
         canary_match = _find_canary_in_evidence_value(canary_policy.canaries, projected)
         if canary_match is not None:
+            ledger = getattr(jk, "_JACK_AUTHORITY_LEDGER", None)
+            if ledger is not None:
+                from jack_authority_ledger import record_evidence_canary_match_failsoft
+                record_evidence_canary_match_failsoft(ledger, canary_match)
             raise StreamingIRQCanaryInterrupt(canary_match)
         return projected
 
@@ -2163,6 +2171,14 @@ def install(
         canary_policy = credential_guard.merge_runtime_canary_policy(
             canary_policy,
             credential_policy,
+        )
+
+    if canary_policy.canaries.short_match_count():
+        import logging
+        logging.getLogger("jack-kernel").warning(
+            "StreamingIRQ: one or more effective Canary match thresholds are shorter than "
+            "8 characters; ordinary text may trigger hard interrupts. Review Security Center "
+            "sensitivity or use longer credentials. Protection remains active."
         )
 
     jk._JACK_EVIDENCE_PROVENANCE_GUARD_INSTALLED = True
