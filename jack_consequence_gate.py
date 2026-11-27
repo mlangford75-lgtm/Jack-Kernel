@@ -314,7 +314,7 @@ def _install_represented_path_gate(
     ledger: Optional[authority_ledger.AuthorityLedger] = None,
 ) -> None:
     original = path_policy.authorize_represented_path
-    if getattr(original, "_jack_phase5_consequence_gate", False):
+    if getattr(original, "_jack_consequence_consequence_gate", False):
         return
 
     @wraps(original)
@@ -371,8 +371,8 @@ def _install_represented_path_gate(
             )
         return _legacy_path_decision(final_decision, raw)
 
-    governed._jack_phase5_consequence_gate = True
-    governed._jack_phase5_legacy_authorizer = original
+    governed._jack_consequence_consequence_gate = True
+    governed._jack_consequence_legacy_authorizer = original
     path_policy.authorize_represented_path = governed
 
 
@@ -430,7 +430,7 @@ def install(jk: Any) -> None:
 
     _install_represented_path_gate(evaluator, ledger=ledger)
 
-    original_partition = getattr(jk, "_phase4_partition_structured_tool_calls", None)
+    original_partition = getattr(jk, "_restricted_path_partition_structured_tool_calls", None)
     if callable(original_partition):
         @wraps(original_partition)
         def governed_partition(calls: Any) -> Any:
@@ -442,9 +442,9 @@ def install(jk: Any) -> None:
                     return original_partition(calls)
             finally:
                 _CURRENT_CONSEQUENCE_BOUNDARY.reset(token)
-        jk._phase4_partition_structured_tool_calls = governed_partition
+        jk._restricted_path_partition_structured_tool_calls = governed_partition
 
-    original_admission = getattr(jk, "_phase4_executor_admission_decision", None)
+    original_admission = getattr(jk, "_restricted_path_executor_admission_decision", None)
     if callable(original_admission):
         @wraps(original_admission)
         def governed_admission(payload: Any, *, expected_call: Optional[dict[str, Any]] = None) -> Any:
@@ -453,7 +453,7 @@ def install(jk: Any) -> None:
                 "tool_name", "arguments", "executor_cwd", "executor_platform",
                 "command_dialect",
             }
-            protocol_version = getattr(jk, "PHASE4_EXECUTOR_ADMISSION_PROTOCOL_VERSION", None)
+            protocol_version = getattr(jk, "RESTRICTED_PATH_EXECUTOR_ADMISSION_PROTOCOL_VERSION", None)
             if isinstance(payload, dict) and not (set(payload) - allowed_fields) and payload.get("protocol_version") == protocol_version:
                 runtime_matches = str(payload.get("runtime_id") or "").strip() == str(getattr(jk, "RUNTIME_ID", ""))
                 lane_matches = str(payload.get("lane_id") or "").strip() == str(getattr(jk, "LANE_ID", ""))
@@ -485,6 +485,6 @@ def install(jk: Any) -> None:
                     return original_admission(payload, expected_call=expected_call)
             finally:
                 _CURRENT_CONSEQUENCE_BOUNDARY.reset(token)
-        jk._phase4_executor_admission_decision = governed_admission
+        jk._restricted_path_executor_admission_decision = governed_admission
 
     jk._JACK_CONSEQUENCE_GATE_INSTALLED = True

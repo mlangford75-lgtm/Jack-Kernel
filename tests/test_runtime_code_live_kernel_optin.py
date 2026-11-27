@@ -57,7 +57,7 @@ async def probe():
                 return "untrusted"
             jk.KERNEL.run = bypass
         elif SCENARIO == "executor_binding":
-            jk._phase4_executor_admission_decision = lambda *_a, **_k: {
+            jk._restricted_path_executor_admission_decision = lambda *_a, **_k: {
                 "outcome": "ALLOW_ANY"
             }
         elif SCENARIO == "route_dispatch":

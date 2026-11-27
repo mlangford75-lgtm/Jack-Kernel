@@ -107,7 +107,7 @@ def child(mode):
         import jack_runtime_code_enforcement as phase9
 
         source = phase8.install(jk, launch_entrypoint_path=Path(secure.__file__).resolve())
-        secure._install_phase8_ledger_observer(jk, source)
+        secure._install_source_drift_ledger_observer(jk, source)
         phase8.activate_runtime_enforcement(jk, source)
         path.install(jk)
         canary.install(jk)

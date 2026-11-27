@@ -71,7 +71,7 @@ kernel.BACKEND._resolved_model = "test-model"
 kernel.BACKEND._model_metadata_checked = True
 kernel._install_bundled_runtime_extensions()
 
-assert kernel._JACK_PHASE7_LEDGER_INSTALLED is True
+assert kernel._JACK_CREDENTIAL_LEDGER_INSTALLED is True
 assert kernel._JACK_CREDENTIAL_RESOURCE_GUARD_INSTALLED is True
 assert "jack_credential_ledger.py" in kernel.RUNTIME_MANIFEST_COMPONENTS
 assert "jack_credential_resource_guard.py" in kernel.RUNTIME_MANIFEST_COMPONENTS

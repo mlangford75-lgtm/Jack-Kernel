@@ -42,7 +42,7 @@ def test_observer_records_only_meaningful_source_transitions_with_safe_payloads(
     recorded = []
 
     monkeypatch.setattr(ledger, "_advance", lambda **kwargs: recorded.append(kwargs))
-    assert entrypoint._install_phase8_ledger_observer(jk, authority) is True
+    assert entrypoint._install_source_drift_ledger_observer(jk, authority) is True
 
     result = authority.verify_now()
     assert result.prior_state is source_guard.SourceAuthorityState.ACTIVE
@@ -90,9 +90,9 @@ def test_observer_records_only_meaningful_source_transitions_with_safe_payloads(
     assert len(recorded) == 3
 
     assert [item["event_type"] for item in recorded] == [
-        entrypoint.Phase8LedgerEventType.SOURCE_AUTHORITY_SUSPENDED,
-        entrypoint.Phase8LedgerEventType.SOURCE_AUTHORITY_RESTORED,
-        entrypoint.Phase8LedgerEventType.SOURCE_DRIFT_DETECTED,
+        entrypoint.SourceDriftLedgerEventType.SOURCE_AUTHORITY_SUSPENDED,
+        entrypoint.SourceDriftLedgerEventType.SOURCE_AUTHORITY_RESTORED,
+        entrypoint.SourceDriftLedgerEventType.SOURCE_DRIFT_DETECTED,
     ]
     assert [item["payload"]["reason"] for item in recorded] == [
         "measurement_unavailable",
@@ -116,7 +116,7 @@ def test_unexpected_required_verifier_failure_records_suspension_after_source_st
     recorded = []
 
     monkeypatch.setattr(ledger, "_advance", lambda **kwargs: recorded.append(kwargs))
-    assert entrypoint._install_phase8_ledger_observer(jk, authority) is True
+    assert entrypoint._install_source_drift_ledger_observer(jk, authority) is True
 
     def explode(_path):
         raise RuntimeError("synthetic verifier failure")
@@ -130,7 +130,7 @@ def test_unexpected_required_verifier_failure_records_suspension_after_source_st
     assert authority.transition_sequence == 1
     assert len(recorded) == 1
     event = recorded[0]
-    assert event["event_type"] is entrypoint.Phase8LedgerEventType.SOURCE_AUTHORITY_SUSPENDED
+    assert event["event_type"] is entrypoint.SourceDriftLedgerEventType.SOURCE_AUTHORITY_SUSPENDED
     assert event["payload"]["reason"] == "verification_operation_failed"
     assert event["payload"]["prior_state"] == "ACTIVE"
     assert event["payload"]["new_state"] == "SUSPENDED_UNVERIFIED"
@@ -159,7 +159,7 @@ def test_two_concurrent_unavailable_verifications_record_exactly_one_suspension(
 
     monkeypatch.setattr(ledger, "_advance", record)
     monkeypatch.setattr(source_guard, "_measure_regular_file", unavailable)
-    assert entrypoint._install_phase8_ledger_observer(jk, authority) is True
+    assert entrypoint._install_source_drift_ledger_observer(jk, authority) is True
 
     def worker():
         start.wait(timeout=5)
@@ -193,7 +193,7 @@ def test_two_concurrent_unavailable_verifications_record_exactly_one_suspension(
     ) == 1
     assert {item.transition_sequence for item in results} == {1}
     assert len(recorded) == 1
-    assert recorded[0]["event_type"] is entrypoint.Phase8LedgerEventType.SOURCE_AUTHORITY_SUSPENDED
+    assert recorded[0]["event_type"] is entrypoint.SourceDriftLedgerEventType.SOURCE_AUTHORITY_SUSPENDED
     assert recorded[0]["payload"]["prior_state"] == "ACTIVE"
     assert recorded[0]["payload"]["new_state"] == "SUSPENDED_UNVERIFIED"
 
@@ -229,7 +229,7 @@ def test_competing_verifications_preserve_exact_suspend_restore_history(
 
     monkeypatch.setattr(ledger, "_advance", record)
     monkeypatch.setattr(source_guard, "_measure_regular_file", unavailable_then_measurable)
-    assert entrypoint._install_phase8_ledger_observer(jk, authority) is True
+    assert entrypoint._install_source_drift_ledger_observer(jk, authority) is True
 
     results = []
 
@@ -266,8 +266,8 @@ def test_competing_verifications_preserve_exact_suspend_restore_history(
         ),
     }
     assert [item["event_type"] for item in recorded] == [
-        entrypoint.Phase8LedgerEventType.SOURCE_AUTHORITY_SUSPENDED,
-        entrypoint.Phase8LedgerEventType.SOURCE_AUTHORITY_RESTORED,
+        entrypoint.SourceDriftLedgerEventType.SOURCE_AUTHORITY_SUSPENDED,
+        entrypoint.SourceDriftLedgerEventType.SOURCE_AUTHORITY_RESTORED,
     ]
     assert [
         (item["payload"]["prior_state"], item["payload"]["new_state"])
@@ -286,7 +286,7 @@ def test_ordering_buffer_reorders_out_of_arrival_transition_facts(tmp_path, monk
     recorded = []
     monkeypatch.setattr(ledger, "_advance", lambda **kwargs: recorded.append(kwargs))
 
-    recorder = entrypoint._Phase8OrderedLedgerObserver(
+    recorder = entrypoint._SourceDriftOrderedLedgerObserver(
         ledger=ledger,
         authority=authority,
         next_transition_sequence=1,
@@ -294,7 +294,7 @@ def test_ordering_buffer_reorders_out_of_arrival_transition_facts(tmp_path, monk
 
     recorder.observe(
         transition_sequence=2,
-        event_type=entrypoint.Phase8LedgerEventType.SOURCE_AUTHORITY_RESTORED,
+        event_type=entrypoint.SourceDriftLedgerEventType.SOURCE_AUTHORITY_RESTORED,
         prior_state="SUSPENDED_UNVERIFIED",
         new_state="ACTIVE",
         reason="exact_reverification",
@@ -303,7 +303,7 @@ def test_ordering_buffer_reorders_out_of_arrival_transition_facts(tmp_path, monk
 
     recorder.observe(
         transition_sequence=1,
-        event_type=entrypoint.Phase8LedgerEventType.SOURCE_AUTHORITY_SUSPENDED,
+        event_type=entrypoint.SourceDriftLedgerEventType.SOURCE_AUTHORITY_SUSPENDED,
         prior_state="ACTIVE",
         new_state="SUSPENDED_UNVERIFIED",
         reason="measurement_unavailable",
@@ -311,8 +311,8 @@ def test_ordering_buffer_reorders_out_of_arrival_transition_facts(tmp_path, monk
     )
 
     assert [item["event_type"] for item in recorded] == [
-        entrypoint.Phase8LedgerEventType.SOURCE_AUTHORITY_SUSPENDED,
-        entrypoint.Phase8LedgerEventType.SOURCE_AUTHORITY_RESTORED,
+        entrypoint.SourceDriftLedgerEventType.SOURCE_AUTHORITY_SUSPENDED,
+        entrypoint.SourceDriftLedgerEventType.SOURCE_AUTHORITY_RESTORED,
     ]
     assert [
         (item["payload"]["prior_state"], item["payload"]["new_state"])
@@ -332,7 +332,7 @@ def test_ledger_failure_cannot_change_source_suspension_or_recovery(
     authority, _target = _authority_for(tmp_path)
     ledger = _ledger_for(tmp_path)
     jk = SimpleNamespace(_JACK_AUTHORITY_LEDGER=ledger)
-    assert entrypoint._install_phase8_ledger_observer(jk, authority) is True
+    assert entrypoint._install_source_drift_ledger_observer(jk, authority) is True
 
     def ledger_failure(**_kwargs):
         raise RuntimeError("synthetic ledger failure")
@@ -364,7 +364,7 @@ def test_real_authority_ledger_accepts_phase8_transition_without_owning_source_s
     authority, target = _authority_for(tmp_path)
     ledger = _ledger_for(tmp_path)
     jk = SimpleNamespace(_JACK_AUTHORITY_LEDGER=ledger)
-    assert entrypoint._install_phase8_ledger_observer(jk, authority) is True
+    assert entrypoint._install_source_drift_ledger_observer(jk, authority) is True
 
     assert ledger.active_head.sequence == 0
     target.write_bytes(b"changed")
@@ -384,15 +384,15 @@ def test_observer_install_is_idempotent_and_never_rewraps_source_lifecycle(tmp_p
     ledger = _ledger_for(tmp_path)
     jk = SimpleNamespace(_JACK_AUTHORITY_LEDGER=ledger)
 
-    assert entrypoint._install_phase8_ledger_observer(jk, authority) is True
+    assert entrypoint._install_source_drift_ledger_observer(jk, authority) is True
     verify = authority.verify_now
     suspend = authority._suspend_unverified
-    recorder = jk._JACK_PHASE8_LEDGER_TRANSITION_RECORDER
+    recorder = jk._JACK_SOURCE_DRIFT_LEDGER_TRANSITION_RECORDER
 
-    assert entrypoint._install_phase8_ledger_observer(jk, authority) is True
+    assert entrypoint._install_source_drift_ledger_observer(jk, authority) is True
     assert authority.verify_now is verify
     assert authority._suspend_unverified is suspend
-    assert jk._JACK_PHASE8_LEDGER_TRANSITION_RECORDER is recorder
+    assert jk._JACK_SOURCE_DRIFT_LEDGER_TRANSITION_RECORDER is recorder
 
     ledger.close()
 
@@ -401,7 +401,7 @@ def test_missing_or_mismatched_ledger_does_not_block_source_enforcement(tmp_path
     authority, _target = _authority_for(tmp_path)
 
     missing = SimpleNamespace()
-    assert entrypoint._install_phase8_ledger_observer(missing, authority) is False
+    assert entrypoint._install_source_drift_ledger_observer(missing, authority) is False
     assert authority.verify_now().verified is True
 
     other = authority_ledger.AuthorityLedger(
@@ -411,7 +411,7 @@ def test_missing_or_mismatched_ledger_does_not_block_source_enforcement(tmp_path
         queue_capacity=16,
     )
     mismatched = SimpleNamespace(_JACK_AUTHORITY_LEDGER=other)
-    assert entrypoint._install_phase8_ledger_observer(mismatched, authority) is False
+    assert entrypoint._install_source_drift_ledger_observer(mismatched, authority) is False
     assert authority.verify_now().verified is True
 
     other.close()

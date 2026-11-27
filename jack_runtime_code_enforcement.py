@@ -19,7 +19,7 @@ from jack_runtime_code_guard import (
 )
 
 DENIAL_BODY = b'{"error":"jack_runtime_code_integrity_unavailable"}'
-_PHASE9B_MARKER = "_JACK_RUNTIME_CODE_ENFORCEMENT_INSTALLED"
+_RUNTIME_CODE_MARKER = "_JACK_RUNTIME_CODE_ENFORCEMENT_INSTALLED"
 # Read-only exception paths are deliberately small and proven not to run
 # model inference, Pi transport, or executor-side effects. Never infer read-only
 # authority from GET alone: /health, /v1/models and Pi events have dependencies.
@@ -70,7 +70,7 @@ def _http_authority_scopes(scope: Any) -> tuple[str, ...]:
     return ("model", "executor", "orchestration", "authority")
 
 
-class Phase9BASGIGuard:
+class RuntimeCodeASGIGuard:
     """Pure ASGI ingress/egress guard; never uses BaseHTTPMiddleware.
 
     A stream that loses integrity after emitting a safe prefix is drained with
@@ -197,7 +197,7 @@ def _selected_required_routes(jk: Any) -> tuple[Any, ...]:
         ("/v1/models", "GET"): "models",
         ("/api/v1/models", "GET"): "backend-models",
     }
-    secured = getattr(jk, "_JACK_PHASE10_PATH_AUTHORITY", None) is not None
+    secured = getattr(jk, "_JACK_PATH_POLICY_AUTHORITY", None) is not None
     required.update(extended if secured else {
         key: label for key, label in extended.items()
         if any(getattr(route, "path", None) == key[0]
@@ -225,7 +225,7 @@ def install(jk: Any) -> RuntimeCodeAuthority:
     Refuse an already constructed ASGI middleware stack (no silent rebaseline).
     """
     existing = getattr(jk, "_JACK_RUNTIME_CODE_AUTHORITY", None)
-    if getattr(jk, _PHASE9B_MARKER, False):
+    if getattr(jk, _RUNTIME_CODE_MARKER, False):
         if isinstance(existing, RuntimeCodeAuthority):
             return existing
         raise RuntimeCodeIntegrityUnavailable("Runtime Code Integrity installation marker inconsistent")
@@ -248,8 +248,8 @@ def install(jk: Any) -> RuntimeCodeAuthority:
     # only after the complete wrapping composition.
     original_run = jk.KERNEL.run
     original_stream = jk.KERNEL.stream
-    original_tools = jk._phase4_partition_structured_tool_calls
-    original_executor = jk._phase4_executor_admission_decision
+    original_tools = jk._restricted_path_partition_structured_tool_calls
+    original_executor = jk._restricted_path_executor_admission_decision
     original_proxy = jk._proxy_pi_control_request
     if not all(callable(x) for x in (
         original_run, original_stream, original_tools, original_executor,
@@ -316,8 +316,8 @@ def install(jk: Any) -> RuntimeCodeAuthority:
 
     jk.KERNEL.run = guarded_run
     jk.KERNEL.stream = guarded_stream
-    jk._phase4_partition_structured_tool_calls = guarded_tool_release
-    jk._phase4_executor_admission_decision = guarded_executor
+    jk._restricted_path_partition_structured_tool_calls = guarded_tool_release
+    jk._restricted_path_executor_admission_decision = guarded_executor
     jk._proxy_pi_control_request = guarded_proxy
 
     # Declare the consequence owned by each executable slot. Shared checker
@@ -326,7 +326,7 @@ def install(jk: Any) -> RuntimeCodeAuthority:
     for label, owner, attr, scope in (
         ("http-auth", jk, "enforce_kernel_auth", "shared"),
         ("agent-request-sanitizer", jk, "sanitize_agent_request", "model"),
-        ("executor-context", jk, "_phase4_executor_context_from_request", "model"),
+        ("executor-context", jk, "_restricted_path_executor_context_from_request", "model"),
         ("stream-public-release", jk, "_safe_public_stream", "model"),
         ("completion-envelope", jk, "completion_envelope", "model"),
         ("tool-evidence-recover", jk, "recover_pi_tool_evidence", "model"),
@@ -334,8 +334,8 @@ def install(jk: Any) -> RuntimeCodeAuthority:
         ("tool-evidence-canary-scan", evidence, "_find_canary_in_evidence_value", "model"),
         ("kernel-run", jk.KERNEL, "run", "model"),
         ("kernel-stream", jk.KERNEL, "stream", "model"),
-        ("tool-release", jk, "_phase4_partition_structured_tool_calls", "model"),
-        ("executor-admission", jk, "_phase4_executor_admission_decision", "executor"),
+        ("tool-release", jk, "_restricted_path_partition_structured_tool_calls", "model"),
+        ("executor-admission", jk, "_restricted_path_executor_admission_decision", "executor"),
         ("pi-control", jk, "_proxy_pi_control_request", "orchestration"),
         ("source-measure", source, "_measure_regular_file", "shared"),
         ("source-verify", jk._JACK_SOURCE_AUTHORITY, "verify_for_authority_boundary", "shared"),
@@ -353,14 +353,14 @@ def install(jk: Any) -> RuntimeCodeAuthority:
         ("p9-route-snapshot", code_guard, "_route_snapshot", "shared"),
         ("p9-handler-snapshot", code_guard, "_exception_handler_snapshot", "shared"),
         ("p9-route-classifier", sys.modules[__name__], "_http_authority_scopes", "shared"),
-        ("p9-asgi", Phase9BASGIGuard, "__call__", "shared"),
+        ("runtime-code-asgi", RuntimeCodeASGIGuard, "__call__", "shared"),
     ):
         guard.register(name=label, owner=owner, attribute=attr, scope=scope)
 
     for label, module, scope in (
         ("module-source", source, "shared"),
         ("module-code-guard", code_guard, "shared"),
-        ("module-phase9b-enforcement", sys.modules[__name__], "shared"),
+        ("module-runtime-code-enforcement", sys.modules[__name__], "shared"),
         ("module-path-policy", path_policy, "shared"),
         ("module-consequence", consequence, "shared"),
         ("module-evidence", evidence, "shared"),
@@ -400,13 +400,13 @@ def install(jk: Any) -> RuntimeCodeAuthority:
             guard.register(name=f"route-observation-{safe_name}-dependent",
                            owner=dependency, attribute="call", scope="observation")
 
-    guard.register_source(name="source-phase9-code-guard",
+    guard.register_source(name="source-runtime-code-guard",
                           path=Path(code_guard.__file__).resolve(), scope="shared")
-    guard.register_source(name="source-phase9-enforcement",
+    guard.register_source(name="source-runtime-code-enforcement",
                           path=Path(__file__).resolve(), scope="shared")
     # The experimental policy gates are composed before sealing. Keep the
     # historical Source Drift Protection manifest frozen and extend this selected manifest.
-    if getattr(jk, "_JACK_PHASE10_PATH_AUTHORITY", None) is not None:
+    if getattr(jk, "_JACK_PATH_POLICY_AUTHORITY", None) is not None:
         import jack_policy_integrity as static
         import jack_policy_integrity_path_enforcement as path_gate
         import jack_policy_integrity_canary_enforcement as canary_gate
@@ -438,9 +438,9 @@ def install(jk: Any) -> RuntimeCodeAuthority:
             ("privacy-holder", jk, "_JACK_DIAGNOSTIC_PRIVACY", "shared"),
             ("privacy-values", jk._JACK_DIAGNOSTIC_PRIVACY, "_values", "shared"),
             ("privacy-fragments", jk._JACK_DIAGNOSTIC_PRIVACY, "_fragments", "shared"),
-            ("path-authority-holder", jk, "_JACK_PHASE10_PATH_AUTHORITY", "shared"),
-            ("canary-authority-holder", jk, "_JACK_PHASE10_CANARY_AUTHORITY", "model"),
-            ("credential-authority-holder", jk, "_JACK_PHASE10_CREDENTIAL_AUTHORITY", "authority"),
+            ("path-authority-holder", jk, "_JACK_PATH_POLICY_AUTHORITY", "shared"),
+            ("canary-authority-holder", jk, "_JACK_CANARY_POLICY_AUTHORITY", "model"),
+            ("credential-authority-holder", jk, "_JACK_CREDENTIAL_POLICY_AUTHORITY", "authority"),
         ):
             guard.register_holder(name=name, owner=owner, attribute=attr, scope=scope)
         for name, owner, attr in (
@@ -481,7 +481,7 @@ def install(jk: Any) -> RuntimeCodeAuthority:
             ("pending-ids", dynamic, "_ids", "authority"),
             ("pending-index-verify", dynamic.PendingAuthority, "_verify_index", "authority"),
             ("pending-index-transition", dynamic.PendingAuthority, "_replace_index", "authority"),
-            ("pending-admission", jk.KERNEL, "_phase4_pending_tool_call_snapshot", "executor"),
+            ("pending-admission", jk.KERNEL, "_restricted_path_pending_tool_call_snapshot", "executor"),
             ("pending-consume", jk.KERNEL, "_consume_pending_tool_resume", "model"),
             ("pending-create", jk.KERNEL, "_register_stage_tool_resume", "model"),
             ("credential-resource-fact", resource, "fact_for_canonical_target", "authority"),
@@ -512,9 +512,9 @@ def install(jk: Any) -> RuntimeCodeAuthority:
     # checks just by swapping jk.KERNEL.run in an otherwise unchanged APP.
     # ASGI wrapping itself remains inside the same interpreter trust domain.
     jk.APP.add_middleware(
-        Phase9BASGIGuard, authority=guard,
+        RuntimeCodeASGIGuard, authority=guard,
         note_stream_failure=getattr(jk.KERNEL, "_note_outer_stream_failure", None),
     )
     jk._JACK_RUNTIME_CODE_AUTHORITY = guard
-    setattr(jk, _PHASE9B_MARKER, True)
+    setattr(jk, _RUNTIME_CODE_MARKER, True)
     return guard

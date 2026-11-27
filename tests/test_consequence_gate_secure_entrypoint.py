@@ -26,7 +26,7 @@ def test_secure_entrypoint_launcher_uses_predecessor_extensions_without_source_a
     )
     monkeypatch.setattr(
         entrypoint,
-        "_install_phase8_ledger_observer",
+        "_install_source_drift_ledger_observer",
         lambda jk, authority: events.append("source-ledger-observer"),
     )
     monkeypatch.setattr(
@@ -71,7 +71,7 @@ def test_secure_entrypoint_serving_process_seals_observes_then_activates_before_
         return received
 
     monkeypatch.setattr(source_guard, "install", install)
-    monkeypatch.setattr(entrypoint, "_install_phase8_ledger_observer", observe)
+    monkeypatch.setattr(entrypoint, "_install_source_drift_ledger_observer", observe)
     monkeypatch.setattr(source_guard, "activate_runtime_enforcement", activate)
 
     def phase9b_install(received):
@@ -126,7 +126,7 @@ def test_secure_serving_child_aborts_before_kernel_main_when_phase9b_cannot_seal
     )
     monkeypatch.setattr(
         entrypoint,
-        "_install_phase8_ledger_observer",
+        "_install_source_drift_ledger_observer",
         lambda jk, received: events.append("source-ledger-observer"),
     )
     monkeypatch.setattr(

@@ -15,7 +15,7 @@ import pytest
 
 import jack_source_drift_guard as phase8
 from jack_runtime_code_guard import RuntimeCodeAuthority, RuntimeCodeIntegrityCompromised
-from jack_runtime_code_enforcement import Phase9BASGIGuard, install, DENIAL_BODY
+from jack_runtime_code_enforcement import RuntimeCodeASGIGuard, install, DENIAL_BODY
 
 
 def _async_send(events):
@@ -43,7 +43,7 @@ def test_asgi_request_admission_blocks_swapped_binding_before_handler():
         await send({"type": "http.response.start", "status": 200, "headers": []})
         await send({"type": "http.response.body", "body": b"unsafe", "more_body": False})
 
-    app = Phase9BASGIGuard(backend, authority=authority)
+    app = RuntimeCodeASGIGuard(backend, authority=authority)
     owner.action = lambda: "bypass"
     async def execute():
         outbound = []
@@ -65,7 +65,7 @@ def test_asgi_benign_nonstream_returns_unaltered_bytes():
 
     events = []
     async def execute():
-        await Phase9BASGIGuard(backend, authority=authority)(
+        await RuntimeCodeASGIGuard(backend, authority=authority)(
             {"type": "http"}, None, _async_send(events)
         )
     asyncio.run(execute())
@@ -85,7 +85,7 @@ def test_asgi_response_start_mutation_returns_503_without_leaking():
 
     events = []
     async def execute():
-        await Phase9BASGIGuard(backend, authority=authority)(
+        await RuntimeCodeASGIGuard(backend, authority=authority)(
             {"type": "http"}, None, _async_send(events)
         )
     asyncio.run(execute())
@@ -103,7 +103,7 @@ def test_asgi_nonstream_after_headers_never_releases_unverified_body():
         await send({"type": "http.response.body", "body": b"not-authorized", "more_body": False})
 
     async def execute():
-        await Phase9BASGIGuard(backend, authority=authority)(
+        await RuntimeCodeASGIGuard(backend, authority=authority)(
             {"type": "http"}, None, _async_send(events)
         )
     with pytest.raises(RuntimeCodeIntegrityCompromised):
@@ -128,7 +128,7 @@ def test_asgi_stream_preserves_prefix_and_withholds_future_chunks():
         await send({"type": "http.response.body", "body": b"data: [DONE]\n\n", "more_body": False})
 
     async def execute():
-        await Phase9BASGIGuard(
+        await RuntimeCodeASGIGuard(
             backend, authority=authority, note_stream_failure=failures.append,
         )(
             {"type": "http"}, None, _async_send(events)
@@ -156,7 +156,7 @@ def test_asgi_stream_does_not_emit_fake_success_after_tampering():
         await send({"type": "http.response.body", "body": b"data: [DONE]\n\n", "more_body": False})
 
     async def execute():
-        await Phase9BASGIGuard(backend, authority=authority)(
+        await RuntimeCodeASGIGuard(backend, authority=authority)(
             {"type": "http"}, None, _async_send(events)
         )
     asyncio.run(execute())
@@ -173,7 +173,7 @@ def test_asgi_non_http_passes_through():
 
     owner.action = lambda: "tampered"
     async def execute():
-        await Phase9BASGIGuard(backend, authority=authority)(
+        await RuntimeCodeASGIGuard(backend, authority=authority)(
             {"type": "websocket"}, None, _async_send(events)
         )
     asyncio.run(execute())
@@ -205,15 +205,15 @@ def _integrated_host(tmp_path: Path):
     app = FastAPI()
     host = SimpleNamespace(
         APP=app, KERNEL=SimpleNamespace(run=run, stream=stream),
-        _phase4_partition_structured_tool_calls=release,
-        _phase4_executor_admission_decision=admit,
+        _restricted_path_partition_structured_tool_calls=release,
+        _restricted_path_executor_admission_decision=admit,
         _proxy_pi_control_request=pi,
         _JACK_SOURCE_AUTHORITY=source,
         _JACK_SOURCE_RUNTIME_ENFORCEMENT_INSTALLED=True,
         ORCHESTRATION_BASE_PATH="/jack/orchestration",
         enforce_kernel_auth=lambda _request: True,
         sanitize_agent_request=lambda body: body,
-        _phase4_executor_context_from_request=lambda _request: None,
+        _restricted_path_executor_context_from_request=lambda _request: None,
         _safe_public_stream=lambda _body: None,
         completion_envelope=lambda value: value,
         recover_pi_tool_evidence=lambda call_id, _sha=None: {"result": call_id},
@@ -241,7 +241,7 @@ def _integrated_host(tmp_path: Path):
     @app.post("/jack/security/path-admission")
     async def executor():
         calls["executor"] += 1
-        return host._phase4_executor_admission_decision({})
+        return host._restricted_path_executor_admission_decision({})
 
     @app.post("/jack/orchestration/tasks")
     async def tasks():
@@ -281,7 +281,7 @@ def test_integrated_fastapi_blocks_bypassed_executor_before_dispatch(tmp_path):
     install(host)
     with TestClient(host.APP) as client:
         assert client.post("/jack/security/path-admission").status_code == 200, host._JACK_RUNTIME_CODE_AUTHORITY.mismatched_slots
-        host._phase4_executor_admission_decision = lambda _body: {"allowed": "ANY"}
+        host._restricted_path_executor_admission_decision = lambda _body: {"allowed": "ANY"}
         assert client.post("/jack/security/path-admission").status_code == 503
     assert calls["executor"] == 1
 
@@ -343,7 +343,7 @@ def test_model_request_survives_independent_executor_integrity_failure(tmp_path)
     host, calls = _integrated_host(tmp_path)
     guard = install(host)
     with TestClient(host.APP) as client:
-        host._phase4_executor_admission_decision = (
+        host._restricted_path_executor_admission_decision = (
             lambda _body: {"allowed": "untrusted"}
         )
         assert client.post("/jack/security/path-admission").status_code == 503
@@ -380,7 +380,7 @@ def test_compromised_executor_prevents_new_pi_task_but_preserves_cancellation(tm
     host, calls = _integrated_host(tmp_path)
     guard = install(host)
     with TestClient(host.APP) as client:
-        host._phase4_executor_admission_decision = lambda _payload: {"allowed": "ANY"}
+        host._restricted_path_executor_admission_decision = lambda _payload: {"allowed": "ANY"}
         assert client.post("/jack/security/path-admission").status_code == 503
         assert client.post("/jack/orchestration/tasks").status_code == 503
         cancel = client.post("/jack/orchestration/tasks/cancel")
@@ -425,9 +425,9 @@ def test_compromised_pi_proxy_blocks_pi_read_only_status(tmp_path):
 def test_model_tool_release_requires_intact_executor_admission(tmp_path):
     host, _calls = _integrated_host(tmp_path)
     guard = install(host)
-    host._phase4_executor_admission_decision = lambda _payload: {"allowed": "bypass"}
+    host._restricted_path_executor_admission_decision = lambda _payload: {"allowed": "bypass"}
     with pytest.raises(RuntimeCodeIntegrityCompromised):
-        host._phase4_partition_structured_tool_calls([])
+        host._restricted_path_partition_structured_tool_calls([])
     assert guard.state == "INVALIDATED"
 
 
@@ -539,7 +539,7 @@ def test_model_sanitizer_rebinding_denies_model_but_preserves_verified_observati
 def test_mandatory_phase9_install_seals_new_guard_and_enforcement_source(tmp_path):
     host, _calls = _integrated_host(tmp_path)
     authority = install(host)
-    expected = {"source-phase9-code-guard", "source-phase9-enforcement"}
+    expected = {"source-runtime-code-guard", "source-runtime-code-enforcement"}
     observed = {entry.label for entry in authority._sources}
     assert expected.issubset(observed)
     authority.verify_for("model")

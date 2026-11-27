@@ -121,7 +121,7 @@ def install_deep_reasoning_usage(kernel: Any, namespace: Any) -> None:
         token = _ACTIVE_USAGE.set(scope)
         try:
             result = await original_run_impl(request_body)
-            current_executor = getattr(namespace, "_phase4_current_executor_context", None)
+            current_executor = getattr(namespace, "_restricted_path_current_executor_context", None)
             context = current_executor() if callable(current_executor) else None
             if (context is not None and
                     str(getattr(context, "adapter", "")).casefold() == "pi" and

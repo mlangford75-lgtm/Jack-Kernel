@@ -15,16 +15,16 @@ import jack_kernel as jk
 LOG = logging.getLogger("jack-kernel.source-authority-ledger")
 
 
-class Phase8LedgerEventType(str, Enum):
+class SourceDriftLedgerEventType(str, Enum):
     SOURCE_AUTHORITY_SUSPENDED = "SOURCE_AUTHORITY_SUSPENDED"
     SOURCE_AUTHORITY_RESTORED = "SOURCE_AUTHORITY_RESTORED"
     SOURCE_DRIFT_DETECTED = "SOURCE_DRIFT_DETECTED"
 
 
-def _record_phase8_source_event_failsoft(
+def _record_source_drift_event_failsoft(
     ledger: authority_ledger.AuthorityLedger,
     *,
-    event_type: Phase8LedgerEventType,
+    event_type: SourceDriftLedgerEventType,
     authority: Any,
     prior_state: str,
     new_state: str,
@@ -69,7 +69,7 @@ def _record_phase8_source_event_failsoft(
         return False
 
 
-class _Phase8OrderedLedgerObserver:
+class _SourceDriftOrderedLedgerObserver:
     """Append immutable source transition facts in source-established order.
 
     Source authority owns transition identity and sequencing. This observer owns
@@ -106,7 +106,7 @@ class _Phase8OrderedLedgerObserver:
         self,
         *,
         transition_sequence: int,
-        event_type: Phase8LedgerEventType,
+        event_type: SourceDriftLedgerEventType,
         prior_state: str,
         new_state: str,
         reason: str,
@@ -133,7 +133,7 @@ class _Phase8OrderedLedgerObserver:
                 while self._next_sequence in self._pending:
                     current = self._pending.pop(self._next_sequence)
                     try:
-                        _record_phase8_source_event_failsoft(
+                        _record_source_drift_event_failsoft(
                             self._ledger,
                             authority=self._authority,
                             **current,
@@ -168,7 +168,7 @@ def _state_value(value: Any) -> str:
     return str(raw or "")
 
 
-def _install_phase8_ledger_observer(jk_module: Any, authority: Any) -> bool:
+def _install_source_drift_ledger_observer(jk_module: Any, authority: Any) -> bool:
     """Observe immutable source transition facts after the source guard establishes them.
 
     The source guard remains the sole verifier/lifecycle owner. The observer never
@@ -177,7 +177,7 @@ def _install_phase8_ledger_observer(jk_module: Any, authority: Any) -> bool:
     has been returned and is fail-soft with respect to enforcement and recovery.
     """
 
-    if getattr(jk_module, "_JACK_PHASE8_LEDGER_OBSERVER_INSTALLED", False):
+    if getattr(jk_module, "_JACK_SOURCE_DRIFT_LEDGER_OBSERVER_INSTALLED", False):
         return True
 
     ledger = getattr(jk_module, "_JACK_AUTHORITY_LEDGER", None)
@@ -214,13 +214,13 @@ def _install_phase8_ledger_observer(jk_module: Any, authority: Any) -> bool:
         )
         return False
 
-    recorder = _Phase8OrderedLedgerObserver(
+    recorder = _SourceDriftOrderedLedgerObserver(
         ledger=ledger,
         authority=authority,
         next_transition_sequence=next_transition_sequence,
     )
 
-    if not getattr(current_verify, "_jack_phase8_ledger_observer", False):
+    if not getattr(current_verify, "_jack_source_drift_ledger_observer", False):
         original_verify = current_verify
 
         @wraps(original_verify)
@@ -247,7 +247,7 @@ def _install_phase8_ledger_observer(jk_module: Any, authority: Any) -> bool:
                 if new_state == "INVALIDATED":
                     recorder.observe(
                         transition_sequence=transition_sequence,
-                        event_type=Phase8LedgerEventType.SOURCE_DRIFT_DETECTED,
+                        event_type=SourceDriftLedgerEventType.SOURCE_DRIFT_DETECTED,
                         prior_state=prior_state,
                         new_state=new_state,
                         reason="confirmed_source_mismatch",
@@ -257,7 +257,7 @@ def _install_phase8_ledger_observer(jk_module: Any, authority: Any) -> bool:
                 elif new_state == "SUSPENDED_UNVERIFIED":
                     recorder.observe(
                         transition_sequence=transition_sequence,
-                        event_type=Phase8LedgerEventType.SOURCE_AUTHORITY_SUSPENDED,
+                        event_type=SourceDriftLedgerEventType.SOURCE_AUTHORITY_SUSPENDED,
                         prior_state=prior_state,
                         new_state=new_state,
                         reason="measurement_unavailable",
@@ -267,7 +267,7 @@ def _install_phase8_ledger_observer(jk_module: Any, authority: Any) -> bool:
                 elif prior_state == "SUSPENDED_UNVERIFIED" and new_state == "ACTIVE":
                     recorder.observe(
                         transition_sequence=transition_sequence,
-                        event_type=Phase8LedgerEventType.SOURCE_AUTHORITY_RESTORED,
+                        event_type=SourceDriftLedgerEventType.SOURCE_AUTHORITY_RESTORED,
                         prior_state=prior_state,
                         new_state=new_state,
                         reason="exact_reverification",
@@ -284,11 +284,11 @@ def _install_phase8_ledger_observer(jk_module: Any, authority: Any) -> bool:
                 )
             return result
 
-        observed_verify_now._jack_phase8_ledger_observer = True
-        observed_verify_now._jack_phase8_original = original_verify
+        observed_verify_now._jack_source_drift_ledger_observer = True
+        observed_verify_now._jack_source_drift_original = original_verify
         authority.verify_now = observed_verify_now
 
-    if not getattr(current_suspend, "_jack_phase8_ledger_observer", False):
+    if not getattr(current_suspend, "_jack_source_drift_ledger_observer", False):
         original_suspend = current_suspend
 
         @wraps(original_suspend)
@@ -303,7 +303,7 @@ def _install_phase8_ledger_observer(jk_module: Any, authority: Any) -> bool:
                         transition_sequence=int(
                             getattr(transition, "transition_sequence", 0) or 0
                         ),
-                        event_type=Phase8LedgerEventType.SOURCE_AUTHORITY_SUSPENDED,
+                        event_type=SourceDriftLedgerEventType.SOURCE_AUTHORITY_SUSPENDED,
                         prior_state=prior_state,
                         new_state=new_state,
                         reason="verification_operation_failed",
@@ -318,13 +318,13 @@ def _install_phase8_ledger_observer(jk_module: Any, authority: Any) -> bool:
                 )
             return transition
 
-        observed_suspend._jack_phase8_ledger_observer = True
-        observed_suspend._jack_phase8_original = original_suspend
+        observed_suspend._jack_source_drift_ledger_observer = True
+        observed_suspend._jack_source_drift_original = original_suspend
         authority._suspend_unverified = observed_suspend
 
-    jk_module.Phase8LedgerEventType = Phase8LedgerEventType
-    jk_module._JACK_PHASE8_LEDGER_TRANSITION_RECORDER = recorder
-    jk_module._JACK_PHASE8_LEDGER_OBSERVER_INSTALLED = True
+    jk_module.SourceDriftLedgerEventType = SourceDriftLedgerEventType
+    jk_module._JACK_SOURCE_DRIFT_LEDGER_TRANSITION_RECORDER = recorder
+    jk_module._JACK_SOURCE_DRIFT_LEDGER_OBSERVER_INSTALLED = True
     return True
 
 
@@ -347,7 +347,7 @@ def main() -> None:
         )
         # Source Drift Protection ledger observation observes lifecycle facts only after Source Drift Protection baseline has established
         # the immutable baseline. Observer failure never blocks Source Drift Protection enforcement.
-        _install_phase8_ledger_observer(jk, authority)
+        _install_source_drift_ledger_observer(jk, authority)
         # Source Drift Protection enforcement is a distinct activation step. This preserves the accepted
         # Source Drift Protection baseline install contract while wiring live enforcement only in the
         # actual serving child.

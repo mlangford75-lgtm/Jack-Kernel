@@ -16,7 +16,7 @@ import jack_authority_ledger as authority_ledger
 LOG = logging.getLogger("jack-kernel.credential-ledger")
 
 
-class Phase7LedgerEventType(str, Enum):
+class CredentialLedgerEventType(str, Enum):
     PROTECTED_CREDENTIAL_MATCH = "PROTECTED_CREDENTIAL_MATCH"
     PROTECTED_CREDENTIAL_RESOURCE_BLOCKED = "PROTECTED_CREDENTIAL_RESOURCE_BLOCKED"
 
@@ -120,7 +120,7 @@ def _safe_class(value: Any) -> Optional[str]:
 def _record_failsoft(
     ledger: authority_ledger.AuthorityLedger,
     *,
-    event_type: Phase7LedgerEventType,
+    event_type: CredentialLedgerEventType,
     producer_code: str,
     boundary: str,
     outcome: str,
@@ -178,7 +178,7 @@ def record_credential_match_failsoft(
     )
     return _record_failsoft(
         ledger,
-        event_type=Phase7LedgerEventType.PROTECTED_CREDENTIAL_MATCH,
+        event_type=CredentialLedgerEventType.PROTECTED_CREDENTIAL_MATCH,
         producer_code=producer_code,
         boundary=boundary_value,
         outcome="HARD_INTERRUPT",
@@ -200,7 +200,7 @@ def record_resource_block_failsoft(
     payload = ProtectedCredentialResourceBlockedPayload(resource_id=safe_id)
     return _record_failsoft(
         ledger,
-        event_type=Phase7LedgerEventType.PROTECTED_CREDENTIAL_RESOURCE_BLOCKED,
+        event_type=CredentialLedgerEventType.PROTECTED_CREDENTIAL_RESOURCE_BLOCKED,
         producer_code="phase7.credential_resource_gate",
         boundary="credential_resource_path",
         outcome="DENY_AND_CONTINUE",
@@ -259,7 +259,7 @@ def _install_transport_hooks(
                 raise
 
         recorded_post._jack_credential_ledger = True
-        recorded_post._jack_phase7_original = original_post
+        recorded_post._jack_credential_original = original_post
         client.post = recorded_post
 
     current_build = getattr(client, "build_request", None)
@@ -282,7 +282,7 @@ def _install_transport_hooks(
                 raise
 
         recorded_build_request._jack_credential_ledger = True
-        recorded_build_request._jack_phase7_original = original_build
+        recorded_build_request._jack_credential_original = original_build
         client.build_request = recorded_build_request
 
 
@@ -301,11 +301,11 @@ def _install_kernel_exception_hooks(
     if not callable(current_run) or not callable(current_stream):
         raise RuntimeError("Credential Isolation and DLP ledger requires Kernel release seams")
 
-    if not getattr(current_run, "_jack_phase7_authority_ledger", False):
+    if not getattr(current_run, "_jack_credential_authority_ledger", False):
         original_run = current_run
 
         @wraps(original_run)
-        async def phase7_run(*args: Any, **kwargs: Any):
+        async def credential_guarded_run(*args: Any, **kwargs: Any):
             try:
                 return await original_run(*args, **kwargs)
             except evidence_guard.StreamingIRQCanaryInterrupt as exc:
@@ -320,15 +320,15 @@ def _install_kernel_exception_hooks(
                     )
                 raise
 
-        phase7_run._jack_phase7_authority_ledger = True
-        phase7_run._jack_phase7_original = original_run
-        kernel.run = phase7_run
+        credential_guarded_run._jack_credential_authority_ledger = True
+        credential_guarded_run._jack_credential_original = original_run
+        kernel.run = credential_guarded_run
 
-    if not getattr(current_stream, "_jack_phase7_authority_ledger", False):
+    if not getattr(current_stream, "_jack_credential_authority_ledger", False):
         original_stream = current_stream
 
         @wraps(original_stream)
-        async def phase7_stream(*args: Any, **kwargs: Any):
+        async def credential_guarded_stream(*args: Any, **kwargs: Any):
             source_stream = original_stream(*args, **kwargs)
             try:
                 async for chunk in source_stream:
@@ -359,9 +359,9 @@ def _install_kernel_exception_hooks(
                 if callable(close):
                     await close()
 
-        phase7_stream._jack_phase7_authority_ledger = True
-        phase7_stream._jack_phase7_original = original_stream
-        kernel.stream = phase7_stream
+        credential_guarded_stream._jack_credential_authority_ledger = True
+        credential_guarded_stream._jack_credential_original = original_stream
+        kernel.stream = credential_guarded_stream
 
 
 def _install_http_diagnostic_hook(
@@ -394,7 +394,7 @@ def _install_http_diagnostic_hook(
             return response
 
         recorded_handler._jack_credential_ledger = True
-        recorded_handler._jack_phase7_original = current
+        recorded_handler._jack_credential_original = current
         return recorded_handler
 
     for exception_type in dict.fromkeys((
@@ -425,7 +425,7 @@ def _install_orchestration_hooks(
             return response
 
         recorded_proxy._jack_credential_ledger = True
-        recorded_proxy._jack_phase7_original = current_proxy
+        recorded_proxy._jack_credential_original = current_proxy
         jk._proxy_pi_control_request = recorded_proxy
 
     hub_type = getattr(jk, "OrchestrationEventHub", None)
@@ -461,7 +461,7 @@ def _install_orchestration_hooks(
                     )
 
         recorded_publish._jack_credential_ledger = True
-        recorded_publish._jack_phase7_original = current_publish
+        recorded_publish._jack_credential_original = current_publish
         hub_type._publish = recorded_publish
 
 
@@ -495,7 +495,7 @@ def _install_retained_diagnostic_hook(
         current(self, name, value)
 
     recorded_setattr._jack_credential_ledger = True
-    recorded_setattr._jack_phase7_original = current
+    recorded_setattr._jack_credential_original = current
     hub_type.__setattr__ = recorded_setattr
 
 
@@ -544,7 +544,7 @@ def _install_log_hook(jk: Any) -> None:
             return result
 
         ledger_filter._jack_credential_ledger = True
-        ledger_filter._jack_phase7_original = original
+        ledger_filter._jack_credential_original = original
         filter_type.filter = ledger_filter
 
 
@@ -554,7 +554,7 @@ def install(
     ledger: authority_ledger.AuthorityLedger,
     credential_policy: Any,
 ) -> None:
-    if getattr(jk, "_JACK_PHASE7_LEDGER_INSTALLED", False):
+    if getattr(jk, "_JACK_CREDENTIAL_LEDGER_INSTALLED", False):
         return
     if not isinstance(ledger, authority_ledger.AuthorityLedger):
         raise TypeError("Credential Isolation and DLP ledger extension requires AuthorityLedger")
@@ -570,8 +570,8 @@ def install(
     _install_retained_diagnostic_hook(jk, ledger, credential_policy)
     _install_log_hook(jk)
 
-    jk.Phase7LedgerEventType = Phase7LedgerEventType
-    jk._JACK_PHASE7_LEDGER_INSTALLED = True
+    jk.CredentialLedgerEventType = CredentialLedgerEventType
+    jk._JACK_CREDENTIAL_LEDGER_INSTALLED = True
 
     register = getattr(jk, "_register_runtime_manifest_components", None)
     if callable(register):

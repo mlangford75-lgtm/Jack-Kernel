@@ -1,4 +1,4 @@
-"""Experimental Phase 10C path consequence gate; not activated at startup yet."""
+"""Experimental Policy Integrity path consequence gate; not activated at startup yet."""
 from functools import wraps
 
 from jack_policy_integrity import (
@@ -31,10 +31,10 @@ def _resource_policy_snapshot(jk, key, expected):
 
 
 def install(jk):
-    """Install before Phase 9B seals the final executable wrappers."""
+    """Install before Runtime Code Integrity seals the final executable wrappers."""
     if getattr(jk, "_JACK_RUNTIME_CODE_AUTHORITY", None) is not None:
         raise PolicyIntegrityUnavailable("path gate must precede executable seal")
-    if getattr(jk, "_JACK_PHASE10_PATH_AUTHORITY", None) is not None:
+    if getattr(jk, "_JACK_PATH_POLICY_AUTHORITY", None) is not None:
         raise PolicyIntegrityUnavailable("path gate already installed")
     policy = jk._runtime_path_policy()
     if policy.runtime_id != jk.RUNTIME_ID or policy.lane_id != jk.LANE_ID:
@@ -49,8 +49,8 @@ def install(jk):
     resource_invalid = False
     if resource_policy is not None or getattr(jk, "_JACK_RUNTIME_CREDENTIAL_POLICY", None) is not None:
         resource_snapshot = _resource_policy_snapshot(jk, resource_key, resource_policy)
-    partition = jk._phase4_partition_structured_tool_calls
-    admission = jk._phase4_executor_admission_decision
+    partition = jk._restricted_path_partition_structured_tool_calls
+    admission = jk._restricted_path_executor_admission_decision
 
     def verify():
         nonlocal resource_invalid
@@ -98,7 +98,7 @@ def install(jk):
             raise jk.HTTPException(status_code=503,
                 detail="Authority policy measurement unavailable") from None
 
-    jk._phase4_partition_structured_tool_calls = guarded_partition
-    jk._phase4_executor_admission_decision = guarded_admission
-    jk._JACK_PHASE10_PATH_AUTHORITY = guard
+    jk._restricted_path_partition_structured_tool_calls = guarded_partition
+    jk._restricted_path_executor_admission_decision = guarded_admission
+    jk._JACK_PATH_POLICY_AUTHORITY = guard
     return guard

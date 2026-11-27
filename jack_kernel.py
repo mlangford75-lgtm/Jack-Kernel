@@ -142,7 +142,7 @@ def is_hard_security_outcome(outcome: SecurityOutcome) -> bool:
     return outcome is SecurityOutcome.HARD_INTERRUPT
 
 
-class Phase4RestrictedPathInterrupt(RuntimeError):
+class RestrictedPathInterrupt(RuntimeError):
     """Hard Restricted Paths / Workspace Lock boundary with no protected path detail exposed downstream."""
 
     security_outcome = SecurityOutcome.HARD_INTERRUPT
@@ -432,7 +432,7 @@ _RUNTIME_PATH_POLICY: Any = None
 
 
 @dataclass(frozen=True)
-class Phase4ExecutorRequestContext:
+class RestrictedPathExecutorRequestContext:
     """Trusted transport facts supplied by a cooperating executor adapter."""
 
     protocol_version: int
@@ -444,16 +444,16 @@ class Phase4ExecutorRequestContext:
     command_dialect: Optional[str] = None
 
 
-_PHASE4_EXECUTOR_REQUEST_CONTEXT: contextvars.ContextVar[
-    Optional[Phase4ExecutorRequestContext]
+_RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT: contextvars.ContextVar[
+    Optional[RestrictedPathExecutorRequestContext]
 ] = contextvars.ContextVar(
-    f"jack_phase4_executor_request_context_{RUNTIME_ID}",
+    f"jack_restricted_path_executor_request_context_{RUNTIME_ID}",
     default=None,
 )
 
 
-def _phase4_current_executor_context() -> Optional[Phase4ExecutorRequestContext]:
-    return _PHASE4_EXECUTOR_REQUEST_CONTEXT.get()
+def _restricted_path_current_executor_context() -> Optional[RestrictedPathExecutorRequestContext]:
+    return _RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.get()
 
 
 def _bind_runtime_path_policy() -> Any:
@@ -2216,7 +2216,7 @@ def _agentic_visible_turn_label(turn_id: Any) -> Optional[str]:
 # Each request owns its own references. Never scan or mutate unrelated pending
 # transactions: a successor Stage-1 tool checkpoint may still need its bridge.
 _AGENTIC_DELAY_R2_SCOPE: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
-    contextvars.ContextVar("jack_agentic_phase3g_delayed_r2", default=None)
+    contextvars.ContextVar("jack_agentic_delayed_reasoning_delayed_r2", default=None)
 )
 
 
@@ -5254,7 +5254,7 @@ def _tool_call_validation_errors(
     return errors
 
 
-def _phase4_partition_structured_tool_calls(
+def _restricted_path_partition_structured_tool_calls(
     calls: Any,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """Partition completed calls at the narrowest Restricted Paths / Workspace Lock release boundary.
@@ -5278,7 +5278,7 @@ def _phase4_partition_structured_tool_calls(
     import jack_path_policy
 
     active_policy = _runtime_path_policy()
-    executor_context = _phase4_current_executor_context()
+    executor_context = _restricted_path_current_executor_context()
     executor_cwd = executor_context.cwd if executor_context is not None else None
     executor_platform = (
         executor_context.platform
@@ -5361,7 +5361,7 @@ def _phase4_partition_structured_tool_calls(
             decision.outcome
             is jack_path_policy.PathAuthorizationOutcome.HARD_INTERRUPT
         ):
-            raise Phase4RestrictedPathInterrupt()
+            raise RestrictedPathInterrupt()
 
         if (
             decision.outcome
@@ -5378,18 +5378,18 @@ def _phase4_partition_structured_tool_calls(
     return allowed, errors
 
 
-def _phase4_structured_tool_authorization_errors(
+def _restricted_path_structured_tool_authorization_errors(
     calls: Any,
 ) -> List[str]:
     """Compatibility wrapper returning only recoverable Restricted Paths / Workspace Lock denials."""
-    _, errors = _phase4_partition_structured_tool_calls(calls)
+    _, errors = _restricted_path_partition_structured_tool_calls(calls)
     return errors
 
 
-PHASE4_EXECUTOR_ADMISSION_PROTOCOL_VERSION = 1
+RESTRICTED_PATH_EXECUTOR_ADMISSION_PROTOCOL_VERSION = 1
 
 
-def _phase4_executor_admission_decision(
+def _restricted_path_executor_admission_decision(
     payload: Any,
     *,
     expected_call: Optional[Dict[str, Any]] = None,
@@ -5419,7 +5419,7 @@ def _phase4_executor_admission_decision(
             detail="Executor admission contains unsupported fields",
         )
 
-    if payload.get("protocol_version") != PHASE4_EXECUTOR_ADMISSION_PROTOCOL_VERSION:
+    if payload.get("protocol_version") != RESTRICTED_PATH_EXECUTOR_ADMISSION_PROTOCOL_VERSION:
         raise HTTPException(
             status_code=400,
             detail="Unsupported executor admission protocol version",
@@ -5548,7 +5548,7 @@ def _phase4_executor_admission_decision(
     )
 
     return {
-        "protocol_version": PHASE4_EXECUTOR_ADMISSION_PROTOCOL_VERSION,
+        "protocol_version": RESTRICTED_PATH_EXECUTOR_ADMISSION_PROTOCOL_VERSION,
         "runtime_id": RUNTIME_ID,
         "lane_id": LANE_ID,
         "tool_call_id": tool_call_id,
@@ -6964,7 +6964,7 @@ def _agentic_usage_for_pi(
     The Pi adapter is the existing request-scoped executor transport identity;
     this informational projection confers no new tool/authorization authority.
     """
-    context = _phase4_current_executor_context()
+    context = _restricted_path_current_executor_context()
     if not (AGENTIC_MODE and context is not None
             and str(context.adapter).strip().casefold() == "pi"):
         return aggregate
@@ -10003,7 +10003,7 @@ class PendingToolResume:
     # First authenticated tool outcomes are immutable across transport retries.
     # A stream disconnect must not allow the caller to substitute new results.
     accepted_tool_results: Optional[Tuple[Dict[str, Any], ...]] = None
-    accepted_executor_context: Optional[Phase4ExecutorRequestContext] = None
+    accepted_executor_context: Optional[RestrictedPathExecutorRequestContext] = None
     # Completed A1 is immutable even if the retrospective stream disconnects.
     # Resume Stage 2 from this frozen history; never rerun Stage 1 or its tools.
     frozen_stage1_history: Optional[List[Dict[str, Any]]] = None
@@ -10178,7 +10178,7 @@ class JackQwenKernel:
         self._activity_telemetry_degraded = False
         self._pending_tool_resumes: Dict[str, PendingToolResume] = {}
         self._pending_tool_resume_lock = asyncio.Lock()
-        self._pending_authority = PendingAuthority(Phase4ExecutorRequestContext)
+        self._pending_authority = PendingAuthority(RestrictedPathExecutorRequestContext)
         self._pending_debugging_intake_resumes: Dict[str, PendingDebuggingIntakeResume] = {}
         self._pending_debugging_intake_resume_lock = asyncio.Lock()
         self._pending_debugging_user_resumes: Dict[str, PendingDebuggingUserResume] = {}
@@ -10450,7 +10450,7 @@ class JackQwenKernel:
         if msg.get("tool_calls"):
             proposed_calls = list(msg.get("tool_calls") or [])
             allowed_calls, path_authorization_errors = (
-                _phase4_partition_structured_tool_calls(
+                _restricted_path_partition_structured_tool_calls(
                     proposed_calls
                 )
             )
@@ -11264,7 +11264,7 @@ class JackQwenKernel:
         if message.get("tool_calls"):
             proposed_calls = list(message.get("tool_calls") or [])
             allowed_calls, path_authorization_errors = (
-                _phase4_partition_structured_tool_calls(
+                _restricted_path_partition_structured_tool_calls(
                     proposed_calls
                 )
             )
@@ -12219,7 +12219,7 @@ class JackQwenKernel:
             reasoning_content=(str(reasoning) if (reasoning and not AGENTIC_MODE) else None),
         )
 
-    async def _phase4_pending_tool_call_snapshot(
+    async def _restricted_path_pending_tool_call_snapshot(
         self,
         tool_call_id: str,
     ) -> Dict[str, Any]:
@@ -12392,7 +12392,7 @@ class JackQwenKernel:
             if state.accepted_tool_results is None:
                 self._pending_authority.transition(state, in_flight=True,
                     accept=tuple(copy.deepcopy(matched_messages)),
-                    context=_phase4_current_executor_context())
+                    context=_restricted_path_current_executor_context())
             elif state.accepted_tool_results != matched_messages:
                 raise HTTPException(
                     status_code=409,
@@ -13487,7 +13487,7 @@ class JackQwenKernel:
                     elif isinstance(state, PendingToolResume) and scope is None:
                         await self._rearm_pending_tool_resume(state)
                 if scope is not None:
-                    await self._agentic_phase3g_settle_scope(scope)
+                    await self._agentic_delayed_reasoning_settle_scope(scope)
             finally:
                 try:
                     run = owner["debugging_run"]
@@ -13507,7 +13507,7 @@ class JackQwenKernel:
                     _REQUEST_RESUME_OWNER.reset(token)
                     self._model_discovery_active -= 1
 
-    async def _agentic_phase3g_settle_scope(self, scope: Dict[str, Any]) -> None:
+    async def _agentic_delayed_reasoning_settle_scope(self, scope: Dict[str, Any]) -> None:
         if scope.get("settled"):
             return
         scope["settled"] = True
@@ -13559,7 +13559,7 @@ class JackQwenKernel:
         finally:
             _agentic_forensic_close_request()
 
-    async def _agentic_phase3g_close_scope(self, scope_token: contextvars.Token) -> None:
+    async def _agentic_delayed_reasoning_close_scope(self, scope_token: contextvars.Token) -> None:
         """Reset request context; settlement occurs under the semaphore."""
         try:
             scope = _AGENTIC_DELAY_R2_SCOPE.get()
@@ -13567,7 +13567,7 @@ class JackQwenKernel:
                 scope.get("entered") or scope.get("stage1_frozen")
                 or scope.get("pending_state") is not None
             ):
-                await self._agentic_phase3g_settle_scope(scope)
+                await self._agentic_delayed_reasoning_settle_scope(scope)
         finally:
             _AGENTIC_DELAY_R2_SCOPE.reset(scope_token)
 
@@ -13670,9 +13670,9 @@ class JackQwenKernel:
         self,
         request_body: Dict[str, Any],
         *,
-        executor_context: Optional[Phase4ExecutorRequestContext] = None,
+        executor_context: Optional[RestrictedPathExecutorRequestContext] = None,
     ) -> KernelResult:
-        token = _PHASE4_EXECUTOR_REQUEST_CONTEXT.set(executor_context)
+        token = _RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.set(executor_context)
         recovery_token = _TOOL_RECOVERY_STATE.set(ToolRecoveryState())
         pending_recovery_token = _TOOL_RECOVERY_PENDING.set(None)
         scope_token = (
@@ -13701,11 +13701,11 @@ class JackQwenKernel:
         finally:
             try:
                 if scope_token is not None:
-                    await self._agentic_phase3g_close_scope(scope_token)
+                    await self._agentic_delayed_reasoning_close_scope(scope_token)
             finally:
                 _TOOL_RECOVERY_PENDING.reset(pending_recovery_token)
                 _TOOL_RECOVERY_STATE.reset(recovery_token)
-                _PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
+                _RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.reset(token)
 
     async def _run_impl(self, request_body: Dict[str, Any]) -> KernelResult:
         request_body = sanitize_agent_request(request_body)
@@ -13786,9 +13786,9 @@ class JackQwenKernel:
         self,
         request_body: Dict[str, Any],
         *,
-        executor_context: Optional[Phase4ExecutorRequestContext] = None,
+        executor_context: Optional[RestrictedPathExecutorRequestContext] = None,
     ) -> AsyncIterator[bytes]:
-        token = _PHASE4_EXECUTOR_REQUEST_CONTEXT.set(executor_context)
+        token = _RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.set(executor_context)
         recovery_token = _TOOL_RECOVERY_STATE.set(ToolRecoveryState())
         pending_recovery_token = _TOOL_RECOVERY_PENDING.set(None)
         scope_token = (
@@ -13836,11 +13836,11 @@ class JackQwenKernel:
         finally:
             try:
                 if scope_token is not None:
-                    await self._agentic_phase3g_close_scope(scope_token)
+                    await self._agentic_delayed_reasoning_close_scope(scope_token)
             finally:
                 _TOOL_RECOVERY_PENDING.reset(pending_recovery_token)
                 _TOOL_RECOVERY_STATE.reset(recovery_token)
-                _PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
+                _RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.reset(token)
 
     async def _stream_impl(self, request_body: Dict[str, Any]) -> AsyncIterator[bytes]:
         if DEEP_REASONING_MODE:
@@ -16139,9 +16139,9 @@ def _agentic_shadow_record_commit(
     )
 
 
-def _phase4_executor_context_from_request(
+def _restricted_path_executor_context_from_request(
     request: Request,
-) -> Optional[Phase4ExecutorRequestContext]:
+) -> Optional[RestrictedPathExecutorRequestContext]:
     """Read executor facts from host transport headers, never from request JSON."""
 
     header_names = {
@@ -16192,7 +16192,7 @@ def _phase4_executor_context_from_request(
             detail="Invalid executor transport protocol version",
         ) from exc
 
-    if version != PHASE4_EXECUTOR_ADMISSION_PROTOCOL_VERSION:
+    if version != RESTRICTED_PATH_EXECUTOR_ADMISSION_PROTOCOL_VERSION:
         raise HTTPException(
             status_code=400,
             detail="Unsupported executor transport protocol version",
@@ -16210,7 +16210,7 @@ def _phase4_executor_context_from_request(
             detail="Executor transport lane identity mismatch",
         )
 
-    return Phase4ExecutorRequestContext(
+    return RestrictedPathExecutorRequestContext(
         protocol_version=version,
         runtime_id=RUNTIME_ID,
         lane_id=LANE_ID,
@@ -16535,7 +16535,7 @@ async def orchestration_events(request: Request):
 
 
 @APP.post("/jack/security/path-admission")
-async def phase4_executor_path_admission(request: Request) -> Dict[str, Any]:
+async def restricted_path_executor_admission(request: Request) -> Dict[str, Any]:
     """Universal pre-execution Restricted Paths / Workspace Lock admission for cooperating executor adapters."""
     await enforce_kernel_auth(request)
     try:
@@ -16556,10 +16556,10 @@ async def phase4_executor_path_admission(request: Request) -> Dict[str, Any]:
             detail="Executor admission requires tool_call_id",
         )
 
-    expected_call = await KERNEL._phase4_pending_tool_call_snapshot(
+    expected_call = await KERNEL._restricted_path_pending_tool_call_snapshot(
         tool_call_id
     )
-    return _phase4_executor_admission_decision(
+    return _restricted_path_executor_admission_decision(
         payload,
         expected_call=expected_call,
     )
@@ -16689,7 +16689,7 @@ async def lmstudio_compatible_models(request: Request) -> Dict[str, Any]:
 async def _safe_public_stream(
     body: Dict[str, Any],
     *,
-    executor_context: Optional[Phase4ExecutorRequestContext] = None,
+    executor_context: Optional[RestrictedPathExecutorRequestContext] = None,
 ) -> AsyncIterator[bytes]:
     """Convert internal stage failures into a clean OpenAI SSE termination."""
     try:
@@ -16772,7 +16772,7 @@ async def chat_completions(request: Request):
                 raise ValueError("Missing TAS session capability")
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid TAS session capability") from exc
-    executor_context = _phase4_executor_context_from_request(request)
+    executor_context = _restricted_path_executor_context_from_request(request)
     hint = None
     if AGENTIC_MODE:
         # Correlation only. Never trust transport hints for memory or tool authority.
@@ -18717,9 +18717,9 @@ def _secured_serving_ready() -> bool:
         and all(globals().get(name) is not None for name in (
             "_JACK_SOURCE_AUTHORITY",
             "_JACK_RUNTIME_CODE_AUTHORITY",
-            "_JACK_PHASE10_PATH_AUTHORITY",
-            "_JACK_PHASE10_CANARY_AUTHORITY",
-            "_JACK_PHASE10_CREDENTIAL_AUTHORITY",
+            "_JACK_PATH_POLICY_AUTHORITY",
+            "_JACK_CANARY_POLICY_AUTHORITY",
+            "_JACK_CREDENTIAL_POLICY_AUTHORITY",
             "_JACK_DIAGNOSTIC_PRIVACY",
         ))
     )

@@ -280,7 +280,7 @@ def test_nonstream_never_target_hard_interrupts_without_model_retry_or_checkpoin
     jack = kernel.JackQwenKernel(backend, kernel.CFG)
 
     with pytest.raises(
-        kernel.Phase4RestrictedPathInterrupt,
+        kernel.RestrictedPathInterrupt,
     ) as caught:
         asyncio.run(jack.run(request()))
 
@@ -318,5 +318,5 @@ def test_phase4_structured_enforcement_is_installed_in_streamed_stage():
         kernel.JackQwenKernel._run_stage_streamed
     )
 
-    assert "_phase4_partition_structured_tool_calls" in source
+    assert "_restricted_path_partition_structured_tool_calls" in source
     assert 'yield {"kind": "tool_calls"' not in source

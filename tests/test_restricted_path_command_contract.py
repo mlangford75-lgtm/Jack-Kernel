@@ -228,7 +228,7 @@ def admission(tool_name, command, dialect):
 
 
 def test_executor_admission_applies_bash_contract(kernel_policy):
-    decision = kernel._phase4_executor_admission_decision(
+    decision = kernel._restricted_path_executor_admission_decision(
         admission("bash", "git status", "bash")
     )
 
@@ -237,7 +237,7 @@ def test_executor_admission_applies_bash_contract(kernel_policy):
 
 
 def test_executor_admission_applies_powershell_contract(kernel_policy):
-    decision = kernel._phase4_executor_admission_decision(
+    decision = kernel._restricted_path_executor_admission_decision(
         admission("powershell", "Get-Process", "powershell")
     )
 
@@ -250,7 +250,7 @@ def test_command_dialect_is_executor_fact_not_policy_override(kernel_policy):
     forged["workspace_root"] = None
 
     with pytest.raises(kernel.HTTPException) as caught:
-        kernel._phase4_executor_admission_decision(forged)
+        kernel._restricted_path_executor_admission_decision(forged)
 
     assert caught.value.status_code == 400
 
@@ -298,7 +298,7 @@ def test_unsupported_command_dialect_is_rejected_by_executor_endpoint(kernel_pol
     forged = admission("shell", "git status", "fish")
 
     with pytest.raises(kernel.HTTPException) as caught:
-        kernel._phase4_executor_admission_decision(forged)
+        kernel._restricted_path_executor_admission_decision(forged)
 
     assert caught.value.status_code == 400
 

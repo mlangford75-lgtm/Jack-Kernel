@@ -57,7 +57,7 @@ def payload(
 
 
 def test_executor_admission_allows_relative_read_inside_workspace():
-    decision = kernel._phase4_executor_admission_decision(
+    decision = kernel._restricted_path_executor_admission_decision(
         payload("read", {"path": r"src\engine.py"})
     )
     assert decision["outcome"] == "ALLOW"
@@ -67,7 +67,7 @@ def test_executor_admission_allows_relative_read_inside_workspace():
 
 
 def test_executor_admission_denies_relative_read_from_outside_cwd():
-    decision = kernel._phase4_executor_admission_decision(
+    decision = kernel._restricted_path_executor_admission_decision(
         payload(
             "read",
             {"path": r"src\engine.py"},
@@ -78,7 +78,7 @@ def test_executor_admission_denies_relative_read_from_outside_cwd():
 
 
 def test_executor_admission_hard_interrupts_relative_never_target():
-    decision = kernel._phase4_executor_admission_decision(
+    decision = kernel._restricted_path_executor_admission_decision(
         payload(
             "read",
             {"path": r"..\Sensitive\secret.txt"},
@@ -89,7 +89,7 @@ def test_executor_admission_hard_interrupts_relative_never_target():
 
 
 def test_executor_admission_pathless_ls_is_bound_to_actual_cwd():
-    decision = kernel._phase4_executor_admission_decision(
+    decision = kernel._restricted_path_executor_admission_decision(
         payload("ls", {}, cwd=r"D:\OtherProject")
     )
     assert decision["outcome"] == "DENY_AND_CONTINUE"
@@ -100,7 +100,7 @@ def test_executor_admission_rejects_policy_injection_fields():
     forged["workspace_root"] = r"C:\\"
 
     with pytest.raises(kernel.HTTPException) as caught:
-        kernel._phase4_executor_admission_decision(forged)
+        kernel._restricted_path_executor_admission_decision(forged)
 
     assert caught.value.status_code == 400
     assert "unsupported fields" in str(caught.value.detail)
@@ -108,7 +108,7 @@ def test_executor_admission_rejects_policy_injection_fields():
 
 def test_executor_admission_rejects_wrong_runtime_identity():
     with pytest.raises(kernel.HTTPException) as caught:
-        kernel._phase4_executor_admission_decision(
+        kernel._restricted_path_executor_admission_decision(
             payload(
                 "read",
                 {"path": r"src\engine.py"},
@@ -119,7 +119,7 @@ def test_executor_admission_rejects_wrong_runtime_identity():
 
 
 def test_bash_command_tool_is_governed_by_the_command_contract():
-    decision = kernel._phase4_executor_admission_decision(
+    decision = kernel._restricted_path_executor_admission_decision(
         payload("bash", {"command": "git status"})
     )
     assert decision["outcome"] == "ALLOW"
@@ -135,4 +135,4 @@ def test_pre_release_phase4_defers_relative_structured_target_to_executor():
             "arguments": json.dumps({"path": r"src\engine.py"}),
         },
     }
-    assert kernel._phase4_structured_tool_authorization_errors([call]) == []
+    assert kernel._restricted_path_structured_tool_authorization_errors([call]) == []

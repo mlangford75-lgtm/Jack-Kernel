@@ -112,7 +112,7 @@ def test_workspace_command_without_executor_context_is_recoverably_denied(monkey
     original = kernel._RUNTIME_PATH_POLICY
     kernel._RUNTIME_PATH_POLICY = build()
     try:
-        allowed, errors = kernel._phase4_partition_structured_tool_calls(
+        allowed, errors = kernel._restricted_path_partition_structured_tool_calls(
             [command_call("git status")]
         )
     finally:
@@ -125,7 +125,7 @@ def test_workspace_command_without_executor_context_is_recoverably_denied(monkey
 def test_workspace_command_with_executor_context_is_releasable(monkeypatch):
     original = kernel._RUNTIME_PATH_POLICY
     kernel._RUNTIME_PATH_POLICY = build()
-    ctx = kernel.Phase4ExecutorRequestContext(
+    ctx = kernel.RestrictedPathExecutorRequestContext(
         protocol_version=1,
         runtime_id=kernel.RUNTIME_ID,
         lane_id=kernel.LANE_ID,
@@ -134,13 +134,13 @@ def test_workspace_command_with_executor_context_is_releasable(monkeypatch):
         adapter="test",
         command_dialect="bash",
     )
-    token = kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.set(ctx)
+    token = kernel._RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.set(ctx)
     try:
-        allowed, errors = kernel._phase4_partition_structured_tool_calls(
+        allowed, errors = kernel._restricted_path_partition_structured_tool_calls(
             [command_call("git status")]
         )
     finally:
-        kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
+        kernel._RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.reset(token)
         kernel._RUNTIME_PATH_POLICY = original
 
     assert [item["id"] for item in allowed] == ["call-command"]
@@ -151,7 +151,7 @@ def test_generic_shell_can_be_bound_by_transport_dialect(monkeypatch):
     original = kernel._RUNTIME_PATH_POLICY
     kernel._RUNTIME_PATH_POLICY = build()
     generic = command_call("git status", name="shell")
-    ctx = kernel.Phase4ExecutorRequestContext(
+    ctx = kernel.RestrictedPathExecutorRequestContext(
         protocol_version=1,
         runtime_id=kernel.RUNTIME_ID,
         lane_id=kernel.LANE_ID,
@@ -160,11 +160,11 @@ def test_generic_shell_can_be_bound_by_transport_dialect(monkeypatch):
         adapter="test",
         command_dialect="bash",
     )
-    token = kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.set(ctx)
+    token = kernel._RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.set(ctx)
     try:
-        allowed, errors = kernel._phase4_partition_structured_tool_calls([generic])
+        allowed, errors = kernel._restricted_path_partition_structured_tool_calls([generic])
     finally:
-        kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
+        kernel._RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.reset(token)
         kernel._RUNTIME_PATH_POLICY = original
 
     assert [item["id"] for item in allowed] == ["call-command"]
@@ -192,7 +192,7 @@ def test_executor_admission_binds_to_exact_released_arguments(monkeypatch):
     original = kernel._RUNTIME_PATH_POLICY
     kernel._RUNTIME_PATH_POLICY = build()
     try:
-        result = kernel._phase4_executor_admission_decision(
+        result = kernel._restricted_path_executor_admission_decision(
             admission_payload(),
             expected_call=expected_read_call(),
         )
@@ -214,7 +214,7 @@ def test_executor_admission_rejects_released_call_substitution(monkeypatch, payl
     kernel._RUNTIME_PATH_POLICY = build()
     try:
         with pytest.raises(kernel.HTTPException) as caught:
-            kernel._phase4_executor_admission_decision(
+            kernel._restricted_path_executor_admission_decision(
                 payload,
                 expected_call=expected_read_call(),
             )
@@ -229,7 +229,7 @@ def test_executor_admission_binds_lane(monkeypatch):
     kernel._RUNTIME_PATH_POLICY = build()
     try:
         with pytest.raises(kernel.HTTPException) as caught:
-            kernel._phase4_executor_admission_decision(
+            kernel._restricted_path_executor_admission_decision(
                 admission_payload(lane_id="wrong-lane"),
                 expected_call=expected_read_call(),
             )
@@ -273,7 +273,7 @@ def executor_headers(**overrides):
 
 
 def test_transport_context_is_runtime_lane_and_dialect_bound():
-    ctx = kernel._phase4_executor_context_from_request(
+    ctx = kernel._restricted_path_executor_context_from_request(
         request_with_headers(executor_headers())
     )
 
@@ -290,7 +290,7 @@ def test_incomplete_transport_context_is_rejected():
     del headers["X-Jack-Executor-Cwd"]
 
     with pytest.raises(kernel.HTTPException) as caught:
-        kernel._phase4_executor_context_from_request(
+        kernel._restricted_path_executor_context_from_request(
             request_with_headers(headers)
         )
 
@@ -299,7 +299,7 @@ def test_incomplete_transport_context_is_rejected():
 
 def test_wrong_transport_lane_is_rejected():
     with pytest.raises(kernel.HTTPException) as caught:
-        kernel._phase4_executor_context_from_request(
+        kernel._restricted_path_executor_context_from_request(
             request_with_headers(
                 executor_headers(**{"X-Jack-Executor-Lane-Id": "wrong-lane"})
             )
@@ -326,7 +326,7 @@ def test_pending_snapshot_returns_exact_released_call():
     jack._pending_tool_resumes["call-read"] = state
 
     snapshot = asyncio.run(
-        jack._phase4_pending_tool_call_snapshot("call-read")
+        jack._restricted_path_pending_tool_call_snapshot("call-read")
     )
 
     assert snapshot == released
@@ -334,7 +334,7 @@ def test_pending_snapshot_returns_exact_released_call():
 
 
 def test_missing_transport_context_preserves_ordinary_clients():
-    assert kernel._phase4_executor_context_from_request(
+    assert kernel._restricted_path_executor_context_from_request(
         request_with_headers({})
     ) is None
 
@@ -358,5 +358,5 @@ def test_responses_compat_forwards_executor_context_to_both_transports():
     register_source = inspect.getsource(jack_responses_compat.register)
 
     assert "executor_context=executor_context" in stream_source
-    assert "_phase4_executor_context_from_request" in register_source
+    assert "_restricted_path_executor_context_from_request" in register_source
     assert "executor_context=executor_context" in register_source

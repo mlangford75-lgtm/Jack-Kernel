@@ -43,8 +43,8 @@ assert kernel._JACK_CREDENTIAL_GUARD_INSTALLED is True
 policy = kernel._JACK_RUNTIME_CREDENTIAL_POLICY
 assert policy.runtime_id == kernel.RUNTIME_ID
 assert policy.lane_id == kernel.LANE_ID
-assert getattr(kernel.BACKEND._client.post, "_jack_phase7_credential_guard", False) is True
-assert getattr(kernel.BACKEND._client.build_request, "_jack_phase7_credential_guard", False) is True
+assert getattr(kernel.BACKEND._client.post, "_jack_credential_credential_guard", False) is True
+assert getattr(kernel.BACKEND._client.build_request, "_jack_credential_credential_guard", False) is True
 
 jack_secret = kernel.CFG.api_key
 backend_secret = kernel.CFG.backend_api_key

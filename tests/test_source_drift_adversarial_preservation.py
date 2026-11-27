@@ -53,7 +53,7 @@ def _runtime_host(authority, *, run=None, proxy=None):
             run=run or default_run,
             stream=default_stream,
         ),
-        _phase4_executor_admission_decision=default_executor,
+        _restricted_path_executor_admission_decision=default_executor,
         _proxy_pi_control_request=proxy or default_proxy,
         APP=None,
         JSONResponse=None,
@@ -69,7 +69,7 @@ def test_observer_processing_bug_cannot_become_verifier_failure(
     authority, _target = _authority_for(tmp_path)
     ledger = _ledger_for(tmp_path)
     jk_observer = SimpleNamespace(_JACK_AUTHORITY_LEDGER=ledger)
-    assert entrypoint._install_phase8_ledger_observer(jk_observer, authority) is True
+    assert entrypoint._install_source_drift_ledger_observer(jk_observer, authority) is True
 
     def observer_bug(_value):
         raise RuntimeError("synthetic observer bug")
@@ -93,8 +93,8 @@ def test_observer_failure_during_suspension_cannot_block_later_exact_recovery(
     authority, _target = _authority_for(tmp_path)
     ledger = _ledger_for(tmp_path)
     jk_observer = SimpleNamespace(_JACK_AUTHORITY_LEDGER=ledger)
-    assert entrypoint._install_phase8_ledger_observer(jk_observer, authority) is True
-    recorder = jk_observer._JACK_PHASE8_LEDGER_TRANSITION_RECORDER
+    assert entrypoint._install_source_drift_ledger_observer(jk_observer, authority) is True
+    recorder = jk_observer._JACK_SOURCE_DRIFT_LEDGER_TRANSITION_RECORDER
 
     def broken_observe(**_kwargs):
         raise RuntimeError("synthetic ordering observer failure")
@@ -123,7 +123,7 @@ def test_observer_failure_during_suspension_cannot_block_later_exact_recovery(
 def test_forensic_ordering_gap_never_becomes_source_admission_backpressure(tmp_path):
     authority, _target = _authority_for(tmp_path)
     ledger = _ledger_for(tmp_path)
-    recorder = entrypoint._Phase8OrderedLedgerObserver(
+    recorder = entrypoint._SourceDriftOrderedLedgerObserver(
         ledger=ledger,
         authority=authority,
         next_transition_sequence=1,
@@ -133,7 +133,7 @@ def test_forensic_ordering_gap_never_becomes_source_admission_backpressure(tmp_p
     # observation-layer gap; source authority stays independently usable.
     recorder.observe(
         transition_sequence=2,
-        event_type=entrypoint.Phase8LedgerEventType.SOURCE_AUTHORITY_RESTORED,
+        event_type=entrypoint.SourceDriftLedgerEventType.SOURCE_AUTHORITY_RESTORED,
         prior_state="SUSPENDED_UNVERIFIED",
         new_state="ACTIVE",
         reason="exact_reverification",

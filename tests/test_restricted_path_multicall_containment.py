@@ -112,7 +112,7 @@ def tools():
 
 
 def executor_context():
-    return kernel.Phase4ExecutorRequestContext(
+    return kernel.RestrictedPathExecutorRequestContext(
         protocol_version=1,
         runtime_id=kernel.RUNTIME_ID,
         lane_id=kernel.LANE_ID,
@@ -129,11 +129,11 @@ def test_partition_preserves_safe_sibling_order_and_ids():
         call("call-safe-b", "bash", {"command": "git status"}),
     ]
 
-    token = kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.set(executor_context())
+    token = kernel._RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.set(executor_context())
     try:
-        allowed, errors = kernel._phase4_partition_structured_tool_calls(calls)
+        allowed, errors = kernel._restricted_path_partition_structured_tool_calls(calls)
     finally:
-        kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
+        kernel._RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.reset(token)
 
     assert [item["id"] for item in allowed] == [
         "call-safe-a",
@@ -167,8 +167,8 @@ def test_positive_never_sibling_hard_interrupts_before_subset_release():
     ]
 
     try:
-        with pytest.raises(kernel.Phase4RestrictedPathInterrupt):
-            kernel._phase4_partition_structured_tool_calls(calls)
+        with pytest.raises(kernel.RestrictedPathInterrupt):
+            kernel._restricted_path_partition_structured_tool_calls(calls)
     finally:
         kernel._RUNTIME_PATH_POLICY = original
 
@@ -251,7 +251,7 @@ def test_checkpoint_tracks_only_authorized_ids_and_deferred_denial():
     # Exercise the real production sequence: model proposal -> host Phase-4
     # partition -> checkpoint registration. The withheld provenance assertion must
     # therefore be earned by Jack's partitioning, not fabricated by the fixture.
-    token = kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.set(executor_context())
+    token = kernel._RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.set(executor_context())
     try:
         data = asyncio.run(
             jack._run_stage(
@@ -265,7 +265,7 @@ def test_checkpoint_tracks_only_authorized_ids_and_deferred_denial():
             )
         )
     finally:
-        kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
+        kernel._RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.reset(token)
 
     message = data["choices"][0]["message"]
     assert [item["id"] for item in message["tool_calls"]] == ["call-safe"]
@@ -409,7 +409,7 @@ def test_complete_mixed_checkpoint_exposes_only_releasable_calls():
         "total_tokens": 0,
     }
 
-    token = kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.set(executor_context())
+    token = kernel._RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.set(executor_context())
     try:
         data = asyncio.run(
             jack._run_stage(
@@ -423,7 +423,7 @@ def test_complete_mixed_checkpoint_exposes_only_releasable_calls():
             )
         )
     finally:
-        kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
+        kernel._RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.reset(token)
     result = asyncio.run(
         jack._register_stage_tool_resume(
             stage_key=active_tool_stage(),
@@ -462,7 +462,7 @@ def test_partition_rewrites_relative_structured_call_before_release():
         ),
     ]
 
-    allowed, errors = kernel._phase4_partition_structured_tool_calls(calls)
+    allowed, errors = kernel._restricted_path_partition_structured_tool_calls(calls)
 
     assert errors == []
     assert len(allowed) == 1
@@ -481,7 +481,7 @@ def test_partition_materializes_workspace_for_pathless_ls_before_release():
         ),
     ]
 
-    allowed, errors = kernel._phase4_partition_structured_tool_calls(calls)
+    allowed, errors = kernel._restricted_path_partition_structured_tool_calls(calls)
 
     assert errors == []
     args = json.loads(

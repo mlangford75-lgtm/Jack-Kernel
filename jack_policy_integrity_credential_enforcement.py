@@ -1,4 +1,4 @@
-"""Experimental Phase 10C credential policy integrity at transport and Pi release."""
+"""Experimental Policy Integrity credential policy integrity at transport and Pi release."""
 from functools import wraps
 
 from jack_credential_guard import RuntimeCredentialPolicy
@@ -9,7 +9,7 @@ from jack_policy_integrity import RuntimePolicyAuthority, PolicyIntegrityUnavail
 def install(jk):
     if getattr(jk, "_JACK_RUNTIME_CODE_AUTHORITY", None) is not None:
         raise PolicyIntegrityUnavailable("credential gate must precede executable seal")
-    if getattr(jk, "_JACK_PHASE10_CREDENTIAL_AUTHORITY", None) is not None:
+    if getattr(jk, "_JACK_CREDENTIAL_POLICY_AUTHORITY", None) is not None:
         raise PolicyIntegrityUnavailable("credential gate already installed")
     policy = jk._JACK_RUNTIME_CREDENTIAL_POLICY
     if (type(policy) is not RuntimeCredentialPolicy or
@@ -83,5 +83,5 @@ def install(jk):
     client.build_request = guarded_build
     jk._proxy_pi_control_request = guarded_proxy
     hub._publish = guarded_publish
-    jk._JACK_PHASE10_CREDENTIAL_AUTHORITY = guard
+    jk._JACK_CREDENTIAL_POLICY_AUTHORITY = guard
     return guard

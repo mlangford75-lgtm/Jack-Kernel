@@ -68,7 +68,7 @@ def test_gate_records_live_path_and_executor_identity_without_changing_dispositi
         CFG=SimpleNamespace(runtime_registry_dir=""),
         KERNEL=NoopKernel(),
         HTTPException=HTTPException,
-        PHASE4_EXECUTOR_ADMISSION_PROTOCOL_VERSION=1,
+        RESTRICTED_PATH_EXECUTOR_ADMISSION_PROTOCOL_VERSION=1,
         _install_bundled_runtime_extensions=lambda: None,
         _JACK_EVIDENCE_PROVENANCE_GUARD_INSTALLED=True,
     )
@@ -84,14 +84,14 @@ def test_gate_records_live_path_and_executor_identity_without_changing_dispositi
     def admission(_payload, *, expected_call=None):
         return {"outcome": "ALLOW", "expected": expected_call}
 
-    fake._phase4_partition_structured_tool_calls = partition
-    fake._phase4_executor_admission_decision = admission
+    fake._restricted_path_partition_structured_tool_calls = partition
+    fake._restricted_path_executor_admission_decision = admission
 
     try:
         gate.install(fake)
         active = fake._JACK_AUTHORITY_LEDGER
 
-        allowed, errors = fake._phase4_partition_structured_tool_calls([])
+        allowed, errors = fake._restricted_path_partition_structured_tool_calls([])
         assert allowed == []
         assert errors == ["DENY_AND_CONTINUE"]
 
@@ -105,12 +105,12 @@ def test_gate_records_live_path_and_executor_identity_without_changing_dispositi
             "executor_cwd": r"D:\\Projects\\Jack",
             "executor_platform": "win32",
         }
-        assert fake._phase4_executor_admission_decision(valid)["outcome"] == "ALLOW"
+        assert fake._restricted_path_executor_admission_decision(valid)["outcome"] == "ALLOW"
 
         bad = dict(valid)
         bad["runtime_id"] = "wrong-runtime"
         with pytest.raises(HTTPException) as caught:
-            fake._phase4_executor_admission_decision(bad)
+            fake._restricted_path_executor_admission_decision(bad)
         assert caught.value.status_code == 409
 
         records = read_records(active)

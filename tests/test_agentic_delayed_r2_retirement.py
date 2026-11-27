@@ -164,7 +164,7 @@ def test_terminal_cleanup_is_transaction_scoped():
         token = k._AGENTIC_DELAY_R2_SCOPE.set(scope)
         try:
             freeze(k, h1)
-            await k.KERNEL._agentic_phase3g_close_scope(token)
+            await k.KERNEL._agentic_delayed_reasoning_close_scope(token)
             assert "reasoning_content" not in h1[1]
             assert h2[1]["reasoning_content"] == "other transaction bridge"
         except BaseException:
@@ -180,7 +180,7 @@ def test_stage1_suspension_does_not_retire_bridge():
         h = bridge_history()
         scope = {"stage1_frozen": False, "bridge_messages": [], "pending_state": None}
         token = k._AGENTIC_DELAY_R2_SCOPE.set(scope)
-        await k.KERNEL._agentic_phase3g_close_scope(token)
+        await k.KERNEL._agentic_delayed_reasoning_close_scope(token)
         assert h[1]["reasoning_content"] == "previous R2"
     asyncio.run(exercise())
 
@@ -210,7 +210,7 @@ def test_pending_checkpoint_retired_on_terminal_scope():
         k.KERNEL._pending_tool_resumes["tool-3g"] = checkpoint
         k.KERNEL._pending_authority.transition(checkpoint, in_flight=True)
         scope["pending_state"] = checkpoint
-        await k.KERNEL._agentic_phase3g_close_scope(token)
+        await k.KERNEL._agentic_delayed_reasoning_close_scope(token)
         assert "tool-3g" not in k.KERNEL._pending_tool_resumes
         assert "reasoning_content" not in checkpoint.history[1]
     asyncio.run(exercise())

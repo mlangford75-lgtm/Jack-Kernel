@@ -86,7 +86,7 @@ def terminal_stream_failure(exc: Exception) -> bool:
     """Return whether stream quarantine and recovery must stop at this boundary."""
     from jack_credential_guard import ProtectedCredentialInterrupt
     from jack_loop_detector import PartialOutputLoopInterrupt, RepeatedLoopInterrupt
-    from jack_phase10_dynamic_authority import DynamicAuthorityUnavailable
+    from jack_policy_integrity_dynamic_authority import DynamicAuthorityUnavailable
     from jack_policy_integrity import PolicyIntegrityUnavailable
     from jack_runtime_code_guard import RuntimeCodeIntegrityUnavailable
     from jack_source_drift_guard import SourceAuthorityUnavailable
@@ -112,7 +112,7 @@ def public_security_failure(exc: Exception) -> Optional[Tuple[int, str, str]]:
     Existing authority-specific HTTP handlers remain authoritative where installed.
     """
     from jack_credential_guard import ProtectedCredentialInterrupt
-    from jack_phase10_dynamic_authority import DynamicAuthorityUnavailable
+    from jack_policy_integrity_dynamic_authority import DynamicAuthorityUnavailable
     from jack_policy_integrity import PolicyIntegrityUnavailable
     from jack_runtime_code_guard import RuntimeCodeIntegrityUnavailable
     from jack_source_drift_guard import SourceAuthorityUnavailable
@@ -2057,7 +2057,7 @@ def _install_tool_evidence_release(jk: Any, canary_policy: RuntimeCanaryPolicy, 
         if match is not None:
             ledger = getattr(jk, "_JACK_AUTHORITY_LEDGER", None)
             if ledger is not None:
-                from jack_phase7_ledger import record_credential_match_failsoft
+                from jack_credential_ledger import record_credential_match_failsoft
                 record_credential_match_failsoft(
                     ledger, boundary="tool_evidence_http_release", direction="caller_bound",
                     credential_id=match.credential_id, credential_class=match.credential_class,

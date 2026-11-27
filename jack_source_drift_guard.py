@@ -529,7 +529,7 @@ _REQUIRED_PREDECESSOR_MARKERS = (
     "_JACK_CREDENTIAL_GUARD_INSTALLED",
     "_JACK_DIAGNOSTIC_CREDENTIAL_DLP_INSTALLED",
     "_JACK_CREDENTIAL_RESOURCE_GUARD_INSTALLED",
-    "_JACK_PHASE7_LEDGER_INSTALLED",
+    "_JACK_CREDENTIAL_LEDGER_INSTALLED",
 )
 
 
@@ -600,7 +600,7 @@ def _install_kernel_release_enforcement(
     if not callable(current_run) or not callable(current_stream):
         raise RuntimeError("Source Drift Protection enforcement requires Kernel run/stream release seams")
 
-    if not getattr(current_run, "_jack_phase8_source_authority", False):
+    if not getattr(current_run, "_jack_source_drift_source_authority", False):
         original_run = current_run
 
         @wraps(original_run)
@@ -610,11 +610,11 @@ def _install_kernel_release_enforcement(
             authority.verify_for_authority_boundary()
             return result
 
-        source_governed_run._jack_phase8_source_authority = True
-        source_governed_run._jack_phase8_original = original_run
+        source_governed_run._jack_source_drift_source_authority = True
+        source_governed_run._jack_source_drift_original = original_run
         kernel.run = source_governed_run
 
-    if not getattr(current_stream, "_jack_phase8_source_authority", False):
+    if not getattr(current_stream, "_jack_source_drift_source_authority", False):
         original_stream = current_stream
 
         @wraps(original_stream)
@@ -649,8 +649,8 @@ def _install_kernel_release_enforcement(
             if blocked is not None:
                 raise blocked
 
-        source_governed_stream._jack_phase8_source_authority = True
-        source_governed_stream._jack_phase8_original = original_stream
+        source_governed_stream._jack_source_drift_source_authority = True
+        source_governed_stream._jack_source_drift_original = original_stream
         kernel.stream = source_governed_stream
 
 
@@ -658,8 +658,8 @@ def _install_tool_release_enforcement(
     jk: Any,
     authority: RuntimeSourceAuthority,
 ) -> None:
-    current = getattr(jk, "_phase4_partition_structured_tool_calls", None)
-    if not callable(current) or getattr(current, "_jack_phase8_source_authority", False):
+    current = getattr(jk, "_restricted_path_partition_structured_tool_calls", None)
+    if not callable(current) or getattr(current, "_jack_source_drift_source_authority", False):
         return
     original = current
 
@@ -668,19 +668,19 @@ def _install_tool_release_enforcement(
         authority.verify_for_authority_boundary()
         return original(*args, **kwargs)
 
-    source_governed_tool_release._jack_phase8_source_authority = True
-    source_governed_tool_release._jack_phase8_original = original
-    jk._phase4_partition_structured_tool_calls = source_governed_tool_release
+    source_governed_tool_release._jack_source_drift_source_authority = True
+    source_governed_tool_release._jack_source_drift_original = original
+    jk._restricted_path_partition_structured_tool_calls = source_governed_tool_release
 
 
 def _install_executor_admission_enforcement(
     jk: Any,
     authority: RuntimeSourceAuthority,
 ) -> None:
-    current = getattr(jk, "_phase4_executor_admission_decision", None)
+    current = getattr(jk, "_restricted_path_executor_admission_decision", None)
     if not callable(current):
         raise RuntimeError("Source Drift Protection enforcement requires Restricted Paths / Workspace Lock executor admission seam")
-    if getattr(current, "_jack_phase8_source_authority", False):
+    if getattr(current, "_jack_source_drift_source_authority", False):
         return
     original = current
 
@@ -689,9 +689,9 @@ def _install_executor_admission_enforcement(
         authority.verify_for_authority_boundary()
         return original(*args, **kwargs)
 
-    source_governed_executor_admission._jack_phase8_source_authority = True
-    source_governed_executor_admission._jack_phase8_original = original
-    jk._phase4_executor_admission_decision = source_governed_executor_admission
+    source_governed_executor_admission._jack_source_drift_source_authority = True
+    source_governed_executor_admission._jack_source_drift_original = original
+    jk._restricted_path_executor_admission_decision = source_governed_executor_admission
 
 
 def _install_debugging_durable_commit_enforcement(
@@ -702,7 +702,7 @@ def _install_debugging_durable_commit_enforcement(
 
     for name in _DEBUGGING_DURABLE_COMMIT_NAMES:
         current = getattr(jk, name, None)
-        if not callable(current) or getattr(current, "_jack_phase8_source_authority", False):
+        if not callable(current) or getattr(current, "_jack_source_drift_source_authority", False):
             continue
         original = current
 
@@ -711,8 +711,8 @@ def _install_debugging_durable_commit_enforcement(
             authority.verify_for_authority_boundary()
             return __original(*args, **kwargs)
 
-        source_governed_commit._jack_phase8_source_authority = True
-        source_governed_commit._jack_phase8_original = original
+        source_governed_commit._jack_source_drift_source_authority = True
+        source_governed_commit._jack_source_drift_original = original
         setattr(jk, name, source_governed_commit)
 
 
@@ -723,7 +723,7 @@ def _install_orchestration_enforcement(
     current = getattr(jk, "_proxy_pi_control_request", None)
     if not callable(current):
         return
-    if getattr(current, "_jack_phase8_source_authority", False):
+    if getattr(current, "_jack_source_drift_source_authority", False):
         return
     original = current
 
@@ -744,8 +744,8 @@ def _install_orchestration_enforcement(
             authority.verify_for_authority_boundary()
         return await original(request, method, path, *args, **kwargs)
 
-    source_governed_proxy._jack_phase8_source_authority = True
-    source_governed_proxy._jack_phase8_original = original
+    source_governed_proxy._jack_source_drift_source_authority = True
+    source_governed_proxy._jack_source_drift_original = original
     jk._proxy_pi_control_request = source_governed_proxy
 
 

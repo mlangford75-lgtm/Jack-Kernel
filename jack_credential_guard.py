@@ -827,14 +827,14 @@ def _install_orchestration_release_guard(
     async def guarded_publish(self: Any, event_type: str, source_event: Any) -> None:
         stream_state = getattr(
             self,
-            "_jack_phase7_orchestration_credential_carry",
+            "_jack_credential_orchestration_credential_carry",
             None,
         )
         if not isinstance(stream_state, dict):
             stream_state = {}
             setattr(
                 self,
-                "_jack_phase7_orchestration_credential_carry",
+                "_jack_credential_orchestration_credential_carry",
                 stream_state,
             )
 
@@ -883,9 +883,9 @@ def _install_orchestration_release_guard(
             safe_source,
         )
 
-    guarded_proxy._jack_phase7_orchestration_credential_dlp = True
-    guarded_publish._jack_phase7_orchestration_credential_dlp = True
-    guarded_publish._jack_phase7_original_publish = original_publish
+    guarded_proxy._jack_credential_orchestration_credential_dlp = True
+    guarded_publish._jack_credential_orchestration_credential_dlp = True
+    guarded_publish._jack_credential_original_publish = original_publish
 
     # A broken Pi SSE connection is not a completion boundary. Dispose held
     # fragments on disconnect and shutdown; never inject them into replay.
@@ -895,7 +895,7 @@ def _install_orchestration_release_guard(
             try:
                 return await original_consume(self, *args, **kwargs)
             finally:
-                state = getattr(self, "_jack_phase7_orchestration_credential_carry", None)
+                state = getattr(self, "_jack_credential_orchestration_credential_carry", None)
                 if isinstance(state, dict):
                     state.clear()
         hub_type._consume_stream = guarded_consume
@@ -948,8 +948,8 @@ def install(
         _guard_build_request_call(credential_policy, args, kwargs)
         return original_build_request(*args, **kwargs)
 
-    guarded_post._jack_phase7_credential_guard = True
-    guarded_build_request._jack_phase7_credential_guard = True
+    guarded_post._jack_credential_credential_guard = True
+    guarded_build_request._jack_credential_credential_guard = True
     client.post = guarded_post
     client.build_request = guarded_build_request
 

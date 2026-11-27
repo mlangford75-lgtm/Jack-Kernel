@@ -37,7 +37,7 @@ def load(mode="agentic"):
 
 
 def executor(k, adapter="pi"):
-    return k.Phase4ExecutorRequestContext(
+    return k.RestrictedPathExecutorRequestContext(
         protocol_version=1,
         runtime_id=k.RUNTIME_ID,
         lane_id=k.LANE_ID,
@@ -64,44 +64,44 @@ def test_partial_and_invalid_stage_telemetry_fails_conservatively(bad):
     k = load()
     assert k._agentic_peak_stage_usage(FIRST, bad) is None
     assert k._agentic_peak_stage_usage(FIRST) is None
-    t = k._PHASE4_EXECUTOR_REQUEST_CONTEXT.set(executor(k))
+    t = k._RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.set(executor(k))
     try:
         assert k._agentic_usage_for_pi(AGGREGATE, None) == AGGREGATE
     finally:
-        k._PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(t)
+        k._RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.reset(t)
 
 
 def test_spoofed_or_unbound_adapter_does_not_change_aggregate():
     k = load()
     peak = k._agentic_peak_stage_usage(FIRST, SECOND)
     assert k._agentic_usage_for_pi(AGGREGATE, peak) == AGGREGATE
-    token = k._PHASE4_EXECUTOR_REQUEST_CONTEXT.set(executor(k, adapter="other"))
+    token = k._RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.set(executor(k, adapter="other"))
     try:
         assert k._agentic_usage_for_pi(AGGREGATE, peak) == AGGREGATE
     finally:
-        k._PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
+        k._RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.reset(token)
 
 
 def test_pi_adapter_projects_conservative_single_stage_peak():
     k = load()
     peak = k._agentic_peak_stage_usage(FIRST, SECOND)
-    token = k._PHASE4_EXECUTOR_REQUEST_CONTEXT.set(executor(k))
+    token = k._RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.set(executor(k))
     try:
         projected = k._agentic_usage_for_pi(AGGREGATE, peak)
         assert projected == FIRST
         assert AGGREGATE == {"prompt_tokens": 66201, "completion_tokens": 6715, "total_tokens": 72916}
         assert FIRST == {"prompt_tokens": 32000, "completion_tokens": 5000, "total_tokens": 37000}
     finally:
-        k._PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
+        k._RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.reset(token)
 
 
 def test_projection_never_upgrades_non_agentic_mode():
     k = load(mode="off")
-    token = k._PHASE4_EXECUTOR_REQUEST_CONTEXT.set(executor(k))
+    token = k._RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.set(executor(k))
     try:
         assert k._agentic_usage_for_pi(AGGREGATE, FIRST) == AGGREGATE
     finally:
-        k._PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
+        k._RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.reset(token)
 
 
 async def run_nonstream(k, context):
@@ -177,8 +177,8 @@ def test_real_streaming_agentic_transaction_usage_event(adapter, expected):
 def test_candidate_exceeding_aggregate_fails_closed():
     k = load()
     impossible = {"prompt_tokens": 85000, "completion_tokens": 200, "total_tokens": 85200}
-    token = k._PHASE4_EXECUTOR_REQUEST_CONTEXT.set(executor(k))
+    token = k._RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.set(executor(k))
     try:
         assert k._agentic_usage_for_pi(AGGREGATE, impossible) == AGGREGATE
     finally:
-        k._PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
+        k._RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.reset(token)

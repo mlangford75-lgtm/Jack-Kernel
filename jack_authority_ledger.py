@@ -151,7 +151,7 @@ class ProjectionStatus:
 
 
 _ACTIVE_LEDGER: contextvars.ContextVar[Optional["AuthorityLedger"]] = contextvars.ContextVar(
-    "jack_phase6_active_ledger",
+    "jack_authority_active_ledger",
     default=None,
 )
 _FILTER_HOOK_LOCK = threading.Lock()
@@ -563,7 +563,7 @@ class AuthorityLedger:
             return
         self._writer = threading.Thread(
             target=self._writer_loop,
-            name=f"jack-phase6-ledger-{_safe_component(self.ledger_instance_id, 'instance')[:24]}",
+            name=f"jack-authority-ledger-{_safe_component(self.ledger_instance_id, 'instance')[:24]}",
             daemon=True,
         )
         self._writer.start()
@@ -851,14 +851,14 @@ def _install_reserved_filter_hook() -> None:
     global _FILTER_HOOK_LOCK
     with _FILTER_HOOK_LOCK:
         current = guard.ReservedEvidenceMarkerFilter
-        if getattr(current, "_jack_phase6_ledger_filter", False):
+        if getattr(current, "_jack_authority_ledger_filter", False):
             return
 
         original = current
 
         class LedgerAwareReservedEvidenceMarkerFilter(original):
-            _jack_phase6_ledger_filter = True
-            _jack_phase6_original_filter = original
+            _jack_authority_ledger_filter = True
+            _jack_authority_original_filter = original
 
             @classmethod
             def _classify_candidate(cls, fragment: str, *, final: bool) -> Tuple[str, int]:
@@ -884,7 +884,7 @@ def _install_evidence_release_hooks(jk: Any, ledger: AuthorityLedger) -> None:
     if not callable(current_run) or not callable(current_stream):
         raise RuntimeError("Jack KERNEL release seams are unavailable for Authority & Security Ledger evidence integration")
 
-    if not getattr(current_run, "_jack_phase6_authority_ledger", False):
+    if not getattr(current_run, "_jack_authority_authority_ledger", False):
         original_run = current_run
 
         @wraps(original_run)
@@ -896,11 +896,11 @@ def _install_evidence_release_hooks(jk: Any, ledger: AuthorityLedger) -> None:
                     _record_canary_failsoft(ledger, exc.match)
                     raise
 
-        ledger_run._jack_phase6_authority_ledger = True
-        ledger_run._jack_phase6_original = original_run
+        ledger_run._jack_authority_authority_ledger = True
+        ledger_run._jack_authority_original = original_run
         kernel.run = ledger_run
 
-    if not getattr(current_stream, "_jack_phase6_authority_ledger", False):
+    if not getattr(current_stream, "_jack_authority_authority_ledger", False):
         original_stream = current_stream
 
         @wraps(original_stream)
@@ -918,8 +918,8 @@ def _install_evidence_release_hooks(jk: Any, ledger: AuthorityLedger) -> None:
                     if callable(close):
                         await close()
 
-        ledger_stream._jack_phase6_authority_ledger = True
-        ledger_stream._jack_phase6_original = original_stream
+        ledger_stream._jack_authority_authority_ledger = True
+        ledger_stream._jack_authority_original = original_stream
         kernel.stream = ledger_stream
 
 

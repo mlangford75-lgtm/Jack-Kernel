@@ -184,13 +184,13 @@ def call(path):
 
 safe = call(r"D:\Projects\Jack\result.txt")
 outside = call(r"D:\Outside\result.txt")
-allowed, errors = jk._phase4_partition_structured_tool_calls([safe])
+allowed, errors = jk._restricted_path_partition_structured_tool_calls([safe])
 assert len(allowed) == 1 and not errors
-allowed, errors = jk._phase4_partition_structured_tool_calls([outside])
+allowed, errors = jk._restricted_path_partition_structured_tool_calls([outside])
 assert not allowed and errors
 
 payload = {
-    "protocol_version": jk.PHASE4_EXECUTOR_ADMISSION_PROTOCOL_VERSION,
+    "protocol_version": jk.RESTRICTED_PATH_EXECUTOR_ADMISSION_PROTOCOL_VERSION,
     "runtime_id": jk.RUNTIME_ID, "lane_id": jk.LANE_ID,
     "tool_call_id": "candidate", "tool_name": "write",
     "arguments": {"path": r"D:\Outside\result.txt", "content": "safe"},
@@ -200,22 +200,22 @@ payload = {
 # Removing the optional holder would bypass the legacy partition's None branch.
 jk._RUNTIME_PATH_POLICY = None
 try:
-    jk._phase4_partition_structured_tool_calls([outside])
+    jk._restricted_path_partition_structured_tool_calls([outside])
 except PolicyIntegrityCompromised:
     pass
 else:
     raise AssertionError("policy loss must terminate tool release, not request model repair")
 try:
-    jk._phase4_executor_admission_decision(payload)
+    jk._restricted_path_executor_admission_decision(payload)
 except jk.HTTPException as exc:
     assert exc.status_code == 503
     assert exc.detail == "AUTHORITY_POLICY_INTEGRITY_COMPROMISED"
 else:
     raise AssertionError("executor admission did not reject missing policy")
-assert jk._phase4_partition_structured_tool_calls([]) == ([], [])
+assert jk._restricted_path_partition_structured_tool_calls([]) == ([], [])
 jk._RUNTIME_PATH_POLICY = original
 try:
-    jk._phase4_partition_structured_tool_calls([safe])
+    jk._restricted_path_partition_structured_tool_calls([safe])
 except PolicyIntegrityCompromised:
     pass
 else:
@@ -332,18 +332,18 @@ install(jk)
 call = {"id": "candidate", "type": "function", "function": {
     "name": "write", "arguments": json.dumps({
         "path": r"D:\Projects\Jack\safe.txt", "content": "safe"})}}
-allowed, errors = jk._phase4_partition_structured_tool_calls([call])
+allowed, errors = jk._restricted_path_partition_structured_tool_calls([call])
 assert allowed and not errors
 resource._RESOURCE_POLICIES.pop(key)
 try:
-    jk._phase4_partition_structured_tool_calls([call])
+    jk._restricted_path_partition_structured_tool_calls([call])
 except PolicyIntegrityCompromised:
     pass
 else:
     raise AssertionError("missing credential resource binding was accepted")
 resource._RESOURCE_POLICIES[key] = policy
 try:
-    jk._phase4_partition_structured_tool_calls([call])
+    jk._restricted_path_partition_structured_tool_calls([call])
 except PolicyIntegrityCompromised:
     pass
 else:

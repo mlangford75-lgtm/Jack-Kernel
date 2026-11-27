@@ -83,7 +83,7 @@ kernel._proxy_pi_control_request = leaking_proxy
 kernel._install_bundled_runtime_extensions()
 
 ledger = kernel._JACK_AUTHORITY_LEDGER
-assert kernel._JACK_PHASE7_LEDGER_INSTALLED is True
+assert kernel._JACK_CREDENTIAL_LEDGER_INSTALLED is True
 
 
 async def exercise():

@@ -297,7 +297,7 @@ async def _stream(
                         if fn.get("name"): acc["function"]["name"] += str(fn["name"])
                         if fn.get("arguments"): acc["function"]["arguments"] += str(fn["arguments"])
     except Exception as exc:
-        # Preserve Phase-7's canonical, already-sanitized credential interrupt
+        # Preserve Credential Isolation's canonical, already-sanitized credential interrupt
         # markers. Never forward arbitrary exception text or dictionary values.
         security = public_security_failure(exc)
         code = security[1] if security is not None else "jack_responses_stream_error"
@@ -413,7 +413,7 @@ def _install_caller_system_contract_compat(jk: Any) -> None:
         caller_contract = caller_system if isinstance(caller_system, str) else str(caller_system or "")
         # Agentic retrospective is Jack-governed, even if a caller directly
         # invokes the system-prompt composer. Backend dispatch also enforces
-        # isolation against the Phase-3E synthetic Stage-1 cache profile.
+        # isolation against the historical cache-append synthetic Stage-1 cache profile.
         if getattr(jk, "AGENTIC_MODE", False) and profile.name == "Agentic native pass 2":
             caller_contract = ""
         if not caller_contract:
@@ -442,7 +442,7 @@ def register(jk: Any) -> None:
         # Reuse the existing public authority filter; Responses parameters cannot
         # override Jack's model, reasoning, sampling, limits, or stage topology.
         chat = jk.sanitize_agent_request(chat)
-        executor_context = jk._phase4_executor_context_from_request(request)
+        executor_context = jk._restricted_path_executor_context_from_request(request)
         if body.get("stream"):
             response_stream = (
                 _stream(jk, chat, kinds)

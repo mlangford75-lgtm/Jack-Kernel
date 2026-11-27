@@ -45,7 +45,7 @@ def _runtime_host(authority, *, run=None, stream=None, executor=None, proxy=None
             run=run or default_run,
             stream=stream or default_stream,
         ),
-        _phase4_executor_admission_decision=executor or default_executor,
+        _restricted_path_executor_admission_decision=executor or default_executor,
         _proxy_pi_control_request=proxy or default_proxy,
         APP=None,
         JSONResponse=None,
@@ -157,7 +157,7 @@ def test_executor_and_mutating_orchestration_are_blocked_but_read_only_status_su
     assert authority.verify_now().state is source_guard.SourceAuthorityState.INVALIDATED
 
     with pytest.raises(source_guard.SourceAuthorityInvalidated):
-        jk._phase4_executor_admission_decision({})
+        jk._restricted_path_executor_admission_decision({})
     assert "executor" not in calls
 
     status = asyncio.run(jk._proxy_pi_control_request(None, "GET", "/v1/status"))
@@ -208,14 +208,14 @@ def test_tool_release_is_withdrawn_after_invalidation(tmp_path):
         calls.append(("tool-release", calls_in))
         return calls_in, []
 
-    jk._phase4_partition_structured_tool_calls = tool_release
+    jk._restricted_path_partition_structured_tool_calls = tool_release
     source_guard.activate_runtime_enforcement(jk, authority, start_periodic=False)
 
     target.write_bytes(b"changed")
     assert authority.verify_now().state is source_guard.SourceAuthorityState.INVALIDATED
 
     with pytest.raises(source_guard.SourceAuthorityInvalidated):
-        jk._phase4_partition_structured_tool_calls([{"id": "call-1"}])
+        jk._restricted_path_partition_structured_tool_calls([{"id": "call-1"}])
 
     assert calls == []
 
@@ -270,14 +270,14 @@ def test_runtime_enforcement_activation_is_idempotent_and_does_not_rewrap_seams(
     source_guard.activate_runtime_enforcement(jk, authority, start_periodic=False)
     run = jk.KERNEL.run
     stream = jk.KERNEL.stream
-    executor = jk._phase4_executor_admission_decision
+    executor = jk._restricted_path_executor_admission_decision
     proxy = jk._proxy_pi_control_request
 
     source_guard.activate_runtime_enforcement(jk, authority, start_periodic=False)
 
     assert jk.KERNEL.run is run
     assert jk.KERNEL.stream is stream
-    assert jk._phase4_executor_admission_decision is executor
+    assert jk._restricted_path_executor_admission_decision is executor
     assert jk._proxy_pi_control_request is proxy
 
 
@@ -294,25 +294,25 @@ authority = source_guard.install(
 )
 source_guard.activate_runtime_enforcement(kernel, authority, start_periodic=False)
 
-assert getattr(kernel.KERNEL.run, "_jack_phase8_source_authority", False)
-assert getattr(kernel.KERNEL.stream, "_jack_phase8_source_authority", False)
-assert getattr(kernel._phase4_partition_structured_tool_calls, "_jack_phase8_source_authority", False)
-assert getattr(kernel._phase4_executor_admission_decision, "_jack_phase8_source_authority", False)
-assert getattr(kernel._proxy_pi_control_request, "_jack_phase8_source_authority", False)
+assert getattr(kernel.KERNEL.run, "_jack_source_drift_source_authority", False)
+assert getattr(kernel.KERNEL.stream, "_jack_source_drift_source_authority", False)
+assert getattr(kernel._restricted_path_partition_structured_tool_calls, "_jack_source_drift_source_authority", False)
+assert getattr(kernel._restricted_path_executor_admission_decision, "_jack_source_drift_source_authority", False)
+assert getattr(kernel._proxy_pi_control_request, "_jack_source_drift_source_authority", False)
 for name in (
     "_debugging_write_open_intake_report",
     "_debugging_freeze_intake",
     "_debugging_atomic_replace_report",
 ):
-    assert getattr(getattr(kernel, name), "_jack_phase8_source_authority", False), name
+    assert getattr(getattr(kernel, name), "_jack_source_drift_source_authority", False), name
 for name in (
     "_debugging_commit_pass_summary",
     "_debugging_commit_final_report",
 ):
-    assert not getattr(getattr(kernel, name), "_jack_phase8_source_authority", False), name
+    assert not getattr(getattr(kernel, name), "_jack_source_drift_source_authority", False), name
 
 # Worker event publication remains predecessor-owned observation/settlement truth.
-assert not getattr(type(kernel.ORCHESTRATION_EVENTS)._publish, "_jack_phase8_source_authority", False)
+assert not getattr(type(kernel.ORCHESTRATION_EVENTS)._publish, "_jack_source_drift_source_authority", False)
 assert kernel._JACK_SOURCE_RUNTIME_ENFORCEMENT_INSTALLED is True
 assert authority.state is source_guard.SourceAuthorityState.ACTIVE
 kernel._JACK_AUTHORITY_LEDGER.close()

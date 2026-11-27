@@ -250,7 +250,7 @@ def _install_http_exception_guard(jk: Any, policy: Any) -> bool:
     http_exception_type = getattr(jk, "HTTPException", None)
     if app is None or http_exception_type is None:
         return False
-    if getattr(app, "_jack_phase7_diagnostic_http_guard", False):
+    if getattr(app, "_jack_credential_diagnostic_http_guard", False):
         return True
 
     import json
@@ -328,7 +328,7 @@ def _install_http_exception_guard(jk: Any, policy: Any) -> bool:
         )
 
     app.add_exception_handler(RequestValidationError, guarded_validation)
-    app._jack_phase7_diagnostic_http_guard = True
+    app._jack_credential_diagnostic_http_guard = True
     return True
 
 
@@ -338,7 +338,7 @@ def _install_stream_exception_guard(jk: Any, policy: Any) -> bool:
     original_stream = getattr(kernel, "stream", None) if kernel is not None else None
     if not callable(original_stream) or http_exception_type is None:
         return False
-    if getattr(original_stream, "_jack_phase7_diagnostic_stream_guard", False):
+    if getattr(original_stream, "_jack_credential_diagnostic_stream_guard", False):
         return True
 
     async def guarded_stream(*args: Any, **kwargs: Any):
@@ -376,8 +376,8 @@ def _install_stream_exception_guard(jk: Any, policy: Any) -> bool:
             if callable(close):
                 await close()
 
-    guarded_stream._jack_phase7_diagnostic_stream_guard = True
-    guarded_stream._jack_phase7_original_stream = original_stream
+    guarded_stream._jack_credential_diagnostic_stream_guard = True
+    guarded_stream._jack_credential_original_stream = original_stream
     kernel.stream = guarded_stream
     return True
 
@@ -387,8 +387,8 @@ def _install_log_guard(jk: Any, policy: Any) -> bool:
     if not isinstance(logger, logging.Logger):
         return False
 
-    existing = getattr(logger, "_jack_phase7_diagnostic_log_filter", None)
-    if getattr(logger, "_jack_phase7_diagnostic_log_guard", False):
+    existing = getattr(logger, "_jack_credential_diagnostic_log_filter", None)
+    if getattr(logger, "_jack_credential_diagnostic_log_guard", False):
         if not isinstance(existing, _CredentialDiagnosticLogFilter):
             raise RuntimeError("installed diagnostic log guard state is invalid")
         existing.add_policy(policy)
@@ -396,8 +396,8 @@ def _install_log_guard(jk: Any, policy: Any) -> bool:
 
     filt = _CredentialDiagnosticLogFilter(policy)
     logger.addFilter(filt)
-    logger._jack_phase7_diagnostic_log_filter = filt
-    logger._jack_phase7_diagnostic_log_guard = True
+    logger._jack_credential_diagnostic_log_filter = filt
+    logger._jack_credential_diagnostic_log_guard = True
     return True
 
 
@@ -408,7 +408,7 @@ def _install_internal_state_guard(jk: Any, policy: Any) -> bool:
     original_setattr = getattr(hub_type, "__setattr__", None)
     if not callable(original_setattr):
         return False
-    if getattr(original_setattr, "_jack_phase7_diagnostic_state_guard", False):
+    if getattr(original_setattr, "_jack_credential_diagnostic_state_guard", False):
         return True
 
     def guarded_setattr(self: Any, name: str, value: Any) -> None:
@@ -423,8 +423,8 @@ def _install_internal_state_guard(jk: Any, policy: Any) -> bool:
                 value = DIAGNOSTIC_STATE_MESSAGE
         original_setattr(self, name, value)
 
-    guarded_setattr._jack_phase7_diagnostic_state_guard = True
-    guarded_setattr._jack_phase7_original_setattr = original_setattr
+    guarded_setattr._jack_credential_diagnostic_state_guard = True
+    guarded_setattr._jack_credential_original_setattr = original_setattr
     hub_type.__setattr__ = guarded_setattr
 
     instance = getattr(jk, "ORCHESTRATION_EVENTS", None)

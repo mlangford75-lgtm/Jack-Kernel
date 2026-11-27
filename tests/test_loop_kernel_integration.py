@@ -152,7 +152,7 @@ def test_cancelled_resumed_checkpoint_is_retired(monkeypatch, tmp_path):
         kernel._pending_authority.transition(state, in_flight=True)
         scope = {"stage1_frozen": False, "bridge_messages": [], "pending_state": state}
         token = k._AGENTIC_DELAY_R2_SCOPE.set(scope)
-        await kernel._agentic_phase3g_close_scope(token)
+        await kernel._agentic_delayed_reasoning_close_scope(token)
         assert "tool-interrupted" not in kernel._pending_tool_resumes
     asyncio.run(go())
 
@@ -341,11 +341,11 @@ def test_outer_release_failure_retires_only_owned_checkpoint(monkeypatch, tmp_pa
         # ContextVar inheritance is not ownership. A child/queued task must
         # not be allowed to mark a different task's suspended checkpoint.
         async def other_task():
-            kernel._note_outer_stream_failure(k.Phase4RestrictedPathInterrupt())
+            kernel._note_outer_stream_failure(k.RestrictedPathInterrupt())
         await asyncio.create_task(other_task())
         assert k._REQUEST_RESUME_OWNER.get().get("outer_failure") is None
 
-        kernel._note_outer_stream_failure(k.Phase4RestrictedPathInterrupt())
+        kernel._note_outer_stream_failure(k.RestrictedPathInterrupt())
         await stream.aclose()
         assert "owned" not in kernel._pending_tool_resumes
         assert kernel._pending_tool_resumes["unrelated"] is unrelated

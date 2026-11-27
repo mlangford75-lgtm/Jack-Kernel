@@ -311,7 +311,7 @@ def test_streamed_never_target_hard_interrupts_before_any_tool_release():
             packets.append(packet)
 
     try:
-        with pytest.raises(kernel.Phase4RestrictedPathInterrupt):
+        with pytest.raises(kernel.RestrictedPathInterrupt):
             asyncio.run(run())
     finally:
         kernel._RUNTIME_PATH_POLICY = original
@@ -338,7 +338,7 @@ def test_streamed_command_arguments_are_not_emitted_as_reasoning_side_channel():
     )
     jack = kernel.JackQwenKernel(backend, kernel.CFG)
 
-    executor_context = kernel.Phase4ExecutorRequestContext(
+    executor_context = kernel.RestrictedPathExecutorRequestContext(
         protocol_version=1,
         runtime_id=kernel.RUNTIME_ID,
         lane_id=kernel.LANE_ID,
@@ -346,11 +346,11 @@ def test_streamed_command_arguments_are_not_emitted_as_reasoning_side_channel():
         platform="win32",
         adapter="test",
     )
-    token = kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.set(executor_context)
+    token = kernel._RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.set(executor_context)
     try:
         packets = asyncio.run(collect_stage(jack))
     finally:
-        kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
+        kernel._RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.reset(token)
 
     visible_reasoning = "".join(
         str(packet.get("text") or "")

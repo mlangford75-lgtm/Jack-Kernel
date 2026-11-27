@@ -1,4 +1,4 @@
-"""Experimental Phase 10C Canary integrity at actual Kernel output release."""
+"""Experimental Policy Integrity Canary integrity at actual Kernel output release."""
 from functools import wraps
 import types
 
@@ -34,7 +34,7 @@ def install(jk):
     """Compose before executable sealing; candidate not yet wired into startup."""
     if getattr(jk, "_JACK_RUNTIME_CODE_AUTHORITY", None) is not None:
         raise PolicyIntegrityUnavailable("Canary gate must precede executable seal")
-    if getattr(jk, "_JACK_PHASE10_CANARY_AUTHORITY", None) is not None:
+    if getattr(jk, "_JACK_CANARY_POLICY_AUTHORITY", None) is not None:
         raise PolicyIntegrityUnavailable("Canary gate already installed")
     run, stream = jk.KERNEL.run, jk.KERNEL.stream
     run_cells = policy_cells(run, RuntimeCanaryPolicy)
@@ -100,5 +100,5 @@ def install(jk):
 
     jk.KERNEL.run = guarded_run
     jk.KERNEL.stream = guarded_stream
-    jk._JACK_PHASE10_CANARY_AUTHORITY = guard
+    jk._JACK_CANARY_POLICY_AUTHORITY = guard
     return guard
