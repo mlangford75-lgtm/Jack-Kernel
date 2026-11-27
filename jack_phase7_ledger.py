@@ -73,7 +73,7 @@ def _bind_policy_ledger(policy: Any, ledger: authority_ledger.AuthorityLedger) -
     with _REGISTRY_LOCK:
         prior = _ledger_for_policy(policy)
         if prior is not None and prior is not ledger:
-            raise RuntimeError("Phase-7 credential policy cannot bind two ledgers")
+            raise RuntimeError("Credential Isolation and DLP credential policy cannot bind two ledgers")
         if prior is ledger:
             return
 
@@ -145,12 +145,12 @@ def _record_failsoft(
     except Exception as exc:
         try:
             ledger.freeze_authority(
-                f"Phase-7 ledger recording failure: {type(exc).__name__}"
+                f"Credential Isolation and DLP ledger recording failure: {type(exc).__name__}"
             )
         except Exception:
             pass
         LOG.exception(
-            "Phase-7 ledger recording failed; ledger advancement frozen without changing security disposition"
+            "Credential Isolation and DLP ledger recording failed; ledger advancement frozen without changing security disposition"
         )
         return False
 
@@ -167,9 +167,9 @@ def record_credential_match_failsoft(
     boundary_value = str(boundary or "")
     direction_value = str(direction or "")
     if boundary_value not in _CREDENTIAL_BOUNDARIES:
-        raise ValueError("unsupported Phase-7 credential boundary")
+        raise ValueError("unsupported Credential Isolation and DLP credential boundary")
     if direction_value not in _CREDENTIAL_DIRECTIONS:
-        raise ValueError("unsupported Phase-7 credential direction")
+        raise ValueError("unsupported Credential Isolation and DLP credential direction")
     payload = ProtectedCredentialMatchPayload(
         boundary=boundary_value,
         direction=direction_value,
@@ -294,12 +294,12 @@ def _install_kernel_exception_hooks(
 
     kernel = getattr(jk, "KERNEL", None)
     if kernel is None:
-        raise RuntimeError("Phase-7 ledger requires Jack KERNEL")
+        raise RuntimeError("Credential Isolation and DLP ledger requires Jack KERNEL")
 
     current_run = getattr(kernel, "run", None)
     current_stream = getattr(kernel, "stream", None)
     if not callable(current_run) or not callable(current_stream):
-        raise RuntimeError("Phase-7 ledger requires Kernel release seams")
+        raise RuntimeError("Credential Isolation and DLP ledger requires Kernel release seams")
 
     if not getattr(current_run, "_jack_phase7_authority_ledger", False):
         original_run = current_run
@@ -557,9 +557,9 @@ def install(
     if getattr(jk, "_JACK_PHASE7_LEDGER_INSTALLED", False):
         return
     if not isinstance(ledger, authority_ledger.AuthorityLedger):
-        raise TypeError("Phase-7 ledger extension requires AuthorityLedger")
+        raise TypeError("Credential Isolation and DLP ledger extension requires AuthorityLedger")
     if _identity(ledger) != _identity(credential_policy):
-        raise RuntimeError("Phase-7 ledger/credential policy ownership mismatch")
+        raise RuntimeError("Credential Isolation and DLP ledger/credential policy ownership mismatch")
 
     _bind_policy_ledger(credential_policy, ledger)
 

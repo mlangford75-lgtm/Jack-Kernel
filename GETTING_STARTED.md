@@ -176,8 +176,8 @@ Additional project regression tests remain under `tests/`.
 
 Historical Phase-6 validation evidence (not the current full-suite baseline):
 
-- Phase-5 targeted regression: **37/37 PASS**;
-- Phase-6 targeted regression: **18/18 PASS**;
+- Consequence Gate targeted regression: **37/37 PASS**;
+- Authority & Security Ledger targeted regression: **18/18 PASS**;
 - complete Python regression suite: **431/431 PASS**;
 - Pi harnesses: **7/7 PASS**;
 - runtime compilation: **PASS**.
@@ -263,7 +263,7 @@ Current static-policy constraints include schema version 1, a maximum of 128 pat
 
 A malformed non-DONE SSE `data:` frame is withheld and raises `StreamingIRQProtocolError`. This is ordinary protocol failure, not `HARD_INTERRUPT`; previously proven-safe held cognition is preserved.
 
-### 11.2 Restricted Paths + Workspace Lock — Phase 4
+### 11.2 Restricted Paths / Workspace Lock
 
 Path policy is supplied at startup through `JACK_PATH_POLICY_JSON`. Jack snapshots that configuration into immutable runtime/lane policy. Model output, caller content, tool results, retries, and later environment changes do not redefine the active policy.
 
@@ -303,19 +303,19 @@ $env:JACK_PATH_POLICY_JSON='{"version":1,"workspace_root":null,"never_paths":["D
 
 Set the environment value before starting the Jack runtime or lane. Restart the runtime to change active path policy.
 
-Phase 4 authorizes represented filesystem targets Jack can deterministically observe. It does not claim final-object or descriptor-level confinement across symlinks, junctions, reparse points, mounts, or hard-link relationships.
+Restricted Paths / Workspace Lock authorizes represented filesystem targets Jack can deterministically observe. It does not claim final-object or descriptor-level confinement across symlinks, junctions, reparse points, mounts, or hard-link relationships.
 
-### 11.3 Deterministic Consequence Gate — Phase 5
+### 11.3 Deterministic Consequence Gate
 
-Phase 5 is automatic Kernel-owned runtime behavior. It does not require a separate user configuration variable.
+Consequence Gate is automatic Kernel-owned runtime behavior. It does not require a separate user configuration variable.
 
 The Gate consumes typed facts produced by the subsystems that actually own them and selects a deterministic `SecurityOutcome` plus containment scope. It does not infer arbitrary shell/filesystem semantics and does not turn observability into authority.
 
 Its governing rule is minimum justified containment: deny or interrupt only the boundary required to preserve the violated invariant while preserving independently valid cognition and state.
 
-### 11.4 Authority & Security Ledger — Phase 6
+### 11.4 Authority & Security Ledger
 
-Phase 6 is also Kernel-owned runtime behavior. It adds a process-local Authority & Security Ledger for a deliberately closed set of established decisions/events:
+Authority & Security Ledger is also Kernel-owned runtime behavior. It adds a process-local Authority & Security Ledger for a deliberately closed set of established decisions/events:
 
 - represented-path decisions;
 - executor runtime/lane admission decisions;
@@ -324,7 +324,7 @@ Phase 6 is also Kernel-owned runtime behavior. It adds a process-local Authority
 
 The ledger does not become the source of those facts. It does not record Pi lifecycle in Phase 6, does not promote persisted historical state into new process authority, and does not turn durable forensic projection into active authority.
 
-For full Phase-6 semantics and validation evidence, read:
+For full Authority & Security Ledger semantics and validation evidence, read:
 
 - `docs/security/SECURITY_LAYER_PHASE6_VALIDATED_2026-10-02.md`
 - `Documentation/Security/GOVERNING_DOCUMENT_SECURITY_AMENDMENT_PHASE_6_2026-10-02.md`

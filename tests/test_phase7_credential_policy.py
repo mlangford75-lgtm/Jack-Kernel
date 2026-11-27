@@ -331,6 +331,6 @@ def test_extra_header_alias_keeps_existing_credential_identity():
     ({"X-Ordinary": "default"}, [""]),
 ])
 def test_extra_header_ambiguous_or_missing_designation_is_rejected(headers, names):
-    with pytest.raises(RuntimeError, match="Phase-7"):
+    with pytest.raises(RuntimeError, match="Credential Isolation and DLP"):
         guard.build_runtime_credential_policy(_jack(
             backend_extra_headers=headers, backend_secret_header_names=names))

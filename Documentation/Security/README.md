@@ -8,7 +8,7 @@ Start with [`../../CURRENT_SECURITY_STATUS.md`](../../CURRENT_SECURITY_STATUS.md
 
 Current checkpoint:
 
-- **Phase 8 — Active Source Authority / Source Drift Protection**
+- **Source Drift Protection**
 - validated tag: `security-layer-phase8-validated-2026-10-06`
 - annotated tag object: `20e35610444f409bbccd62a461e42e2dce06ac6a`
 - validated closure target: `cebe9fd75fe30a9c84a0af08d2105af448fc3d00`
@@ -44,7 +44,7 @@ The formal governing-amendment series currently preserved in this directory is:
 - [`GOVERNING_DOCUMENT_SECURITY_AMENDMENT_PHASE_5_2026-10-01.md`](GOVERNING_DOCUMENT_SECURITY_AMENDMENT_PHASE_5_2026-10-01.md)
 - [`GOVERNING_DOCUMENT_SECURITY_AMENDMENT_PHASE_6_2026-10-02.md`](GOVERNING_DOCUMENT_SECURITY_AMENDMENT_PHASE_6_2026-10-02.md)
 
-These amendments preserve the state and claims accepted at their respective phase boundaries. The formal amendment-file series stops at Phase 6; this does **not** mean later validated phases are absent or provisional. Current validated Phase-7 and Phase-8 implementation truth is recorded in `CURRENT_SECURITY_STATUS.md` and the exact validated closure records under `docs/security/`.
+These amendments preserve the state and claims accepted at their respective phase boundaries. The formal amendment-file series stops at Authority & Security Ledger; this does **not** mean later validated phases are absent or provisional. Current validated Credential Isolation and DLP and Source Drift Protection implementation truth is recorded in `CURRENT_SECURITY_STATUS.md` and the exact validated closure records under `docs/security/`.
 
 Older governing papers and amendments are not silently rewritten merely because later implementation exists.
 
@@ -58,11 +58,11 @@ The archive contains:
 - Phase 4 validated checkpoint
 - Phase 5 validated checkpoint
 - Phase 6 validated checkpoint / closure record
-- Phase 7 validated closure record
+- Credential Isolation and DLP validated closure record
 - Phase 8 validated frozen closure record
 - Phase 9A experimental research-closure record (not security validation)
 
-Current Phase-8 closure record:
+Current Source Drift Protection closure record:
 
 - [`../../docs/security/SECURITY_LAYER_PHASE8_VALIDATED_2026-10-06.md`](../../docs/security/SECURITY_LAYER_PHASE8_VALIDATED_2026-10-06.md)
 
@@ -75,21 +75,21 @@ The Phase-8 detailed closure record has been reconciled after independent annota
 Current security behavior must be interpreted cumulatively:
 
 - Phases 0–3 own the validated release-boundary security substrate and Canary behavior;
-- Phase 4 owns represented-path fact production and path-policy semantics;
-- Phase 5 owns deterministic consequence disposition;
-- Phase 6 owns the process-local authority/security chain and bounded forensic projection semantics;
-- Phase 7 adds closed known-credential authority, exact model ingress/egress DLP, orchestration and diagnostic release protection, exact credential-resource containment, and safe Phase-7 observations in the existing Phase-6 chain;
-- Phase 8 adds bounded active-runtime source authority: immutable protected-source baseline, exact bounded remeasurement, `ACTIVE` / `SUSPENDED_UNVERIFIED` / `INVALIDATED` lifecycle, preservation-aware runtime enforcement, fail-soft lifecycle observation, concurrency-safe forensic ordering, and adversarial anti-brittleness closure.
+- Restricted Paths / Workspace Lock owns represented-path fact production and path-policy semantics;
+- Consequence Gate owns deterministic consequence disposition;
+- Authority & Security Ledger owns the process-local authority/security chain and bounded forensic projection semantics;
+- Credential Isolation and DLP adds closed known-credential authority, exact model ingress/egress DLP, orchestration and diagnostic release protection, exact credential-resource containment, and safe Credential Isolation and DLP observations in the existing Authority & Security Ledger chain;
+- Source Drift Protection adds bounded active-runtime source authority: immutable protected-source baseline, exact bounded remeasurement, `ACTIVE` / `SUSPENDED_UNVERIFIED` / `INVALIDATED` lifecycle, preservation-aware runtime enforcement, fail-soft lifecycle observation, concurrency-safe forensic ordering, and adversarial anti-brittleness closure.
 
-Permanent Phase-8 preservation statement:
+Permanent Source Drift Protection preservation statement:
 
 > **Source-authority loss withdraws new Kernel-authoritative admission. It does not imply process death, blanket cancellation, invented worker failure, erasure of completed cognition, or loss of safe observation.**
 
-Permanent Phase-8 execution boundary:
+Permanent Source Drift Protection execution boundary:
 
-> **Phase 8 serializes Kernel-authoritative admission, not physical continuous-world execution after an admission already occurred.**
+> **Source Drift Protection serializes Kernel-authoritative admission, not physical continuous-world execution after an admission already occurred.**
 
-Permanent Phase-8 nonclaim:
+Permanent Source Drift Protection nonclaim:
 
 > **Phase 8 protects active-runtime source identity through bounded exact measurements. It does not provide continuous historical attestation, loaded-code/function-binding integrity, authority-state integrity, universal filesystem-object identity, or hostile in-process tamper resistance.**
 

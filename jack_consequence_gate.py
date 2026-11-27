@@ -148,7 +148,7 @@ def _enum_values(outcome_type: Any) -> Tuple[str, ...]:
 def _require_compatible_outcome_type(outcome_type: Any) -> None:
     if _enum_values(outcome_type) != _EXPECTED_OUTCOME_VALUES:
         raise RuntimeError(
-            "Jack Kernel SecurityOutcome vocabulary does not match Phase-5 contract"
+            "Jack Kernel SecurityOutcome vocabulary does not match Consequence Gate contract"
         )
 
 
@@ -228,7 +228,7 @@ def _decision_for_fact(fact: AuthorityFact, *, boundary: ConsequenceBoundary, ou
         if ok:
             return _single(fact, allow, ContainmentScope.NONE, False)
         raise UnmappedAuthorityFact(
-            "task/run/run_epoch mismatch has authoritative facts but no single Phase-5 severity may be invented until the exact existing boundary semantics are mapped"
+            "task/run/run_epoch mismatch has authoritative facts but no single Consequence Gate severity may be invented until the exact existing boundary semantics are mapped"
         )
 
     raise TypeError(f"Unsupported authority fact type: {type(fact).__name__}")
@@ -298,7 +298,7 @@ def _legacy_path_decision(decision: ConsequenceDecision, raw: path_policy.Repres
     try:
         legacy = path_policy.PathAuthorizationOutcome(decision.outcome.value)
     except ValueError as exc:
-        raise AssertionError("Phase-5 path decision cannot be represented by Phase-4 release machinery") from exc
+        raise AssertionError("Consequence Gate path decision cannot be represented by Restricted Paths / Workspace Lock release machinery") from exc
     reason = raw.reason
     if isinstance(
         decision.decisive_fact,

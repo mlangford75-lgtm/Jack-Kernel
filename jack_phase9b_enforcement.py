@@ -228,11 +228,11 @@ def install(jk: Any) -> RuntimeCodeAuthority:
     if getattr(jk, _PHASE9B_MARKER, False):
         if isinstance(existing, RuntimeCodeAuthority):
             return existing
-        raise RuntimeCodeIntegrityUnavailable("Phase 9B installation marker inconsistent")
+        raise RuntimeCodeIntegrityUnavailable("Runtime Code Integrity installation marker inconsistent")
     if not getattr(jk, "_JACK_SOURCE_RUNTIME_ENFORCEMENT_INSTALLED", False):
-        raise RuntimeCodeIntegrityUnavailable("Phase 9B requires active Phase 8")
+        raise RuntimeCodeIntegrityUnavailable("Runtime Code Integrity requires active Source Drift Protection")
     if getattr(jk.APP, "middleware_stack", None) is not None:
-        raise RuntimeCodeIntegrityUnavailable("Phase 9B must install before ASGI startup")
+        raise RuntimeCodeIntegrityUnavailable("Runtime Code Integrity must install before ASGI startup")
 
     import jack_consequence_gate as consequence
     import jack_evidence_guard as evidence

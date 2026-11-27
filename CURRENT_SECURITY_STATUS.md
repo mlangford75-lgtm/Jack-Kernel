@@ -24,7 +24,7 @@ Phase 8 is **VALIDATED / MERGED / DOCUMENTED / TAGGED / FROZEN**.
 
 **Phase 9A:** exploratory research closed 2026-10-14 (historical only).
 
-**Phase 9B:** mandatory selected runtime-code-integrity enforcement **implemented and target-qualified on 2026-11-25** in [PR #173](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/173); **not yet a complete production-security validation**. GitHub Actions [run 45606058846](https://github.com/mlangford75-lgtm/Jack-Kernel/actions/runs/45606058846) on candidate SHA `563d02f682a5213ea7962263477b717e30a152ff` completed **98 targeted Windows Python 3.14.6 tests** (54 Phase 9B primitive/enforcement, 3 real-Kernel subprocess, 1 mandatory secure-child startup, 1 live post-start adversarial HTTP, 39 unchanged Phase 8). The live attack swapped actual `KERNEL.run` and API-authentication callables in the already-running secured child; both attempted releases were denied before the unauthorized functions executed. A successful targeted run does not replace the full cross-mode regression suite.
+**Runtime Code Integrity:** mandatory selected runtime-code-integrity enforcement **implemented and target-qualified on 2026-11-25** in [PR #173](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/173); **not yet a complete production-security validation**. GitHub Actions [run 45606058846](https://github.com/mlangford75-lgtm/Jack-Kernel/actions/runs/45606058846) on candidate SHA `563d02f682a5213ea7962263477b717e30a152ff` completed **98 targeted Windows Python 3.14.6 tests** (54 Runtime Code Integrity primitive/enforcement, 3 real-Kernel subprocess, 1 mandatory secure-child startup, 1 live post-start adversarial HTTP, 39 unchanged Source Drift Protection). The live attack swapped actual `KERNEL.run` and API-authentication callables in the already-running secured child; both attempted releases were denied before the unauthorized functions executed. A successful targeted run does not replace the full cross-mode regression suite.
 
 **Merge status:** Merged 2026-11-25 via PR #173, without declaring Phase 9B a frozen full-security checkpoint. The exact pre-merge security target-qualified SHA is `563d02f682a5213ea7962263477b717e30a152ff` (98 targeted Windows tests). Main's merged implementation is `6565e08b2e4bd114725b8edea6987880498f3087`. Post-merge full CI must be evaluated independently.
 
@@ -36,9 +36,9 @@ Post-Phase-8 maintenance: PR #45 (Agentic tool-result provenance correction), PR
 
 **Phase-9A milestone:** annotated tag `security-layer-phase9a-research-closed-2026-10-14` points to documentation merge commit `5e909494eb354c45907bb15c9a621980f99b2263`. The tag marks **research closure only**, not Phase 9 security validation.
 
-## Phase-8 validation identity
+## Source Drift Protection validation identity
 
-Phase 8 was developed and closed through these exact repository identities:
+Source Drift Protection was developed and closed through these exact repository identities:
 
 - Phase-7 baseline `main`: `0168d60577deb62c93cc82607206395eab00edb8`
 - Phase-8B accepted head: `956bcad5c7ca8e66a9c5355af0c58538a7e18845`
@@ -65,10 +65,10 @@ Validation evidence:
 - Phase-8E CI #212: **PASS**
 - integrated implementation CI #216: **PASS**
 - closure-complete main CI #218: **PASS**
-- Phase-5 targeted regression: **38 passed**
-- Phase-6 targeted regression: **18 passed**
-- Phase-7 targeted regression: **34 passed**
-- Phase-8 targeted source-authority/preservation regression: **39 passed**
+- Consequence Gate targeted regression: **38 passed**
+- Authority & Security Ledger targeted regression: **18 passed**
+- Credential Isolation and DLP targeted regression: **34 passed**
+- Source Drift Protection targeted source-authority/preservation regression: **39 passed**
 - complete Python regression: **523 passed**
 - Pi harnesses: **7 / 7 PASS**
 - runtime compilation: **PASS**
@@ -101,7 +101,7 @@ Historical record:
 
 - `docs/security/SECURITY_LAYER_PHASE0_3_VALIDATED_2026-09-27.md`
 
-### Phase 4 — Restricted Paths + Workspace Lock
+### Restricted Paths / Workspace Lock
 
 Host-owned represented-path policy, deterministic NEVER-path enforcement, optional Workspace Lock, bounded recognized command authorization, consequence-release enforcement, executor admission, and minimum multi-call containment.
 
@@ -109,7 +109,7 @@ Historical record:
 
 - `docs/security/SECURITY_LAYER_PHASE4_VALIDATED_2026-09-30.md`
 
-### Phase 5 — Deterministic Consequence Gate
+### Deterministic Consequence Gate
 
 Consumes typed authoritative facts from the subsystems that actually own them and selects the narrowest deterministic disposition sufficient to preserve the violated invariant.
 
@@ -117,7 +117,7 @@ Historical record:
 
 - `docs/security/SECURITY_LAYER_PHASE5_VALIDATED_2026-10-01.md`
 
-### Phase 6 — Runtime-Scoped Authority & Security Ledger
+### Runtime-Scoped Authority & Security Ledger
 
 Process-local Authority & Security Ledger with canonical predecessor chaining, immutable committed projection, bounded fail-soft durability, restart isolation, and narrow ledger-authority freeze behavior. The ledger records selected established facts; it does not become the source of the authority it records.
 
@@ -125,7 +125,7 @@ Historical record:
 
 - `docs/security/SECURITY_LAYER_PHASE6_VALIDATED_2026-10-02.md`
 
-### Phase 7 — Credential Isolation and Integrated DLP
+### Credential Isolation and DLP
 
 Closed known-credential authority protecting exact registered values at validated model ingress, model egress, orchestration observer release, diagnostic release, credential-resource represented paths, and safe ledger observation boundaries.
 
@@ -133,9 +133,9 @@ Historical record:
 
 - `docs/security/SECURITY_LAYER_PHASE7_VALIDATED_2026-10-05.md`
 
-### Phase 8 — Active Source Authority / Source Drift Protection
+### Source Drift Protection
 
-Phase 8 establishes bounded exact source identity for the authority-bearing active runtime and withdraws new Kernel-authoritative admission if that source identity becomes unavailable or mismatched.
+Source Drift Protection establishes bounded exact source identity for the authority-bearing active runtime and withdraws new Kernel-authoritative admission if that source identity becomes unavailable or mismatched.
 
 Lifecycle:
 
@@ -146,7 +146,7 @@ SUSPENDED_UNVERIFIED -> ACTIVE      (exact re-verification)
 ACTIVE/SUSPENDED -> INVALIDATED     (confirmed mismatch; terminal)
 ```
 
-Validated Phase-8 authority includes:
+Validated Source Drift Protection authority includes:
 
 - immutable protected-source baseline before ACTIVE;
 - exact regular-file byte identity and canonical component identity;
@@ -156,7 +156,7 @@ Validated Phase-8 authority includes:
 - mutating orchestration admission enforcement;
 - selected Jack-owned durable-write enforcement;
 - concurrency-safe lifecycle facts and forensic ordering;
-- fail-soft Phase-6 ledger observation;
+- fail-soft Authority & Security Ledger ledger observation;
 - adversarial anti-brittleness/preservation closure.
 
 Permanent preservation statement:
@@ -165,7 +165,7 @@ Permanent preservation statement:
 
 Permanent execution boundary:
 
-> **Phase 8 serializes Kernel-authoritative admission, not physical continuous-world execution after an admission already occurred.**
+> **Source Drift Protection serializes Kernel-authoritative admission, not physical continuous-world execution after an admission already occurred.**
 
 Permanent forensic distinction:
 
@@ -177,7 +177,7 @@ process-local source-transition chronology for truthful forensic ordering
 transition_sequence
 != source authority
 != admission authority
-!= Phase-10 integrity protection
+!= Policy Integrity integrity protection
 
 ordering-buffer health
 != source-enforcement health
@@ -187,15 +187,15 @@ Authoritative closure record:
 
 - `docs/security/SECURITY_LAYER_PHASE8_VALIDATED_2026-10-06.md`
 
-## Phase 9B — Current selected loaded-code enforcement (2026-11-25)
+## Runtime Code Integrity — Current selected loaded-code enforcement (2026-11-25)
 
-**Design and implementation:** The secured `jack_secure_entrypoint.py --serve` process installs Phase 9B **unconditionally after Phase 8 activation**. An absent required P0 manifest or invalid seal prevents normal secured-child startup. There is **no runtime enable/disable toggle**. The model can propose outputs, but code identity is measured against a stable protected binding manifest before consequential request, tool, executor, Pi and HTTP-release boundaries.
+**Design and implementation:** The secured `jack_secure_entrypoint.py --serve` process installs Runtime Code Integrity **unconditionally after Source Drift Protection activation**. An absent required P0 manifest or invalid seal prevents normal secured-child startup. There is **no runtime enable/disable toggle**. The model can propose outputs, but code identity is measured against a stable protected binding manifest before consequential request, tool, executor, Pi and HTTP-release boundaries.
 
 Key files:
 
 - `jack_runtime_code_guard.py` — selected function/descriptor/receiver, code constants/nested-code/selected delegates, imported module and FastAPI route-table identity. It distinguishes confirmed mismatch from temporary measurement unavailability; confirmed compromise is terminal within the secured child.
-- `jack_phase9b_enforcement.py` — effective post-Phase-8 Kernel wrappers plus ASGI ingress and release interception for streaming and nonstreaming responses, selected executor paths and mutating Pi control.
-- `jack_secure_entrypoint.py` — mandatory Phase 9B installation in the actual secured serving child.
+- `jack_phase9b_enforcement.py` — effective post-Source Drift Protection Kernel wrappers plus ASGI ingress and release interception for streaming and nonstreaming responses, selected executor paths and mutating Pi control.
+- `jack_secure_entrypoint.py` — mandatory Runtime Code Integrity installation in the actual secured serving child.
 - `tests/test_phase9_live_security_http_tamper.py` — actual secured-child post-start code replacement and blocked HTTP consequence, with explicit checks that substituted functions never ran.
 
 **Containment is dependency driven, not unconditional survival or unconditional shutdown.** The shared verifier, API authentication, source-checking, represented-path and consequence-policy integrity are common security dependencies. New Pi tasks require model, executor and orchestration trust; independently verified cancellation can remain available without starting new work. Already-released safe SSE bytes are not erased, but later compromised streaming work is interrupted rather than deliberately drained.
@@ -204,10 +204,10 @@ Key files:
 
 Evidence:
 
-- [Phase 9B runtime authority map](docs/security/PHASE9B_A_CURRENT_RUNTIME_AUTHORITY_MAP_2026-11-25.md)
-- [Phase 9B code-identity qualification](docs/security/PHASE9B_B_EXPERIMENTAL_IDENTITY_QUALIFICATION_2026-11-25.md)
-- [Phase 9B enforcement qualification](docs/security/PHASE9B_C_EXPERIMENTAL_ENFORCEMENT_QUALIFICATION_2026-11-25.md)
-- [Phase 9B dependency and containment review](docs/security/PHASE9B_DEPENDENCY_CONTAINMENT_REVIEW_2026-11-25.md)
+- [Runtime Code Integrity runtime authority map](docs/security/PHASE9B_A_CURRENT_RUNTIME_AUTHORITY_MAP_2026-11-25.md)
+- [Runtime Code Integrity code-identity qualification](docs/security/PHASE9B_B_EXPERIMENTAL_IDENTITY_QUALIFICATION_2026-11-25.md)
+- [Runtime Code Integrity enforcement qualification](docs/security/PHASE9B_C_EXPERIMENTAL_ENFORCEMENT_QUALIFICATION_2026-11-25.md)
+- [Runtime Code Integrity dependency and containment review](docs/security/PHASE9B_DEPENDENCY_CONTAINMENT_REVIEW_2026-11-25.md)
 - [Windows attack and targeted validation run](https://github.com/mlangford75-lgtm/Jack-Kernel/actions/runs/45606058846)
 
 **Checkpoint classification:** Phase 8 is the last formally frozen/tagged full security validation. Phase 9B has passed its recorded targeted tests; **full closure and tagging are not claimed**.
@@ -218,7 +218,7 @@ The current security stack does **not** claim:
 
 - continuous historical source attestation;
 - proof that protected disk bytes were never transiently changed between bounded measurements;
-- universal loaded-code/function-binding integrity beyond the selected Phase 9B manifest;
+- universal loaded-code/function-binding integrity beyond the selected Runtime Code Integrity manifest;
 - proof that already imported Python objects correspond to current disk bytes;
 - authority-state integrity;
 - hostile in-process tamper resistance;
@@ -230,11 +230,11 @@ The current security stack does **not** claim:
 - encrypted-at-rest secret custody redesign;
 - distributed or cross-runtime consensus ledger/source authority;
 - proof that already admitted external consequences physically ceased after later invalidation;
-- comprehensive/independent Phase 9 Runtime Code Integrity attestation beyond the selected process-local implementation;
-- Phase 10 Authority State Integrity;
-- Phase 11 Privacy/Telemetry Hardening.
+- comprehensive/independent Runtime Code Integrity attestation beyond the selected process-local implementation;
+- Policy Integrity Authority State Integrity;
+- Diagnostic Privacy Privacy/Telemetry Hardening.
 
-Permanent Phase-8 nonclaim:
+Permanent Source Drift Protection nonclaim:
 
 > **Phase 8 protects active-runtime source identity through bounded exact measurements. It does not provide continuous historical attestation, loaded-code/function-binding integrity, authority-state integrity, universal filesystem-object identity, or hostile in-process tamper resistance.**
 

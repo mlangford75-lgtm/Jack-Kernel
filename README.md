@@ -121,8 +121,8 @@ Jack's host-authoritative boundary includes, where applicable:
 - deterministic security outcomes and consequence disposition;
 - represented-path policy;
 - the runtime-scoped Authority & Security Ledger;
-- deterministic authority over the closed Phase-7 known-credential set at validated ingress/release/resource boundaries;
-- bounded Phase-8 source authority over the immutable active-runtime protected component set, including suspension on measurement uncertainty and terminal invalidation on confirmed source mismatch.
+- deterministic authority over the closed Credential Isolation and DLP known-credential set at validated ingress/release/resource boundaries;
+- bounded Source Drift Protection source authority over the immutable active-runtime protected component set, including suspension on measurement uncertainty and terminal invalidation on confirmed source mismatch.
 
 Jack does not acquire authority merely because it can observe a value. Observability is not authority, evidence is not authority, a port is not identity, cancellation is not settlement, represented targets are not necessarily resolved host objects, and forensic chronology is not source authority.
 
@@ -141,23 +141,23 @@ See [`CURRENT_SECURITY_STATUS.md`](CURRENT_SECURITY_STATUS.md) for the exact cur
 The cumulative validated security controls are:
 
 - **Phases 0–3:** deterministic security outcomes, bounded StreamingIRQ pre-release quarantine, malformed-SSE release protection and Canary controls.
-- **Phase 4:** represented-path restrictions, optional Workspace Lock, tool-release and executor admission checks.
-- **Phase 5:** deterministic, proportionate consequence disposition.
-- **Phase 6:** process-local Authority & Security Ledger.
-- **Phase 7:** closed known-credential isolation and selected model/output/diagnostic DLP boundaries.
-- **Phase 8:** immutable protected-source baseline, bounded remeasurement, source-authority suspension/invalidation and preservation of otherwise safe work.
+- **Restricted Paths / Workspace Lock:** represented-path restrictions, optional Workspace Lock, tool-release and executor admission checks.
+- **Consequence Gate:** deterministic, proportionate consequence disposition.
+- **Authority & Security Ledger:** process-local Authority & Security Ledger.
+- **Credential Isolation and DLP:** closed known-credential isolation and selected model/output/diagnostic DLP boundaries.
+- **Source Drift Protection:** immutable protected-source baseline, bounded remeasurement, source-authority suspension/invalidation and preservation of otherwise safe work.
 
 **Phase 9A research closed without production enforcement.** The [Phase 9A research checkpoint](docs/security/SECURITY_LAYER_PHASE9A_RESEARCH_CHECKPOINT_2026-10-14.md) documents the live binding inventory, experiments, unresolved Phase 9A.4 identity differences, and the decision to defer Phase 9B. The annotated [Phase 9A research-closure tag](https://github.com/mlangford75-lgtm/Jack-Kernel/tree/security-layer-phase9a-research-closed-2026-10-14) identifies that **research milestone**, not a validated integrity guard.
 
-Post-Phase-8 merged maintenance:
+Post-Source Drift Protection merged maintenance:
 
 - [PR #45](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/45): historical tool-result replay in the Agentic (Preserve Thinking) lineage and pending stage-resume correction.
-- [PR #46](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/46): Responses API exception non-disclosure while retaining sanitized Phase-7 diagnostics.
+- [PR #46](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/46): Responses API exception non-disclosure while retaining sanitized Credential Isolation and DLP diagnostics.
 - [PR #47](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/47): Phase 9A research-closure record and live status reconciliation.
 
-The verified October 14 post-fix Windows clone at `ef613e46e70181f7fa8d054aabc3b5a744d8f704` passed **527 Python regression tests**. This is not Phase 9 security validation.
+The verified October 14 post-fix Windows clone at `ef613e46e70181f7fa8d054aabc3b5a744d8f704` passed **527 Python regression tests**. This is not Runtime Code Integrity security validation.
 
-**Still unimplemented/unvalidated:** Phase 9 loaded-code/function-binding enforcement, Phase 10 authority-state integrity and Phase 11 comprehensive telemetry/privacy hardening. Jack does not claim hostile in-process tamper resistance, universal OS sandboxing, or proof of external consequences.
+**Still unimplemented/unvalidated:** Runtime Code Integrity loaded-code/function-binding enforcement, Policy Integrity authority-state integrity and Diagnostic Privacy comprehensive telemetry/privacy hardening. Jack does not claim hostile in-process tamper resistance, universal OS sandboxing, or proof of external consequences.
 
 For authoritative current implementation claims, exclusions, and exact Phase 8 validation lineage, read [Current Security Status](CURRENT_SECURITY_STATUS.md). Preserve the dated prior-phase checkpoints in [the security archive](docs/security/README.md) as historical validation records.
 
