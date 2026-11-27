@@ -7737,7 +7737,8 @@ def _agentic_context_split_host_artifact(content: Any) -> Optional[Tuple[str, st
 
 
 def _agentic_context_measure_request(
-    messages: List[Dict[str, Any]], payload: Dict[str, Any], profile: "StageProfile"
+    messages: List[Dict[str, Any]], payload: Dict[str, Any], profile: "StageProfile",
+    *, projected_artifacts: Optional[Dict[int, str]] = None,
 ) -> Dict[str, Any]:
     """Account for final *model-facing* data, including active-turn traffic.
 
@@ -7784,7 +7785,19 @@ def _agentic_context_measure_request(
             out["tool_result_content_bytes"] += cb
         elif role == "assistant":
             host_pair = _agentic_context_split_host_artifact(content)
-            if host_pair is not None:
+            artifact = projected_artifacts.get(id(msg)) if projected_artifacts is not None else None
+            if artifact == "M":
+                out["memory_content_bytes"] += cb
+                next_assistant_is_answer = False
+            elif artifact == "A1":
+                out["frozen_answer_content_bytes"] += cb
+                next_assistant_is_answer = False
+            elif projected_artifacts is not None:
+                # Actual dispatch has a host-owned sidecar. Do not infer an
+                # authenticated M/A1 association from arbitrary model prose.
+                out["other_assistant_content_bytes"] += cb
+                next_assistant_is_answer = False
+            elif host_pair is not None:
                 memory, answer = host_pair
                 out["memory_content_bytes"] += _agentic_context_content_bytes(memory)
                 out["frozen_answer_content_bytes"] += _agentic_context_content_bytes(answer)
@@ -7835,13 +7848,19 @@ def _agentic_context_measure_request(
 
 
 def _agentic_context_report_request(
-    messages: List[Dict[str, Any]], payload: Dict[str, Any], profile: "StageProfile"
+    messages: List[Dict[str, Any]], payload: Dict[str, Any], profile: "StageProfile",
+    *, projected_artifacts: Optional[Dict[int, str]] = None,
 ) -> None:
     """Fail-open telemetry: never alter, reject, or copy backend request data."""
     if not (AGENTIC_MODE and AGENTIC_CONTEXT_ACCOUNTING_ENABLED):
         return
     try:
-        report = _agentic_context_measure_request(messages, payload, profile)
+        report = (
+            _agentic_context_measure_request(messages, payload, profile)
+            if projected_artifacts is None else
+            _agentic_context_measure_request(messages, payload, profile,
+                                            projected_artifacts=projected_artifacts)
+        )
         raw_budget = os.environ.get("JACK_AGENTIC_CONTEXT_REPORT_BUDGET_BYTES", "").strip()
         if raw_budget:
             try:
@@ -8789,7 +8808,8 @@ class OpenAICompatibleBackend:
 
 
     def _stage_messages_for_profile(
-        self, messages: List[Dict[str, Any]], profile: StageProfile
+        self, messages: List[Dict[str, Any]], profile: StageProfile,
+        *, projected_artifacts: Optional[Dict[int, str]] = None,
     ) -> List[Dict[str, Any]]:
         """Prepare a backend-safe request view with copy-on-write semantics.
 
@@ -9067,6 +9087,13 @@ class OpenAICompatibleBackend:
                         "memory_text": item["content"],
                     })
                     continue
+            if (projected_artifacts is not None and historical_kind in {"M", "A1"}
+                    and message.get("_jack_forensic_role") == historical_kind
+                    and message.get("_jack_forensic_turn_id")
+                    and item.get("role") == "assistant"):
+                # Identity of the emitted copy, never model-visible metadata.
+                # The prepared list holds this object through request reporting.
+                projected_artifacts[id(item)] = historical_kind
             prepared.append(item)
         if historical_data_entries:
             # Before the preceding conversation: never an assistant example,
@@ -9492,7 +9519,13 @@ class OpenAICompatibleBackend:
         model = await self.resolve_model()
         source_view = _agentic_stage2_test_history(messages, profile)
         reasoning_primary = AGENTIC_MODE and profile.name == "Agentic native pass 2"
-        prepared_messages = self._stage_messages_for_profile(source_view, profile)
+        projected_artifacts = {} if AGENTIC_MODE and AGENTIC_CONTEXT_ACCOUNTING_ENABLED else None
+        prepared_messages = (
+            self._stage_messages_for_profile(source_view, profile)
+            if projected_artifacts is None else
+            self._stage_messages_for_profile(source_view, profile,
+                                             projected_artifacts=projected_artifacts)
+        )
         # All Agentic profiles use the same source-only memory directive;
         # authenticated U/A1 stay in canonical history, never in Stage-2 wire.
         # No legacy summary mode or cache-append prompt substitution.
@@ -9598,7 +9631,8 @@ class OpenAICompatibleBackend:
                     LOG.info("Jack cache byte-prefix diagnostic: %s", json.dumps(cache_byte_diag, sort_keys=True))
             except Exception as exc:
                 LOG.warning("Jack cache byte-prefix diagnostic unavailable (nonblocking): %s", type(exc).__name__)
-        _agentic_context_report_request(stage_messages, payload, profile)
+        _agentic_context_report_request(stage_messages, payload, profile,
+                                        projected_artifacts=projected_artifacts)
         if DEEP_REASONING_MODE:
             from jack_tas_context_accounting import emit_tas_context_report
             emit_tas_context_report(stage_messages, payload, profile.name, LOG)
@@ -9694,7 +9728,13 @@ class OpenAICompatibleBackend:
         model = await self.resolve_model()
         source_view = _agentic_stage2_test_history(messages, profile)
         reasoning_primary = AGENTIC_MODE and profile.name == "Agentic native pass 2"
-        prepared_messages = self._stage_messages_for_profile(source_view, profile)
+        projected_artifacts = {} if AGENTIC_MODE and AGENTIC_CONTEXT_ACCOUNTING_ENABLED else None
+        prepared_messages = (
+            self._stage_messages_for_profile(source_view, profile)
+            if projected_artifacts is None else
+            self._stage_messages_for_profile(source_view, profile,
+                                             projected_artifacts=projected_artifacts)
+        )
         # All Agentic profiles use the same source-only memory directive;
         # authenticated U/A1 stay in canonical history, never in Stage-2 wire.
         # No legacy summary mode or cache-append prompt substitution.
@@ -9799,7 +9839,8 @@ class OpenAICompatibleBackend:
                     LOG.info("Jack cache byte-prefix diagnostic: %s", json.dumps(cache_byte_diag, sort_keys=True))
             except Exception as exc:
                 LOG.warning("Jack cache byte-prefix diagnostic unavailable (nonblocking): %s", type(exc).__name__)
-        _agentic_context_report_request(stage_messages, payload, profile)
+        _agentic_context_report_request(stage_messages, payload, profile,
+                                        projected_artifacts=projected_artifacts)
         if DEEP_REASONING_MODE:
             from jack_tas_context_accounting import emit_tas_context_report
             emit_tas_context_report(stage_messages, payload, profile.name, LOG)
