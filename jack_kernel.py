@@ -10989,32 +10989,6 @@ class JackQwenKernel:
             yield {"kind": "result", "data": fallback}
             return
 
-        if early_planner_denial is not None:
-            partial = {"role": "assistant", "content": "".join(content_parts)}
-            if reasoning_content_parts:
-                partial["reasoning_content"] = "".join(reasoning_content_parts)
-            if (_coder_planner_rejection_count(history) >= 2
-                    or _coder_planner_repeated_inspection_pending(history)):
-                fallback = _coder_planner_host_handoff_result(history, partial["content"])
-                yield {"kind": "content", "text": fallback["choices"][0]["message"]["content"]}
-                yield {"kind": "result", "data": fallback}
-                return
-            repair = _tool_recovery_check(
-                history, partial, [early_planner_denial],
-                stage_key, secondary_system, usage,
-            )
-            async with contextlib.aclosing(self._run_stage_streamed(
-                repair, secondary_system, stage_key, usage,
-                tools=tools, tool_choice=tool_choice,
-                append=append, same_stage_resume=True,
-                tool_validation_repair_depth=tool_validation_repair_depth + 1,
-                correction_loop_detector=detector,
-                loop_retry_depth=loop_retry_depth,
-            )) as retry_packets:
-                async for packet in retry_packets:
-                    yield packet
-            return
-
         message: Dict[str, Any] = {
             "role": "assistant",
             "content": "".join(content_parts),
