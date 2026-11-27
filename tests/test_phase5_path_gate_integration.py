@@ -296,3 +296,42 @@ def test_powershell_metadata_does_not_relax_path_policy(
         build(), call, executor_cwd=r"D:\Projects\Jack", command_dialect="powershell",
     )
     assert applied and decision.outcome is expected
+
+
+def test_malformed_ads_with_credential_authority_preserves_sibling(installed_path_gate, monkeypatch):
+    import jack_credential_resource_guard as resources
+
+    active = build()
+    key = (active.runtime_id, active.lane_id)
+    resource = resources.ProtectedCredentialResource(
+        resources.RESOURCE_JACK_CONFIG, r"d:\projects\jack\config.json")
+    monkeypatch.setitem(resources._RESOURCE_POLICIES, key,
+        resources.RuntimeCredentialResourcePolicy(*key, (resource,)))
+    malformed = r"D:\Projects\Jack\:stream"
+    assert resources.fact_for_canonical_target(active, active.normalize(malformed)) is None
+    assert path_policy.authorize_represented_path(active, malformed).outcome is path_policy.PathAuthorizationOutcome.DENY_AND_CONTINUE
+    assert resources.fact_for_canonical_target(active, r"d:\projects\jack\config.json:$data").protected
+    monkeypatch.setattr(kernel, "_RUNTIME_PATH_POLICY", active)
+    def call(ident, path):
+        return {"id": ident, "type": "function", "function": {
+            "name": "read", "arguments": json.dumps({"path": path})}}
+    allowed, errors = kernel._phase4_partition_structured_tool_calls([
+        call("bad", malformed), call("good", "good.txt")])
+    assert [item["id"] for item in allowed] == ["good"]
+    assert len(errors) == 1
+
+
+def test_unresolved_workspace_rewrite_routes_through_authority(installed_path_gate, monkeypatch):
+    active = build()
+    monkeypatch.setattr(kernel, "_RUNTIME_PATH_POLICY", active)
+    observations = []
+    monkeypatch.setattr(gate.authority_ledger, "record_represented_path_decision_failsoft",
+                        lambda **facts: observations.append(facts))
+    calls = [{"id": "bad", "type": "function", "function": {
+        "name": "read", "arguments": json.dumps({"path": r"%UNKNOWN_ENV%\x.txt"})}},
+        {"id": "good", "type": "function", "function": {
+        "name": "read", "arguments": json.dumps({"path": "good.txt"})}}]
+    allowed, errors = kernel._phase4_partition_structured_tool_calls(calls)
+    assert [item["id"] for item in allowed] == ["good"]
+    assert len(errors) == 1
+    assert len(observations) == 2 and not observations[0]["deterministic"]

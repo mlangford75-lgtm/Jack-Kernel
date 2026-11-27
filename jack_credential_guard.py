@@ -699,7 +699,7 @@ def _quarantine_orchestration_snapshots(policy, source_event):
             return [trim(item, textual) for item in node]
         if isinstance(node, dict):
             return {
-                key: (value if key == "delta" else trim(value, key in {
+                key: (value if key == "delta" and not textual else trim(value, textual or key in {
                     "content", "text", "thinking", "reasoning", "reasoning_content",
                     "partialJson", "arguments",
                 }))
@@ -864,7 +864,7 @@ def _install_orchestration_release_guard(
                 _clear_orchestration_stream_state(stream_state, source_event)
             elif event_type in {"agent_end", "agent_settled"}:
                 _clear_orchestration_stream_state(stream_state, source_event)
-            elif event_type == "message" or _orchestration_delta_fragments(source_event):
+            elif event_type in {"message", "tool_update"} or _orchestration_delta_fragments(source_event):
                 projected = _quarantine_orchestration_snapshots(policy, projected)
             await original_publish(self, event_type, projected)
             return

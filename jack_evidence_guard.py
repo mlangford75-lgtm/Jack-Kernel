@@ -105,6 +105,25 @@ def terminal_stream_failure(exc: Exception) -> bool:
     )
 
 
+def checkpoint_retiring_failure(exc: Exception) -> bool:
+    """Distinguish temporary measurement uncertainty from terminal authority loss.
+
+    Immediate stream release still uses terminal_stream_failure. A retained
+    checkpoint remains subject to the full existing admission checks.
+    """
+    from jack_policy_integrity import PolicyIntegrityUnavailable, PolicyIntegrityCompromised
+    from jack_runtime_code_guard import RuntimeCodeIntegrityUnavailable, RuntimeCodeIntegrityCompromised
+    from jack_source_drift_guard import SourceAuthorityUnavailable, SourceAuthorityInvalidated
+
+    if isinstance(exc, (PolicyIntegrityCompromised, RuntimeCodeIntegrityCompromised,
+                        SourceAuthorityInvalidated)):
+        return True
+    if isinstance(exc, (PolicyIntegrityUnavailable, RuntimeCodeIntegrityUnavailable,
+                        SourceAuthorityUnavailable)):
+        return False
+    return terminal_stream_failure(exc)
+
+
 def public_security_failure(exc: Exception) -> Optional[Tuple[int, str, str]]:
     """Map host-owned security failures to fixed, non-disclosing public outcomes.
 
@@ -1828,12 +1847,10 @@ async def _guarded_stream(
             )
 
     except Exception as exc:
-        if isinstance(exc, StreamingIRQProtocolError):
-            # Parsed text already admitted by Canary detection is distinct
-            # from raw detector carry. Preserve the former, not the latter.
-            for detector in (*canary_detectors.values(), *tool_canary_detectors.values()):
-                detector.flush()
-        elif terminal_stream_failure(exc):
+        # Abnormal termination cannot certify an incomplete Canary prefix.
+        for detector in (*canary_detectors.values(), *tool_canary_detectors.values()):
+            detector.flush()
+        if not isinstance(exc, StreamingIRQProtocolError) and terminal_stream_failure(exc):
             raise
         # Ordinary transport/stage failure is not itself a
         # security violation. Preserve deterministically safe

@@ -90,7 +90,7 @@ from jack_phase10_dynamic_authority import PendingAuthority, DynamicAuthorityUna
 from jack_cache_orchestrator import CacheDecision, CacheOrchestrator
 from jack_cache_prefix_diagnostics import CacheBytePrefixProbe
 from jack_stage1_cache_stability import Stage1CacheStabilizer
-from jack_evidence_guard import TOOL_RESUME_PROVENANCE_NOTE, terminal_stream_failure, public_security_failure
+from jack_evidence_guard import TOOL_RESUME_PROVENANCE_NOTE, checkpoint_retiring_failure, terminal_stream_failure, public_security_failure
 import os
 import shutil
 import socket
@@ -2051,6 +2051,15 @@ AGENTIC_CACHE_APPEND_EXPERIMENT = (
 AGENTIC_STAGE2_RETENTION_TEST = "isolate-retain"
 
 # Internal host bookkeeping still isolates Stage 2 and protects frozen A1.
+_EMPTY_STREAM_RECOVERY_NOTICE = (
+    "Jack protocol continuation: The prior backend generation produced "
+    "neither a final answer nor a structured executable tool call. "
+    "Continue the existing task from the completed tool results. "
+    "If a tool is needed, use its structured tool interface. "
+    "Do not repeat completed work."
+)
+
+
 def _agentic_stage2_test_history(
     messages: List[Dict[str, Any]], profile: "StageProfile"
 ) -> List[Dict[str, Any]]:
@@ -2080,9 +2089,24 @@ def _agentic_stage2_test_history(
     if frozen.get("role") != "assistant" or not _content_to_text(frozen.get("content")).strip():
         raise HTTPException(status_code=409, detail="Isolated Stage 2 missing exact frozen Stage-1 answer")
     recovery = view[frozen_index + 1:]
-    if len(recovery) % 2:
-        raise HTTPException(status_code=409, detail="Isolated Stage 2 has an invalid recovery suffix")
-    for idx in range(0, len(recovery), 2):
+    recovery_notices = []
+    protocol_seen = False
+    idx = 0
+    while idx < len(recovery):
+        item = recovery[idx]
+        if (
+            isinstance(item, dict)
+            and item.get("role") == "user"
+            and item.get("_jack_internal_protocol_recovery") is True
+            and item.get("content") == _EMPTY_STREAM_RECOVERY_NOTICE
+            and not protocol_seen
+        ):
+            protocol_seen = True
+            recovery_notices.append(dict(item))
+            idx += 1
+            continue
+        if idx + 1 >= len(recovery):
+            raise HTTPException(status_code=409, detail="Isolated Stage 2 has an invalid recovery suffix")
         checkpoint, notice = recovery[idx:idx + 2]
         if not (
             isinstance(checkpoint, dict)
@@ -2093,6 +2117,8 @@ def _agentic_stage2_test_history(
             and notice.get("_jack_internal_tool_validation_rejection") is True
         ):
             raise HTTPException(status_code=409, detail="Isolated Stage 2 has an invalid recovery suffix")
+        recovery_notices.append(dict(notice))
+        idx += 2
 
     # Model-facing Stage 2 = the authenticated U and the frozen A1 carrying all
     # native Stage-1 R1 in chronological order. Flatten the reasoning fragments
@@ -2167,12 +2193,8 @@ def _agentic_stage2_test_history(
         # Never put changing turn/attempt IDs in the model's Stage-2 prefix.
         # This is a request-view change only; canonical U/R1/A1 and ownership
         # checks above remain byte-exact for every backend and agent.
-        return [source_user, frozen_view] + [
-            dict(recovery[idx]) for idx in range(1, len(recovery), 2)
-        ]
-    return [source_user, frozen_view] + [
-        dict(recovery[idx]) for idx in range(1, len(recovery), 2)
-    ]
+        return [source_user, frozen_view] + recovery_notices
+    return [source_user, frozen_view] + recovery_notices
 
 
 # Phase-3G recovery: model-visible U/M/A forensic labels are OFF by default.
@@ -5316,14 +5338,10 @@ def _phase4_partition_structured_tool_calls(
         )
 
         if structured.applicable:
-            try:
-                candidate = jack_path_policy.rewrite_structured_tool_call_for_workspace_release(
-                    active_policy,
-                    call,
-                )
-            except jack_path_policy.RepresentedPathError:
-                errors.append(f"tool call {index}: workspace path could not be resolved")
-                continue
+            candidate = jack_path_policy.rewrite_structured_tool_call_for_workspace_release(
+                active_policy,
+                call,
+            )
             decision = jack_path_policy.authorize_structured_tool_call(
                 active_policy,
                 candidate,
@@ -6745,9 +6763,18 @@ def _ultra_project_review_request(
     genuine_users = sum(
         _jack_is_authentic_user_message(item) for item in source_view
     )
-    if sum(item.get("role") == "user" for item in source_view) != genuine_users:
+    retry_indices = [
+        i for i, item in enumerate(source_view)
+        if i > boundaries[0] and isinstance(item, dict)
+        and item.get("role") == "user"
+        and item.get("_jack_internal_protocol_recovery") is True
+        and item.get("content") == _EMPTY_STREAM_RECOVERY_NOTICE
+    ]
+    if len(retry_indices) > 1:
+        raise ForensicConflict("Ultra review has multiple protocol recovery notices")
+    if sum(item.get("role") == "user" for item in source_view) != genuine_users + len(retry_indices):
         raise ForensicConflict("Ultra review source contains an internal user-role message")
-    if sum(item.get("role") == "user" for item in stage_messages) != genuine_users:
+    if sum(item.get("role") == "user" for item in stage_messages) != genuine_users + len(retry_indices):
         raise ForensicConflict("Ultra review introduced a user-role message")
 
     def remove_exact(wire: Dict[str, Any]) -> None:
@@ -6758,11 +6785,15 @@ def _ultra_project_review_request(
 
     remove_exact(boundary_wire)
     remove_exact(user_wire)
+    for retry_index in retry_indices:
+        remove_exact(prepared_messages[retry_index])
     # Agentic's already-tested review pattern: authenticated U opens generation,
     # while the review instruction is owned by the deterministic system.
     stage_messages.append(user_wire)
     system_index = 1 if stage_messages and stage_messages[0].get("role") == "system" else 0
     stage_messages.insert(system_index, {"role": "system", "content": ULTRA_REVIEW_TRIGGER})
+    if retry_indices:
+        stage_messages.insert(system_index + 1, {"role": "system", "content": _EMPTY_STREAM_RECOVERY_NOTICE})
     if (stage_messages[-1] is not user_wire
             or any(item is boundary_wire for item in stage_messages)
             or sum(item.get("role") == "user" for item in stage_messages) != genuine_users):
@@ -11121,13 +11152,7 @@ class JackQwenKernel:
                 # as answers or executable calls.
                 history.append({
                     "role": "user",
-                    "content": (
-                        "Jack protocol continuation: The prior backend generation produced "
-                        "neither a final answer nor a structured executable tool call. "
-                        "Continue the existing task from the completed tool results. "
-                        "If a tool is needed, use its structured tool interface. "
-                        "Do not repeat completed work."
-                    ),
+                    "content": _EMPTY_STREAM_RECOVERY_NOTICE,
                     "_jack_internal_protocol_recovery": True,
                 })
                 async with contextlib.aclosing(self._run_stage_streamed(
@@ -13508,7 +13533,7 @@ class JackQwenKernel:
                 failure = owner.get("outer_failure") or failure
                 terminal = isinstance(failure, (
                     GenerationBudgetExceeded, ToolRecoveryExhausted,
-                )) or (isinstance(failure, Exception) and terminal_stream_failure(failure))
+                )) or (isinstance(failure, Exception) and checkpoint_retiring_failure(failure))
                 if terminal:
                     if isinstance(state, PendingToolResume):
                         await self._retire_pending_tool_resume(state)

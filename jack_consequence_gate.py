@@ -350,9 +350,9 @@ def _install_represented_path_gate(
             boundary=_CURRENT_CONSEQUENCE_BOUNDARY.get(),
         )
 
-        resource_fact = credential_resource_guard.fact_for_canonical_target(
-            policy,
-            raw.canonical_target,
+        resource_fact = (
+            credential_resource_guard.fact_for_canonical_target(policy, raw.canonical_target)
+            if raw.deterministic else None
         )
         if resource_fact is None or not resource_fact.protected:
             return _legacy_path_decision(path_decision, raw)

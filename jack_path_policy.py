@@ -2593,9 +2593,14 @@ def rewrite_structured_tool_call_for_workspace_release(
         if not isinstance(value, str) or not value.strip():
             continue
 
-        canonical = policy.normalize(value, base_root=policy.workspace_root)
-        arguments[field_name] = canonical
         saw_path = True
+        try:
+            canonical = policy.normalize(value, base_root=policy.workspace_root)
+        except RepresentedPathError:
+            # Preserve the original for authoritative path evaluation. Never
+            # replace an unresolved explicit target with a default directory.
+            continue
+        arguments[field_name] = canonical
 
     if not saw_path and contract.default_to_executor_cwd:
         arguments[contract.path_fields[0]] = policy.workspace_root

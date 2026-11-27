@@ -194,7 +194,13 @@ def fact_for_canonical_target(
         return None
 
     # Path authority and credential identity share the selected host semantics.
-    canonical = path_policy.object_path(canonical_target)
+    from jack_path_policy import RepresentedPathError
+    try:
+        canonical = path_policy.object_path(canonical_target)
+    except RepresentedPathError:
+        # No deterministic object identity; the path consequence remains
+        # authoritative. Do not invent an unprotected resource fact.
+        return None
     for resource in policy.resources:
         if canonical == resource.canonical_path:
             return CredentialResourceAuthorityFact(
