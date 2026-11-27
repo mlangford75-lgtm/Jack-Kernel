@@ -80,7 +80,7 @@ def make_endpoint(exception):
         KERNEL=Kernel(),
         enforce_kernel_auth=_no_auth,
         sanitize_agent_request=lambda chat: chat,
-        _restricted_path_executor_context_from_request=lambda _request: None,
+        _phase4_executor_context_from_request=lambda _request: None,
         build_stage_system_prompt=lambda caller_system, profile, messages=None: "stage",
         LOG=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
     )

@@ -39,7 +39,7 @@ class ContainmentScope(str, Enum):
 
 
 class UnmappedAuthorityFact(RuntimeError):
-    """An authoritative fact exists, but Consequence Gate has no justified mapping yet."""
+    """An authoritative fact exists, but Phase 5 has no justified mapping yet."""
 
 
 @dataclass(frozen=True)
@@ -55,9 +55,9 @@ class ToolSchemaFact:
 
 @dataclass(frozen=True)
 class ExecutorAdmissionIdentityFact:
-    """Live Consequence Gate identity facts currently integrated at executor admission.
+    """Live Phase-5 identity facts currently integrated at executor admission.
 
-    Exact pending tool-call correlation remains owned by the existing Restricted Paths / Workspace Lock
+    Exact pending tool-call correlation remains owned by the existing Phase-4
     admission mechanism until its raw-fact seam is centralized without changing
     validation order or blast radius.
     """
@@ -74,7 +74,7 @@ class SettlementFact:
 
 @dataclass(frozen=True)
 class ReservedEvidenceNamespaceFact:
-    """The one live evidence violation Consequence Gate can currently name precisely.
+    """The one live evidence violation Phase 5 can currently name precisely.
 
     Unknown provenance is intentionally not represented as a violation. This is
     not a generalized evidence-trust classifier.
@@ -85,7 +85,7 @@ class ReservedEvidenceNamespaceFact:
 
 @dataclass(frozen=True)
 class ApprovalFact:
-    """Policy contract only; Consequence Gate has no live approval-state producer."""
+    """Policy contract only; Phase 5 has no live approval-state producer."""
 
     approval_required: bool
     approval_valid: bool
@@ -124,7 +124,7 @@ _AUTHORITY_FACT_TYPES = (
 
 _CURRENT_CONSEQUENCE_BOUNDARY: contextvars.ContextVar[ConsequenceBoundary] = (
     contextvars.ContextVar(
-        "jack_consequence_boundary",
+        "jack_phase5_consequence_boundary",
         default=ConsequenceBoundary.TOOL_CALL,
     )
 )
@@ -148,7 +148,7 @@ def _enum_values(outcome_type: Any) -> Tuple[str, ...]:
 def _require_compatible_outcome_type(outcome_type: Any) -> None:
     if _enum_values(outcome_type) != _EXPECTED_OUTCOME_VALUES:
         raise RuntimeError(
-            "Jack Kernel SecurityOutcome vocabulary does not match Consequence Gate contract"
+            "Jack Kernel SecurityOutcome vocabulary does not match Phase-5 contract"
         )
 
 
@@ -228,7 +228,7 @@ def _decision_for_fact(fact: AuthorityFact, *, boundary: ConsequenceBoundary, ou
         if ok:
             return _single(fact, allow, ContainmentScope.NONE, False)
         raise UnmappedAuthorityFact(
-            "task/run/run_epoch mismatch has authoritative facts but no single Consequence Gate severity may be invented until the exact existing boundary semantics are mapped"
+            "task/run/run_epoch mismatch has authoritative facts but no single Phase-5 severity may be invented until the exact existing boundary semantics are mapped"
         )
 
     raise TypeError(f"Unsupported authority fact type: {type(fact).__name__}")
@@ -298,7 +298,7 @@ def _legacy_path_decision(decision: ConsequenceDecision, raw: path_policy.Repres
     try:
         legacy = path_policy.PathAuthorizationOutcome(decision.outcome.value)
     except ValueError as exc:
-        raise AssertionError("Consequence Gate path decision cannot be represented by Restricted Paths / Workspace Lock release machinery") from exc
+        raise AssertionError("Phase-5 path decision cannot be represented by Phase-4 release machinery") from exc
     reason = raw.reason
     if isinstance(
         decision.decisive_fact,
@@ -314,7 +314,7 @@ def _install_represented_path_gate(
     ledger: Optional[authority_ledger.AuthorityLedger] = None,
 ) -> None:
     original = path_policy.authorize_represented_path
-    if getattr(original, "_jack_consequence_consequence_gate", False):
+    if getattr(original, "_jack_phase5_consequence_gate", False):
         return
 
     @wraps(original)
@@ -334,8 +334,8 @@ def _install_represented_path_gate(
             verified_default_windows_read=verified_default_windows_read,
         )
 
-        # Preserve the meaning of the frozen Authority & Security Ledger path record: it continues to
-        # reflect only predecessor represented-path facts. Credential Isolation and DLP resource
+        # Preserve the meaning of the frozen Phase-6 path record: it continues to
+        # reflect only predecessor represented-path facts. Phase 7 resource
         # authority is evaluated and recorded separately below.
         path_decision = evaluator((raw,))
         authority_ledger.record_represented_path_decision_failsoft(
@@ -362,17 +362,17 @@ def _install_represented_path_gate(
             ledger is not None
             and final_decision.outcome.value == "DENY_AND_CONTINUE"
         ):
-            import jack_credential_ledger
+            import jack_phase7_ledger
 
-            jack_credential_ledger.record_resource_block_failsoft(
+            jack_phase7_ledger.record_resource_block_failsoft(
                 ledger,
                 resource_id=str(resource_fact.resource_id or ""),
                 containment_scope=final_decision.containment_scope.value,
             )
         return _legacy_path_decision(final_decision, raw)
 
-    governed._jack_consequence_consequence_gate = True
-    governed._jack_consequence_legacy_authorizer = original
+    governed._jack_phase5_consequence_gate = True
+    governed._jack_phase5_legacy_authorizer = original
     path_policy.authorize_represented_path = governed
 
 
@@ -399,13 +399,13 @@ def install(jk: Any) -> None:
             )
         ledger = authority_ledger.install(jk)
         if credential_policy is not None:
-            import jack_credential_ledger
+            import jack_phase7_ledger
 
             credential_resource_guard.install(
                 jk,
                 credential_policy=credential_policy,
             )
-            jack_credential_ledger.install(
+            jack_phase7_ledger.install(
                 jk,
                 ledger=ledger,
                 credential_policy=credential_policy,
@@ -430,7 +430,7 @@ def install(jk: Any) -> None:
 
     _install_represented_path_gate(evaluator, ledger=ledger)
 
-    original_partition = getattr(jk, "_restricted_path_partition_structured_tool_calls", None)
+    original_partition = getattr(jk, "_phase4_partition_structured_tool_calls", None)
     if callable(original_partition):
         @wraps(original_partition)
         def governed_partition(calls: Any) -> Any:
@@ -442,9 +442,9 @@ def install(jk: Any) -> None:
                     return original_partition(calls)
             finally:
                 _CURRENT_CONSEQUENCE_BOUNDARY.reset(token)
-        jk._restricted_path_partition_structured_tool_calls = governed_partition
+        jk._phase4_partition_structured_tool_calls = governed_partition
 
-    original_admission = getattr(jk, "_restricted_path_executor_admission_decision", None)
+    original_admission = getattr(jk, "_phase4_executor_admission_decision", None)
     if callable(original_admission):
         @wraps(original_admission)
         def governed_admission(payload: Any, *, expected_call: Optional[dict[str, Any]] = None) -> Any:
@@ -453,7 +453,7 @@ def install(jk: Any) -> None:
                 "tool_name", "arguments", "executor_cwd", "executor_platform",
                 "command_dialect",
             }
-            protocol_version = getattr(jk, "RESTRICTED_PATH_EXECUTOR_ADMISSION_PROTOCOL_VERSION", None)
+            protocol_version = getattr(jk, "PHASE4_EXECUTOR_ADMISSION_PROTOCOL_VERSION", None)
             if isinstance(payload, dict) and not (set(payload) - allowed_fields) and payload.get("protocol_version") == protocol_version:
                 runtime_matches = str(payload.get("runtime_id") or "").strip() == str(getattr(jk, "RUNTIME_ID", ""))
                 lane_matches = str(payload.get("lane_id") or "").strip() == str(getattr(jk, "LANE_ID", ""))
@@ -485,6 +485,6 @@ def install(jk: Any) -> None:
                     return original_admission(payload, expected_call=expected_call)
             finally:
                 _CURRENT_CONSEQUENCE_BOUNDARY.reset(token)
-        jk._restricted_path_executor_admission_decision = governed_admission
+        jk._phase4_executor_admission_decision = governed_admission
 
     jk._JACK_CONSEQUENCE_GATE_INSTALLED = True

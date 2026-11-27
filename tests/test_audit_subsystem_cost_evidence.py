@@ -92,7 +92,7 @@ def test_p4_long_cycle_scan_cost():
 def test_p4_closed_ledger_registry_retention(monkeypatch, tmp_path):
     import jack_authority_ledger as authority
     import jack_credential_guard as credential
-    import jack_credential_ledger as phase7
+    import jack_phase7_ledger as phase7
 
     # Independent registry and no process-global logging mutation in this
     # measurement. Exact production registration still executes.
@@ -179,7 +179,7 @@ def test_p4_live_owners_not_evicted_when_all_slots_are_live(monkeypatch, tmp_pat
 def test_p4_registry_weak_binding_preserves_live_identity(monkeypatch, tmp_path):
     import jack_authority_ledger as authority
     import jack_credential_guard as credential
-    import jack_credential_ledger as phase7
+    import jack_phase7_ledger as phase7
     monkeypatch.setattr(phase7, "_LEDGER_BY_POLICY_OBJECT", {})
     policy = credential.RuntimeCredentialPolicy(runtime_id="p4", lane_id="lane", credentials=())
     other = credential.RuntimeCredentialPolicy(runtime_id="p4", lane_id="lane", credentials=())

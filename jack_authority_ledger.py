@@ -19,7 +19,7 @@ from types import MappingProxyType
 from typing import Any, Dict, Iterator, Mapping, Optional, Tuple
 
 
-LOG = logging.getLogger("jack-kernel.authority-ledger")
+LOG = logging.getLogger("jack-kernel.phase6-ledger")
 
 LEDGER_SCHEMA = "jack.authority.security.ledger.v1"
 RECORD_VERSION = 1
@@ -64,7 +64,7 @@ class LedgerEventType(str, Enum):
 
 
 class LedgerAuthorityFrozen(RuntimeError):
-    """Authority & Security Ledger ledger advancement is frozen; underlying Jack authority is separate."""
+    """Phase-6 ledger advancement is frozen; underlying Jack authority is separate."""
 
 
 @dataclass(frozen=True)
@@ -151,7 +151,7 @@ class ProjectionStatus:
 
 
 _ACTIVE_LEDGER: contextvars.ContextVar[Optional["AuthorityLedger"]] = contextvars.ContextVar(
-    "jack_authority_active_ledger",
+    "jack_phase6_active_ledger",
     default=None,
 )
 _FILTER_HOOK_LOCK = threading.Lock()
@@ -233,13 +233,13 @@ def live_ledger_scope(ledger: "AuthorityLedger") -> Iterator[None]:
 
 
 class AuthorityLedger:
-    """One process-local authoritative Authority & Security Ledger chain plus fail-soft disk projection.
+    """One process-local authoritative Phase-6 chain plus fail-soft disk projection.
 
-    The in-memory head is the only active Authority & Security Ledger authority state. Durable files are
+    The in-memory head is the only active Phase-6 authority state. Durable files are
     forensic projections and are never promoted into active authority on restart.
 
     SHA-256 predecessor chaining proves internal chain consistency under this
-    Authority & Security Ledger trust model. It is not hostile in-process tamper resistance or
+    Phase-6 trust model. It is not hostile in-process tamper resistance or
     cryptographic authenticity against an actor able to rewrite records and the
     projected head. Later integrity phases own those stronger properties.
     """
@@ -260,7 +260,7 @@ class AuthorityLedger:
         if not self.lane_id:
             raise ValueError("lane_id must not be empty")
         if queue_capacity < 1 or queue_capacity > MAX_PROJECTION_QUEUE_CAPACITY:
-            raise ValueError("queue_capacity is outside Authority & Security Ledger bounds")
+            raise ValueError("queue_capacity is outside Phase-6 bounds")
 
         self.ledger_instance_id = str(ledger_instance_id or uuid.uuid4())
         self.projection_root = Path(projection_root)
@@ -532,7 +532,7 @@ class AuthorityLedger:
         safe_id = str(canary_id or "")
         tier_value = _enum_value(tier)
         if _SAFE_CANARY_ID.fullmatch(safe_id) is None:
-            raise ValueError("canary_id is not safe Authority & Security Ledger metadata")
+            raise ValueError("canary_id is not safe Phase-6 metadata")
         if tier_value not in _CANARY_TIERS:
             raise ValueError("unsupported Canary tier")
         payload = CanaryMatchPayload(canary_id=safe_id, tier=tier_value)
@@ -563,7 +563,7 @@ class AuthorityLedger:
             return
         self._writer = threading.Thread(
             target=self._writer_loop,
-            name=f"jack-authority-ledger-{_safe_component(self.ledger_instance_id, 'instance')[:24]}",
+            name=f"jack-phase6-ledger-{_safe_component(self.ledger_instance_id, 'instance')[:24]}",
             daemon=True,
         )
         self._writer.start()
@@ -652,7 +652,7 @@ class AuthorityLedger:
             self._atomic_write(target, projection.encoded)
         except Exception:
             self._mark_projection_lost(projection.sequence)
-            LOG.exception("Authority & Security Ledger authority-ledger record projection failed; Jack authority remains active")
+            LOG.exception("Phase-6 authority-ledger record projection failed; Jack authority remains active")
             # A record-file failure may still permit projection metadata to be
             # written. Attempt it so durable history can truthfully advertise
             # the known gap when the storage failure is partial rather than total.
@@ -696,7 +696,7 @@ class AuthorityLedger:
             with self._durability_lock:
                 self._projection_metadata_degraded = True
             LOG.exception(
-                "Authority & Security Ledger projection-head update failed; projected records remain forensic and active authority is unchanged"
+                "Phase-6 projection-head update failed; projected records remain forensic and active authority is unchanged"
             )
 
     def projection_status(self) -> ProjectionStatus:
@@ -760,13 +760,13 @@ class AuthorityLedger:
 
         if not drained or (writer is not None and writer.is_alive()):
             LOG.warning(
-                "Authority & Security Ledger authority-ledger shutdown did not finish within the "
+                "Phase-6 authority-ledger shutdown did not finish within the "
                 "projection drain budget; queued evidence may remain unprojected"
             )
 
 
 def _safe_record(ledger: AuthorityLedger, method_name: str, /, **kwargs: Any) -> bool:
-    """Keep Authority & Security Ledger failure contained to Authority & Security Ledger, never rewrite predecessor authority."""
+    """Keep Phase-6 failure contained to Phase 6, never rewrite predecessor authority."""
     try:
         method = getattr(ledger, method_name)
         method(**kwargs)
@@ -777,10 +777,10 @@ def _safe_record(ledger: AuthorityLedger, method_name: str, /, **kwargs: Any) ->
         # A ledger implementation failure freezes only further ledger advancement.
         # Existing Gate/evidence decisions remain authoritative and continue.
         try:
-            ledger.freeze_authority(f"Authority & Security Ledger ledger recording failure: {type(exc).__name__}")
+            ledger.freeze_authority(f"Phase-6 ledger recording failure: {type(exc).__name__}")
         except Exception:
             pass
-        LOG.exception("Authority & Security Ledger ledger recording failed; ledger advancement frozen without changing predecessor authority")
+        LOG.exception("Phase-6 ledger recording failed; ledger advancement frozen without changing predecessor authority")
         return False
 
 
@@ -851,14 +851,14 @@ def _install_reserved_filter_hook() -> None:
     global _FILTER_HOOK_LOCK
     with _FILTER_HOOK_LOCK:
         current = guard.ReservedEvidenceMarkerFilter
-        if getattr(current, "_jack_authority_ledger_filter", False):
+        if getattr(current, "_jack_phase6_ledger_filter", False):
             return
 
         original = current
 
         class LedgerAwareReservedEvidenceMarkerFilter(original):
-            _jack_authority_ledger_filter = True
-            _jack_authority_original_filter = original
+            _jack_phase6_ledger_filter = True
+            _jack_phase6_original_filter = original
 
             @classmethod
             def _classify_candidate(cls, fragment: str, *, final: bool) -> Tuple[str, int]:
@@ -877,14 +877,14 @@ def _install_evidence_release_hooks(jk: Any, ledger: AuthorityLedger) -> None:
 
     kernel = getattr(jk, "KERNEL", None)
     if kernel is None:
-        raise RuntimeError("Jack KERNEL instance is unavailable for Authority & Security Ledger evidence integration")
+        raise RuntimeError("Jack KERNEL instance is unavailable for Phase-6 evidence integration")
 
     current_run = getattr(kernel, "run", None)
     current_stream = getattr(kernel, "stream", None)
     if not callable(current_run) or not callable(current_stream):
-        raise RuntimeError("Jack KERNEL release seams are unavailable for Authority & Security Ledger evidence integration")
+        raise RuntimeError("Jack KERNEL release seams are unavailable for Phase-6 evidence integration")
 
-    if not getattr(current_run, "_jack_authority_authority_ledger", False):
+    if not getattr(current_run, "_jack_phase6_authority_ledger", False):
         original_run = current_run
 
         @wraps(original_run)
@@ -896,11 +896,11 @@ def _install_evidence_release_hooks(jk: Any, ledger: AuthorityLedger) -> None:
                     _record_canary_failsoft(ledger, exc.match)
                     raise
 
-        ledger_run._jack_authority_authority_ledger = True
-        ledger_run._jack_authority_original = original_run
+        ledger_run._jack_phase6_authority_ledger = True
+        ledger_run._jack_phase6_original = original_run
         kernel.run = ledger_run
 
-    if not getattr(current_stream, "_jack_authority_authority_ledger", False):
+    if not getattr(current_stream, "_jack_phase6_authority_ledger", False):
         original_stream = current_stream
 
         @wraps(original_stream)
@@ -918,29 +918,29 @@ def _install_evidence_release_hooks(jk: Any, ledger: AuthorityLedger) -> None:
                     if callable(close):
                         await close()
 
-        ledger_stream._jack_authority_authority_ledger = True
-        ledger_stream._jack_authority_original = original_stream
+        ledger_stream._jack_phase6_authority_ledger = True
+        ledger_stream._jack_phase6_original = original_stream
         kernel.stream = ledger_stream
 
 
 def install(jk: Any) -> AuthorityLedger:
-    """Install one process-local Authority & Security Ledger ledger through the Kernel-owned Gate seam."""
+    """Install one process-local Phase-6 ledger through the Kernel-owned Gate seam."""
     existing = getattr(jk, "_JACK_AUTHORITY_LEDGER", None)
     if getattr(jk, "_JACK_AUTHORITY_LEDGER_INSTALLED", False):
         if not isinstance(existing, AuthorityLedger):
-            raise RuntimeError("Authority & Security Ledger installation marker exists without an AuthorityLedger")
+            raise RuntimeError("Phase-6 installation marker exists without an AuthorityLedger")
         return existing
 
     runtime_id = str(getattr(jk, "RUNTIME_ID", "") or "").strip()
     lane_id = str(getattr(jk, "LANE_ID", "") or "").strip()
     if not runtime_id:
-        raise RuntimeError("Jack runtime identity is unavailable for Authority & Security Ledger ledger")
+        raise RuntimeError("Jack runtime identity is unavailable for Phase-6 ledger")
     if not lane_id:
-        raise RuntimeError("Jack lane identity is unavailable for Authority & Security Ledger ledger")
+        raise RuntimeError("Jack lane identity is unavailable for Phase-6 ledger")
 
     if not getattr(jk, "_JACK_EVIDENCE_PROVENANCE_GUARD_INSTALLED", False):
         raise RuntimeError(
-            "Authority & Security Ledger ledger requires the predecessor evidence/Canary guard to be installed first"
+            "Phase-6 ledger requires the predecessor evidence/Canary guard to be installed first"
         )
 
     ledger = AuthorityLedger(

@@ -287,7 +287,7 @@ def test_audit_m9_recovery_checkpoint_survives_stage_return(
             yield {"choices": [{"delta": {}, "finish_reason": finish}]}
 
     k.KERNEL.backend = Backend()
-    monkeypatch.setattr(k, "_restricted_path_partition_structured_tool_calls",
+    monkeypatch.setattr(k, "_phase4_partition_structured_tool_calls",
                         lambda calls: (calls, []))
 
     async def run():

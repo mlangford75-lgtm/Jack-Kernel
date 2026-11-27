@@ -1,4 +1,4 @@
-"""Runtime Code Integrity selected executable-identity primitive.
+"""Phase 9B experimental selected executable-identity primitive.
 
 No security authority is conferred until a separately validated runtime installer
 binds checks to real admission/release paths. This module does not claim hostile
@@ -186,7 +186,7 @@ def _function_shape(fn: types.FunctionType, code_memo: dict | None = None) -> by
             # Function keyword-default assignments are executable inputs: a
             # scalar-only change can change behavior with identical bytecode.
             # Ordinary mutable state dictionaries captured in closures/defaults
-            # are *not* treated as immutable policy (Policy Integrity owns that).
+            # are *not* treated as immutable policy (Phase 10 owns that).
             update_atom(b"dict-object", str(id(obj)).encode("ascii"))
             if keyword_defaults:
                 update_atom(b"kwdefaults-size", str(len(obj)).encode("ascii"))
@@ -400,9 +400,9 @@ class RuntimeCodeAuthority:
             self._holders.append(_HolderIdentity(name, owner, attribute, original, scope))
 
     def register_source(self, *, name: str, path: Path, scope: str = "shared") -> None:
-        """Seal exact source bytes for runtime code modules absent from the source drift manifest.
+        """Seal exact source bytes for new Phase 9 modules absent from Phase 8.
 
-        Reuse Source Drift Protection's already validated regular-file identity measurement
+        Reuse Phase 8's already validated regular-file identity measurement
         without changing its historical required-source manifest.
         """
         if not isinstance(name, str) or not name or not isinstance(scope, str) or not scope:

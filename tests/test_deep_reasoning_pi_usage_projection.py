@@ -47,7 +47,7 @@ class Kernel:
 
 def configured(adapter="pi"):
     kernel = Kernel()
-    ns = SimpleNamespace(_restricted_path_current_executor_context=lambda: SimpleNamespace(adapter=adapter) if adapter else None)
+    ns = SimpleNamespace(_phase4_current_executor_context=lambda: SimpleNamespace(adapter=adapter) if adapter else None)
     install_deep_reasoning_usage(kernel, ns)
     return kernel
 

@@ -70,8 +70,8 @@ def test_secure_composition_and_explicit_test_escape(monkeypatch, tmp_path, caps
     monkeypatch.setattr(module, "_JACK_SOURCE_RUNTIME_ENFORCEMENT_INSTALLED", True, raising=False)
     for name in (
         "_JACK_SOURCE_AUTHORITY", "_JACK_RUNTIME_CODE_AUTHORITY",
-        "_JACK_PATH_POLICY_AUTHORITY", "_JACK_CANARY_POLICY_AUTHORITY",
-        "_JACK_CREDENTIAL_POLICY_AUTHORITY", "_JACK_DIAGNOSTIC_PRIVACY",
+        "_JACK_PHASE10_PATH_AUTHORITY", "_JACK_PHASE10_CANARY_AUTHORITY",
+        "_JACK_PHASE10_CREDENTIAL_AUTHORITY", "_JACK_DIAGNOSTIC_PRIVACY",
     ):
         monkeypatch.setattr(module, name, object(), raising=False)
     module.main()

@@ -83,7 +83,7 @@ def install_deep_reasoning(kernel: Any, namespace: Any) -> None:
     """Attach the scoped TAS driver to one initialized Kernel instance.
 
     Namespace supplies the existing Jack classes/functions. No security wrapper
-    or Restricted Paths tool admission function is replaced.
+    or Phase-4 tool admission function is replaced.
     """
     if not namespace.DEEP_REASONING_MODE:
         return
@@ -122,7 +122,7 @@ def install_deep_reasoning(kernel: Any, namespace: Any) -> None:
             }]
         }
         # The calls were produced by the Kernel's _run_stage, which already ran
-        # tool/schema and Restricted Paths authorization before the host is asked to execute.
+        # tool/schema and Phase-4 authorization before the host is asked to execute.
         released = await kernel._register_stage_tool_resume(
             stage_key=stage_key,
             history=[{k:v for k,v in m.items() if k not in {"reasoning_content", "reasoning", "thinking"}}
@@ -294,7 +294,7 @@ def install_deep_reasoning(kernel: Any, namespace: Any) -> None:
                 )
             else:
                 # Reuse Jack's streaming stage engine and its existing tool
-                # validation, Restricted Paths authorization, and release checkpoint.
+                # validation, Phase-4 authorization, and release checkpoint.
                 # Stage text is provisional OBSERVATION over reasoning_content,
                 # never final-answer authority or executable tool fragments.
                 sink.offer("reasoning", "\n[" + stage.upper() + "]\n")
@@ -494,4 +494,4 @@ def install_deep_reasoning(kernel: Any, namespace: Any) -> None:
     install_deep_reasoning_usage(kernel, namespace)
 
     kernel._deep_reasoning_pi_stream = pi_stream
-    kernel._deep_reasoning_nonstream_enabled = True
+    kernel._deep_reasoning_phase3_nonstream_enabled = True

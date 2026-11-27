@@ -90,12 +90,12 @@ _RESOURCE_POLICIES: dict[tuple[str, str], RuntimeCredentialResourcePolicy] = {}
 def _canonical_resource_path(value: Any) -> str:
     text = str(value or "").strip().replace("/", "\\")
     if not text:
-        raise RuntimeError("Credential Isolation and DLP credential resource path is empty")
+        raise RuntimeError("Phase-7 credential resource path is empty")
     canonical = ntpath.normcase(ntpath.normpath(text))
     drive, tail = ntpath.splitdrive(canonical)
     if not drive or not (tail.startswith("\\") or drive.startswith("\\\\")):
         raise RuntimeError(
-            "Credential Isolation and DLP credential resource path is not an absolute Windows path"
+            "Phase-7 credential resource path is not an absolute Windows path"
         )
     return canonical
 
@@ -110,7 +110,7 @@ def _resource_id_for_path(canonical: str) -> str:
         return RESOURCE_JACK_CURRENT_CONFIG
     if lowered.endswith(r"\.pi\agent\jack-kernel.json"):
         return RESOURCE_PI_CONFIG
-    raise RuntimeError("Credential Isolation and DLP encountered an unknown protected credential resource")
+    raise RuntimeError("Phase-7 encountered an unknown protected credential resource")
 
 
 def build_runtime_credential_resource_policy(
@@ -143,21 +143,21 @@ def install(
     existing = getattr(jk, "_JACK_CREDENTIAL_RESOURCE_POLICY", None)
     if getattr(jk, "_JACK_CREDENTIAL_RESOURCE_GUARD_INSTALLED", False):
         if not isinstance(existing, RuntimeCredentialResourcePolicy):
-            raise RuntimeError("Credential Isolation and DLP credential resource policy state is invalid")
+            raise RuntimeError("Phase-7 credential resource policy state is invalid")
         return existing
 
     policy = build_runtime_credential_resource_policy(credential_policy)
     runtime_id = str(getattr(jk, "RUNTIME_ID", "") or "").strip()
     lane_id = str(getattr(jk, "LANE_ID", "") or "").strip()
     if policy.runtime_id != runtime_id or policy.lane_id != lane_id:
-        raise RuntimeError("Credential Isolation and DLP credential resource ownership mismatch")
+        raise RuntimeError("Phase-7 credential resource ownership mismatch")
 
     key = (policy.runtime_id, policy.lane_id)
     with _REGISTRY_LOCK:
         prior = _RESOURCE_POLICIES.get(key)
         if prior is not None and prior != policy:
             raise RuntimeError(
-                "Credential Isolation and DLP credential resource identity cannot be rebound to a different policy"
+                "Phase-7 credential resource identity cannot be rebound to a different policy"
             )
         _RESOURCE_POLICIES[key] = policy
 
@@ -176,7 +176,7 @@ def fact_for_canonical_target(
     path_policy: Any,
     canonical_target: Optional[str],
 ) -> Optional[CredentialResourceAuthorityFact]:
-    """Return a Credential Isolation and DLP fact only when this runtime has resource authority installed."""
+    """Return a Phase-7 fact only when this runtime has resource authority installed."""
 
     if not isinstance(canonical_target, str) or not canonical_target:
         return None

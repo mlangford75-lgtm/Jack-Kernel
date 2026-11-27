@@ -174,15 +174,15 @@ py -3 -m pytest -q tests\test_surgical_regressions.py
 
 Additional project regression tests remain under `tests/`.
 
-Historical Authority & Security Ledger validation evidence (not the current full-suite baseline):
+Historical Phase-6 validation evidence (not the current full-suite baseline):
 
-- Consequence Gate targeted regression: **37/37 PASS**;
-- Authority & Security Ledger targeted regression: **18/18 PASS**;
+- Phase-5 targeted regression: **37/37 PASS**;
+- Phase-6 targeted regression: **18/18 PASS**;
 - complete Python regression suite: **431/431 PASS**;
 - Pi harnesses: **7/7 PASS**;
 - runtime compilation: **PASS**.
 
-See `CURRENT_SECURITY_STATUS.md` for exact checkpoint identities. The post-PR #46 clean Windows baseline passed **527 Python tests**; that is a later regression result, not a new Source Drift Protection validation tag.
+See `CURRENT_SECURITY_STATUS.md` for exact checkpoint identities. The post-PR #46 clean Windows baseline passed **527 Python tests**; that is a later regression result, not a new Phase 8 validation tag.
 
 ## 10. Multi-endpoint runtime lanes
 
@@ -243,7 +243,7 @@ The gauge uses **backend-reported request usage**, when supplied, and the loaded
 
 ## 11. Current security configuration
 
-The latest validated, frozen security checkpoint is **Source Drift Protection**. The operational controls below describe earlier configuration cumulatively; later phases do not erase earlier configuration. runtime-code research produced experimental research only, with no loaded-code integrity enforcement. For current status see `CURRENT_SECURITY_STATUS.md`.
+The latest validated, frozen security checkpoint is **Phase 8**. The operational controls below describe earlier configuration cumulatively; later phases do not erase earlier configuration. Phase 9A produced experimental research only, with no loaded-code integrity enforcement. For current status see `CURRENT_SECURITY_STATUS.md`.
 
 For exact current claims, checkpoint identities, validation results, and nonclaims, read:
 
@@ -263,7 +263,7 @@ Current static-policy constraints include schema version 1, a maximum of 128 pat
 
 A malformed non-DONE SSE `data:` frame is withheld and raises `StreamingIRQProtocolError`. This is ordinary protocol failure, not `HARD_INTERRUPT`; previously proven-safe held cognition is preserved.
 
-### 11.2 Restricted Paths / Workspace Lock
+### 11.2 Restricted Paths + Workspace Lock — Phase 4
 
 Path policy is supplied at startup through `JACK_PATH_POLICY_JSON`. Jack snapshots that configuration into immutable runtime/lane policy. Model output, caller content, tool results, retries, and later environment changes do not redefine the active policy.
 
@@ -303,28 +303,28 @@ $env:JACK_PATH_POLICY_JSON='{"version":1,"workspace_root":null,"never_paths":["D
 
 Set the environment value before starting the Jack runtime or lane. Restart the runtime to change active path policy.
 
-Restricted Paths / Workspace Lock authorizes represented filesystem targets Jack can deterministically observe. It does not claim final-object or descriptor-level confinement across symlinks, junctions, reparse points, mounts, or hard-link relationships.
+Phase 4 authorizes represented filesystem targets Jack can deterministically observe. It does not claim final-object or descriptor-level confinement across symlinks, junctions, reparse points, mounts, or hard-link relationships.
 
-### 11.3 Deterministic Consequence Gate
+### 11.3 Deterministic Consequence Gate — Phase 5
 
-Consequence Gate is automatic Kernel-owned runtime behavior. It does not require a separate user configuration variable.
+Phase 5 is automatic Kernel-owned runtime behavior. It does not require a separate user configuration variable.
 
 The Gate consumes typed facts produced by the subsystems that actually own them and selects a deterministic `SecurityOutcome` plus containment scope. It does not infer arbitrary shell/filesystem semantics and does not turn observability into authority.
 
 Its governing rule is minimum justified containment: deny or interrupt only the boundary required to preserve the violated invariant while preserving independently valid cognition and state.
 
-### 11.4 Authority & Security Ledger
+### 11.4 Authority & Security Ledger — Phase 6
 
-Authority & Security Ledger is also Kernel-owned runtime behavior. It adds a process-local Authority & Security Ledger for a deliberately closed set of established decisions/events:
+Phase 6 is also Kernel-owned runtime behavior. It adds a process-local Authority & Security Ledger for a deliberately closed set of established decisions/events:
 
 - represented-path decisions;
 - executor runtime/lane admission decisions;
 - exact Canary matches;
 - exact reserved-evidence-namespace blocks.
 
-The ledger does not become the source of those facts. It does not record Pi lifecycle in Authority & Security Ledger, does not promote persisted historical state into new process authority, and does not turn durable forensic projection into active authority.
+The ledger does not become the source of those facts. It does not record Pi lifecycle in Phase 6, does not promote persisted historical state into new process authority, and does not turn durable forensic projection into active authority.
 
-For full Authority & Security Ledger semantics and validation evidence, read:
+For full Phase-6 semantics and validation evidence, read:
 
 - `docs/security/SECURITY_LAYER_PHASE6_VALIDATED_2026-10-02.md`
 - `Documentation/Security/GOVERNING_DOCUMENT_SECURITY_AMENDMENT_PHASE_6_2026-10-02.md`
@@ -347,6 +347,6 @@ Historical evidence:
 
 - `Documentation/Historical-Build-Record/` — dated demonstrations, superseded root checkpoint summaries, and build evidence.
 - `Documentation/Orchestration/Historical/` — orchestration acceptance history.
-- `docs/security/` — detailed immutable security checkpoint checkpoint records.
+- `docs/security/` — detailed immutable security phase checkpoint records.
 
 Historical statements remain preserved as evidence of what was true at their checkpoint. They must not be substituted for current-state documentation when determining present behavior.

@@ -24,8 +24,8 @@ For a new user, read in this order:
 ## Local Agentic (Preserve Thinking)
 
 - **Current runtime:** see the [root README](../README.md#local-agentic-preserve-thinking--current-runtime-contract) for the source-only, tools-off retrospective, authenticated history, current profile selectors and tool-free Coder Architect contract.
-- **Historical implementation:** [`October 21 operating contract`](Agentic/AGENTIC_PRESERVE_THINKING_2026-10-21.md) preserves the earlier one-hop bridge and cache-append experiment cache-append design; these are not current runtime guarantees.
-- **Local cache-append experiment test checkpoint:** [`October 22 three-turn cache and memory findings`](Agentic/LOCAL_AGENTIC_PHASE3E_CHECKPOINT_2026-10-22.md) — observed cache reuse with no demonstrated functional regression in the tested workload; not a controlled A/B speedup.
+- **Historical implementation:** [`October 21 operating contract`](Agentic/AGENTIC_PRESERVE_THINKING_2026-10-21.md) preserves the earlier one-hop bridge and Phase 3E cache-append design; these are not current runtime guarantees.
+- **Local Phase 3E test checkpoint:** [`October 22 three-turn cache and memory findings`](Agentic/LOCAL_AGENTIC_PHASE3E_CHECKPOINT_2026-10-22.md) — observed cache reuse with no demonstrated functional regression in the tested workload; not a controlled A/B speedup.
 - **Historical precursor:** [`October 15 retrospective-memory release candidate`](Agentic/AGENTIC_RETROSPECTIVE_MEMORY_RELEASE_2026-10-15.md) — retained for design provenance only; its unmerged status is superseded by [PR #57](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/57). Prior DOCX descriptions of the XML-based predecessor are dated references, not the current mode.
 
 ## Deep Reasoning
@@ -46,7 +46,7 @@ For a new user, read in this order:
 - cumulative governing amendments for Phases 0–6 remain in [`Security/`](Security/).
 - exact detailed phase checkpoints remain under [`../docs/security/`](../docs/security/).
 
-See [Current Security Status](../CURRENT_SECURITY_STATUS.md) for the current validated security lineage. [runtime-code research closed without enforcement](../docs/security/SECURITY_LAYER_PHASE9A_RESEARCH_CHECKPOINT_2026-10-14.md) is a dated checkpoint, not a statement of the current enforcement boundary. The [independent audit register](Independent_Audit_Remediation_Register.md) records experimental remediation and qualification, not a merged release guarantee.
+See [Current Security Status](../CURRENT_SECURITY_STATUS.md) for the current validated security lineage. [Phase 9A research closed without enforcement](../docs/security/SECURITY_LAYER_PHASE9A_RESEARCH_CHECKPOINT_2026-10-14.md) is a dated checkpoint, not a statement of the current enforcement boundary. The [independent audit register](Independent_Audit_Remediation_Register.md) records experimental remediation and qualification, not a merged release guarantee.
 
 ## Historical Build Record
 

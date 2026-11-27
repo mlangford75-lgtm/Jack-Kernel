@@ -112,13 +112,13 @@ class CredentialMatch:
 
 
 class ProtectedCredentialInterrupt(RuntimeError):
-    """Hard Credential Isolation and DLP boundary that never exposes the protected value."""
+    """Hard Phase-7 boundary that never exposes the protected value."""
 
     def __init__(self, match: CredentialMatch) -> None:
         if not isinstance(match, CredentialMatch):
             raise TypeError("match must be a CredentialMatch")
         self.match = match
-        super().__init__("Credential Isolation and DLP protected credential hard interrupt")
+        super().__init__("Phase-7 protected credential hard interrupt")
 
 
 @dataclass(frozen=True, repr=False)
@@ -243,7 +243,7 @@ def _validated_secret(value: Any, *, source_kind: str) -> Optional[str]:
     if value in (None, ""):
         return None
     if not isinstance(value, str):
-        raise RuntimeError(f"Credential Isolation and DLP credential source {source_kind} is not textual")
+        raise RuntimeError(f"Phase-7 credential source {source_kind} is not textual")
     return value
 
 
@@ -282,9 +282,9 @@ def _extra_header_sources(cfg: Any) -> Tuple[tuple, ...]:
     extra = getattr(cfg, "backend_extra_headers", {})
     declared = getattr(cfg, "backend_secret_header_names", ())
     if not isinstance(extra, dict) or not isinstance(declared, (list, tuple)):
-        raise RuntimeError("Credential Isolation and DLP backend extra-header configuration is invalid")
+        raise RuntimeError("Phase-7 backend extra-header configuration is invalid")
     if any(not isinstance(name, str) or not name.strip() for name in declared):
-        raise RuntimeError("Credential Isolation and DLP backend secret-header designation is invalid")
+        raise RuntimeError("Phase-7 backend secret-header designation is invalid")
     explicit = {name.strip().lower() for name in declared}
     selected = explicit | _EXTRA_AUTH_HEADER_NAMES
     present = set()
@@ -294,7 +294,7 @@ def _extra_header_sources(cfg: Any) -> Tuple[tuple, ...]:
         if normalized not in selected:
             continue
         if normalized in present:
-            raise RuntimeError("Credential Isolation and DLP duplicate protected backend header name")
+            raise RuntimeError("Phase-7 duplicate protected backend header name")
         present.add(normalized)
         # Stable, non-value-derived identity. Do not expose arbitrary names in
         # ledger metadata or diagnostics, and never merge distinct values by class.
@@ -309,14 +309,14 @@ def _extra_header_sources(cfg: Any) -> Tuple[tuple, ...]:
                 frozenset({DEST_BACKEND_NAMED_AUTH_HEADER}),
             ))
     if not explicit.issubset(present):
-        raise RuntimeError("Credential Isolation and DLP designated backend secret header is missing")
+        raise RuntimeError("Phase-7 designated backend secret header is missing")
     return tuple(sources)
 
 
 def _logical_sources(jk: Any) -> Tuple[tuple, ...]:
     cfg = getattr(jk, "CFG", None)
     if cfg is None:
-        raise RuntimeError("Credential Isolation and DLP credential policy requires Jack CFG")
+        raise RuntimeError("Phase-7 credential policy requires Jack CFG")
 
     jack_api = _validated_secret(
         getattr(cfg, "api_key", ""),
@@ -355,7 +355,7 @@ def _logical_sources(jk: Any) -> Tuple[tuple, ...]:
         try:
             bridge = loader()
         except Exception:
-            raise RuntimeError("Credential Isolation and DLP Pi control credential resolution failed") from None
+            raise RuntimeError("Phase-7 Pi control credential resolution failed") from None
         if isinstance(bridge, dict):
             pi_control = _validated_secret(
                 bridge.get("token", ""),
@@ -409,14 +409,14 @@ def _logical_sources(jk: Any) -> Tuple[tuple, ...]:
 
 
 def build_runtime_credential_policy(jk: Any) -> RuntimeCredentialPolicy:
-    """Build one immutable Credential Isolation and DLP credential snapshot from closed Jack sources."""
+    """Build one immutable Phase-7 credential snapshot from closed Jack sources."""
 
     runtime_id = str(getattr(jk, "RUNTIME_ID", "") or "").strip()
     lane_id = str(getattr(jk, "LANE_ID", "") or "").strip()
     if not runtime_id:
-        raise RuntimeError("Credential Isolation and DLP runtime identity is unavailable")
+        raise RuntimeError("Phase-7 runtime identity is unavailable")
     if not lane_id:
-        raise RuntimeError("Credential Isolation and DLP lane identity is unavailable")
+        raise RuntimeError("Phase-7 lane identity is unavailable")
 
     by_value = {}
     order = []
@@ -493,9 +493,9 @@ def merge_runtime_canary_policy(canary_policy: Any, credential_policy: RuntimeCr
     if not isinstance(canary_policy, RuntimeCanaryPolicy):
         raise TypeError("canary_policy must be a RuntimeCanaryPolicy")
     if canary_policy.runtime_id != credential_policy.runtime_id:
-        raise RuntimeError("Credential Isolation and DLP credential/Canary runtime ownership mismatch")
+        raise RuntimeError("Phase-7 credential/Canary runtime ownership mismatch")
     if canary_policy.lane_id != credential_policy.lane_id:
-        raise RuntimeError("Credential Isolation and DLP credential/Canary lane ownership mismatch")
+        raise RuntimeError("Phase-7 credential/Canary lane ownership mismatch")
     sensitivity = canary_policy.sensitivity_percent
     existing = tuple(getattr(canary_policy.canaries, "_patterns", ()))
     existing_ids = {item.canary_id for item in existing}
@@ -504,7 +504,7 @@ def merge_runtime_canary_policy(canary_policy: Any, credential_policy: RuntimeCr
 
     for credential in credential_policy.credentials:
         if credential.credential_id in existing_ids or credential.value in existing_values:
-            raise RuntimeError("Credential Isolation and DLP credential/Canary policy collision")
+            raise RuntimeError("Phase-7 credential/Canary policy collision")
         additions.append(
             CanaryPattern(
                 canary_id=credential.credential_id,
@@ -518,7 +518,7 @@ def merge_runtime_canary_policy(canary_policy: Any, credential_policy: RuntimeCr
     credential_window = max((item.match_chars - 1 for item in additions), default=0)
     if credential_window > max(CREDENTIAL_CANARY_MAX_WINDOW, canary_policy.canaries.max_window):
         raise RuntimeError(
-            "Credential Isolation and DLP credential Canary merge exceeds the bounded output-DLP ceiling"
+            "Phase-7 credential Canary merge exceeds the bounded output-DLP ceiling"
         )
     combined = existing + tuple(additions)
     max_window = max(
@@ -806,7 +806,7 @@ def _install_orchestration_release_guard(
     if not callable(original_proxy) or not callable(original_publish):
         return
     if not callable(json_response):
-        raise RuntimeError("Credential Isolation and DLP orchestration release guard requires JSONResponse")
+        raise RuntimeError("Phase-7 orchestration release guard requires JSONResponse")
 
     async def guarded_proxy(*args: Any, **kwargs: Any):
         response = await original_proxy(*args, **kwargs)
@@ -827,14 +827,14 @@ def _install_orchestration_release_guard(
     async def guarded_publish(self: Any, event_type: str, source_event: Any) -> None:
         stream_state = getattr(
             self,
-            "_jack_credential_orchestration_credential_carry",
+            "_jack_phase7_orchestration_credential_carry",
             None,
         )
         if not isinstance(stream_state, dict):
             stream_state = {}
             setattr(
                 self,
-                "_jack_credential_orchestration_credential_carry",
+                "_jack_phase7_orchestration_credential_carry",
                 stream_state,
             )
 
@@ -883,9 +883,9 @@ def _install_orchestration_release_guard(
             safe_source,
         )
 
-    guarded_proxy._jack_credential_orchestration_credential_dlp = True
-    guarded_publish._jack_credential_orchestration_credential_dlp = True
-    guarded_publish._jack_credential_original_publish = original_publish
+    guarded_proxy._jack_phase7_orchestration_credential_dlp = True
+    guarded_publish._jack_phase7_orchestration_credential_dlp = True
+    guarded_publish._jack_phase7_original_publish = original_publish
 
     # A broken Pi SSE connection is not a completion boundary. Dispose held
     # fragments on disconnect and shutdown; never inject them into replay.
@@ -895,7 +895,7 @@ def _install_orchestration_release_guard(
             try:
                 return await original_consume(self, *args, **kwargs)
             finally:
-                state = getattr(self, "_jack_credential_orchestration_credential_carry", None)
+                state = getattr(self, "_jack_phase7_orchestration_credential_carry", None)
                 if isinstance(state, dict):
                     state.clear()
         hub_type._consume_stream = guarded_consume
@@ -915,7 +915,7 @@ def install(
     existing = getattr(jk, "_JACK_RUNTIME_CREDENTIAL_POLICY", None)
     if getattr(jk, "_JACK_CREDENTIAL_GUARD_INSTALLED", False):
         if not isinstance(existing, RuntimeCredentialPolicy):
-            raise RuntimeError("Credential Isolation and DLP installed policy state is invalid")
+            raise RuntimeError("Phase-7 installed policy state is invalid")
         return existing
 
     if credential_policy is None:
@@ -926,19 +926,19 @@ def install(
     runtime_id = str(getattr(jk, "RUNTIME_ID", "") or "").strip()
     lane_id = str(getattr(jk, "LANE_ID", "") or "").strip()
     if credential_policy.runtime_id != runtime_id:
-        raise RuntimeError("Credential Isolation and DLP credential policy runtime ownership mismatch")
+        raise RuntimeError("Phase-7 credential policy runtime ownership mismatch")
     if credential_policy.lane_id != lane_id:
-        raise RuntimeError("Credential Isolation and DLP credential policy lane ownership mismatch")
+        raise RuntimeError("Phase-7 credential policy lane ownership mismatch")
 
     backend = getattr(jk, "BACKEND", None)
     client = getattr(backend, "_client", None)
     if client is None:
-        raise RuntimeError("Credential Isolation and DLP backend transport is unavailable")
+        raise RuntimeError("Phase-7 backend transport is unavailable")
 
     original_post = getattr(client, "post", None)
     original_build_request = getattr(client, "build_request", None)
     if not callable(original_post) or not callable(original_build_request):
-        raise RuntimeError("Credential Isolation and DLP backend transport does not expose required dispatch seams")
+        raise RuntimeError("Phase-7 backend transport does not expose required dispatch seams")
 
     async def guarded_post(*args: Any, **kwargs: Any):
         _guard_post_call(credential_policy, args, kwargs)
@@ -948,8 +948,8 @@ def install(
         _guard_build_request_call(credential_policy, args, kwargs)
         return original_build_request(*args, **kwargs)
 
-    guarded_post._jack_credential_credential_guard = True
-    guarded_build_request._jack_credential_credential_guard = True
+    guarded_post._jack_phase7_credential_guard = True
+    guarded_build_request._jack_phase7_credential_guard = True
     client.post = guarded_post
     client.build_request = guarded_build_request
 

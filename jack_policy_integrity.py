@@ -1,8 +1,8 @@
-"""Policy Integrity selected immutable security policy measurement.
+"""Phase 10-B selected immutable security policy measurement (experimental).
 
 This module is not activated in production. It measures *known* Jack policy
 types, capturing actual holder or closure-cell identity and canonical
-behavior-affecting fields. The enforcement integration must prove that
+behavior-affecting fields. A later Phase 10-C integration must prove that
 the measured references are the ones the consequence gate actually consumes.
 
 Scope: runtime-process local; not independent same-interpreter attestation.

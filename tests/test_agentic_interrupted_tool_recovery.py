@@ -76,7 +76,7 @@ def test_interrupted_accepted_tool_evidence_is_retryable_and_immutable(
             "stage1_frozen": False, "bridge_messages": [], "pending_state": state
         }
         token = k._AGENTIC_DELAY_R2_SCOPE.set(scope)
-        await k.KERNEL._agentic_delayed_reasoning_close_scope(token)
+        await k.KERNEL._agentic_phase3g_close_scope(token)
         assert k.KERNEL._pending_tool_resumes[call_id] is state
         assert not state.in_flight
         assert k._agentic_forensic_turn(state.history).status == "awaiting_tool"

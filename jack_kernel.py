@@ -86,7 +86,7 @@ from jack_loop_shadow import LongCycleShadowDetector, LongCycleRepeatedReasoning
 from jack_tool_outcomes import reported_tool_outcome, SUCCESS as TOOL_SUCCESS, FAILED as TOOL_FAILED, UNKNOWN as TOOL_UNKNOWN
 from jack_tool_recovery import ToolRecoveryState, ToolRecoveryExhausted, operation_key, POLICY_REPEAT_LIMIT
 from jack_tool_lifecycle import ToolLifecycleObserver
-from jack_policy_integrity_dynamic_authority import PendingAuthority, DynamicAuthorityUnavailable
+from jack_phase10_dynamic_authority import PendingAuthority, DynamicAuthorityUnavailable
 from jack_cache_orchestrator import CacheDecision, CacheOrchestrator
 from jack_cache_prefix_diagnostics import CacheBytePrefixProbe
 from jack_stage1_cache_stability import Stage1CacheStabilizer
@@ -142,8 +142,8 @@ def is_hard_security_outcome(outcome: SecurityOutcome) -> bool:
     return outcome is SecurityOutcome.HARD_INTERRUPT
 
 
-class RestrictedPathInterrupt(RuntimeError):
-    """Hard Restricted Paths / Workspace Lock boundary with no protected path detail exposed downstream."""
+class Phase4RestrictedPathInterrupt(RuntimeError):
+    """Hard Phase-4 boundary with no protected path detail exposed downstream."""
 
     security_outcome = SecurityOutcome.HARD_INTERRUPT
 
@@ -424,7 +424,7 @@ RUNTIME_ID = _safe_runtime_identifier(
 LANE_ID = _safe_runtime_identifier(CFG.lane_id, RUNTIME_ID)
 TOOL_LIFECYCLE_OBSERVER = ToolLifecycleObserver()
 
-# Restricted Paths / Workspace Lock path authority is host-owned startup state. It is deliberately
+# Phase 4 path authority is host-owned startup state. It is deliberately
 # separate from ordinary request fields and model-visible conversation state.
 # Binding occurs once before the serving/runtime entrypoint begins accepting
 # work. Later environment changes cannot replace the already-bound snapshot.
@@ -432,7 +432,7 @@ _RUNTIME_PATH_POLICY: Any = None
 
 
 @dataclass(frozen=True)
-class RestrictedPathExecutorRequestContext:
+class Phase4ExecutorRequestContext:
     """Trusted transport facts supplied by a cooperating executor adapter."""
 
     protocol_version: int
@@ -444,20 +444,20 @@ class RestrictedPathExecutorRequestContext:
     command_dialect: Optional[str] = None
 
 
-_RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT: contextvars.ContextVar[
-    Optional[RestrictedPathExecutorRequestContext]
+_PHASE4_EXECUTOR_REQUEST_CONTEXT: contextvars.ContextVar[
+    Optional[Phase4ExecutorRequestContext]
 ] = contextvars.ContextVar(
-    f"jack_restricted_path_executor_request_context_{RUNTIME_ID}",
+    f"jack_phase4_executor_request_context_{RUNTIME_ID}",
     default=None,
 )
 
 
-def _restricted_path_current_executor_context() -> Optional[RestrictedPathExecutorRequestContext]:
-    return _RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.get()
+def _phase4_current_executor_context() -> Optional[Phase4ExecutorRequestContext]:
+    return _PHASE4_EXECUTOR_REQUEST_CONTEXT.get()
 
 
 def _bind_runtime_path_policy() -> Any:
-    """Bind exactly one immutable host-owned Restricted Paths / Workspace Lock policy to this runtime/lane."""
+    """Bind exactly one immutable host-owned Phase-4 policy to this runtime/lane."""
     global _RUNTIME_PATH_POLICY
 
     if _RUNTIME_PATH_POLICY is not None:
@@ -2034,7 +2034,7 @@ def _append_ultra_stage_generation_trigger(
     return trigger
 
 
-# cache-append: optional cache-compatible Stage-2 request; dedicated Stage-2 system is default.
+# Phase 3E: optional cache-compatible Stage-2 request; dedicated Stage-2 system is default.
 # Set JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT=1 to explicitly opt into cache-append layout.
 # This changes only the backend REQUEST REPRESENTATION of Agentic Stage 2.
 # It does not change either stage's prompt text, frozen answer, tool authority,
@@ -2175,7 +2175,7 @@ def _agentic_stage2_test_history(
     ]
 
 
-# reasoning retirement recovery: model-visible U/M/A forensic labels are OFF by default.
+# Phase-3G recovery: model-visible U/M/A forensic labels are OFF by default.
 # The durable host-side turn journal, U/A1 hash checks, stage completion gates,
 # and Stage-2 cached-prefix topology remain active regardless of this switch.
 # Set JACK_AGENTIC_TASK_ANCHOR=1 only for explicit comparison with PR #72.
@@ -2187,7 +2187,7 @@ AGENTIC_TASK_ANCHOR_ENABLED = (
 
 # Model-visible per-turn Request/Response/Memory associations. This reuses the
 # existing durable host-minted UUID, so no second identity system is created.
-# Set to 1 to opt into the live A/B experiment; 0 preserves reasoning retirement.
+# Set to 1 to opt into the live A/B experiment; 0 preserves Phase-3G.
 # The old forensic-label experiment
 # is mutually exclusive when explicitly enabled for historical A/B testing.
 AGENTIC_TRANSACTION_LINKS_ENABLED = (
@@ -2216,7 +2216,7 @@ def _agentic_visible_turn_label(turn_id: Any) -> Optional[str]:
 # Each request owns its own references. Never scan or mutate unrelated pending
 # transactions: a successor Stage-1 tool checkpoint may still need its bridge.
 _AGENTIC_DELAY_R2_SCOPE: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
-    contextvars.ContextVar("jack_agentic_delayed_reasoning_delayed_r2", default=None)
+    contextvars.ContextVar("jack_agentic_phase3g_delayed_r2", default=None)
 )
 
 
@@ -5254,10 +5254,10 @@ def _tool_call_validation_errors(
     return errors
 
 
-def _restricted_path_partition_structured_tool_calls(
+def _phase4_partition_structured_tool_calls(
     calls: Any,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
-    """Partition completed calls at the narrowest Restricted Paths / Workspace Lock release boundary.
+    """Partition completed calls at the narrowest Phase-4 release boundary.
 
     Exact structured filesystem tools are canonicalized under Workspace Lock
     before release. Exact command-capability contracts are authorized using
@@ -5278,7 +5278,7 @@ def _restricted_path_partition_structured_tool_calls(
     import jack_path_policy
 
     active_policy = _runtime_path_policy()
-    executor_context = _restricted_path_current_executor_context()
+    executor_context = _phase4_current_executor_context()
     executor_cwd = executor_context.cwd if executor_context is not None else None
     executor_platform = (
         executor_context.platform
@@ -5361,7 +5361,7 @@ def _restricted_path_partition_structured_tool_calls(
             decision.outcome
             is jack_path_policy.PathAuthorizationOutcome.HARD_INTERRUPT
         ):
-            raise RestrictedPathInterrupt()
+            raise Phase4RestrictedPathInterrupt()
 
         if (
             decision.outcome
@@ -5378,23 +5378,23 @@ def _restricted_path_partition_structured_tool_calls(
     return allowed, errors
 
 
-def _restricted_path_structured_tool_authorization_errors(
+def _phase4_structured_tool_authorization_errors(
     calls: Any,
 ) -> List[str]:
-    """Compatibility wrapper returning only recoverable Restricted Paths / Workspace Lock denials."""
-    _, errors = _restricted_path_partition_structured_tool_calls(calls)
+    """Compatibility wrapper returning only recoverable Phase-4 denials."""
+    _, errors = _phase4_partition_structured_tool_calls(calls)
     return errors
 
 
-RESTRICTED_PATH_EXECUTOR_ADMISSION_PROTOCOL_VERSION = 1
+PHASE4_EXECUTOR_ADMISSION_PROTOCOL_VERSION = 1
 
 
-def _restricted_path_executor_admission_decision(
+def _phase4_executor_admission_decision(
     payload: Any,
     *,
     expected_call: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Evaluate executor facts against Jack-owned immutable Restricted Paths / Workspace Lock policy."""
+    """Evaluate executor facts against Jack-owned immutable Phase-4 policy."""
 
     if not isinstance(payload, dict):
         raise HTTPException(
@@ -5419,7 +5419,7 @@ def _restricted_path_executor_admission_decision(
             detail="Executor admission contains unsupported fields",
         )
 
-    if payload.get("protocol_version") != RESTRICTED_PATH_EXECUTOR_ADMISSION_PROTOCOL_VERSION:
+    if payload.get("protocol_version") != PHASE4_EXECUTOR_ADMISSION_PROTOCOL_VERSION:
         raise HTTPException(
             status_code=400,
             detail="Unsupported executor admission protocol version",
@@ -5548,7 +5548,7 @@ def _restricted_path_executor_admission_decision(
     )
 
     return {
-        "protocol_version": RESTRICTED_PATH_EXECUTOR_ADMISSION_PROTOCOL_VERSION,
+        "protocol_version": PHASE4_EXECUTOR_ADMISSION_PROTOCOL_VERSION,
         "runtime_id": RUNTIME_ID,
         "lane_id": LANE_ID,
         "tool_call_id": tool_call_id,
@@ -5890,7 +5890,7 @@ def _agentic_caller_system_for_actual_stage(caller_system: str, profile: "StageP
     """External custom system instructions govern Agentic Stage 1, never Stage 2.
 
     Decide from the *actual* stage, not the synthetic Stage-1 profile reused by
-    the cache-append cache-append transport. Preserve all other modes unchanged.
+    the Phase-3E cache-append transport. Preserve all other modes unchanged.
     """
     if AGENTIC_MODE and profile.name == "Agentic native pass 2":
         return ""
@@ -6964,7 +6964,7 @@ def _agentic_usage_for_pi(
     The Pi adapter is the existing request-scoped executor transport identity;
     this informational projection confers no new tool/authorization authority.
     """
-    context = _restricted_path_current_executor_context()
+    context = _phase4_current_executor_context()
     if not (AGENTIC_MODE and context is not None
             and str(context.adapter).strip().casefold() == "pi"):
         return aggregate
@@ -7616,7 +7616,7 @@ def _agentic_project_committed_artifact_pair(
         (r.memory.content, r.response.content, r.tool_receipt) for r in matches
     }
     if len(fingerprints) != 1:
-        LOG.warning("Agentic historical memory projection ambiguous historical artifact boundaries; retaining caller text")
+        LOG.warning("Agentic Phase 3C ambiguous historical artifact boundaries; retaining caller text")
         return None
     memory, answer, receipt = next(iter(fingerprints))
     # Retrospective appears first; exact frozen A1 ends the old user turn.
@@ -7635,11 +7635,11 @@ def _agentic_project_committed_artifact_pair(
         for item, label in zip(result, ("M", "A1")):
             item["_jack_forensic_turn_id"] = forensic["turn_id"]
             item["_jack_forensic_role"] = label
-    LOG.info("Agentic historical memory projection projected supplied, validated M/A pair; no hidden ledger recall")
+    LOG.info("Agentic Phase 3C projected supplied, validated M/A pair; no hidden ledger recall")
     return result
 
 
-# reasoning retirement one-hop native reasoning bridge: carry ONLY the immediately preceding
+# Phase 3G one-hop native reasoning bridge: carry ONLY the immediately preceding
 # authenticated turn's Stage-2 native reasoning into the next complete turn.
 # Do not infer private thinking from memory, or carry old R1 or model prose.
 def _agentic_extract_one_hop_stage2_reasoning(raw: Any) -> Optional[str]:
@@ -7699,7 +7699,7 @@ def _agentic_finish_delayed_one_hop(history: List[Dict[str, Any]]) -> None:
         _agentic_retire_consumed_one_hop(scope.get("bridge_messages", []))
 
 
-# context accounting — portable, opt-in observational context accounting.
+# Phase 3F — portable, opt-in observational context accounting.
 # There is no inference/admission control here. No content or native reasoning is logged.
 # Byte thresholds are reporting-only, NOT model token/context capacity.
 AGENTIC_CONTEXT_ACCOUNTING_ENABLED = (
@@ -7881,9 +7881,9 @@ def _agentic_context_report_request(
             else:
                 report["budget_status"] = "invalid_budget_ignored"
         # Logging never influences dispatch. No request text or serialized body.
-        LOG.info("Agentic context accounting context: %s", json.dumps(report, ensure_ascii=True, sort_keys=True))
+        LOG.info("Agentic Phase 3F context: %s", json.dumps(report, ensure_ascii=True, sort_keys=True))
     except Exception as exc:
-        LOG.warning("Agentic context accounting context telemetry failed open: %s", type(exc).__name__)
+        LOG.warning("Agentic Phase 3F context telemetry failed open: %s", type(exc).__name__)
 
 
 def _compact_agentic_completed_capsules(
@@ -7962,7 +7962,7 @@ def _compact_agentic_completed_capsules(
         # by the exact frozen A1. Validate emptiness above, but never normalize the
         # committed content here or the next turn would silently rewrite A1.
         item["content"] = text
-        # historical memory projection: the client already supplied the whole M+A assistant artifact.
+        # Phase 3C: the client already supplied the whole M+A assistant artifact.
         # Split it only when host-recorded U, M, and A exactly agree with those
         # incoming bytes. No lookup of hidden memory from A1 alone is possible.
         projected = _agentic_project_committed_artifact_pair(retained, text)
@@ -8021,7 +8021,7 @@ def _compact_agentic_completed_capsules(
     )
     if AGENTIC_CONTEXT_ACCOUNTING_ENABLED:
         LOG.info(
-            "Agentic context accounting projection: authenticated_pairs=%d safe_unprojected_messages=%d opaque_unattributable_messages=%d; retained_users=%d committed_capsules=%d",
+            "Agentic Phase 3F projection: authenticated_pairs=%d safe_unprojected_messages=%d opaque_unattributable_messages=%d; retained_users=%d committed_capsules=%d",
             projected_pairs, projection_fallbacks, opaque_unattributable_messages,
             retained_user_turns, retained_agentic_commits,
         )
@@ -10003,7 +10003,7 @@ class PendingToolResume:
     # First authenticated tool outcomes are immutable across transport retries.
     # A stream disconnect must not allow the caller to substitute new results.
     accepted_tool_results: Optional[Tuple[Dict[str, Any], ...]] = None
-    accepted_executor_context: Optional[RestrictedPathExecutorRequestContext] = None
+    accepted_executor_context: Optional[Phase4ExecutorRequestContext] = None
     # Completed A1 is immutable even if the retrospective stream disconnects.
     # Resume Stage 2 from this frozen history; never rerun Stage 1 or its tools.
     frozen_stage1_history: Optional[List[Dict[str, Any]]] = None
@@ -10178,7 +10178,7 @@ class JackQwenKernel:
         self._activity_telemetry_degraded = False
         self._pending_tool_resumes: Dict[str, PendingToolResume] = {}
         self._pending_tool_resume_lock = asyncio.Lock()
-        self._pending_authority = PendingAuthority(RestrictedPathExecutorRequestContext)
+        self._pending_authority = PendingAuthority(Phase4ExecutorRequestContext)
         self._pending_debugging_intake_resumes: Dict[str, PendingDebuggingIntakeResume] = {}
         self._pending_debugging_intake_resume_lock = asyncio.Lock()
         self._pending_debugging_user_resumes: Dict[str, PendingDebuggingUserResume] = {}
@@ -10446,11 +10446,11 @@ class JackQwenKernel:
 
         # Withheld-call provenance is host-owned. Never trust a backend/model-supplied
         # private field with the same name.
-        msg.pop("_jack_restricted_path_withheld_tool_call_ids", None)
+        msg.pop("_jack_phase4_withheld_tool_call_ids", None)
         if msg.get("tool_calls"):
             proposed_calls = list(msg.get("tool_calls") or [])
             allowed_calls, path_authorization_errors = (
-                _restricted_path_partition_structured_tool_calls(
+                _phase4_partition_structured_tool_calls(
                     proposed_calls
                 )
             )
@@ -10497,10 +10497,10 @@ class JackQwenKernel:
                     and str(call.get("id") or "").strip() not in allowed_ids
                 ]
                 msg["tool_calls"] = allowed_calls
-                msg["_jack_restricted_path_deferred_tool_rejection_errors"] = list(
+                msg["_jack_phase4_deferred_tool_rejection_errors"] = list(
                     path_authorization_errors
                 )
-                msg["_jack_restricted_path_withheld_tool_call_ids"] = withheld_ids
+                msg["_jack_phase4_withheld_tool_call_ids"] = withheld_ids
 
         if not msg.get("tool_calls"):
             if AGENTIC_TRANSLATED_MODE and stage_key == "extended_initial":
@@ -10611,7 +10611,7 @@ class JackQwenKernel:
         Reasoning/content packets remain suitable for immediate forwarding.
         Executable tool-call fragments are reconstructed privately and are not
         released from this stage runner. The outer runtime releases one complete
-        tool call only after deterministic validation/Restricted Paths / Workspace Lock authorization and
+        tool call only after deterministic validation/Phase-4 authorization and
         stage-local checkpointing. The final kind=result packet contains the
         reconstructed OpenAI-style stage response used internally.
         """
@@ -10859,7 +10859,7 @@ class JackQwenKernel:
                         if isinstance(function, dict):
                             budget.observe("output", str(function.get("name") or ""))
                             budget.observe("output", str(function.get("arguments") or ""))
-                    # Restricted Paths / Workspace Lock release barrier: executable tool-call fragments stay
+                    # Phase 4 release barrier: executable tool-call fragments stay
                     # private to Jack until the full call is reconstructed. Normal
                     # reasoning/content still streams live above. This prevents a
                     # client/executor from acting on an incomplete or unauthorized
@@ -11022,7 +11022,7 @@ class JackQwenKernel:
                         "text": "\n[JACK EMPTY STREAM — RETRYING SAME STAGE; COMPLETED TOOLS PRESERVED]\n",
                     }
                     # A completed tool result must not erase the authority to
-                    # perform NEW tools. Checkpoints, Restricted Paths / Workspace Lock authorization and
+                    # perform NEW tools. Checkpoints, Phase-4 authorization and
                     # the recovery-only completed-mutation replay guard still
                     # prevent re-executing an already accepted side effect.
                     async with contextlib.aclosing(self._run_stage_streamed(
@@ -11260,11 +11260,11 @@ class JackQwenKernel:
 
         # Streaming reconstruction creates host-owned message state, but clear the
         # private field explicitly so this path mirrors non-stream semantics.
-        message.pop("_jack_restricted_path_withheld_tool_call_ids", None)
+        message.pop("_jack_phase4_withheld_tool_call_ids", None)
         if message.get("tool_calls"):
             proposed_calls = list(message.get("tool_calls") or [])
             allowed_calls, path_authorization_errors = (
-                _restricted_path_partition_structured_tool_calls(
+                _phase4_partition_structured_tool_calls(
                     proposed_calls
                 )
             )
@@ -11322,10 +11322,10 @@ class JackQwenKernel:
                     and str(call.get("id") or "").strip() not in allowed_ids
                 ]
                 message["tool_calls"] = allowed_calls
-                message["_jack_restricted_path_deferred_tool_rejection_errors"] = list(
+                message["_jack_phase4_deferred_tool_rejection_errors"] = list(
                     path_authorization_errors
                 )
-                message["_jack_restricted_path_withheld_tool_call_ids"] = withheld_ids
+                message["_jack_phase4_withheld_tool_call_ids"] = withheld_ids
 
         unexpected_reasoning = message.get("reasoning_content") or message.get("reasoning")
         if unexpected_reasoning and not profile.thinking:
@@ -12151,9 +12151,9 @@ class JackQwenKernel:
         deferred_errors = tuple(
             str(item)
             for item in (
-                msg.get("_jack_restricted_path_deferred_tool_rejection_errors")
+                msg.get("_jack_phase4_deferred_tool_rejection_errors")
                 if isinstance(
-                    msg.get("_jack_restricted_path_deferred_tool_rejection_errors"),
+                    msg.get("_jack_phase4_deferred_tool_rejection_errors"),
                     list,
                 )
                 else []
@@ -12164,8 +12164,8 @@ class JackQwenKernel:
             dict.fromkeys(
                 str(item).strip()
                 for item in (
-                    msg.get("_jack_restricted_path_withheld_tool_call_ids")
-                    if isinstance(msg.get("_jack_restricted_path_withheld_tool_call_ids"), list)
+                    msg.get("_jack_phase4_withheld_tool_call_ids")
+                    if isinstance(msg.get("_jack_phase4_withheld_tool_call_ids"), list)
                     else []
                 )
                 if str(item).strip()
@@ -12219,7 +12219,7 @@ class JackQwenKernel:
             reasoning_content=(str(reasoning) if (reasoning and not AGENTIC_MODE) else None),
         )
 
-    async def _restricted_path_pending_tool_call_snapshot(
+    async def _phase4_pending_tool_call_snapshot(
         self,
         tool_call_id: str,
     ) -> Dict[str, Any]:
@@ -12392,7 +12392,7 @@ class JackQwenKernel:
             if state.accepted_tool_results is None:
                 self._pending_authority.transition(state, in_flight=True,
                     accept=tuple(copy.deepcopy(matched_messages)),
-                    context=_restricted_path_current_executor_context())
+                    context=_phase4_current_executor_context())
             elif state.accepted_tool_results != matched_messages:
                 raise HTTPException(
                     status_code=409,
@@ -12443,7 +12443,7 @@ class JackQwenKernel:
                     # denied siblings once after their actual results return;
                     # never rerun the rejected operation under a new ID.
                     tracker.fail(
-                        "restricted_path_withheld_action", error,
+                        "phase4_withheld_action", error,
                         call_id=f"{state.resume_id}:withheld:{index}",
                         policy_denial=_immutable_path_denial([error]),
                     )
@@ -12541,7 +12541,7 @@ class JackQwenKernel:
         if _agentic_memory_is_instruction_echo(memory):
             raise HTTPException(status_code=502, detail="Agentic Stage 2 echoed its host instruction instead of producing working memory.")
         # Preserve the actual Stage-2 memory as its own shadow artifact.
-        # Existing outward formatting still includes the host receipt for historical artifact compatibility.
+        # Existing outward formatting still includes the host receipt until Phase 3.
         unadorned_memory = memory
         # Flash's complete memory must be exactly "Turn N"; tool evidence
         # remains available through the separately retained tool history.
@@ -13487,7 +13487,7 @@ class JackQwenKernel:
                     elif isinstance(state, PendingToolResume) and scope is None:
                         await self._rearm_pending_tool_resume(state)
                 if scope is not None:
-                    await self._agentic_delayed_reasoning_settle_scope(scope)
+                    await self._agentic_phase3g_settle_scope(scope)
             finally:
                 try:
                     run = owner["debugging_run"]
@@ -13507,7 +13507,7 @@ class JackQwenKernel:
                     _REQUEST_RESUME_OWNER.reset(token)
                     self._model_discovery_active -= 1
 
-    async def _agentic_delayed_reasoning_settle_scope(self, scope: Dict[str, Any]) -> None:
+    async def _agentic_phase3g_settle_scope(self, scope: Dict[str, Any]) -> None:
         if scope.get("settled"):
             return
         scope["settled"] = True
@@ -13559,7 +13559,7 @@ class JackQwenKernel:
         finally:
             _agentic_forensic_close_request()
 
-    async def _agentic_delayed_reasoning_close_scope(self, scope_token: contextvars.Token) -> None:
+    async def _agentic_phase3g_close_scope(self, scope_token: contextvars.Token) -> None:
         """Reset request context; settlement occurs under the semaphore."""
         try:
             scope = _AGENTIC_DELAY_R2_SCOPE.get()
@@ -13567,7 +13567,7 @@ class JackQwenKernel:
                 scope.get("entered") or scope.get("stage1_frozen")
                 or scope.get("pending_state") is not None
             ):
-                await self._agentic_delayed_reasoning_settle_scope(scope)
+                await self._agentic_phase3g_settle_scope(scope)
         finally:
             _AGENTIC_DELAY_R2_SCOPE.reset(scope_token)
 
@@ -13670,9 +13670,9 @@ class JackQwenKernel:
         self,
         request_body: Dict[str, Any],
         *,
-        executor_context: Optional[RestrictedPathExecutorRequestContext] = None,
+        executor_context: Optional[Phase4ExecutorRequestContext] = None,
     ) -> KernelResult:
-        token = _RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.set(executor_context)
+        token = _PHASE4_EXECUTOR_REQUEST_CONTEXT.set(executor_context)
         recovery_token = _TOOL_RECOVERY_STATE.set(ToolRecoveryState())
         pending_recovery_token = _TOOL_RECOVERY_PENDING.set(None)
         scope_token = (
@@ -13701,11 +13701,11 @@ class JackQwenKernel:
         finally:
             try:
                 if scope_token is not None:
-                    await self._agentic_delayed_reasoning_close_scope(scope_token)
+                    await self._agentic_phase3g_close_scope(scope_token)
             finally:
                 _TOOL_RECOVERY_PENDING.reset(pending_recovery_token)
                 _TOOL_RECOVERY_STATE.reset(recovery_token)
-                _RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.reset(token)
+                _PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
 
     async def _run_impl(self, request_body: Dict[str, Any]) -> KernelResult:
         request_body = sanitize_agent_request(request_body)
@@ -13786,9 +13786,9 @@ class JackQwenKernel:
         self,
         request_body: Dict[str, Any],
         *,
-        executor_context: Optional[RestrictedPathExecutorRequestContext] = None,
+        executor_context: Optional[Phase4ExecutorRequestContext] = None,
     ) -> AsyncIterator[bytes]:
-        token = _RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.set(executor_context)
+        token = _PHASE4_EXECUTOR_REQUEST_CONTEXT.set(executor_context)
         recovery_token = _TOOL_RECOVERY_STATE.set(ToolRecoveryState())
         pending_recovery_token = _TOOL_RECOVERY_PENDING.set(None)
         scope_token = (
@@ -13836,11 +13836,11 @@ class JackQwenKernel:
         finally:
             try:
                 if scope_token is not None:
-                    await self._agentic_delayed_reasoning_close_scope(scope_token)
+                    await self._agentic_phase3g_close_scope(scope_token)
             finally:
                 _TOOL_RECOVERY_PENDING.reset(pending_recovery_token)
                 _TOOL_RECOVERY_STATE.reset(recovery_token)
-                _RESTRICTED_PATH_EXECUTOR_REQUEST_CONTEXT.reset(token)
+                _PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
 
     async def _stream_impl(self, request_body: Dict[str, Any]) -> AsyncIterator[bytes]:
         if DEEP_REASONING_MODE:
@@ -14220,7 +14220,7 @@ class JackQwenKernel:
                                             yield event({"reasoning_content": f"\n[{label} TOOL GENERATION: {name}]\n"})
                                         # Raw executable arguments are intentionally
                                         # not mirrored onto caller-visible reasoning.
-                                        # They remain consequential state until Restricted Paths / Workspace Lock
+                                        # They remain consequential state until Phase-4
                                         # authorization has completed.
                                 else:
                                     yield event({"tool_calls": packet["tool_calls"]})
@@ -14837,7 +14837,7 @@ class JackQwenKernel:
                             elif kind == "tool_calls":
                                 # Ultra withholds unvalidated partial tool calls.
                                 # Complete calls go through the existing host
-                                # checkpoint/Restricted Paths / Workspace Lock admission below.
+                                # checkpoint/Phase-4 admission below.
                                 if not ULTRA_REVIEW_MODE:
                                     yield event({"tool_calls": packet["tool_calls"]})
                             elif kind == "keepalive":
@@ -15505,7 +15505,7 @@ class AgenticTurnShadowRecord:
     memory: Optional[AgenticMemoryArtifact]
     tool_receipt: str
     status: str
-    # Every actual commit has a Jack-minted identity and exact user origin.
+    # Phase 3A: every actual commit has a Jack-minted identity and exact user origin.
     turn_id: str = ""
     user_request: Optional[AgenticUserRequestArtifact] = None
 
@@ -16139,9 +16139,9 @@ def _agentic_shadow_record_commit(
     )
 
 
-def _restricted_path_executor_context_from_request(
+def _phase4_executor_context_from_request(
     request: Request,
-) -> Optional[RestrictedPathExecutorRequestContext]:
+) -> Optional[Phase4ExecutorRequestContext]:
     """Read executor facts from host transport headers, never from request JSON."""
 
     header_names = {
@@ -16192,7 +16192,7 @@ def _restricted_path_executor_context_from_request(
             detail="Invalid executor transport protocol version",
         ) from exc
 
-    if version != RESTRICTED_PATH_EXECUTOR_ADMISSION_PROTOCOL_VERSION:
+    if version != PHASE4_EXECUTOR_ADMISSION_PROTOCOL_VERSION:
         raise HTTPException(
             status_code=400,
             detail="Unsupported executor transport protocol version",
@@ -16210,7 +16210,7 @@ def _restricted_path_executor_context_from_request(
             detail="Executor transport lane identity mismatch",
         )
 
-    return RestrictedPathExecutorRequestContext(
+    return Phase4ExecutorRequestContext(
         protocol_version=version,
         runtime_id=RUNTIME_ID,
         lane_id=LANE_ID,
@@ -16535,8 +16535,8 @@ async def orchestration_events(request: Request):
 
 
 @APP.post("/jack/security/path-admission")
-async def restricted_path_executor_admission(request: Request) -> Dict[str, Any]:
-    """Universal pre-execution Restricted Paths / Workspace Lock admission for cooperating executor adapters."""
+async def phase4_executor_path_admission(request: Request) -> Dict[str, Any]:
+    """Universal pre-execution Phase-4 admission for cooperating executor adapters."""
     await enforce_kernel_auth(request)
     try:
         payload = await request.json()
@@ -16556,10 +16556,10 @@ async def restricted_path_executor_admission(request: Request) -> Dict[str, Any]
             detail="Executor admission requires tool_call_id",
         )
 
-    expected_call = await KERNEL._restricted_path_pending_tool_call_snapshot(
+    expected_call = await KERNEL._phase4_pending_tool_call_snapshot(
         tool_call_id
     )
-    return _restricted_path_executor_admission_decision(
+    return _phase4_executor_admission_decision(
         payload,
         expected_call=expected_call,
     )
@@ -16689,7 +16689,7 @@ async def lmstudio_compatible_models(request: Request) -> Dict[str, Any]:
 async def _safe_public_stream(
     body: Dict[str, Any],
     *,
-    executor_context: Optional[RestrictedPathExecutorRequestContext] = None,
+    executor_context: Optional[Phase4ExecutorRequestContext] = None,
 ) -> AsyncIterator[bytes]:
     """Convert internal stage failures into a clean OpenAI SSE termination."""
     try:
@@ -16772,7 +16772,7 @@ async def chat_completions(request: Request):
                 raise ValueError("Missing TAS session capability")
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid TAS session capability") from exc
-    executor_context = _restricted_path_executor_context_from_request(request)
+    executor_context = _phase4_executor_context_from_request(request)
     hint = None
     if AGENTIC_MODE:
         # Correlation only. Never trust transport hints for memory or tool authority.
@@ -18640,7 +18640,7 @@ def run_server() -> None:
     # Uvicorn configures its handlers after secure startup; cover the final handlers.
     privacy = globals().get("_JACK_DIAGNOSTIC_PRIVACY")
     if privacy is not None:
-        from jack_diagnostic_privacy import protect_logging_handlers
+        from jack_phase11_privacy import protect_logging_handlers
         protect_logging_handlers(privacy)
     server = uvicorn.Server(config)
     # Spawn a separate, fully optional process after the actual port is bound.
@@ -18665,7 +18665,7 @@ def _install_bundled_runtime_extensions() -> None:
 
     module = sys.modules[__name__]
 
-    # Restricted Paths / Workspace Lock startup authority is bound before endpoint compatibility is
+    # Phase 4 startup authority is bound before endpoint compatibility is
     # registered and before any request can supply ordinary model/caller data.
     _bind_runtime_path_policy()
 
@@ -18694,7 +18694,7 @@ def _install_bundled_runtime_extensions() -> None:
             canary_policy=canary_policy,
         )
 
-    # Consequence Gate is Kernel-owned authority. Install it explicitly from the shared
+    # Phase 5 is Kernel-owned authority. Install it explicitly from the shared
     # bundled-extension seam after predecessor security policy is bound and
     # before compatibility surfaces are registered.
     jack_consequence_gate.install(module)
@@ -18717,9 +18717,9 @@ def _secured_serving_ready() -> bool:
         and all(globals().get(name) is not None for name in (
             "_JACK_SOURCE_AUTHORITY",
             "_JACK_RUNTIME_CODE_AUTHORITY",
-            "_JACK_PATH_POLICY_AUTHORITY",
-            "_JACK_CANARY_POLICY_AUTHORITY",
-            "_JACK_CREDENTIAL_POLICY_AUTHORITY",
+            "_JACK_PHASE10_PATH_AUTHORITY",
+            "_JACK_PHASE10_CANARY_AUTHORITY",
+            "_JACK_PHASE10_CREDENTIAL_AUTHORITY",
             "_JACK_DIAGNOSTIC_PRIVACY",
         ))
     )
@@ -18751,7 +18751,7 @@ def main() -> None:
             _delegate_secured_serving()
             return
         # Explicit process-local test escape hatch; never selected by the CLI.
-        print("WARNING: UNSECURED TEST SERVER — Source Drift Protection, Runtime Code Integrity, Policy Integrity and Diagnostic Privacy are not installed.",
+        print("WARNING: UNSECURED TEST SERVER — Phases 8, 9B, 10 and 11 are not installed.",
               file=sys.stderr, flush=True)
     elif serving and isolated_test:
         raise SystemExit("Unsecured test option is not accepted by secured serving")
