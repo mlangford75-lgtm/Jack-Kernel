@@ -133,3 +133,38 @@ def test_active_gate_requires_reconsideration_not_just_repeated_work_words():
     observation = monitor.feed(as_text(chapter * 4 + ["end"] * 256))
     assert observation is not None
     assert not monitor.interrupt_eligible(observation)
+
+
+def test_anchor_search_matches_original_exact_window():
+    import random
+    from jack_loop_shadow import (
+        _ANCHOR_WORDS, _ANCHOR_JITTER, _MIN_ANCHOR_HITS,
+    )
+
+    def reference(a, b):
+        width = len(a)
+        matched = 0
+        for numerator in range(1, 7):
+            offset = width * numerator // 7
+            snippet = b[offset:offset + _ANCHOR_WORDS]
+            lower = max(0, offset - _ANCHOR_JITTER)
+            upper = min(width - _ANCHOR_WORDS, offset + _ANCHOR_JITTER)
+            if any(snippet == a[i:i + _ANCHOR_WORDS]
+                   for i in range(lower, upper + 1)):
+                matched += 1
+                if matched == _MIN_ANCHOR_HITS:
+                    return True
+        return False
+
+    rng = random.Random(17)
+    for width in (2049, 2064, 4096, 8192):
+        for trial in range(100):
+            a = [rng.randrange((2, 8, 32, 10000)[trial % 4])
+                 for _ in range(width)]
+            b = a.copy() if trial % 3 else [rng.randrange(10000) for _ in a]
+            if trial % 3 == 1:
+                for _ in range(width // 30):
+                    b[rng.randrange(width)] = rng.randrange(10000)
+            if trial % 3 == 2:
+                b = b[19:] + b[:19]
+            assert LongCycleShadowDetector._anchor_match(a, b) == reference(a, b)
