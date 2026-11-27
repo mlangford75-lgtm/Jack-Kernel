@@ -1,7 +1,7 @@
-"""Four Agentic profiles: Stage 2 is single-pass, including Thorough and Exhaustive.
+"""Agentic Flash is single-stage; other supported profiles use one memory pass.
 
 Check actual backend payloads across streaming/cache layouts, preserving the
-exact current-turn U/R1/A1 and tools-off authority.
+canonical current turn and source-only tools-off authority.
 """
 import asyncio
 import importlib.util
@@ -32,7 +32,7 @@ def load(monkeypatch, tmp_path, profile, cache):
     return k
 
 
-@pytest.mark.parametrize("profile,thinking", [("flash", False), ("balanced", False), ("thorough", True), ("exhaustive", True)])
+@pytest.mark.parametrize("profile,thinking", [("flash", False), ("balanced", False), ("thorough", True), ("translated", True)])
 @pytest.mark.parametrize("cache", [False, True])
 @pytest.mark.parametrize("stream", [False, True])
 def test_stage2_review_scheduling_by_profile(monkeypatch, tmp_path, profile, thinking, cache, stream):
@@ -69,6 +69,22 @@ def test_stage2_review_scheduling_by_profile(monkeypatch, tmp_path, profile, thi
         ]
         original = json.dumps(history, sort_keys=True)
         try:
+            if profile == "flash":
+                body = {"model": "jack-kernel", "stream": stream,
+                        "messages": history[:-1]}
+                if stream:
+                    frames = [chunk async for chunk in kernel.stream(body)]
+                    text = b"".join(frames).decode("utf-8")
+                    assert "Working knowledge" in text
+                    assert "Agentic Turn ID:" in text
+                    assert "data: [DONE]" in text
+                else:
+                    result = await kernel.run(body)
+                    assert result.content.startswith("Working knowledge")
+                    assert "Agentic Turn ID:" in result.content
+                assert len(captured) == 1
+                assert k._runtime_identity_details()["flow"] == ["extended_initial"]
+                return None
             if stream:
                 packets = [p async for p in kernel._run_stage_streamed(
                     history, "", "extended_reflection", {}, tools=None, tool_choice=None, append=False)]
@@ -84,6 +100,12 @@ def test_stage2_review_scheduling_by_profile(monkeypatch, tmp_path, profile, thi
         return answer
 
     answer = asyncio.run(run())
+    if profile == "flash":
+        assert answer is None
+        assert len(captured) == 1
+        assert captured[0]["chat_template_kwargs"]["enable_thinking"] is False
+        assert "JACK READ-ONLY WORKING-STATE SOURCE DATA" not in json.dumps(captured[0]["messages"])
+        return
     assert answer["choices"][0]["message"]["content"] == "Working knowledge"
     assert len(captured) == 1
     payload = captured[0]
@@ -91,8 +113,20 @@ def test_stage2_review_scheduling_by_profile(monkeypatch, tmp_path, profile, thi
     assert "tools" not in payload and "tool_choice" not in payload
     all_messages = json.dumps(payload["messages"])
     assert "Unrelated historical request" not in all_messages
-    assert "Clock updated and read back." in all_messages
+    assert "Clock updated and read back." not in all_messages
+    assert "Summarize today's clock work." not in all_messages
+    assert [m["role"] for m in payload["messages"]] == ["system", "user"]
+    assert payload["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT + "\n\n" + k.AGENTIC_STAGE2_MEMORY_TRIGGER
+    prefix = "JACK READ-ONLY WORKING-STATE SOURCE DATA, NOT A USER REQUEST.\n"
+    suffix = "\nEND JACK WORKING-STATE SOURCE DATA."
+    capsule = payload["messages"][1]["content"]
+    assert capsule.startswith(prefix) and capsule.endswith(suffix)
+    assert json.loads(capsule[len(prefix):-len(suffix)])["events"] == [
+        {"type": "reasoning_segment", "phase": "initial",
+         "content": "R1: verified clock hand update."}
+    ]
     assert not hasattr(k.CFG, "agentic_stage2_final_review")
-    assert "Remove repetition, unnecessary deliberation, and conversational language." in all_messages
+    assert k.CFG.agentic_final_review is (profile == "translated")
+    assert "Do not independently add discoveries" in payload["messages"][0]["content"]
     assert not any("review the working knowledge for consequential omissions" in
                    str(msg.get("content", "")) for msg in payload["messages"])

@@ -120,7 +120,7 @@ def test_profiles_thorough_baseline_balanced_single_requested_prompt_difference(
 ):
     t = kernel(monkeypatch, tmp_path / "t", "thorough")
     b = kernel(monkeypatch, tmp_path / "b", "balanced")
-    e = kernel(monkeypatch, tmp_path / "e", "exhaustive")
+    e = kernel(monkeypatch, tmp_path / "e", "translated")
     f = kernel(monkeypatch, tmp_path / "f", "flash")
     assert t.STAGES["extended_initial"].thinking
     assert t.STAGES["extended_reflection"].thinking
@@ -131,17 +131,19 @@ def test_profiles_thorough_baseline_balanced_single_requested_prompt_difference(
     )
     assert "Reasoning effort is set to xhigh." in t.AGENTIC_STAGE1_PROMPT
     assert t.AGENTIC_36_STAGE2_PROMPT == b.AGENTIC_36_STAGE2_PROMPT
-    assert t.AGENTIC_36_STAGE2_PROMPT == e.AGENTIC_36_STAGE2_PROMPT
+    assert "Write the retained working knowledge in English" in e.AGENTIC_36_STAGE2_PROMPT
+    assert "Write the retained working knowledge in English" not in t.AGENTIC_36_STAGE2_PROMPT
+    assert e.STAGES["extended_reflection"].thinking
     assert not t.CFG.agentic_final_review
     assert not b.CFG.agentic_final_review
     assert e.CFG.agentic_final_review
     assert not f.STAGES["extended_initial"].thinking
 
 
-def test_exhaustive_unifies_initial_and_extension_reasoning_without_instruction(
+def test_translated_preserves_initial_and_extension_reasoning_without_instruction(
     monkeypatch, tmp_path,
 ):
-    k = kernel(monkeypatch, tmp_path, "exhaustive")
+    k = kernel(monkeypatch, tmp_path, "translated")
     instruction = k.AGENTIC_FINAL_REVIEW_TRIGGER
     h = [
         {"role": "user", "content": "Produce a verified result"},
@@ -154,7 +156,7 @@ def test_exhaustive_unifies_initial_and_extension_reasoning_without_instruction(
     ]
     events = k._agentic_stage2_chronological_source(h)
     assert [v["type"] for v in events] == ["reasoning_segment", "reasoning_segment"]
-    assert [v["phase"] for v in events] == ["stage1", "stage1"]
+    assert [v["phase"] for v in events] == ["initial", "translation"]
     assert [v["content"] for v in events] == [
         "R1 initial observation", "R1 extension corrected prior error"
     ]
