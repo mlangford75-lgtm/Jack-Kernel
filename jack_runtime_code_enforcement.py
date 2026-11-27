@@ -244,7 +244,7 @@ def install(jk: Any) -> RuntimeCodeAuthority:
 
     guard = RuntimeCodeAuthority()
     # Register the *effective* Source Drift Protection wrapped bindings first. These are
-    # replaced below with Phase-9 wrappers; the final manifest is captured
+    # replaced below with runtime code integrity wrappers; the final manifest is captured
     # only after the complete wrapping composition.
     original_run = jk.KERNEL.run
     original_stream = jk.KERNEL.stream

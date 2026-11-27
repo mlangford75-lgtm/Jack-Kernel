@@ -1,4 +1,4 @@
-"""Phase 11 candidate: exact protected-value redaction at diagnostic sinks.
+"""Diagnostic Privacy: exact protected-value redaction at diagnostic sinks.
 
 Never rewrite model output, authenticated tool evidence, or authoritative state.
 Optional archives containing protected data are withheld rather than falsified.
@@ -124,7 +124,7 @@ def protect_logging_handlers(boundary):
 
 
 def install_http_diagnostic_guard(jk, boundary):
-    """Inspect actual error responses; preserve established Phase 7 markers."""
+    """Inspect actual error responses; preserve established Credential Isolation markers."""
     from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
     from fastapi.exceptions import RequestValidationError
     from fastapi.responses import JSONResponse

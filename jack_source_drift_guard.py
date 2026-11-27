@@ -805,7 +805,7 @@ def activate_runtime_enforcement(
     if not getattr(jk, "_JACK_SOURCE_AUTHORITY_INSTALLED", False):
         raise RuntimeError("Source Drift Protection enforcement requires an installed Source Drift Protection baseline baseline")
 
-    # Separate activation verification preserves the Phase-8A ordering:
+    # Separate activation verification preserves the source authority activation ordering:
     # sealed baseline -> exact pre-ready verification -> live enforcement -> ready.
     authority.verify_for_authority_boundary()
 

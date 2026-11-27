@@ -10446,7 +10446,7 @@ class JackQwenKernel:
 
         # Withheld-call provenance is host-owned. Never trust a backend/model-supplied
         # private field with the same name.
-        msg.pop("_jack_phase4_withheld_tool_call_ids", None)
+        msg.pop("_jack_restricted_path_withheld_tool_call_ids", None)
         if msg.get("tool_calls"):
             proposed_calls = list(msg.get("tool_calls") or [])
             allowed_calls, path_authorization_errors = (
@@ -10497,10 +10497,10 @@ class JackQwenKernel:
                     and str(call.get("id") or "").strip() not in allowed_ids
                 ]
                 msg["tool_calls"] = allowed_calls
-                msg["_jack_phase4_deferred_tool_rejection_errors"] = list(
+                msg["_jack_restricted_path_deferred_tool_rejection_errors"] = list(
                     path_authorization_errors
                 )
-                msg["_jack_phase4_withheld_tool_call_ids"] = withheld_ids
+                msg["_jack_restricted_path_withheld_tool_call_ids"] = withheld_ids
 
         if not msg.get("tool_calls"):
             if AGENTIC_TRANSLATED_MODE and stage_key == "extended_initial":
@@ -11260,7 +11260,7 @@ class JackQwenKernel:
 
         # Streaming reconstruction creates host-owned message state, but clear the
         # private field explicitly so this path mirrors non-stream semantics.
-        message.pop("_jack_phase4_withheld_tool_call_ids", None)
+        message.pop("_jack_restricted_path_withheld_tool_call_ids", None)
         if message.get("tool_calls"):
             proposed_calls = list(message.get("tool_calls") or [])
             allowed_calls, path_authorization_errors = (
@@ -11322,10 +11322,10 @@ class JackQwenKernel:
                     and str(call.get("id") or "").strip() not in allowed_ids
                 ]
                 message["tool_calls"] = allowed_calls
-                message["_jack_phase4_deferred_tool_rejection_errors"] = list(
+                message["_jack_restricted_path_deferred_tool_rejection_errors"] = list(
                     path_authorization_errors
                 )
-                message["_jack_phase4_withheld_tool_call_ids"] = withheld_ids
+                message["_jack_restricted_path_withheld_tool_call_ids"] = withheld_ids
 
         unexpected_reasoning = message.get("reasoning_content") or message.get("reasoning")
         if unexpected_reasoning and not profile.thinking:
@@ -12151,9 +12151,9 @@ class JackQwenKernel:
         deferred_errors = tuple(
             str(item)
             for item in (
-                msg.get("_jack_phase4_deferred_tool_rejection_errors")
+                msg.get("_jack_restricted_path_deferred_tool_rejection_errors")
                 if isinstance(
-                    msg.get("_jack_phase4_deferred_tool_rejection_errors"),
+                    msg.get("_jack_restricted_path_deferred_tool_rejection_errors"),
                     list,
                 )
                 else []
@@ -12164,8 +12164,8 @@ class JackQwenKernel:
             dict.fromkeys(
                 str(item).strip()
                 for item in (
-                    msg.get("_jack_phase4_withheld_tool_call_ids")
-                    if isinstance(msg.get("_jack_phase4_withheld_tool_call_ids"), list)
+                    msg.get("_jack_restricted_path_withheld_tool_call_ids")
+                    if isinstance(msg.get("_jack_restricted_path_withheld_tool_call_ids"), list)
                     else []
                 )
                 if str(item).strip()
@@ -12443,7 +12443,7 @@ class JackQwenKernel:
                     # denied siblings once after their actual results return;
                     # never rerun the rejected operation under a new ID.
                     tracker.fail(
-                        "phase4_withheld_action", error,
+                        "restricted_path_withheld_action", error,
                         call_id=f"{state.resume_id}:withheld:{index}",
                         policy_denial=_immutable_path_denial([error]),
                     )
@@ -12541,7 +12541,7 @@ class JackQwenKernel:
         if _agentic_memory_is_instruction_echo(memory):
             raise HTTPException(status_code=502, detail="Agentic Stage 2 echoed its host instruction instead of producing working memory.")
         # Preserve the actual Stage-2 memory as its own shadow artifact.
-        # Existing outward formatting still includes the host receipt until Phase 3.
+        # Existing outward formatting still includes the host receipt for historical artifact compatibility.
         unadorned_memory = memory
         # Flash's complete memory must be exactly "Turn N"; tool evidence
         # remains available through the separately retained tool history.
@@ -15505,7 +15505,7 @@ class AgenticTurnShadowRecord:
     memory: Optional[AgenticMemoryArtifact]
     tool_receipt: str
     status: str
-    # Phase 3A: every actual commit has a Jack-minted identity and exact user origin.
+    # Every actual commit has a Jack-minted identity and exact user origin.
     turn_id: str = ""
     user_request: Optional[AgenticUserRequestArtifact] = None
 

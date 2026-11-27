@@ -366,7 +366,7 @@ def test_orchestration_quarantine_live_replay_mirrors_and_benign_completion(monk
                                  "content": "safe " + prefix + "!" + prefix}}})
         assert hub._buffer[-2]["data"]["assistantMessageEvent"]["delta"] == prefix
         assert hub._buffer[-1]["type"] == "message_end"
-        assert not hub._jack_phase7_orchestration_credential_carry
+        assert not hub._jack_credential_orchestration_credential_carry
         await hub.unsubscribe(queue)
 
     asyncio.run(run())
@@ -390,7 +390,7 @@ def test_orchestration_quarantine_incomplete_connection_discards_prefix(monkeypa
         hub = m.OrchestrationEventHub(replay_limit=8)
         queue, _ = await hub.subscribe(None)
         await hub._consume_stream(Upstream())
-        assert not hub._jack_phase7_orchestration_credential_carry
+        assert not hub._jack_credential_orchestration_credential_carry
         assert prefix.encode() not in await queue.get()
         _, replay = await hub.subscribe(0)
         assert prefix.encode() not in b"".join(replay)

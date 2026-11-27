@@ -124,7 +124,7 @@ _AUTHORITY_FACT_TYPES = (
 
 _CURRENT_CONSEQUENCE_BOUNDARY: contextvars.ContextVar[ConsequenceBoundary] = (
     contextvars.ContextVar(
-        "jack_phase5_consequence_boundary",
+        "jack_consequence_boundary",
         default=ConsequenceBoundary.TOOL_CALL,
     )
 )

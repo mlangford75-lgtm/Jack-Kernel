@@ -220,7 +220,7 @@ def test_nonstream_stage_keeps_safe_sibling_and_defers_denied_notice():
     message = result["choices"][0]["message"]
 
     assert [item["id"] for item in message["tool_calls"]] == ["call-safe"]
-    deferred = message["_jack_phase4_deferred_tool_rejection_errors"]
+    deferred = message["_jack_restricted_path_deferred_tool_rejection_errors"]
     assert len(deferred) == 1
     assert r"D:\Outside" not in deferred[0]
 
@@ -269,8 +269,8 @@ def test_checkpoint_tracks_only_authorized_ids_and_deferred_denial():
 
     message = data["choices"][0]["message"]
     assert [item["id"] for item in message["tool_calls"]] == ["call-safe"]
-    assert message["_jack_phase4_withheld_tool_call_ids"] == ["call-denied"]
-    assert len(message["_jack_phase4_deferred_tool_rejection_errors"]) == 1
+    assert message["_jack_restricted_path_withheld_tool_call_ids"] == ["call-denied"]
+    assert len(message["_jack_restricted_path_deferred_tool_rejection_errors"]) == 1
 
     result = asyncio.run(
         jack._register_stage_tool_resume(
@@ -318,7 +318,7 @@ def test_resume_history_orders_safe_result_before_host_denial_notice():
         expected_tool_call_ids=("call-safe",),
         created_at=0.0,
         deferred_tool_rejection_errors=(
-            "tool call 1: host-owned Phase-4 path policy denied "
+            "tool call 1: host-owned Restricted Paths / Workspace Lock path policy denied "
             "the represented filesystem target",
         ),
     )
