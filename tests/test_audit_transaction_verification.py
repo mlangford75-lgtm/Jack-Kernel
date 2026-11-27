@@ -10,7 +10,7 @@ from test_audit_cache_cost_evidence import mock_backend, dispatch
 
 
 @pytest.mark.parametrize("streamed", [False, True])
-def test_v1_stage2_budget_terminal_policy_evidence(monkeypatch, tmp_path, streamed):
+def test_v1_stage2_budget_preserves_frozen_answer_and_forensic_state(monkeypatch, tmp_path, streamed):
     monkeypatch.setenv("JACK_OUTPUT_BUDGET_TOKENS", "64")
     k = load(monkeypatch, tmp_path, profile="balanced")
     answer = "Exact frozen A1."
@@ -46,8 +46,7 @@ def test_v1_stage2_budget_terminal_policy_evidence(monkeypatch, tmp_path, stream
         else:
             visible = (await k.KERNEL.run(body)).content
         assert len(calls) == 2, calls
-        assert "Jack Failure: Output Budget" in visible
-        assert answer not in visible
+        assert visible == answer
         records = list(k._AGENTIC_TURN_LIFECYCLES.values())
         assert len(records) == 1
         saved = k._agentic_forensic_journal().get(records[0].turn_id)
