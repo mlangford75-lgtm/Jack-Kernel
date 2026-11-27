@@ -319,3 +319,56 @@ def test_v3_idle_discovery_and_request_admission_are_serialized(monkeypatch, tmp
             await backend._client.aclose()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("streamed", [False, True])
+def test_v4_existing_responses_instruction_authority_evidence(monkeypatch, tmp_path, streamed):
+    import jack_responses_compat as compat
+
+    k = load(monkeypatch, tmp_path, profile="balanced")
+    compat._install_caller_system_contract_compat(k)
+    body = {"instructions": "Top-level Responses instruction sentinel.",
+            "input": [
+                {"role": "system", "content": "Later system sentinel."},
+                {"role": "developer", "content": "History developer sentinel."},
+                {"role": "user", "content": "Actual user task."},
+            ], "stream": streamed}
+    chat, _ = compat._chat_body(body)
+    sanitized = k.sanitize_agent_request(chat)
+    assert sanitized["messages"][0]["role"] == "developer"
+    secondary = k.merged_secondary_system_prompt(sanitized["messages"])
+    assert secondary == ""
+    history = k.strip_secondary_system_messages(sanitized["messages"])
+    assert history == [{"role": "user", "content": "Actual user task."}]
+    received = []
+
+    async def run():
+        backend = await mock_backend(k, received)
+        try:
+            kwargs = dict(messages=history, secondary_system=secondary,
+                          profile=k.STAGES["extended_initial"])
+            if streamed:
+                async for _ in backend.chat_stream(**kwargs):
+                    pass
+            else:
+                await backend.chat(**kwargs)
+        finally:
+            await backend._client.aclose()
+
+    asyncio.run(run())
+    assert len(received) == 1
+    wire = json.dumps(received[0]["messages"])
+    assert "Actual user task." in wire
+    for sentinel in ("Top-level Responses instruction sentinel.",
+                     "Later system sentinel.", "History developer sentinel."):
+        assert sentinel not in wire
+    # A directly supplied leading system contract remains the only caller
+    # contract under current policy, and must never govern Agentic Stage 2.
+    leading, _ = compat._chat_body({"input": [
+        {"role": "system", "content": "Leading system sentinel."},
+        {"role": "user", "content": "Actual user task."},
+    ]})
+    contract = k.merged_secondary_system_prompt(leading["messages"])
+    assert contract == "Leading system sentinel."
+    assert contract in k.build_stage_system_prompt(contract, k.STAGES["extended_initial"])
+    assert contract not in k.build_stage_system_prompt(contract, k.STAGES["extended_reflection"])

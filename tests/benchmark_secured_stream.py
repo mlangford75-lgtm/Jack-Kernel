@@ -9,10 +9,12 @@ Timing is informational; exact logical response and authority state are asserted
 from __future__ import annotations
 
 import asyncio
+import cProfile
 import json
 import os
 from pathlib import Path
 import platform
+import pstats
 import statistics
 import subprocess
 import sys
@@ -34,6 +36,35 @@ def summary(values):
         "p95": ordered[int((len(ordered) - 1) * .95)],
         "max": ordered[-1],
     }
+
+
+def profile_summary(profiler):
+    """Report aggregate call timing only; no inputs, locals or source text.
+
+    Inclusive times overlap; exclusive totals are additive. Strip host paths
+    and restrict rows to known repository modules plus aggregate total.
+    """
+    stats = pstats.Stats(profiler)
+    selected = {
+        "jack_runtime_code_guard.py", "jack_source_drift_guard.py",
+        "jack_phase9b_enforcement.py", "jack_phase10_canary_enforcement.py",
+        "jack_phase10_credential_enforcement.py", "jack_phase10_dynamic_authority.py",
+        "jack_phase10_path_enforcement.py", "jack_evidence_guard.py",
+        "jack_credential_guard.py", "jack_phase11_privacy.py",
+    }
+    rows = []
+    modules = {}
+    for (filename, line, name), (primitive, calls, own, cumulative, _) in stats.stats.items():
+        module = Path(filename).name
+        if module not in selected:
+            continue
+        modules[module] = modules.get(module, 0.0) + own
+        rows.append({"module": module, "line": line, "function": name,
+                     "primitive_calls": primitive, "calls": calls,
+                     "exclusive_seconds": own, "inclusive_seconds": cumulative})
+    rows.sort(key=lambda row: row["inclusive_seconds"], reverse=True)
+    return {"profile_total_seconds": stats.total_tt,
+            "module_exclusive_seconds": modules, "top_inclusive": rows[:40]}
 
 
 def child(mode):
@@ -148,7 +179,19 @@ def child(mode):
                         stop = True
                         await task
                     gaps.append(summary(sample))
+                attribution = None
                 if mode == "secured":
+                    # Separate profiling request: do not contaminate wall-clock
+                    # samples or replace any sealed callable. cProfile records
+                    # call/time metadata, not credentials or message contents.
+                    profiler = cProfile.Profile()
+                    profiler.enable()
+                    try:
+                        profiled_size = await request()
+                    finally:
+                        profiler.disable()
+                    assert profiled_size == sizes[0]
+                    attribution = profile_summary(profiler)
                     assert guard.state == "ACTIVE", guard.mismatched_slots
                     assert source.state is phase8.SourceAuthorityState.ACTIVE
                 print(MARKER + json.dumps({
@@ -157,6 +200,7 @@ def child(mode):
                     "frames_per_second": [FRAMES / item for item in elapsed],
                     "scheduler_gap_ms": gaps,
                     "released_bytes": sizes,
+                    "profile_attribution": attribution,
                     "platform": platform.platform(),
                     "python": platform.python_version(),
                 }), flush=True)
