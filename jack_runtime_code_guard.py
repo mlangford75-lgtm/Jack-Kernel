@@ -227,6 +227,24 @@ class _RouteTableIdentity:
     scope: str = "shared"
 
 
+@dataclass(frozen=True)
+class _ExceptionHandlersIdentity:
+    label: str
+    app: Any
+    mapping: Any
+    handlers: tuple
+    scope: str = "shared"
+
+
+def _exception_handler_snapshot(app: Any) -> tuple:
+    try:
+        return tuple((key, value, _function_shape(value))
+                     for key, value in app.exception_handlers.items()
+                     if isinstance(value, types.FunctionType))
+    except Exception as exc:
+        raise RuntimeCodeIntegrityUnavailable("exception handler identity unavailable") from exc
+
+
 def _route_snapshot(app: Any) -> tuple[_RouteIdentity, ...]:
     """Record the actual registered router table, not lazy middleware state."""
     try:
@@ -258,6 +276,7 @@ class RuntimeCodeAuthority:
         self._sources: list[_SourceIdentity] = []
         self._holders: list[_HolderIdentity] = []
         self._route_tables: list[_RouteTableIdentity] = []
+        self._exception_handlers: list[_ExceptionHandlersIdentity] = []
         self._state = "INITIALIZING"
         # Pin the method that performs actual measurement. Checking it before
         # dispatch prevents straightforward descriptor rebinding from making
@@ -354,6 +373,19 @@ class RuntimeCodeAuthority:
             if any(x.label == name for x in self._route_tables):
                 raise ValueError("duplicate route table label")
             self._route_tables.append(_RouteTableIdentity(name, app, _route_snapshot(app), scope))
+
+    def register_exception_handlers(self, *, name: str, app: Any, scope: str = "shared") -> None:
+        with self._lock:
+            if self._state != "INITIALIZING":
+                raise RuntimeError("protected exception handler manifest is sealed")
+            if any(item.label == name for item in self._exception_handlers):
+                raise ValueError("duplicate protected exception handler label")
+            snapshot = _exception_handler_snapshot(app)
+            if len(snapshot) != len(app.exception_handlers):
+                raise RuntimeCodeIntegrityUnavailable("required exception handler not measurable")
+            self._exception_handlers.append(_ExceptionHandlersIdentity(
+                name, app, app.exception_handlers, snapshot, scope,
+            ))
 
     def seal(self) -> None:
         with self._lock:
@@ -456,6 +488,22 @@ class RuntimeCodeAuthority:
             ):
                 mismatches.append(table.label)
                 mismatch_scopes.add(table.scope)
+        for item in self._exception_handlers:
+            if not selected(item.scope):
+                continue
+            try:
+                current = _exception_handler_snapshot(item.app)
+                changed = (item.app.exception_handlers is not item.mapping
+                           or len(current) != len(item.app.exception_handlers)
+                           or len(current) != len(item.handlers)
+                           or any(a[0] != b[0] or a[1] is not b[1] or a[2] != b[2]
+                                  for a, b in zip(current, item.handlers)))
+            except RuntimeCodeIntegrityUnavailable as exc:
+                record_unavailable(item.scope, exc)
+                continue
+            if changed:
+                mismatches.append(item.label)
+                mismatch_scopes.add(item.scope)
         if mismatches:
             self._last_mismatches = tuple(mismatches)
             if scopes is None:

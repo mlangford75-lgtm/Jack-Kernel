@@ -441,8 +441,9 @@ def _install_retained_diagnostic_hook(
 
     def recorded_setattr(self: Any, name: str, value: Any) -> None:
         if name == "_last_error" and value is not None:
-            match = credential_policy.find(
-                value,
+            from jack_diagnostic_guard import _policy_match
+            match = _policy_match(
+                credential_policy, value,
                 boundary="diagnostic_internal_state",
                 direction="host_state",
             )

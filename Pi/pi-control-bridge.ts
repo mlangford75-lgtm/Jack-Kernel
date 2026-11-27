@@ -2,7 +2,7 @@ import fs from "fs";
 import http from "http";
 import os from "os";
 import path from "path";
-import { randomUUID } from "crypto";
+import { randomUUID, timingSafeEqual } from "crypto";
 
 const HOST = "127.0.0.1";
 const DEFAULT_CONTROL_PORT = 8013;
@@ -675,7 +675,9 @@ export default async function (pi) {
   server = http.createServer(async (req, res) => {
     try {
       const authorization = req.headers.authorization || "";
-      if (!token || authorization !== `Bearer ${token}`) {
+      const supplied = Buffer.from(authorization, "utf8");
+      const expected = Buffer.from(`Bearer ${token}`, "utf8");
+      if (!token || supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
         json(res, 401, { error: "unauthorized" });
         return;
       }

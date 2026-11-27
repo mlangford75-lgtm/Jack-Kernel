@@ -350,3 +350,27 @@ def test_full_verify_cannot_clear_confirmed_scoped_invalidation():
         guard.verify()
     guard.verify_for("observation")
     assert guard.state == "INVALIDATED"
+
+
+def test_exception_handler_registry_is_sealed_and_terminal():
+    from fastapi import FastAPI, HTTPException
+    from fastapi.testclient import TestClient
+    app = FastAPI()
+
+    @app.exception_handler(HTTPException)
+    async def safe(request, exc):
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=exc.status_code, content={"detail": "safe"})
+
+    guard = RuntimeCodeAuthority()
+    guard.register(name="handler", owner=SimpleNamespace(fn=safe), attribute="fn")
+    guard.register_exception_handlers(name="handlers", app=app)
+    guard.seal()
+    with TestClient(app):
+        guard.verify_for("observation")
+    app.exception_handlers[HTTPException] = lambda *_: None
+    with pytest.raises(RuntimeCodeIntegrityCompromised):
+        guard.verify_for("model")
+    app.exception_handlers[HTTPException] = safe
+    with pytest.raises(RuntimeCodeIntegrityCompromised):
+        guard.verify_for("observation")

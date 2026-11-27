@@ -351,6 +351,7 @@ def install(jk: Any) -> RuntimeCodeAuthority:
         ("p9-resolve", code_guard, "_resolve", "shared"),
         ("p9-measure", code_guard, "_function_shape", "shared"),
         ("p9-route-snapshot", code_guard, "_route_snapshot", "shared"),
+        ("p9-handler-snapshot", code_guard, "_exception_handler_snapshot", "shared"),
         ("p9-route-classifier", sys.modules[__name__], "_http_authority_scopes", "shared"),
         ("p9-asgi", Phase9BASGIGuard, "__call__", "shared"),
     ):
@@ -436,6 +437,7 @@ def install(jk: Any) -> RuntimeCodeAuthority:
             ("pending-lock-holder", jk.KERNEL, "_pending_tool_resume_lock", "authority"),
             ("privacy-holder", jk, "_JACK_DIAGNOSTIC_PRIVACY", "shared"),
             ("privacy-values", jk._JACK_DIAGNOSTIC_PRIVACY, "_values", "shared"),
+            ("privacy-fragments", jk._JACK_DIAGNOSTIC_PRIVACY, "_fragments", "shared"),
             ("path-authority-holder", jk, "_JACK_PHASE10_PATH_AUTHORITY", "shared"),
             ("canary-authority-holder", jk, "_JACK_PHASE10_CANARY_AUTHORITY", "model"),
             ("credential-authority-holder", jk, "_JACK_PHASE10_CREDENTIAL_AUTHORITY", "authority"),
@@ -491,6 +493,7 @@ def install(jk: Any) -> RuntimeCodeAuthority:
             ("credential-publish", jk.OrchestrationEventHub, "_publish", "orchestration"),
             ("privacy-redact", privacy.PrivacyBoundary, "redact", "shared"),
             ("privacy-match", privacy.PrivacyBoundary, "_contains", "shared"),
+            ("privacy-fragment-match", privacy.PrivacyBoundary, "_contains_fragment", "shared"),
             ("privacy-archive", privacy.PrivacyBoundary, "permits_archive", "shared"),
             ("privacy-diagnostic", privacy.PrivacyBoundary, "permits_diagnostic", "shared"),
             ("privacy-text-sink", jk, "_diagnostic_text", "shared"),
@@ -502,6 +505,7 @@ def install(jk: Any) -> RuntimeCodeAuthority:
             guard.register(name=label, owner=owner, attribute=attr, scope=scope)
 
     guard.register_route_table(name="all-http-routes", app=jk.APP)
+    guard.register_exception_handlers(name="http-exception-handlers", app=jk.APP)
     guard.seal()
 
     # The *outer* HTTP guard makes it impossible to defeat request/response

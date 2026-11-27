@@ -294,3 +294,16 @@ def test_pending_recovery_settles_only_owned_working_copy():
     work.progress("edit", call_id="other")
     assert s.tool_recovery.consecutive_failures == 1
     a.verify(s)
+
+
+def test_diagnostic_canary_fragments_respect_configured_threshold():
+    from jack_evidence_guard import CanaryPattern, CanaryTier, DeterministicCanarySet
+    pattern = CanaryPattern("diagnostic", next(iter(CanaryTier)), "abcdefghijklmnoqrstuvwxyz", 40)
+    canaries = DeterministicCanarySet([pattern], max_window=100)
+    b = PrivacyBoundary(SimpleNamespace(credentials=[]), SimpleNamespace(canaries=canaries))
+    fragment = pattern.value[3:3 + pattern.match_chars]
+    below = fragment[:-1]
+    assert not b.permits_diagnostic({"detail": fragment})
+    assert not b.permits_archive({fragment: "diagnostic"})
+    assert b.redact("safe " + fragment + " tail") == ""
+    assert b.permits_diagnostic(below)

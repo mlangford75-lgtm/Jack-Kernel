@@ -72,6 +72,7 @@ import copy
 import errno
 import getpass
 import hashlib
+import hmac
 import html
 import re
 from contextlib import asynccontextmanager
@@ -15430,7 +15431,10 @@ async def enforce_kernel_auth(request: Request) -> None:
     if not CFG.api_key:
         return
     auth = request.headers.get("authorization", "")
-    if auth != f"Bearer {CFG.api_key}":
+    if not hmac.compare_digest(
+        auth.encode("utf-8", "surrogatepass"),
+        f"Bearer {CFG.api_key}".encode("utf-8", "surrogatepass"),
+    ):
         raise HTTPException(status_code=401, detail="Invalid Jack Kernel API key")
 
 
