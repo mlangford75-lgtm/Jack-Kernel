@@ -266,3 +266,31 @@ def test_v5_security_center_rejects_credential_collision_before_child(cfg, monke
     with pytest.raises(RuntimeError, match="Invalid security policy") as caught:
         jk._config_to_env(cfg)
     assert secret not in str(caught.value)
+
+def test_restore_factory_path_defaults_preserves_other_settings(factory_windows, monkeypatch, capsys):
+    factory_windows["security_path_policy"] = {
+        "version": 1, "workspace_root": r"D:\Projects\Jack",
+        "never_paths": [r"D:\Projects\Private"],
+    }
+    factory_windows["security_irq_settings"] = {"max_window": 4096, "sensitivity_percent": 25}
+    jk._security_center_summary(factory_windows)
+    assert "LOCAL SETTINGS" in capsys.readouterr().out
+    inputs = iter(["11", "y", "s"])
+    monkeypatch.setattr(jk, "_cli_input", lambda *a, **kw: next(inputs))
+    jk._edit_security_center(factory_windows)
+    assert factory_windows["security_path_policy"] is None
+    assert factory_windows["security_irq_settings"]["sensitivity_percent"] == 25
+    loaded = jk._load_cli_config()
+    active = jk._security_center_policies(loaded)[0]
+    assert active.workspace_root is None and active.user_never_roots == ()
+    jk._security_center_summary(loaded)
+    assert "FACTORY DEFAULTS" in capsys.readouterr().out
+
+
+def test_factory_path_reset_does_not_override_admin_policy(factory_windows, monkeypatch):
+    raw = json.dumps({"version": 1, "workspace_root": "D:/Admin", "never_paths": []})
+    monkeypatch.setenv("JACK_PATH_POLICY_JSON", raw)
+    inputs = iter(["11", "s"])
+    monkeypatch.setattr(jk, "_cli_input", lambda *a, **kw: next(inputs))
+    jk._edit_security_center(factory_windows)
+    assert jk._security_center_policies(factory_windows)[0].workspace_root == r"d:\admin"
