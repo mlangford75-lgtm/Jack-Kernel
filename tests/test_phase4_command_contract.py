@@ -514,3 +514,42 @@ def test_unknown_command_with_no_visible_filesystem_operands_remains_usable_unlo
     assert policy.authorize_command_tool_call(
         build(workspace=None), call(dialect, command), command_dialect=dialect,
     ).outcome is policy.PathAuthorizationOutcome.ALLOW
+
+@pytest.mark.parametrize("command", [
+    r'find "D:\Projects\Jack"',
+    r'find "D:\Projects\Jack" -mindepth 1 -maxdepth 1 -print',
+    "find . -maxdepth 1 -type f -print",
+    "find -maxdepth 1 -empty",
+])
+def test_read_only_find_workspace_inspection(command):
+    for workspace in (None, r"D:\Projects\Jack"):
+        decision = policy.authorize_command_tool_call(
+            build(workspace=workspace), call("bash", command),
+            executor_cwd=r"D:\Projects\Jack", command_dialect="bash",
+        )
+        assert decision.outcome is policy.PathAuthorizationOutcome.ALLOW
+
+
+@pytest.mark.parametrize("command", [
+    r'find "D:\Outside"',
+    r'find "D:\Projects\Jack" -delete',
+    r'find "D:\Projects\Jack" -exec echo {} +',
+    r'find -L "D:\Projects\Jack"',
+    r'find "D:\Projects\Jack" -fprint "D:\Projects\Jack\out.txt"',
+])
+def test_find_outside_workspace_or_unclassified_effects_remain_denied(command):
+    decision = policy.authorize_command_tool_call(
+        build(), call("bash", command),
+        executor_cwd=r"D:\Projects\Jack", command_dialect="bash",
+    )
+    assert decision.outcome is policy.PathAuthorizationOutcome.DENY_AND_CONTINUE
+
+
+def test_find_explicit_never_root_remains_hard_interrupt():
+    for workspace in (None, r"D:\Projects\Jack"):
+        decision = policy.authorize_command_tool_call(
+            build(workspace=workspace, never=(r"D:\Projects\Jack\Private",)),
+            call("bash", r'find "D:\Projects\Jack\Private" -maxdepth 1'),
+            executor_cwd=r"D:\Projects\Jack", command_dialect="bash",
+        )
+        assert decision.outcome is policy.PathAuthorizationOutcome.HARD_INTERRUPT
