@@ -33,19 +33,51 @@ class CacheBytePrefixProbe:
         self._last_by_stage: Dict[str, Dict[str, Any]] = {}
         self._last: Optional[Dict[str, Any]] = None
 
-    def _signature(self, wire: bytes, capture_limit: Optional[int] = None) -> Dict[str, Any]:
+    @staticmethod
+    def _signature_index(*snapshots: Optional[Dict[str, Any]]) -> Dict[tuple, Dict[str, Any]]:
+        """Temporary lookup over already retained digest-only snapshots.
+
+        Capture length is part of the identity: reusing a shorter trajectory
+        must never reduce the diagnostic coverage of a subsequent observation.
+        No new long-lived registry, raw prompt bytes, or cross-probe sharing.
+        """
+        index = {}
+        for snapshot in snapshots:
+            if snapshot is None:
+                continue
+            signatures = list(snapshot["messages"])
+            if snapshot.get("system") is not None:
+                signatures.append(snapshot["system"])
+            signatures.extend(region["sig"] for region in snapshot.get("regions", ()))
+            for signature in signatures:
+                key = (signature["sha256"], signature["byte_length"],
+                       len(signature["prefix_hashes"]))
+                index.setdefault(key, signature)
+        return index
+
+    def _signature(self, wire: bytes, capture_limit: Optional[int] = None,
+                   *, reuse: Optional[Dict[tuple, Dict[str, Any]]] = None) -> Dict[str, Any]:
         limit = self.byte_cap if capture_limit is None else max(0, min(self.byte_cap, int(capture_limit)))
+        digest = hashlib.sha256(wire).hexdigest()
+        key = (digest, len(wire), min(limit, len(wire)))
+        if reuse is not None:
+            existing = reuse.get(key)
+            if existing is not None:
+                return existing
         limited = wire[:limit]
         h = hashlib.blake2b(digest_size=8, key=self._key)
         sigs = array("Q")
         for item in limited:
             h.update(bytes((item,)))
             sigs.append(int.from_bytes(h.copy().digest(), "little"))
-        return {
+        signature = {
             "byte_length": len(wire),
-            "sha256": hashlib.sha256(wire).hexdigest(),
+            "sha256": digest,
             "prefix_hashes": sigs,
         }
+        if reuse is not None:
+            reuse[key] = signature
+        return signature
 
     def capture_regions(
         self, stage_messages: Sequence[Dict[str, Any]],
@@ -54,6 +86,7 @@ class CacheBytePrefixProbe:
         """Capture provenance BEFORE Jack consolidates model-facing system roles."""
         if not self.enabled:
             return []
+        reuse = self._signature_index(self._last)
         source_ids = {id(item) for item in prepared_messages if isinstance(item, dict)}
         result = []
         stage_seen = False
@@ -75,7 +108,7 @@ class CacheBytePrefixProbe:
             else:
                 injected_ordinal += 1
                 label = f"jack_injected_system_{injected_ordinal}"
-            result.append({"label": label, "sig": self._signature(content.encode("utf-8"))})
+            result.append({"label": label, "sig": self._signature(content.encode("utf-8"), reuse=reuse)})
         return result
 
     def _offset(self, before: Dict[str, Any], after: Dict[str, Any]) -> Dict[str, Any]:
@@ -171,21 +204,25 @@ class CacheBytePrefixProbe:
         """Report offsets only; do not touch stage_messages or output prompt text."""
         if not self.enabled:
             return None
-        wire = [
-            json.dumps(m, ensure_ascii=False, sort_keys=True,
-                       separators=(",", ":"), default=str).encode("utf-8")
-            for m in stage_messages
-        ]
+        reuse = self._signature_index(self._last_by_stage.get(str(stage)), self._last)
+        for region in regions:
+            signature = region["sig"]
+            reuse.setdefault((signature["sha256"], signature["byte_length"],
+                              len(signature["prefix_hashes"])), signature)
         first = stage_messages[0] if stage_messages else None
         system = None
         if isinstance(first, dict) and first.get("role") == "system" and isinstance(first.get("content"), str):
-            system = self._signature(first["content"].encode("utf-8"))
+            system = self._signature(first["content"].encode("utf-8"), reuse=reuse)
         # Bound total retained digest trajectories even for very long histories.
         remaining = self.byte_cap * 2
         message_sigs = []
-        for m in wire:
+        for message in stage_messages:
+            # Serialize one message at a time rather than retaining a duplicate
+            # byte representation of the complete request alongside its hashes.
+            m = json.dumps(message, ensure_ascii=False, sort_keys=True,
+                           separators=(",", ":"), default=str).encode("utf-8")
             capture = min(remaining, len(m))
-            message_sigs.append(self._signature(m, capture))
+            message_sigs.append(self._signature(m, capture, reuse=reuse))
             remaining -= capture
         current = {
             "messages": message_sigs,

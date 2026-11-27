@@ -94,3 +94,61 @@ def test_sensitive_prompt_text_not_retained_by_probe():
     assert text not in repr(probe._last)
     assert text not in repr(regions)
     assert text not in json.dumps(report)
+
+
+def test_unchanged_signatures_are_reused_without_additional_retention():
+    probe = CacheBytePrefixProbe(enabled=True)
+    messages = [{"role": "system", "content": "stable"},
+                {"role": "user", "content": "previous-secret-" * 1000}]
+    prepare_regions = lambda: probe.capture_regions(messages, [], "stable")
+    probe.observe(messages, "stage", prepare_regions())
+    old = probe._last
+    report = probe.observe(messages, "stage", prepare_regions())
+    assert report["same_stage"]["relation"] == "identical_messages"
+    assert all(new is previous for new, previous in
+               zip(probe._last["messages"], old["messages"]))
+    assert probe._last["system"] is old["system"]
+    assert probe._last["regions"][0]["sig"] is old["regions"][0]["sig"]
+    assert "previous-secret-" not in repr(probe._last)
+    assert len(probe._last_by_stage) == 1
+
+
+def test_reused_signature_requires_exact_capture_length():
+    probe = CacheBytePrefixProbe(enabled=True, byte_cap=1024)
+    wire = b"abc" * 1000
+    reuse = {}
+    short = probe._signature(wire, 16, reuse=reuse)
+    full = probe._signature(wire, reuse=reuse)
+    assert len(short["prefix_hashes"]) == 16
+    assert len(full["prefix_hashes"]) == 1024
+    assert short is not full
+    assert probe._signature(wire, 16, reuse=reuse) is short
+    assert probe._signature(wire, reuse=reuse) is full
+    changed = probe._signature(wire[:500] + b"X" + wire[501:], reuse=reuse)
+    assert probe._offset(full, changed)["first_differing_utf8_byte_offset"] == 500
+
+
+def test_reuse_reports_identical_offsets_to_fresh_signature_generation(monkeypatch):
+    import random
+    rng = random.Random(174)
+    candidate = CacheBytePrefixProbe(enabled=True, byte_cap=1024)
+    reference = CacheBytePrefixProbe(enabled=True, byte_cap=1024)
+    original = reference._signature
+    monkeypatch.setattr(reference, "_signature",
+                        lambda wire, capture_limit=None, **kw: original(wire, capture_limit))
+    snapshots = []
+    for index in range(12):
+        system = "stable" if index % 3 else "system-" + str(index)
+        historical = [{"role": "user", "content": "history " + str(n) + "é" * 400}
+                      for n in range(index % 6)]
+        changed = "x" * rng.randrange(100, 1600) + str(index)
+        messages = [{"role": "system", "content": system}, *historical,
+                    {"role": "assistant", "content": changed}]
+        snapshots.append(messages)
+    for i, messages in enumerate(snapshots):
+        stage = "stage-" + str(i % 2)
+        reports = []
+        for probe in (candidate, reference):
+            regions = probe.capture_regions(messages, [], messages[0]["content"])
+            reports.append(probe.observe(messages, stage, regions))
+        assert reports[0] == reports[1]

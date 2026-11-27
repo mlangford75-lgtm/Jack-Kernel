@@ -218,7 +218,11 @@ def test_p3_request_diagnostic_cost_evidence(monkeypatch, tmp_path, size_kib):
         try:
             for enabled in (False, True):
                 backend._cache_byte_probe.enabled = enabled
+                # First capture is cold; subsequent captures reuse only exact
+                # digest trajectories. Report both rather than hiding cold cost.
+                start = time.perf_counter_ns()
                 await dispatch(k, backend, history)
+                cold_ms = (time.perf_counter_ns() - start) / 1e6
                 times.clear()
                 elapsed = []
                 for _ in range(3):
@@ -242,6 +246,7 @@ def test_p3_request_diagnostic_cost_evidence(monkeypatch, tmp_path, size_kib):
                     tracemalloc.stop()
                 results.append({
                     "byte_probe_enabled": enabled,
+                    "cold_request_ms": cold_ms,
                     "elapsed_median_ms": statistics.median(elapsed),
                     "component_median_ms": timing,
                     "request_json_bytes": len(wire_bytes(payload)),

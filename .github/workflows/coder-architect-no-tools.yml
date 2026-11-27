@@ -7,6 +7,8 @@ on:
       - "jack_kernel.py"
       - "tests/test_coder_architect_no_tools.py"
       - "tests/test_coder_architect_readonly_role_isolation_20261124.py"
+      - "jack_cache_prefix_diagnostics.py"
+      - "tests/test_jack_cache_prefix_diagnostics.py"
       - "tests/test_audit_cache_cost_evidence.py"
       - "tests/test_audit_subsystem_cost_evidence.py"
       - ".github/workflows/coder-architect-no-tools.yml"
@@ -37,7 +39,7 @@ jobs:
         run: python -m pytest -q tests/test_coder_architect_no_tools.py tests/test_coder_architect_readonly_role_isolation_20261124.py
 
       - name: Measure P-2 wire prefix and P-3 host request diagnostics
-        run: python -m pytest -q -s tests/test_audit_cache_cost_evidence.py
+        run: python -m pytest -q -s tests/test_jack_cache_prefix_diagnostics.py tests/test_audit_cache_cost_evidence.py
 
       - name: Measure P-4 retained state and loop detector costs
         run: python -m pytest -q -s tests/test_audit_subsystem_cost_evidence.py
