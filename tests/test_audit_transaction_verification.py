@@ -129,3 +129,51 @@ def test_v2_dispatch_accounting_does_not_authenticate_model_written_labels(monke
     assert report["memory_content_bytes"] == report["frozen_answer_content_bytes"] == 0
     assert report["other_assistant_content_bytes"] == sum(
         len(m["content"].encode("utf-8")) for m in messages)
+
+
+@pytest.mark.parametrize("streamed", [False, True])
+def test_v3_historical_tool_outcomes_stay_host_only(monkeypatch, tmp_path, streamed):
+    from jack_tool_outcomes import reported_tool_outcome, FAILED, SUCCESS
+
+    k = load(monkeypatch, tmp_path, profile="balanced")
+    calls = [
+        {"id": "call_a", "type": "function",
+         "function": {"name": "read", "arguments": "{}"}},
+        {"id": "call_b", "type": "function",
+         "function": {"name": "read", "arguments": "{}"}},
+        {"id": "call_c", "type": "function",
+         "function": {"name": "read", "arguments": "{}"}},
+    ]
+    results = [
+        {"role": "tool", "tool_call_id": "call_a", "content": "Failed read.",
+         "is_error": True},
+        {"role": "tool", "tool_call_id": "call_b", "content": "Exact café result.",
+         "isError": False, "_jack_internal_tool_exchange": True},
+        {"role": "tool", "tool_call_id": "call_c", "content": "Another result.",
+         "tool_outcome": "SUCCESS"},
+    ]
+    history = [{"role": "user", "content": "Read three files."},
+               {"role": "assistant", "content": None, "tool_calls": calls},
+               *results,
+               {"role": "assistant", "content": "Earlier answer."},
+               {"role": "user", "content": "Continue."}]
+    snapshot = json.dumps(history, ensure_ascii=False, sort_keys=True)
+    received = []
+
+    async def run():
+        backend = await mock_backend(k, received)
+        try:
+            await dispatch(k, backend, history, streamed)
+        finally:
+            await backend._client.aclose()
+
+    asyncio.run(run())
+    assert len(received) == 1
+    wire_tools = [m for m in received[0]["messages"] if m["role"] == "tool"]
+    expected = [{key: m[key] for key in ("role", "tool_call_id", "content")}
+                for m in results]
+    # The strict provider tool-message shape rejects Pi/Jack outcome fields.
+    # Check the actual serialized wire view, including the false marker.
+    assert wire_tools == expected
+    assert json.dumps(history, ensure_ascii=False, sort_keys=True) == snapshot
+    assert [reported_tool_outcome(m) for m in results] == [FAILED, SUCCESS, SUCCESS]

@@ -8935,6 +8935,15 @@ class OpenAICompatibleBackend:
                 isinstance(key, str) and key.startswith("_jack_")
                 for key in message.keys()
             )
+            # Reported tool outcomes belong to Jack's canonical recovery history,
+            # not the upstream Chat Completions tool-message schema. Pi also
+            # tags replayed historical tool results, which need not have a
+            # private _jack_ field. Never mutate the caller's original message.
+            outcome_fields = ("is_error", "isError", "tool_outcome")
+            must_strip_outcome = (
+                message.get("role") == "tool"
+                and any(key in message for key in outcome_fields)
+            )
             must_strip_reasoning = bool(
                 strip_reasoning
                 and message.get("role") == "assistant"
@@ -8952,11 +8961,14 @@ class OpenAICompatibleBackend:
                 )
                 and _AGENTIC_HISTORICAL_ID_LINE_RE.search(message["content"])
             )
-            if not has_private and not must_strip_reasoning and not obsolete_id_lines and historical_memory_view is None and historical_kind != "A1":
+            if not has_private and not must_strip_outcome and not must_strip_reasoning and not obsolete_id_lines and historical_memory_view is None and historical_kind != "A1":
                 prepared.append(message)
                 continue
 
             item = dict(message)
+            if must_strip_outcome:
+                for key in outcome_fields:
+                    item.pop(key, None)
             if planner_checkpoint:
                 item["content"] = checkpoint_text
             if historical_memory_view is not None:
