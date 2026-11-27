@@ -1,7 +1,7 @@
-"""Phase 9B-C experimental selected runtime-code enforcement.
+"""Runtime Code Integrity-C experimental selected runtime-code enforcement.
 
-Install ONLY in the secured --serve child after Phase 8 is active and before
-the ASGI middleware stack is built. Phase 8 is not modified. This protects
+Install ONLY in the secured --serve child after Source Drift Protection is active and before
+the ASGI middleware stack is built. Source Drift Protection is not modified. This protects
 consequential host-owned dispatch and HTTP release under a bounded capability
 threat model; no in-process Python guard attests itself against an actor who
 can rewrite all interpreter state or replace the outer ASGI call chain.
@@ -219,7 +219,7 @@ def _selected_required_routes(jk: Any) -> tuple[Any, ...]:
 
 
 def install(jk: Any) -> RuntimeCodeAuthority:
-    """Seal selected, effective post-Phase-8 bindings before ASGI startup.
+    """Seal selected, effective post-Source Drift Protection bindings before ASGI startup.
 
     Bootstrapping is strictly in the secure service, not interactive CLI.
     Refuse an already constructed ASGI middleware stack (no silent rebaseline).
@@ -228,11 +228,11 @@ def install(jk: Any) -> RuntimeCodeAuthority:
     if getattr(jk, _PHASE9B_MARKER, False):
         if isinstance(existing, RuntimeCodeAuthority):
             return existing
-        raise RuntimeCodeIntegrityUnavailable("Phase 9B installation marker inconsistent")
+        raise RuntimeCodeIntegrityUnavailable("Runtime Code Integrity installation marker inconsistent")
     if not getattr(jk, "_JACK_SOURCE_RUNTIME_ENFORCEMENT_INSTALLED", False):
-        raise RuntimeCodeIntegrityUnavailable("Phase 9B requires active Phase 8")
+        raise RuntimeCodeIntegrityUnavailable("Runtime Code Integrity requires active Source Drift Protection")
     if getattr(jk.APP, "middleware_stack", None) is not None:
-        raise RuntimeCodeIntegrityUnavailable("Phase 9B must install before ASGI startup")
+        raise RuntimeCodeIntegrityUnavailable("Runtime Code Integrity must install before ASGI startup")
 
     import jack_consequence_gate as consequence
     import jack_evidence_guard as evidence
@@ -243,7 +243,7 @@ def install(jk: Any) -> RuntimeCodeAuthority:
     import sys
 
     guard = RuntimeCodeAuthority()
-    # Register the *effective* Phase-8 wrapped bindings first. These are
+    # Register the *effective* Source Drift Protection wrapped bindings first. These are
     # replaced below with Phase-9 wrappers; the final manifest is captured
     # only after the complete wrapping composition.
     original_run = jk.KERNEL.run
@@ -405,7 +405,7 @@ def install(jk: Any) -> RuntimeCodeAuthority:
     guard.register_source(name="source-phase9-enforcement",
                           path=Path(__file__).resolve(), scope="shared")
     # The experimental policy gates are composed before sealing. Keep the
-    # historical Phase 8 manifest frozen and extend this selected manifest.
+    # historical Source Drift Protection manifest frozen and extend this selected manifest.
     if getattr(jk, "_JACK_PHASE10_PATH_AUTHORITY", None) is not None:
         import jack_policy_integrity as static
         import jack_phase10_path_enforcement as path_gate

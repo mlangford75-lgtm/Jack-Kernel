@@ -143,7 +143,7 @@ def is_hard_security_outcome(outcome: SecurityOutcome) -> bool:
 
 
 class Phase4RestrictedPathInterrupt(RuntimeError):
-    """Hard Phase-4 boundary with no protected path detail exposed downstream."""
+    """Hard Restricted Paths / Workspace Lock boundary with no protected path detail exposed downstream."""
 
     security_outcome = SecurityOutcome.HARD_INTERRUPT
 
@@ -424,7 +424,7 @@ RUNTIME_ID = _safe_runtime_identifier(
 LANE_ID = _safe_runtime_identifier(CFG.lane_id, RUNTIME_ID)
 TOOL_LIFECYCLE_OBSERVER = ToolLifecycleObserver()
 
-# Phase 4 path authority is host-owned startup state. It is deliberately
+# Restricted Paths / Workspace Lock path authority is host-owned startup state. It is deliberately
 # separate from ordinary request fields and model-visible conversation state.
 # Binding occurs once before the serving/runtime entrypoint begins accepting
 # work. Later environment changes cannot replace the already-bound snapshot.
@@ -457,7 +457,7 @@ def _phase4_current_executor_context() -> Optional[Phase4ExecutorRequestContext]
 
 
 def _bind_runtime_path_policy() -> Any:
-    """Bind exactly one immutable host-owned Phase-4 policy to this runtime/lane."""
+    """Bind exactly one immutable host-owned Restricted Paths / Workspace Lock policy to this runtime/lane."""
     global _RUNTIME_PATH_POLICY
 
     if _RUNTIME_PATH_POLICY is not None:
@@ -2034,7 +2034,7 @@ def _append_ultra_stage_generation_trigger(
     return trigger
 
 
-# Phase 3E: optional cache-compatible Stage-2 request; dedicated Stage-2 system is default.
+# cache-append: optional cache-compatible Stage-2 request; dedicated Stage-2 system is default.
 # Set JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT=1 to explicitly opt into cache-append layout.
 # This changes only the backend REQUEST REPRESENTATION of Agentic Stage 2.
 # It does not change either stage's prompt text, frozen answer, tool authority,
@@ -2175,7 +2175,7 @@ def _agentic_stage2_test_history(
     ]
 
 
-# Phase-3G recovery: model-visible U/M/A forensic labels are OFF by default.
+# reasoning retirement recovery: model-visible U/M/A forensic labels are OFF by default.
 # The durable host-side turn journal, U/A1 hash checks, stage completion gates,
 # and Stage-2 cached-prefix topology remain active regardless of this switch.
 # Set JACK_AGENTIC_TASK_ANCHOR=1 only for explicit comparison with PR #72.
@@ -2187,7 +2187,7 @@ AGENTIC_TASK_ANCHOR_ENABLED = (
 
 # Model-visible per-turn Request/Response/Memory associations. This reuses the
 # existing durable host-minted UUID, so no second identity system is created.
-# Set to 1 to opt into the live A/B experiment; 0 preserves Phase-3G.
+# Set to 1 to opt into the live A/B experiment; 0 preserves reasoning retirement.
 # The old forensic-label experiment
 # is mutually exclusive when explicitly enabled for historical A/B testing.
 AGENTIC_TRANSACTION_LINKS_ENABLED = (
@@ -5257,7 +5257,7 @@ def _tool_call_validation_errors(
 def _phase4_partition_structured_tool_calls(
     calls: Any,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
-    """Partition completed calls at the narrowest Phase-4 release boundary.
+    """Partition completed calls at the narrowest Restricted Paths / Workspace Lock release boundary.
 
     Exact structured filesystem tools are canonicalized under Workspace Lock
     before release. Exact command-capability contracts are authorized using
@@ -5381,7 +5381,7 @@ def _phase4_partition_structured_tool_calls(
 def _phase4_structured_tool_authorization_errors(
     calls: Any,
 ) -> List[str]:
-    """Compatibility wrapper returning only recoverable Phase-4 denials."""
+    """Compatibility wrapper returning only recoverable Restricted Paths / Workspace Lock denials."""
     _, errors = _phase4_partition_structured_tool_calls(calls)
     return errors
 
@@ -5394,7 +5394,7 @@ def _phase4_executor_admission_decision(
     *,
     expected_call: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Evaluate executor facts against Jack-owned immutable Phase-4 policy."""
+    """Evaluate executor facts against Jack-owned immutable Restricted Paths / Workspace Lock policy."""
 
     if not isinstance(payload, dict):
         raise HTTPException(
@@ -5890,7 +5890,7 @@ def _agentic_caller_system_for_actual_stage(caller_system: str, profile: "StageP
     """External custom system instructions govern Agentic Stage 1, never Stage 2.
 
     Decide from the *actual* stage, not the synthetic Stage-1 profile reused by
-    the Phase-3E cache-append transport. Preserve all other modes unchanged.
+    the cache-append cache-append transport. Preserve all other modes unchanged.
     """
     if AGENTIC_MODE and profile.name == "Agentic native pass 2":
         return ""
@@ -7616,7 +7616,7 @@ def _agentic_project_committed_artifact_pair(
         (r.memory.content, r.response.content, r.tool_receipt) for r in matches
     }
     if len(fingerprints) != 1:
-        LOG.warning("Agentic Phase 3C ambiguous historical artifact boundaries; retaining caller text")
+        LOG.warning("Agentic historical memory projection ambiguous historical artifact boundaries; retaining caller text")
         return None
     memory, answer, receipt = next(iter(fingerprints))
     # Retrospective appears first; exact frozen A1 ends the old user turn.
@@ -7635,11 +7635,11 @@ def _agentic_project_committed_artifact_pair(
         for item, label in zip(result, ("M", "A1")):
             item["_jack_forensic_turn_id"] = forensic["turn_id"]
             item["_jack_forensic_role"] = label
-    LOG.info("Agentic Phase 3C projected supplied, validated M/A pair; no hidden ledger recall")
+    LOG.info("Agentic historical memory projection projected supplied, validated M/A pair; no hidden ledger recall")
     return result
 
 
-# Phase 3G one-hop native reasoning bridge: carry ONLY the immediately preceding
+# reasoning retirement one-hop native reasoning bridge: carry ONLY the immediately preceding
 # authenticated turn's Stage-2 native reasoning into the next complete turn.
 # Do not infer private thinking from memory, or carry old R1 or model prose.
 def _agentic_extract_one_hop_stage2_reasoning(raw: Any) -> Optional[str]:
@@ -7699,7 +7699,7 @@ def _agentic_finish_delayed_one_hop(history: List[Dict[str, Any]]) -> None:
         _agentic_retire_consumed_one_hop(scope.get("bridge_messages", []))
 
 
-# Phase 3F — portable, opt-in observational context accounting.
+# context accounting — portable, opt-in observational context accounting.
 # There is no inference/admission control here. No content or native reasoning is logged.
 # Byte thresholds are reporting-only, NOT model token/context capacity.
 AGENTIC_CONTEXT_ACCOUNTING_ENABLED = (
@@ -7881,9 +7881,9 @@ def _agentic_context_report_request(
             else:
                 report["budget_status"] = "invalid_budget_ignored"
         # Logging never influences dispatch. No request text or serialized body.
-        LOG.info("Agentic Phase 3F context: %s", json.dumps(report, ensure_ascii=True, sort_keys=True))
+        LOG.info("Agentic context accounting context: %s", json.dumps(report, ensure_ascii=True, sort_keys=True))
     except Exception as exc:
-        LOG.warning("Agentic Phase 3F context telemetry failed open: %s", type(exc).__name__)
+        LOG.warning("Agentic context accounting context telemetry failed open: %s", type(exc).__name__)
 
 
 def _compact_agentic_completed_capsules(
@@ -7962,7 +7962,7 @@ def _compact_agentic_completed_capsules(
         # by the exact frozen A1. Validate emptiness above, but never normalize the
         # committed content here or the next turn would silently rewrite A1.
         item["content"] = text
-        # Phase 3C: the client already supplied the whole M+A assistant artifact.
+        # historical memory projection: the client already supplied the whole M+A assistant artifact.
         # Split it only when host-recorded U, M, and A exactly agree with those
         # incoming bytes. No lookup of hidden memory from A1 alone is possible.
         projected = _agentic_project_committed_artifact_pair(retained, text)
@@ -8021,7 +8021,7 @@ def _compact_agentic_completed_capsules(
     )
     if AGENTIC_CONTEXT_ACCOUNTING_ENABLED:
         LOG.info(
-            "Agentic Phase 3F projection: authenticated_pairs=%d safe_unprojected_messages=%d opaque_unattributable_messages=%d; retained_users=%d committed_capsules=%d",
+            "Agentic context accounting projection: authenticated_pairs=%d safe_unprojected_messages=%d opaque_unattributable_messages=%d; retained_users=%d committed_capsules=%d",
             projected_pairs, projection_fallbacks, opaque_unattributable_messages,
             retained_user_turns, retained_agentic_commits,
         )
@@ -10611,7 +10611,7 @@ class JackQwenKernel:
         Reasoning/content packets remain suitable for immediate forwarding.
         Executable tool-call fragments are reconstructed privately and are not
         released from this stage runner. The outer runtime releases one complete
-        tool call only after deterministic validation/Phase-4 authorization and
+        tool call only after deterministic validation/Restricted Paths / Workspace Lock authorization and
         stage-local checkpointing. The final kind=result packet contains the
         reconstructed OpenAI-style stage response used internally.
         """
@@ -10859,7 +10859,7 @@ class JackQwenKernel:
                         if isinstance(function, dict):
                             budget.observe("output", str(function.get("name") or ""))
                             budget.observe("output", str(function.get("arguments") or ""))
-                    # Phase 4 release barrier: executable tool-call fragments stay
+                    # Restricted Paths / Workspace Lock release barrier: executable tool-call fragments stay
                     # private to Jack until the full call is reconstructed. Normal
                     # reasoning/content still streams live above. This prevents a
                     # client/executor from acting on an incomplete or unauthorized
@@ -11022,7 +11022,7 @@ class JackQwenKernel:
                         "text": "\n[JACK EMPTY STREAM — RETRYING SAME STAGE; COMPLETED TOOLS PRESERVED]\n",
                     }
                     # A completed tool result must not erase the authority to
-                    # perform NEW tools. Checkpoints, Phase-4 authorization and
+                    # perform NEW tools. Checkpoints, Restricted Paths / Workspace Lock authorization and
                     # the recovery-only completed-mutation replay guard still
                     # prevent re-executing an already accepted side effect.
                     async with contextlib.aclosing(self._run_stage_streamed(
@@ -14220,7 +14220,7 @@ class JackQwenKernel:
                                             yield event({"reasoning_content": f"\n[{label} TOOL GENERATION: {name}]\n"})
                                         # Raw executable arguments are intentionally
                                         # not mirrored onto caller-visible reasoning.
-                                        # They remain consequential state until Phase-4
+                                        # They remain consequential state until Restricted Paths / Workspace Lock
                                         # authorization has completed.
                                 else:
                                     yield event({"tool_calls": packet["tool_calls"]})
@@ -14837,7 +14837,7 @@ class JackQwenKernel:
                             elif kind == "tool_calls":
                                 # Ultra withholds unvalidated partial tool calls.
                                 # Complete calls go through the existing host
-                                # checkpoint/Phase-4 admission below.
+                                # checkpoint/Restricted Paths / Workspace Lock admission below.
                                 if not ULTRA_REVIEW_MODE:
                                     yield event({"tool_calls": packet["tool_calls"]})
                             elif kind == "keepalive":
@@ -16536,7 +16536,7 @@ async def orchestration_events(request: Request):
 
 @APP.post("/jack/security/path-admission")
 async def phase4_executor_path_admission(request: Request) -> Dict[str, Any]:
-    """Universal pre-execution Phase-4 admission for cooperating executor adapters."""
+    """Universal pre-execution Restricted Paths / Workspace Lock admission for cooperating executor adapters."""
     await enforce_kernel_auth(request)
     try:
         payload = await request.json()
@@ -18665,7 +18665,7 @@ def _install_bundled_runtime_extensions() -> None:
 
     module = sys.modules[__name__]
 
-    # Phase 4 startup authority is bound before endpoint compatibility is
+    # Restricted Paths / Workspace Lock startup authority is bound before endpoint compatibility is
     # registered and before any request can supply ordinary model/caller data.
     _bind_runtime_path_policy()
 
@@ -18694,7 +18694,7 @@ def _install_bundled_runtime_extensions() -> None:
             canary_policy=canary_policy,
         )
 
-    # Phase 5 is Kernel-owned authority. Install it explicitly from the shared
+    # Consequence Gate is Kernel-owned authority. Install it explicitly from the shared
     # bundled-extension seam after predecessor security policy is bound and
     # before compatibility surfaces are registered.
     jack_consequence_gate.install(module)
@@ -18751,7 +18751,7 @@ def main() -> None:
             _delegate_secured_serving()
             return
         # Explicit process-local test escape hatch; never selected by the CLI.
-        print("WARNING: UNSECURED TEST SERVER — Phases 8, 9B, 10 and 11 are not installed.",
+        print("WARNING: UNSECURED TEST SERVER — Source Drift Protection, Runtime Code Integrity, Policy Integrity and Diagnostic Privacy are not installed.",
               file=sys.stderr, flush=True)
     elif serving and isolated_test:
         raise SystemExit("Unsecured test option is not accepted by secured serving")

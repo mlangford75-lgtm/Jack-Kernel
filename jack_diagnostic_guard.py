@@ -461,7 +461,7 @@ def install(jk: Any, *, credential_policy: Any) -> None:
         _install_internal_state_guard(jk, credential_policy),
     )
     if not all(installed):
-        raise RuntimeError("Phase-7 diagnostic credential DLP could not bind all live surfaces")
+        raise RuntimeError("Credential Isolation and DLP diagnostic credential DLP could not bind all live surfaces")
 
     jk._JACK_DIAGNOSTIC_CREDENTIAL_DLP_INSTALLED = True
 

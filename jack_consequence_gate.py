@@ -39,7 +39,7 @@ class ContainmentScope(str, Enum):
 
 
 class UnmappedAuthorityFact(RuntimeError):
-    """An authoritative fact exists, but Phase 5 has no justified mapping yet."""
+    """An authoritative fact exists, but Consequence Gate has no justified mapping yet."""
 
 
 @dataclass(frozen=True)
@@ -55,9 +55,9 @@ class ToolSchemaFact:
 
 @dataclass(frozen=True)
 class ExecutorAdmissionIdentityFact:
-    """Live Phase-5 identity facts currently integrated at executor admission.
+    """Live Consequence Gate identity facts currently integrated at executor admission.
 
-    Exact pending tool-call correlation remains owned by the existing Phase-4
+    Exact pending tool-call correlation remains owned by the existing Restricted Paths / Workspace Lock
     admission mechanism until its raw-fact seam is centralized without changing
     validation order or blast radius.
     """
@@ -74,7 +74,7 @@ class SettlementFact:
 
 @dataclass(frozen=True)
 class ReservedEvidenceNamespaceFact:
-    """The one live evidence violation Phase 5 can currently name precisely.
+    """The one live evidence violation Consequence Gate can currently name precisely.
 
     Unknown provenance is intentionally not represented as a violation. This is
     not a generalized evidence-trust classifier.
@@ -85,7 +85,7 @@ class ReservedEvidenceNamespaceFact:
 
 @dataclass(frozen=True)
 class ApprovalFact:
-    """Policy contract only; Phase 5 has no live approval-state producer."""
+    """Policy contract only; Consequence Gate has no live approval-state producer."""
 
     approval_required: bool
     approval_valid: bool
@@ -148,7 +148,7 @@ def _enum_values(outcome_type: Any) -> Tuple[str, ...]:
 def _require_compatible_outcome_type(outcome_type: Any) -> None:
     if _enum_values(outcome_type) != _EXPECTED_OUTCOME_VALUES:
         raise RuntimeError(
-            "Jack Kernel SecurityOutcome vocabulary does not match Phase-5 contract"
+            "Jack Kernel SecurityOutcome vocabulary does not match Consequence Gate contract"
         )
 
 
@@ -228,7 +228,7 @@ def _decision_for_fact(fact: AuthorityFact, *, boundary: ConsequenceBoundary, ou
         if ok:
             return _single(fact, allow, ContainmentScope.NONE, False)
         raise UnmappedAuthorityFact(
-            "task/run/run_epoch mismatch has authoritative facts but no single Phase-5 severity may be invented until the exact existing boundary semantics are mapped"
+            "task/run/run_epoch mismatch has authoritative facts but no single Consequence Gate severity may be invented until the exact existing boundary semantics are mapped"
         )
 
     raise TypeError(f"Unsupported authority fact type: {type(fact).__name__}")
@@ -298,7 +298,7 @@ def _legacy_path_decision(decision: ConsequenceDecision, raw: path_policy.Repres
     try:
         legacy = path_policy.PathAuthorizationOutcome(decision.outcome.value)
     except ValueError as exc:
-        raise AssertionError("Phase-5 path decision cannot be represented by Phase-4 release machinery") from exc
+        raise AssertionError("Consequence Gate path decision cannot be represented by Restricted Paths / Workspace Lock release machinery") from exc
     reason = raw.reason
     if isinstance(
         decision.decisive_fact,
@@ -334,8 +334,8 @@ def _install_represented_path_gate(
             verified_default_windows_read=verified_default_windows_read,
         )
 
-        # Preserve the meaning of the frozen Phase-6 path record: it continues to
-        # reflect only predecessor represented-path facts. Phase 7 resource
+        # Preserve the meaning of the frozen Authority & Security Ledger path record: it continues to
+        # reflect only predecessor represented-path facts. Credential Isolation and DLP resource
         # authority is evaluated and recorded separately below.
         path_decision = evaluator((raw,))
         authority_ledger.record_represented_path_decision_failsoft(

@@ -12,7 +12,7 @@ import jack_authority_ledger as authority_ledger
 import jack_kernel as jk
 
 
-LOG = logging.getLogger("jack-kernel.phase8-ledger")
+LOG = logging.getLogger("jack-kernel.source-authority-ledger")
 
 
 class Phase8LedgerEventType(str, Enum):
@@ -59,12 +59,12 @@ def _record_phase8_source_event_failsoft(
     except Exception as exc:
         try:
             ledger.freeze_authority(
-                f"Phase-8D source-event recording failure: {type(exc).__name__}"
+                f"Source Drift Protection ledger observation source-event recording failure: {type(exc).__name__}"
             )
         except Exception:
             pass
         LOG.exception(
-            "Phase-8D source-event recording failed; source authority remains unchanged"
+            "Source Drift Protection ledger observation source-event recording failed; source authority remains unchanged"
         )
         return False
 
@@ -143,7 +143,7 @@ class _Phase8OrderedLedgerObserver:
                         # containment prevents even an unexpected observer bug
                         # from becoming backpressure on source authority.
                         LOG.exception(
-                            "Phase-8D observer append failed unexpectedly; "
+                            "Source Drift Protection ledger observation observer append failed unexpectedly; "
                             "source authority remains unchanged"
                         )
                     finally:
@@ -158,7 +158,7 @@ class _Phase8OrderedLedgerObserver:
             except Exception:
                 pass
             LOG.exception(
-                "Phase-8D observer processing failed and was disabled; "
+                "Source Drift Protection ledger observation observer processing failed and was disabled; "
                 "source authority remains unchanged"
             )
 
@@ -183,7 +183,7 @@ def _install_phase8_ledger_observer(jk_module: Any, authority: Any) -> bool:
     ledger = getattr(jk_module, "_JACK_AUTHORITY_LEDGER", None)
     if not isinstance(ledger, authority_ledger.AuthorityLedger):
         LOG.warning(
-            "Phase-8D ledger observer unavailable: active AuthorityLedger not found"
+            "Source Drift Protection ledger observation ledger observer unavailable: active AuthorityLedger not found"
         )
         return False
 
@@ -194,7 +194,7 @@ def _install_phase8_ledger_observer(jk_module: Any, authority: Any) -> bool:
         != str(getattr(authority, "lane_id", "") or "").strip()
     ):
         LOG.warning(
-            "Phase-8D ledger observer unavailable: ledger/source ownership mismatch"
+            "Source Drift Protection ledger observation ledger observer unavailable: ledger/source ownership mismatch"
         )
         return False
 
@@ -202,7 +202,7 @@ def _install_phase8_ledger_observer(jk_module: Any, authority: Any) -> bool:
     current_suspend = getattr(authority, "_suspend_unverified", None)
     if not callable(current_verify) or not callable(current_suspend):
         LOG.warning(
-            "Phase-8D ledger observer unavailable: source lifecycle seams not callable"
+            "Source Drift Protection ledger observation ledger observer unavailable: source lifecycle seams not callable"
         )
         return False
 
@@ -210,7 +210,7 @@ def _install_phase8_ledger_observer(jk_module: Any, authority: Any) -> bool:
         next_transition_sequence = int(getattr(authority, "transition_sequence")) + 1
     except Exception:
         LOG.warning(
-            "Phase-8D ledger observer unavailable: source transition sequence unavailable"
+            "Source Drift Protection ledger observation ledger observer unavailable: source transition sequence unavailable"
         )
         return False
 
@@ -280,7 +280,7 @@ def _install_phase8_ledger_observer(jk_module: Any, authority: Any) -> bool:
                 except Exception:
                     pass
                 LOG.exception(
-                    "Phase-8D verify observer failed; source result remains authoritative"
+                    "Source Drift Protection ledger observation verify observer failed; source result remains authoritative"
                 )
             return result
 
@@ -314,7 +314,7 @@ def _install_phase8_ledger_observer(jk_module: Any, authority: Any) -> bool:
                 except Exception:
                     pass
                 LOG.exception(
-                    "Phase-8D suspension observer failed; source transition remains authoritative"
+                    "Source Drift Protection ledger observation suspension observer failed; source transition remains authoritative"
                 )
             return transition
 
@@ -332,11 +332,11 @@ def main() -> None:
     if "--unsecured-test-serve" in sys.argv[1:]:
         raise SystemExit("Unsecured test option is not accepted by the secured entrypoint")
     # All bundled predecessor authority/security extensions converge through
-    # this shared Kernel installer before Phase 8 establishes source authority.
+    # this shared Kernel installer before Source Drift Protection establishes source authority.
     jk._install_bundled_runtime_extensions()
 
     # The interactive launcher process is not itself the serving Kernel. Seal
-    # Phase-8B source authority only in the --serve process, after predecessor
+    # Source Drift Protection baseline source authority only in the --serve process, after predecessor
     # extensions are installed and before Jack enters the serving lifecycle.
     if "--serve" in sys.argv[1:]:
         import jack_source_drift_guard
@@ -345,20 +345,20 @@ def main() -> None:
             jk,
             launch_entrypoint_path=Path(__file__).resolve(),
         )
-        # Phase 8D observes lifecycle facts only after Phase 8B has established
-        # the immutable baseline. Observer failure never blocks Phase 8C.
+        # Source Drift Protection ledger observation observes lifecycle facts only after Source Drift Protection baseline has established
+        # the immutable baseline. Observer failure never blocks Source Drift Protection enforcement.
         _install_phase8_ledger_observer(jk, authority)
-        # Phase 8C is a distinct activation step. This preserves the accepted
-        # Phase-8B install contract while wiring live enforcement only in the
+        # Source Drift Protection enforcement is a distinct activation step. This preserves the accepted
+        # Source Drift Protection baseline install contract while wiring live enforcement only in the
         # actual serving child.
         jack_source_drift_guard.activate_runtime_enforcement(jk, authority)
 
-        # Phase 9B is mandatory in every secured --serve child on this
+        # Runtime Code Integrity is mandatory in every secured --serve child on this
         # experimental branch. Branch isolation controls release readiness;
         # runtime configuration must never downgrade executable integrity.
-        # Install after Phase 8 and before Uvicorn/ASGI middleware startup.
+        # Install after Source Drift Protection and before Uvicorn/ASGI middleware startup.
         # Failure to seal the required manifest aborts secure-child startup.
-        # Compose Phase 10 path enforcement before Phase 9B seals dispatch.
+        # Compose Policy Integrity path enforcement before Runtime Code Integrity seals dispatch.
         import jack_phase10_path_enforcement
 
         jack_phase10_path_enforcement.install(jk)

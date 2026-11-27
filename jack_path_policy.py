@@ -12,7 +12,7 @@ from typing import Any, Mapping, Optional, Tuple
 STATIC_PATH_POLICY_ENV = "JACK_PATH_POLICY_JSON"
 STATIC_PATH_POLICY_VERSION = 1
 
-# Phase 4 intentionally snapshots only environment values that are ordinary
+# Restricted Paths / Workspace Lock intentionally snapshots only environment values that are ordinary
 # Windows path anchors. It does not ingest arbitrary process environment into
 # the authority object.
 PATH_ENVIRONMENT_KEYS = (
@@ -63,7 +63,7 @@ class NonFilesystemPowerShellTarget(ValueError):
 
 
 class PathAuthorizationOutcome(str, Enum):
-    """Phase-4 path classification prior to Kernel SecurityOutcome mapping."""
+    """Restricted Paths / Workspace Lock path classification prior to Kernel SecurityOutcome mapping."""
 
     ALLOW = "ALLOW"
     DENY_AND_CONTINUE = "DENY_AND_CONTINUE"
@@ -83,7 +83,7 @@ class PathAuthorizationDecision:
 
 @dataclass(frozen=True)
 class RepresentedPathAuthorityFacts:
-    """Raw deterministic Phase-4 represented-target facts.
+    """Raw deterministic Restricted Paths / Workspace Lock represented-target facts.
 
     This is the single fact representation for represented-path normalization,
     NEVER matching, Workspace Lock membership, ambiguity, and executor-cwd
@@ -142,7 +142,7 @@ _GENERIC_COMMAND_TOOL_NAMES = frozenset({"shell", "terminal", "command", "exec",
 
 # Simple commands whose represented filesystem scope is the executor cwd when
 # no explicit target is present. This is not a claim about arbitrary child
-# process behavior; Phase 4 governs represented targets, not a universal OS
+# process behavior; Restricted Paths / Workspace Lock governs represented targets, not a universal OS
 # sandbox.
 _BASH_CWD_SCOPED = frozenset({
     "git", "pytest", "dotnet",
@@ -196,7 +196,7 @@ PI_STRUCTURED_PATH_CONTRACTS = (
 
 @dataclass(frozen=True)
 class RuntimePathPolicy:
-    """Immutable host-owned Phase-4 path-policy snapshot for one runtime/lane."""
+    """Immutable host-owned Restricted Paths / Workspace Lock path-policy snapshot for one runtime/lane."""
 
     runtime_id: str
     lane_id: str
@@ -607,7 +607,7 @@ def build_runtime_path_policy(
     raw_json: str,
     host_environment: Optional[Mapping[str, Any]] = None,
 ) -> RuntimePathPolicy:
-    """Build one immutable host-owned Phase-4 startup policy snapshot.
+    """Build one immutable host-owned Restricted Paths / Workspace Lock startup policy snapshot.
 
     `raw_json` is startup configuration transport. After construction, authority
     resides only in the returned runtime/lane-bound immutable object.
@@ -1809,7 +1809,7 @@ def extract_command_paths(
 
 
 
-# Phase 4 safe default: ordinary Windows system inspection is not a destructive
+# Restricted Paths / Workspace Lock safe default: ordinary Windows system inspection is not a destructive
 # filesystem consequence. This exception is deliberately narrower than a raw
 # pathname allowlist. Only Jack-owned, positively identified read-only executor
 # contracts may request it; caller text cannot set an "intent" flag.
@@ -1879,7 +1879,7 @@ def _safe_default_windows_read(
     """Narrow host-authoritative read exemption for the *default* Windows tree.
 
     Other NEVER roots, explicit Workspace Lock, sensitive system subtrees, and
-    the separate Phase-7 credential resource guard keep their full authority.
+    the separate Credential Isolation and DLP credential resource guard keep their full authority.
     Non-Windows, dynamic, or unresolved paths do not receive this exemption.
     A None result means: apply the original path policy unchanged.
     """
@@ -1939,7 +1939,7 @@ def _safe_default_windows_read(
             target,
         )
 
-    # Phase-7 credential resources are always authoritative. When its policy is
+    # Credential Isolation and DLP credential resources are always authoritative. When its policy is
     # installed, never convert a protected resource into a read allow.
     try:
         import jack_credential_resource_guard as credential_guard
@@ -2296,7 +2296,7 @@ def authorize_structured_tool_call(
     executor_cwd: Optional[str] = None,
     defer_relative_without_executor: bool = False,
 ) -> PathAuthorizationDecision:
-    """Authorize a completed structured filesystem call under Phase 4.
+    """Authorize a completed structured filesystem call under Restricted Paths / Workspace Lock.
 
     `executor_cwd` is an executor fact, never a model/caller policy field.
     Before executable release Jack may defer a genuinely relative represented
@@ -2401,7 +2401,7 @@ def inspect_represented_path(
     executor_cwd: Optional[str] = None,
     defer_relative_without_executor: bool = False,
 ) -> RepresentedPathAuthorityFacts:
-    """Establish raw path facts without choosing a Phase-5 SecurityOutcome."""
+    """Establish raw path facts without choosing a Consequence Gate SecurityOutcome."""
 
     if not isinstance(policy, RuntimePathPolicy):
         raise TypeError("policy must be a RuntimePathPolicy")
@@ -2573,7 +2573,7 @@ def authorize_represented_path(
     defer_relative_without_executor: bool = False,
     verified_default_windows_read: bool = False,
 ) -> PathAuthorizationDecision:
-    """Legacy Phase-4 mapping from the shared raw represented-path facts."""
+    """Legacy Restricted Paths / Workspace Lock mapping from the shared raw represented-path facts."""
 
     facts = inspect_operation_path(
         policy,
