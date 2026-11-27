@@ -212,3 +212,87 @@ def test_missing_executor_cwd_denial_logs_only_safe_category(
         assert not allowed and kernel._immutable_path_denial(errors)
     finally:
         kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
+
+
+def test_literal_bash_home_operand_is_bound_before_release_and_executor_admission(
+    installed_path_gate, monkeypatch,
+):
+    workspace = r"C:\Users\Operator\Desktop\Project"
+    active = path_policy.build_runtime_path_policy(
+        runtime_id=kernel.RUNTIME_ID, lane_id=kernel.LANE_ID,
+        raw_json=json.dumps({"version": 1, "workspace_root": workspace,
+                             "never_paths": [workspace + r"\Private"]}),
+        host_environment=HOST_ENV,
+    )
+    monkeypatch.setattr(kernel, "_RUNTIME_PATH_POLICY", active)
+    context = kernel.Phase4ExecutorRequestContext(
+        protocol_version=1, runtime_id=kernel.RUNTIME_ID, lane_id=kernel.LANE_ID,
+        cwd=workspace, platform="win32", adapter="test",
+    )
+    token = kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.set(context)
+    def command_call(command):
+        return {"id": "listing", "type": "function", "function": {
+            "name": "bash", "arguments": json.dumps({"command": command})}}
+    try:
+        original = command_call("ls -la ~/Desktop/Project/clock.html")
+        allowed, errors = kernel._phase4_partition_structured_tool_calls([original])
+        assert len(allowed) == 1 and not errors
+        assert json.loads(original["function"]["arguments"])["command"].startswith("ls -la ~/")
+        assert json.loads(allowed[0]["function"]["arguments"])["command"] == (
+            "ls -la c:/users/operator/Desktop/Project/clock.html"
+        )
+        decision, applied = path_policy.authorize_executor_tool_call(
+            active, allowed[0], executor_cwd=workspace,
+            command_dialect="bash", executor_platform="win32",
+        )
+        assert applied and decision.outcome is path_policy.PathAuthorizationOutcome.ALLOW
+        allowed, errors = kernel._phase4_partition_structured_tool_calls(
+            [command_call("ls -la ~/Desktop/Other")]
+        )
+        assert not allowed and errors
+        with pytest.raises(kernel.Phase4RestrictedPathInterrupt):
+            kernel._phase4_partition_structured_tool_calls(
+                [command_call("ls -la ~/Desktop/Project/Private")]
+            )
+        for unresolved in (
+            "ls -la ~another/Desktop/Project",
+            "ls -la '~/Desktop/Project'",
+            "ls -la \\\\~/Desktop/Project",
+            "ls -la ~/Desktop/Project/*",
+            "env HOME=/other ls -la ~/Desktop/Project",
+            "ls -la ~/Desktop/Project; pwd",
+        ):
+            call = command_call(unresolved)
+            assert path_policy.rewrite_literal_bash_home_call_for_workspace_release(
+                active, call, executor_platform="win32"
+            ) == call
+    finally:
+        kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
+
+
+@pytest.mark.parametrize("command", ["Get-Location", "gl", "pwd", "Get-Item clock.html", "gi clock.html"])
+def test_powershell_ordinary_workspace_metadata_remains_usable(
+    installed_path_gate, command,
+):
+    active = build()
+    call = {"type": "function", "function": {"name": "powershell",
+            "arguments": json.dumps({"command": command})}}
+    decision, applied = path_policy.authorize_executor_tool_call(
+        active, call, executor_cwd=r"D:\Projects\Jack", command_dialect="powershell",
+    )
+    assert applied and decision.outcome is path_policy.PathAuthorizationOutcome.ALLOW
+
+
+@pytest.mark.parametrize("command, expected", [
+    (r"Get-Item D:\Outside\file.txt", path_policy.PathAuthorizationOutcome.DENY_AND_CONTINUE),
+    (r"Get-Item D:\Sensitive\file.txt", path_policy.PathAuthorizationOutcome.HARD_INTERRUPT),
+])
+def test_powershell_metadata_does_not_relax_path_policy(
+    installed_path_gate, command, expected,
+):
+    call = {"type": "function", "function": {"name": "powershell",
+            "arguments": json.dumps({"command": command})}}
+    decision, applied = path_policy.authorize_executor_tool_call(
+        build(), call, executor_cwd=r"D:\Projects\Jack", command_dialect="powershell",
+    )
+    assert applied and decision.outcome is expected

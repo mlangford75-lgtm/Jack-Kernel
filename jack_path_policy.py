@@ -152,11 +152,13 @@ _POWERSHELL_PATHLESS = frozenset({
     "get-service", "gsv",
     "get-ciminstance",
     "get-date",
+    "get-location", "gl", "pwd",
     "write-output", "echo",
     "write-host",
 })
 _POWERSHELL_PATH_COMMANDS = frozenset({
     "get-childitem", "gci", "dir", "ls",
+    "get-item", "gi",
     "get-content", "gc", "cat", "type",
     "set-content", "sc",
     "add-content", "ac",
@@ -2219,6 +2221,81 @@ def authorize_executor_tool_call(
         ),
         False,
     )
+
+
+def rewrite_literal_bash_home_call_for_workspace_release(
+    policy: RuntimePathPolicy,
+    call: Any,
+    *,
+    command_dialect: Any = None,
+    executor_platform: Optional[str] = None,
+) -> Any:
+    """Bind simple unquoted Bash home operands to the same path we authorize.
+
+    Never infer a value for a shell expression, named-user tilde, quoted
+    literal tilde, or a command containing shell control/dynamic syntax.
+    The normalized argv is both what the gate checks and what Pi receives.
+    No workspace/NEVER decision is bypassed by this representation rewrite.
+    """
+    import shlex
+
+    if not policy.workspace_enabled or str(executor_platform or "").casefold() not in {"win32", "windows"}:
+        return call
+    if not isinstance(call, dict) or not isinstance(call.get("function"), dict):
+        return call
+    function = call["function"]
+    if _command_dialect_for_tool(function.get("name"), command_dialect) != "bash":
+        return call
+    arguments = function.get("arguments")
+    command, error = _command_text_from_arguments(arguments)
+    if error or not command or "~" not in command:
+        return call
+    # Only literal argv; do not transform scripts, pipelines, assignments,
+    # comments, expansions, or shell control operators.
+    if any(c in command for c in "\r\n#;&|<>") or _has_unresolved_dynamic_shell_syntax(command, "bash"):
+        return call
+    raw = _shell_tokens(command, "powershell")
+    cooked = _shell_tokens(command, "bash")
+    if not raw or not cooked or len(raw) != len(cooked):
+        return call
+    if raw[0] != cooked[0] or cooked[0] not in _BASH_PATH_COMMANDS | {"find", "git", "pytest", "py.test", "dotnet"}:
+        return call
+    env = policy.path_environment()
+    home = _bash_environment_value("HOME", env)
+    if not home:
+        return call
+    try:
+        home = normalize_represented_windows_path(home, environment=env)
+    except RepresentedPathError:
+        return call
+    if not re.match(r"^[A-Za-z]:\\", home):
+        return call
+
+    rewritten = list(cooked)
+    changed = False
+    for index in range(1, len(raw)):
+        token = raw[index]
+        # A quote or escape changes Bash expansion semantics. Only transform
+        # an exact, unquoted home word. All other forms keep existing checks.
+        if token != cooked[index] or any(c in token for c in "\\\"'"):
+            continue
+        if token == "~" or token.startswith("~/"):
+            rewritten[index] = home.replace("\\", "/") + token[1:]
+            changed = True
+    if not changed:
+        return call
+
+    candidate = json.loads(json.dumps(call))
+    candidate_function = candidate["function"]
+    parsed = json.loads(arguments) if isinstance(arguments, str) else dict(arguments)
+    for key in _COMMAND_TEXT_KEYS:
+        if isinstance(parsed.get(key), str) and parsed[key].strip():
+            parsed[key] = shlex.join(rewritten)
+            break
+    candidate_function["arguments"] = (
+        json.dumps(parsed) if isinstance(arguments, str) else parsed
+    )
+    return candidate
 
 
 def rewrite_structured_tool_call_for_workspace_release(

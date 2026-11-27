@@ -5331,16 +5331,22 @@ def _phase4_partition_structured_tool_calls(
             )
             contract_applied = True
         else:
+            candidate = jack_path_policy.rewrite_literal_bash_home_call_for_workspace_release(
+                active_policy,
+                call,
+                command_dialect=command_dialect,
+                executor_platform=executor_platform,
+            )
             decision, contract_applied = (
                 jack_path_policy.authorize_executor_tool_call(
                     active_policy,
-                    call,
+                    candidate,
                     executor_cwd=executor_cwd,
                     command_dialect=command_dialect,
                     executor_platform=executor_platform,
                 )
             )
-            candidate = copy.deepcopy(call)
+            candidate = copy.deepcopy(candidate)
 
         if (
             not contract_applied
