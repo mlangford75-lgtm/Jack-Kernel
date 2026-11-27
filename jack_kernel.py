@@ -16286,8 +16286,13 @@ def _runtime_identity_details() -> Dict[str, Any]:
         )
     elif AGENTIC_MODE:
         mode = "agentic"
-        flow = (["coder_planner", "extended_initial", "extended_reflection"]
-                if AGENTIC_CODER_MODE else ["extended_initial", "extended_reflection"])
+        if AGENTIC_FLASH_MODE:
+            # Flash commits frozen A1 directly; no retrospective generation.
+            flow = ["extended_initial"]
+        elif AGENTIC_CODER_MODE:
+            flow = ["coder_planner", "extended_initial", "extended_reflection"]
+        else:
+            flow = ["extended_initial", "extended_reflection"]
         authoritative_stage = "extended_initial"
         retention_policy = (
             "retain_completed_user_xml_frozen_a1_prune_historical_native_reasoning_"
