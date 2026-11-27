@@ -13016,7 +13016,7 @@ class JackQwenKernel:
                     stage.get("usage"), xml_stage.get("usage")
                 )
             except Exception as exc:
-                if isinstance(exc, GenerationBudgetExceeded):
+                if terminal_stream_failure(exc) and not isinstance(exc, RepeatedLoopInterrupt):
                     raise
                 detail = _diagnostic_text(exc.detail if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}")
                 completed = self._agentic_degraded_result(history, usage, frozen_stage1_answer, detail)
@@ -13097,7 +13097,7 @@ class JackQwenKernel:
             )
             return completed
         except Exception as exc:
-            if isinstance(exc, GenerationBudgetExceeded):
+            if terminal_stream_failure(exc) and not isinstance(exc, RepeatedLoopInterrupt):
                 raise
             detail = _diagnostic_text(exc.detail if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}")
             return self._agentic_degraded_result(history, usage, frozen_answer, detail)
@@ -13232,7 +13232,7 @@ class JackQwenKernel:
                 )
                 return completed
             except Exception as exc:
-                if isinstance(exc, GenerationBudgetExceeded):
+                if terminal_stream_failure(exc) and not isinstance(exc, RepeatedLoopInterrupt):
                     raise
                 detail = _diagnostic_text(exc.detail if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}")
                 return self._agentic_degraded_result(history, usage, frozen_stage1_answer, detail)
@@ -14273,13 +14273,14 @@ class JackQwenKernel:
                             async for wire in active_stage:
                                 yield wire
                     except Exception as exc:
-                        if isinstance(exc, GenerationBudgetExceeded):
-                            raise
-                        if isinstance(exc, RepeatedLoopInterrupt) and not (
+                        frozen_memory_stage = (
                             AGENTIC_MODE and stage_key == "extended_reflection"
                             and agentic_frozen_stage1_answer is not None
-                        ):
-                            # Stage-1 and other-mode repeated loops remain terminal.
+                        )
+                        if terminal_stream_failure(exc) and not isinstance(exc, RepeatedLoopInterrupt):
+                            raise
+                        if isinstance(exc, (GenerationBudgetExceeded, RepeatedLoopInterrupt)) and not frozen_memory_stage:
+                            # Stage-1 and other-mode budgets and loops remain terminal.
                             raise
                         if AGENTIC_MODE and stage_key == "extended_reflection" and agentic_frozen_stage1_answer is not None:
                             # An interrupted Stage 2 never commits M. Explicitly
