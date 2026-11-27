@@ -16015,8 +16015,18 @@ def _agentic_begin_turn(history: List[Dict[str, Any]], *, fresh: bool) -> Option
         )
         previous.status = "stage1_active"
     _AGENTIC_ACTIVE_TURN.set(turn_id)
+    # The retention target is for retired lifecycle records, not live work.
+    # Never discard an active, suspended, or retryable frozen transaction to
+    # make room for unrelated new requests. The durable journal is not a live
+    # ownership substitute. If all owners are live, retain them until settlement.
     while len(_AGENTIC_TURN_LIFECYCLES) > _AGENTIC_SHADOW_LIMIT:
-        _AGENTIC_TURN_LIFECYCLES.pop(next(iter(_AGENTIC_TURN_LIFECYCLES)))
+        retired = next((key for key, record in _AGENTIC_TURN_LIFECYCLES.items()
+                        if key != turn_id and record.status in {
+                            "complete", "memory_failed", "stage1_failed",
+                        }), None)
+        if retired is None:
+            break
+        _AGENTIC_TURN_LIFECYCLES.pop(retired)
     return turn_id
 
 

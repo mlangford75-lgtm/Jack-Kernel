@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import weakref
 from dataclasses import asdict, dataclass
 from enum import Enum
 from functools import wraps
@@ -55,8 +56,35 @@ class ProtectedCredentialResourceBlockedPayload:
 # lookup. Key by the exact immutable credential-policy object, not merely the
 # configured runtime/lane strings: isolated runtime instances may legitimately
 # reuse the same configured identity in one embedding/test process.
-_LEDGER_BY_POLICY_OBJECT: dict[int, authority_ledger.AuthorityLedger] = {}
-_REGISTRY_LOCK = threading.Lock()
+_LEDGER_BY_POLICY_OBJECT: dict[int, tuple[weakref.ReferenceType, weakref.ReferenceType]] = {}
+_REGISTRY_LOCK = threading.RLock()
+
+
+def _ledger_for_policy(policy: Any) -> Optional[authority_ledger.AuthorityLedger]:
+    with _REGISTRY_LOCK:
+        pair = _LEDGER_BY_POLICY_OBJECT.get(id(policy))
+        if pair is None or pair[0]() is not policy:
+            return None
+        return pair[1]()
+
+
+def _bind_policy_ledger(policy: Any, ledger: authority_ledger.AuthorityLedger) -> None:
+    key = id(policy)
+    with _REGISTRY_LOCK:
+        prior = _ledger_for_policy(policy)
+        if prior is not None and prior is not ledger:
+            raise RuntimeError("Phase-7 credential policy cannot bind two ledgers")
+        if prior is ledger:
+            return
+
+        def expired(reference):
+            # A late callback must never remove a newer binding at a reused ID.
+            with _REGISTRY_LOCK:
+                pair = _LEDGER_BY_POLICY_OBJECT.get(key)
+                if pair is not None and any(item is reference for item in pair):
+                    _LEDGER_BY_POLICY_OBJECT.pop(key, None)
+
+        _LEDGER_BY_POLICY_OBJECT[key] = (weakref.ref(policy, expired), weakref.ref(ledger, expired))
 _LOG_HOOK_LOCK = threading.Lock()
 
 
@@ -505,8 +533,7 @@ def _install_log_hook(jk: Any) -> None:
 
             result = original(self, record)
             if matched_policy is not None:
-                with _REGISTRY_LOCK:
-                    ledger = _LEDGER_BY_POLICY_OBJECT.get(id(matched_policy))
+                ledger = _ledger_for_policy(matched_policy)
                 if ledger is not None:
                     record_credential_match_failsoft(
                         ledger,
@@ -534,12 +561,7 @@ def install(
     if _identity(ledger) != _identity(credential_policy):
         raise RuntimeError("Phase-7 ledger/credential policy ownership mismatch")
 
-    with _REGISTRY_LOCK:
-        policy_key = id(credential_policy)
-        prior = _LEDGER_BY_POLICY_OBJECT.get(policy_key)
-        if prior is not None and prior is not ledger:
-            raise RuntimeError("Phase-7 credential policy cannot bind two ledgers")
-        _LEDGER_BY_POLICY_OBJECT[policy_key] = ledger
+    _bind_policy_ledger(credential_policy, ledger)
 
     _install_transport_hooks(jk, ledger)
     _install_kernel_exception_hooks(jk, ledger)

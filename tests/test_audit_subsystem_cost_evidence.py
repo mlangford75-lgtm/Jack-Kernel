@@ -123,6 +123,8 @@ def test_p4_closed_ledger_registry_retention(monkeypatch, tmp_path):
         ledger.close()
         del ledger, host
     gc.collect()
+    assert not phase7._LEDGER_BY_POLICY_OBJECT
+    assert all(ref() is None for ref in refs)
     print("P4_LEDGER_REGISTRY " + json.dumps({
         "closed_ledgers": len(refs),
         "registry_entries_after_close": len(phase7._LEDGER_BY_POLICY_OBJECT),
@@ -147,6 +149,10 @@ def test_p4_pending_agentic_lifecycle_pressure(monkeypatch, tmp_path):
     present = pending in k._AGENTIC_TURN_LIFECYCLES
     owned = k._agentic_forensic_journal().get(pending)
     assert owned is not None
+    assert present
+    assert k._AGENTIC_TURN_LIFECYCLES[pending].status == "awaiting_tool"
+    assert k._agentic_begin_turn(first, fresh=False) == pending
+    assert k._AGENTIC_TURN_LIFECYCLES[pending].status == "stage1_active"
     print("P4_PENDING_LIFECYCLE " + json.dumps({
         "retention_limit": 3,
         "independent_turns": 3,
@@ -155,3 +161,40 @@ def test_p4_pending_agentic_lifecycle_pressure(monkeypatch, tmp_path):
         "resident_lifecycles": len(k._AGENTIC_TURN_LIFECYCLES),
         "measurement": "actual host-owned lifecycle registration under pressure",
     }, sort_keys=True))
+
+
+def test_p4_live_owners_not_evicted_when_all_slots_are_live(monkeypatch, tmp_path):
+    from test_agentic_coder_planner_executor import load
+    k = load(monkeypatch, tmp_path, profile="balanced")
+    monkeypatch.setattr(k, "_AGENTIC_SHADOW_LIMIT", 2)
+    owners = []
+    for index in range(4):
+        history = [{"role": "user", "content": f"Independent pending work {index}."}]
+        owner = k._agentic_begin_turn(history, fresh=True)
+        k._agentic_turn_status(history, "awaiting_tool")
+        owners.append(owner)
+    assert set(k._AGENTIC_TURN_LIFECYCLES) == set(owners)
+
+
+def test_p4_registry_weak_binding_preserves_live_identity(monkeypatch, tmp_path):
+    import jack_authority_ledger as authority
+    import jack_credential_guard as credential
+    import jack_phase7_ledger as phase7
+    monkeypatch.setattr(phase7, "_LEDGER_BY_POLICY_OBJECT", {})
+    policy = credential.RuntimeCredentialPolicy(runtime_id="p4", lane_id="lane", credentials=())
+    other = credential.RuntimeCredentialPolicy(runtime_id="p4", lane_id="lane", credentials=())
+    def make():
+        return authority.AuthorityLedger(runtime_id="p4", lane_id="lane",
+                                         projection_root=tmp_path, queue_capacity=8)
+    one, two = make(), make()
+    try:
+        phase7._bind_policy_ledger(policy, one)
+        phase7._bind_policy_ledger(other, two)
+        phase7._bind_policy_ledger(policy, one)
+        assert phase7._ledger_for_policy(policy) is one
+        assert phase7._ledger_for_policy(other) is two
+        with pytest.raises(RuntimeError, match="cannot bind two ledgers"):
+            phase7._bind_policy_ledger(policy, two)
+    finally:
+        one.close()
+        two.close()

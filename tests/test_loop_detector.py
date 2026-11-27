@@ -71,3 +71,21 @@ def test_invalid_threshold_rejected():
     import pytest
     with pytest.raises(ValueError):
         ReasoningLoopDetector(31)
+
+
+def test_trimmed_exact_detector_keeps_hash_ranges_and_detects_full_width_cycle():
+    import pytest
+    for repetitions in (4, 12, 128):
+        detector = ReasoningLoopDetector(repetitions, max_cycle_words=64)
+        limit = detector.max_cycle_words * repetitions + 1024 + 4096
+        # Exercise multiple real trim boundaries with unique words, but
+        # isolate the retention path from expensive negative suffix scanning.
+        for index in range(limit * 2):
+            detector._record(f"unique_{index}")
+        assert len(detector._words) <= limit
+        assert len(detector._prefix) == len(detector._words) + 1
+        assert len(detector._words) % 16 == (limit * 2) % 16
+        cycle = [f"new_{i}" for i in range(64)]
+        assert not detector.feed(" ".join(cycle * (repetitions - 1)) + " ")
+        assert detector.feed(" ".join(cycle) + " ")
+        assert detector.detected_cycle_words == 64
