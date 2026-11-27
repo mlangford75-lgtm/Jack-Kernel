@@ -775,10 +775,12 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 LOG = logging.getLogger("jack-kernel")
 
-if CFG.qwen_control_shape not in {"template_kwargs", "top_level", "hybrid", "ollama_openai"}:
+if CFG.qwen_control_shape not in {"template_kwargs", "top_level", "hybrid", "ollama_openai", "openai_standard"}:
     raise RuntimeError(
-        "JACK_QWEN_CONTROL_SHAPE must be template_kwargs, top_level, hybrid, or ollama_openai"
+        "JACK_QWEN_CONTROL_SHAPE must be template_kwargs, top_level, hybrid, ollama_openai, or openai_standard"
     )
+if CFG.qwen_control_shape == "openai_standard" and CFG.backend_profile != "custom":
+    raise RuntimeError("openai_standard control shape requires the Custom backend profile")
 if CFG.backend_auth_mode not in {
     "none", "bearer", "header", "basic", "authorization"
 }:
@@ -8733,7 +8735,7 @@ class OpenAICompatibleBackend:
             base["presence_penalty"] = float(profile.presence_penalty)
         # Ollama's OpenAI-compatible endpoint intentionally supports a narrower
         # sampler surface. Do not send llama.cpp-only extensions that it may reject.
-        if self.cfg.backend_profile == "ollama":
+        if self.cfg.backend_profile == "ollama" or self.cfg.qwen_control_shape == "openai_standard":
             allowed = {"temperature", "top_p", "presence_penalty"}
             return {k: v for k, v in base.items() if k in allowed}
         return base
@@ -9208,6 +9210,12 @@ class OpenAICompatibleBackend:
         # mode. Never inject a numeric zero reasoning budget: some backends
         # terminate before producing useful output. This is independent of
         # Jack's reasoning/output safety monitors and generation limits.
+
+        # Explicit standard-wire mode is not a promise that an arbitrary
+        # provider supports local native thinking controls. Do not translate
+        # those controls into guessed provider parameters or retry on rejection.
+        if self.cfg.qwen_control_shape == "openai_standard":
+            return
 
         # Ollama's OpenAI-compatible API maps reasoning_effort onto its native
         # thinking control. xhigh maps to Ollama's current "max" level.
@@ -18214,11 +18222,15 @@ def _edit_advanced(cfg: Dict[str, Any]) -> None:
     print()
     print("Advanced Qwen / backend runtime settings")
     shape = _cli_input(
-        "Qwen control shape [template_kwargs/top_level/hybrid/ollama_openai] "
+        "Qwen control shape [template_kwargs/top_level/hybrid/ollama_openai/openai_standard] "
         f"[{cfg['qwen_control_shape']}]: "
     ).strip().lower()
     if shape:
-        if shape in {"template_kwargs", "top_level", "hybrid", "ollama_openai"}:
+        if shape == "openai_standard" and _backend_profile_key(cfg) == "custom":
+            print("Standard wire mode omits local sampler extensions and native thinking controls; "
+                  "provider reasoning behavior and parameter support require separate qualification.")
+            cfg["qwen_control_shape"] = shape
+        elif shape in {"template_kwargs", "top_level", "hybrid", "ollama_openai"}:
             cfg["qwen_control_shape"] = shape
         else:
             print("Invalid control shape; keeping current value.")

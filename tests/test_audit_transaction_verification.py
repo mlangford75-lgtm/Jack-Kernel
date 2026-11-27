@@ -177,3 +177,35 @@ def test_v3_historical_tool_outcomes_stay_host_only(monkeypatch, tmp_path, strea
     assert wire_tools == expected
     assert json.dumps(history, ensure_ascii=False, sort_keys=True) == snapshot
     assert [reported_tool_outcome(m) for m in results] == [FAILED, SUCCESS, SUCCESS]
+
+
+@pytest.mark.parametrize("streamed", [False, True])
+def test_v3_explicit_standard_wire_omits_local_extensions(monkeypatch, tmp_path, streamed):
+    from dataclasses import replace
+
+    k = load(monkeypatch, tmp_path, profile="balanced")
+    history = [{"role": "user", "content": "Complete the task."}]
+    received = []
+
+    async def run():
+        # Exercise both real dispatch paths; retain the ordinary local default
+        # as a control instead of globally changing the Custom/vLLM contract.
+        for cfg in (k.CFG, replace(k.CFG, backend_profile="custom",
+                                  qwen_control_shape="openai_standard")):
+            monkeypatch.setattr(k, "CFG", cfg)
+            backend = await mock_backend(k, received)
+            try:
+                await dispatch(k, backend, history, streamed)
+            finally:
+                await backend._client.aclose()
+
+    asyncio.run(run())
+    local, standard = received
+    for field in ("top_k", "min_p", "repeat_penalty", "chat_template_kwargs"):
+        assert field in local
+        assert field not in standard
+    for field in ("enable_thinking", "preserve_thinking", "reasoning_effort", "id_slot"):
+        assert field not in standard
+    for field in ("temperature", "top_p", "presence_penalty", "model", "messages", "stream"):
+        assert standard[field] == local[field]
+    assert standard["messages"] == local["messages"]
