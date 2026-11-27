@@ -374,3 +374,83 @@ def test_exception_handler_registry_is_sealed_and_terminal():
     app.exception_handlers[HTTPException] = safe
     with pytest.raises(RuntimeCodeIntegrityCompromised):
         guard.verify_for("observation")
+
+
+def test_p1_immutable_code_memo_replays_exact_fingerprint_and_live_defaults():
+    from jack_runtime_code_guard import _function_shape
+
+    def make(value):
+        def nested():
+            return ("literal", 123, frozenset({1, 2}))
+        def fn(*, flag=False):
+            return nested(), value, flag
+        return fn
+
+    first, second = make(1), make(2)
+    memo = {}
+    for fn in (first, second, first, second):
+        assert _function_shape(fn, memo) == _function_shape(fn)
+    assert id(first.__code__) in memo
+    assert first.__code__ is second.__code__
+    old = _function_shape(first, memo)
+    first.__kwdefaults__["flag"] = True
+    assert _function_shape(first, memo) == _function_shape(first) != old
+    # The function identity is not part of the cached code subtree.
+    assert _function_shape(first, memo) != _function_shape(second, memo)
+
+
+def test_p1_code_with_mutable_executable_constant_is_never_memoized():
+    from jack_runtime_code_guard import _function_shape
+
+    def delegate():
+        return "first"
+    def changed():
+        return "second"
+    def fn():
+        return None
+
+    fn.__code__ = fn.__code__.replace(co_consts=(None, delegate))
+    memo = {}
+    old = _function_shape(fn, memo)
+    assert id(fn.__code__) not in memo
+    delegate.__code__ = changed.__code__
+    assert _function_shape(fn, memo) == _function_shape(fn) != old
+
+
+def test_p1_warm_code_memo_preserves_depth_and_node_limits():
+    from jack_runtime_code_guard import _function_shape
+
+    def delegate():
+        return 1
+    def fn():
+        return None
+
+    memo = {}
+    _function_shape(delegate, memo)
+    deep = delegate
+    for _ in range(19):
+        deep = (deep,)
+    fn.__defaults__ = (deep,)
+    for cache in (None, memo):
+        with pytest.raises(RuntimeCodeIntegrityUnavailable, match="measurement limits"):
+            _function_shape(fn, cache)
+    fn.__defaults__ = (tuple(delegate for _ in range(1000)),)
+    for cache in (None, memo):
+        with pytest.raises(RuntimeCodeIntegrityUnavailable, match="measurement limits"):
+            _function_shape(fn, cache)
+
+
+def test_p1_memo_never_survives_a_verification_boundary():
+    def run():
+        return "safe"
+
+    first = SimpleNamespace(go=run)
+    second = SimpleNamespace(go=run)
+    guard = RuntimeCodeAuthority()
+    guard.register(name="one", owner=first, attribute="go")
+    guard.register(name="two", owner=second, attribute="go")
+    guard.seal()
+    guard.verify_for("model")
+    run.__code__ = run.__code__.replace(co_consts=(None, "changed"))
+    with pytest.raises(RuntimeCodeIntegrityCompromised):
+        guard.verify_for("model")

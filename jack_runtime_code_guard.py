@@ -32,7 +32,7 @@ class _ProtectedSlotMissing(RuntimeCodeIntegrityUnavailable):
     """Confirmed absence of a previously captured executable binding."""
 
 
-def _function_shape(fn: types.FunctionType) -> bytes:
+def _function_shape(fn: types.FunctionType, code_memo: dict | None = None) -> bytes:
     """Fingerprint code and selected executable delegates without invoking them.
 
     A limited closed type grammar avoids executing arbitrary __repr__, __hash__,
@@ -42,29 +42,80 @@ def _function_shape(fn: types.FunctionType) -> bytes:
     digest = hashlib.sha256()
     visited_functions: set[int] = set()
     nodes = 0
+    # Bounded, verification-local memo of *immutable code trees only*. The
+    # original framed byte transcript is replayed, not a substitute digest.
+    # Function bindings, defaults, closure cells, and arbitrary objects are
+    # always measured live. Never retain this memo across verify boundaries.
+    capture = None
+    capturing = False
+    capture_pure = True
+    capture_depth = 0
 
     def update_atom(tag: bytes, value: bytes = b"") -> None:
-        digest.update(len(tag).to_bytes(2, "big"))
-        digest.update(tag)
-        digest.update(len(value).to_bytes(8, "big"))
-        digest.update(value)
+        nonlocal capture
+        atom = len(tag).to_bytes(2, "big") + tag + len(value).to_bytes(8, "big") + value
+        if capture is not None:
+            if len(capture) + len(atom) <= 65536:
+                capture.extend(atom)
+                return
+            digest.update(capture)
+            capture = None
+        digest.update(atom)
+
+    def walk_code(obj: types.CodeType, depth: int) -> None:
+        update_atom(b"code-bytecode", obj.co_code)
+        update_atom(b"code-exceptions", obj.co_exceptiontable)
+        for attribute in (
+            "co_argcount", "co_posonlyargcount", "co_kwonlyargcount",
+            "co_nlocals", "co_stacksize", "co_flags",
+            "co_names", "co_varnames", "co_cellvars", "co_freevars",
+            "co_consts",
+        ):
+            update_atom(b"code-attribute", attribute.encode("ascii"))
+            walk(getattr(obj, attribute), depth + 1)
 
     def walk(obj: Any, depth: int, *, keyword_defaults: bool = False) -> None:
-        nonlocal nodes
+        nonlocal nodes, capture, capturing, capture_pure, capture_depth
         nodes += 1
         if nodes > 4096 or depth > 20:
             raise RuntimeCodeIntegrityUnavailable("executable shape exceeds measurement limits")
+        if capturing:
+            capture_depth = max(capture_depth, depth)
+            if type(obj) not in (types.CodeType, type(None), bool, int, str,
+                                 bytes, float, complex, tuple, frozenset, type(Ellipsis)):
+                capture_pure = False
         if isinstance(obj, types.CodeType):
-            update_atom(b"code-bytecode", obj.co_code)
-            update_atom(b"code-exceptions", obj.co_exceptiontable)
-            for attribute in (
-                "co_argcount", "co_posonlyargcount", "co_kwonlyargcount",
-                "co_nlocals", "co_stacksize", "co_flags",
-                "co_names", "co_varnames", "co_cellvars", "co_freevars",
-                "co_consts",
-            ):
-                update_atom(b"code-attribute", attribute.encode("ascii"))
-                walk(getattr(obj, attribute), depth + 1)
+            if code_memo is None or capturing:
+                walk_code(obj, depth)
+                return
+            saved = code_memo.get(id(obj))
+            if saved is not None and saved[0] is obj:
+                _, transcript, node_count, relative_depth = saved
+                nodes += node_count - 1
+                if nodes > 4096 or depth + relative_depth > 20:
+                    raise RuntimeCodeIntegrityUnavailable("executable shape exceeds measurement limits")
+                digest.update(transcript)
+                return
+            if len(code_memo) >= 128:
+                walk_code(obj, depth)
+                return
+            start_nodes = nodes
+            capture = bytearray()
+            capturing = True
+            capture_pure = True
+            capture_depth = depth
+            try:
+                walk_code(obj, depth)
+                transcript = capture
+                if transcript is not None:
+                    digest.update(transcript)
+                    if capture_pure:
+                        code_memo[id(obj)] = (obj, bytes(transcript),
+                                              nodes - start_nodes + 1,
+                                              capture_depth - depth)
+            finally:
+                capture = None
+                capturing = False
         elif isinstance(obj, types.MethodType):
             update_atom(b"method-owner", str(id(obj.__self__)).encode("ascii"))
             walk(obj.__func__, depth + 1)
@@ -116,6 +167,8 @@ def _function_shape(fn: types.FunctionType) -> bytes:
             parts: list[bytes] = []
             for item in obj:
                 if type(item) not in (str, bytes, int, bool, float, type(None)):
+                    if capturing:
+                        capture_pure = False
                     update_atom(b"opaque-frozenset", str(id(obj)).encode("ascii"))
                     break
                 parts.append(repr((type(item).__name__, item)).encode("utf-8", "surrogatepass"))
@@ -150,7 +203,7 @@ def _function_shape(fn: types.FunctionType) -> bytes:
     return digest.digest()
 
 
-def _resolve(owner: Any, name: str) -> tuple[Any, Any, bytes]:
+def _resolve(owner: Any, name: str, code_memo: dict | None = None) -> tuple[Any, Any, bytes]:
     """Read the effective ordinary attribute; avoid invoking target itself."""
     try:
         value = getattr(owner, name)
@@ -167,7 +220,7 @@ def _resolve(owner: Any, name: str) -> tuple[Any, Any, bytes]:
     else:
         raise _ProtectedSlotMissing("protected executable is no longer a Python function/method")
     try:
-        shape = _function_shape(fn)
+        shape = _function_shape(fn, code_memo)
     except RuntimeCodeIntegrityUnavailable:
         raise
     except Exception as exc:
@@ -236,9 +289,9 @@ class _ExceptionHandlersIdentity:
     scope: str = "shared"
 
 
-def _exception_handler_snapshot(app: Any) -> tuple:
+def _exception_handler_snapshot(app: Any, code_memo: dict | None = None) -> tuple:
     try:
-        return tuple((key, value, _function_shape(value))
+        return tuple((key, value, _function_shape(value, code_memo))
                      for key, value in app.exception_handlers.items()
                      if isinstance(value, types.FunctionType))
     except Exception as exc:
@@ -401,6 +454,9 @@ class RuntimeCodeAuthority:
         mismatch_scopes: set[str] = set()
         unavailable_scopes: set[str] = set()
         measurement_error: RuntimeCodeIntegrityUnavailable | None = None
+        # At most 128 immutable transcripts of 64 KiB, owned exclusively by
+        # this synchronous check. No stale cache can authorize a later release.
+        code_memo: dict = {}
 
         def selected(scope: str) -> bool:
             return scopes is None or scope == "shared" or scope in scopes
@@ -414,7 +470,7 @@ class RuntimeCodeAuthority:
             if not selected(slot.scope):
                 continue
             try:
-                receiver, fn, shape = _resolve(slot.owner, slot.attribute)
+                receiver, fn, shape = _resolve(slot.owner, slot.attribute, code_memo)
             except _ProtectedSlotMissing:
                 mismatches.append(slot.name)
                 mismatch_scopes.add(slot.scope)
@@ -492,7 +548,7 @@ class RuntimeCodeAuthority:
             if not selected(item.scope):
                 continue
             try:
-                current = _exception_handler_snapshot(item.app)
+                current = _exception_handler_snapshot(item.app, code_memo)
                 changed = (item.app.exception_handlers is not item.mapping
                            or len(current) != len(item.app.exception_handlers)
                            or len(current) != len(item.handlers)
