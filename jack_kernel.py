@@ -18282,7 +18282,7 @@ def _config_to_env(cfg: Dict[str, Any]) -> Dict[str, str]:
 def _server_command() -> List[str]:
     if getattr(sys, "frozen", False):
         return [sys.executable, "--serve"]
-    return [sys.executable, str(Path(__file__).resolve()), "--serve"]
+    return [sys.executable, str(Path(__file__).resolve().with_name("jack_secure_entrypoint.py")), "--serve"]
 
 
 def _start_server_from_cli(cfg: Dict[str, Any]) -> None:
@@ -18628,9 +18628,52 @@ def _install_bundled_runtime_extensions() -> None:
     })
 
 
+def _secured_serving_ready() -> bool:
+    return (
+        globals().get("_JACK_SOURCE_RUNTIME_ENFORCEMENT_INSTALLED") is True
+        and all(globals().get(name) is not None for name in (
+            "_JACK_SOURCE_AUTHORITY",
+            "_JACK_RUNTIME_CODE_AUTHORITY",
+            "_JACK_PHASE10_PATH_AUTHORITY",
+            "_JACK_PHASE10_CANARY_AUTHORITY",
+            "_JACK_PHASE10_CREDENTIAL_AUTHORITY",
+            "_JACK_DIAGNOSTIC_PRIVACY",
+        ))
+    )
+
+
+def _delegate_secured_serving() -> None:
+    # Use a normal child process rather than execv: Windows does not provide
+    # POSIX process replacement semantics, and the caller must wait for and
+    # receive the actual serving child's exit status.
+    if getattr(sys, "frozen", False):
+        raise RuntimeError("Secured serving entrypoint is unavailable in this executable")
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve().with_name("jack_secure_entrypoint.py")),
+        *sys.argv[1:],
+    ]
+    raise SystemExit(subprocess.run(command, check=False).returncode)
+
+
 def main() -> None:
+    serving = "--serve" in sys.argv[1:]
+    isolated_test = "--unsecured-test-serve" in sys.argv[1:]
+    if isolated_test and not serving:
+        raise SystemExit("--unsecured-test-serve requires --serve")
+    if serving and not _secured_serving_ready():
+        if globals().get("_JACK_SOURCE_AUTHORITY_INSTALLED"):
+            raise RuntimeError("Secured serving authority composition is incomplete")
+        if not isolated_test:
+            _delegate_secured_serving()
+            return
+        # Explicit process-local test escape hatch; never selected by the CLI.
+        print("WARNING: UNSECURED TEST SERVER — Phases 8, 9B, 10 and 11 are not installed.",
+              file=sys.stderr, flush=True)
+    elif serving and isolated_test:
+        raise SystemExit("Unsecured test option is not accepted by secured serving")
     _install_bundled_runtime_extensions()
-    if "--serve" in sys.argv:
+    if serving:
         run_server()
     else:
         run_cli()

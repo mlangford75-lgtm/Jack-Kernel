@@ -329,6 +329,8 @@ def _install_phase8_ledger_observer(jk_module: Any, authority: Any) -> bool:
 
 
 def main() -> None:
+    if "--unsecured-test-serve" in sys.argv[1:]:
+        raise SystemExit("Unsecured test option is not accepted by the secured entrypoint")
     # All bundled predecessor authority/security extensions converge through
     # this shared Kernel installer before Phase 8 establishes source authority.
     jk._install_bundled_runtime_extensions()

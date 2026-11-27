@@ -483,12 +483,10 @@ def register(jk: Any) -> None:
 
 
 def main() -> None:
-    import jack_kernel as jk
-    register(jk)
-    # The interactive Jack CLI re-spawns a --serve child. Keep the compatibility
-    # route registered in that child too.
-    jk._server_command = lambda: [sys.executable, str(Path(__file__).resolve()), "--serve"]
-    jk.main()
+    # Responses compatibility is already registered by the secured entrypoint.
+    # There is no separate operational server with weaker authority.
+    from jack_secure_entrypoint import main as secured_main
+    secured_main()
 
 
 if __name__ == "__main__":
