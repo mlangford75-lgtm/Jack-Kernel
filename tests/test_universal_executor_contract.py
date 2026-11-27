@@ -85,3 +85,73 @@ def test_policy_integrity_material_distinguishes_modes():
     assert _canonical_material("path", policy(), b"x" * 32) != _canonical_material(
         "path", policy("represented"), b"x" * 32,
     )
+
+
+def custom_policy(entries):
+    return path.build_runtime_path_policy(
+        runtime_id="runtime", lane_id="lane", raw_json=json.dumps({
+            "version": 2, "workspace_mode": "represented",
+            "workspace_root": "/work", "never_paths": ["/work/Private"],
+        }), path_style="posix", host_environment={},
+        tool_contracts_json=json.dumps({"version": 1, "tools": entries}),
+    )
+
+
+def custom_contract(name="inspect_format", operation="inspect"):
+    return {"name": name, "operation": operation,
+            "path_fields": ["filename"], "argument_types": {"filename": "string", "limit": "integer"},
+            "required_fields": ["filename"]}
+
+
+def test_custom_host_contract_applies_to_rewrite_and_admission():
+    active = custom_policy([custom_contract()])
+    for value, expected in (
+        ("clock.html", path.PathAuthorizationOutcome.ALLOW),
+        ("../other", path.PathAuthorizationOutcome.DENY_AND_CONTINUE),
+        ("Private/file", path.PathAuthorizationOutcome.HARD_INTERRUPT),
+    ):
+        call = {"function": {"name": "inspect_format", "arguments": {"filename": value, "limit": 5}}}
+        rewritten = path.rewrite_structured_tool_call_for_workspace_release(active, call)
+        assert json.loads(rewritten["function"]["arguments"])["filename"].startswith("/")
+        for candidate in (call, rewritten):
+            decision, applied = path.authorize_executor_tool_call(active, candidate, executor_cwd="/work")
+            assert applied and decision.outcome is expected
+
+
+@pytest.mark.parametrize("arguments", [{}, {"filename": 4}, {"filename": "ok", "limit": True},
+                                       {"filename": "ok", "alternate": "/work/Private"}])
+def test_custom_contract_rejects_malformed_or_unknown_argument_fields(arguments):
+    active = custom_policy([custom_contract()])
+    decision, applied = path.authorize_executor_tool_call(active,
+        {"function": {"name": "inspect_format", "arguments": arguments}}, executor_cwd="/work")
+    assert applied and decision.outcome is path.PathAuthorizationOutcome.DENY_AND_CONTINUE
+
+
+def test_unregistered_tool_does_not_claim_path_coverage():
+    active = custom_policy([])
+    decision, applied = path.authorize_executor_tool_call(active,
+        {"function": {"name": "inspect_format", "arguments": {"filename": "/work/Private"}}})
+    assert not applied
+
+
+@pytest.mark.parametrize("entries", [
+    [custom_contract("read")], [custom_contract("bash")],
+    [custom_contract(), custom_contract("INSPECT_FORMAT")],
+    [dict(custom_contract(), operation="self_declared")],
+    [dict(custom_contract(), required_fields=[])],
+    [dict(custom_contract(), argument_types={"filename": "object"})],
+])
+def test_custom_contract_registry_rejects_ambiguous_or_unsupported_schema(entries):
+    with pytest.raises(RuntimeError, match="Invalid host-owned structured tool contract registry"):
+        custom_policy(entries)
+
+
+def test_custom_contract_is_sealed_and_drives_debugging_classification(monkeypatch):
+    import jack_kernel as kernel
+    from jack_policy_integrity import _canonical_material
+    active = custom_policy([custom_contract(), custom_contract("perform_operation", "mutate")])
+    monkeypatch.setattr(kernel, "_RUNTIME_PATH_POLICY", active)
+    assert _canonical_material("path", active, b"x" * 32) != _canonical_material("path", custom_policy([]), b"x" * 32)
+    assert not kernel._debugging_tool_is_direct_mutator({"function": {"name": "inspect_format"}})
+    assert kernel._debugging_tool_is_direct_mutator({"function": {"name": "perform_operation"}})
+    assert kernel._debugging_tool_is_direct_mutator({"function": {"name": "unregistered_format"}})

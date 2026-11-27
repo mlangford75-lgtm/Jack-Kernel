@@ -14,6 +14,7 @@ import jack_posix_paths
 
 STATIC_PATH_POLICY_ENV = "JACK_PATH_POLICY_JSON"
 STATIC_PATH_POLICY_VERSION = 1
+STATIC_TOOL_CONTRACT_ENV = "JACK_STRUCTURED_TOOL_CONTRACTS_JSON"
 
 # Phase 4 intentionally snapshots only environment values that are ordinary
 # Windows path anchors. It does not ingest arbitrary process environment into
@@ -114,6 +115,9 @@ class StructuredToolPathContract:
     tool_name: str
     path_fields: Tuple[str, ...]
     default_to_executor_cwd: bool = False
+    operation: str = "legacy"
+    argument_types: Tuple[Tuple[str, str], ...] = ()
+    required_fields: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -199,6 +203,51 @@ PI_STRUCTURED_PATH_CONTRACTS = (
 )
 
 
+def _parse_custom_tool_contracts(raw: str) -> Tuple[StructuredToolPathContract, ...]:
+    """Load operator-owned versioned contracts, never model declarations."""
+    if not isinstance(raw, str):
+        raise RuntimeError("structured tool contracts must be startup JSON")
+    if not raw.strip():
+        return ()
+    try:
+        payload = json.loads(raw)
+        if (type(payload) is not dict or set(payload) != {"version", "tools"}
+                or type(payload["version"]) is not int or payload["version"] != 1
+                or type(payload["tools"]) is not list or len(payload["tools"]) > 64):
+            raise ValueError
+        reserved = ({c.tool_name for c in PI_STRUCTURED_PATH_CONTRACTS}
+                    | _BASH_EXACT_TOOL_NAMES | _POWERSHELL_EXACT_TOOL_NAMES
+                    | _GENERIC_COMMAND_TOOL_NAMES)
+        entries = []
+        for item in payload["tools"]:
+            if type(item) is not dict or set(item) != {
+                "name", "operation", "path_fields", "argument_types", "required_fields",
+            }:
+                raise ValueError
+            name, operation = item["name"], item["operation"]
+            fields, schema, required = item["path_fields"], item["argument_types"], item["required_fields"]
+            if (type(name) is not str or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name)
+                    or name.casefold() in reserved or operation not in ("inspect", "mutate")
+                    or type(schema) is not dict or not 1 <= len(schema) <= 64
+                    or any(type(key) is not str or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", key)
+                           or value not in ("string", "integer", "number", "boolean")
+                           for key, value in schema.items())
+                    or type(fields) is not list or not fields
+                    or type(required) is not list
+                    or any(type(key) is not str for key in fields + required)
+                    or len(set(fields)) != len(fields) or len(set(required)) != len(required)
+                    or not set(fields).issubset(required) or not set(required).issubset(schema)
+                    or any(schema[key] != "string" for key in fields)):
+                raise ValueError
+            reserved.add(name.casefold())
+            entries.append(StructuredToolPathContract(
+                name, tuple(fields), False, operation, tuple(sorted(schema.items())), tuple(sorted(required)),
+            ))
+        return tuple(entries)
+    except (ValueError, TypeError, KeyError, RecursionError):
+        raise RuntimeError("Invalid host-owned structured tool contract registry") from None
+
+
 @dataclass(frozen=True)
 class RuntimePathPolicy:
     """Immutable host-owned Phase-4 path-policy snapshot for one runtime/lane."""
@@ -216,6 +265,7 @@ class RuntimePathPolicy:
     # Legacy locks keep bounded admission; represented coverage is opt-in.
     workspace_mode: str = "bounded"
     path_style: str = "windows"
+    custom_tool_contracts: Tuple[StructuredToolPathContract, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.runtime_id, str) or not self.runtime_id:
@@ -223,6 +273,10 @@ class RuntimePathPolicy:
         if not isinstance(self.lane_id, str) or not self.lane_id:
             raise ValueError("lane_id must not be empty")
 
+        if type(self.custom_tool_contracts) is not tuple or any(
+            type(item) is not StructuredToolPathContract for item in self.custom_tool_contracts
+        ):
+            raise TypeError("custom tool contracts must be an immutable tuple")
         if self.path_style not in {"windows", "posix"}:
             raise ValueError("unsupported host path style")
         protection = effective_protection(self.workspace_root is not None, self.workspace_mode)
@@ -667,6 +721,7 @@ def build_runtime_path_policy(
     raw_json: str,
     host_environment: Optional[Mapping[str, Any]] = None,
     path_style: Optional[str] = None,
+    tool_contracts_json: Optional[str] = None,
 ) -> RuntimePathPolicy:
     """Build one immutable host-owned Phase-4 startup policy snapshot.
 
@@ -773,6 +828,9 @@ def build_runtime_path_policy(
         user_never_roots=tuple(user_never_roots),
         workspace_mode=workspace_mode,
         path_style=style,
+        custom_tool_contracts=_parse_custom_tool_contracts(
+            os.getenv(STATIC_TOOL_CONTRACT_ENV, "") if tool_contracts_json is None else tool_contracts_json
+        ),
     )
     if workspace_root is not None and _effective_never_match(policy, workspace_root):
         raise RuntimeError(
@@ -783,6 +841,7 @@ def build_runtime_path_policy(
 
 def _structured_tool_path_contract(
     tool_name: Any,
+    custom_contracts: Tuple[StructuredToolPathContract, ...] = (),
 ) -> Optional[StructuredToolPathContract]:
     if not isinstance(tool_name, str):
         return None
@@ -792,7 +851,9 @@ def _structured_tool_path_contract(
     for contract in PI_STRUCTURED_PATH_CONTRACTS:
         if normalized == contract.tool_name:
             return contract
-
+    for contract in custom_contracts:
+        if tool_name == contract.tool_name:
+            return contract
     return None
 
 
@@ -801,10 +862,11 @@ def extract_structured_tool_paths(
     arguments: Any,
     *,
     path_style: str = "windows",
+    custom_contracts: Tuple[StructuredToolPathContract, ...] = (),
 ) -> StructuredToolPathExtraction:
     """Extract represented targets only under exact host-owned tool contracts."""
 
-    contract = _structured_tool_path_contract(tool_name)
+    contract = _structured_tool_path_contract(tool_name, custom_contracts)
 
     if contract is None:
         return StructuredToolPathExtraction(
@@ -832,6 +894,16 @@ def extract_structured_tool_paths(
             applicable=True,
             error="structured filesystem tool arguments must be an object",
         )
+
+    if contract.argument_types:
+        schema = dict(contract.argument_types)
+        types = {"string": (str,), "integer": (int,), "number": (int, float), "boolean": (bool,)}
+        if (not set(contract.required_fields).issubset(parsed)
+                or not set(parsed).issubset(schema)
+                or any(type(value) not in types[schema[key]] for key, value in parsed.items())):
+            return StructuredToolPathExtraction(
+                applicable=True, error="structured filesystem arguments violate host-owned contract schema",
+            )
 
     targets = []
 
@@ -2450,6 +2522,7 @@ def authorize_executor_tool_call(
         ((call.get("function") or {}).get("name") if isinstance(call, dict) else None),
         ((call.get("function") or {}).get("arguments") if isinstance(call, dict) else None),
         path_style=policy.path_style,
+        custom_contracts=policy.custom_tool_contracts,
     )
     if structured.applicable:
         return (
@@ -2579,7 +2652,7 @@ def rewrite_structured_tool_call_for_workspace_release(
     if not isinstance(function, dict):
         return rewritten
 
-    contract = _structured_tool_path_contract(function.get("name"))
+    contract = _structured_tool_path_contract(function.get("name"), policy.custom_tool_contracts)
     if contract is None or not policy.workspace_enabled:
         return rewritten
 
@@ -2661,6 +2734,7 @@ def authorize_structured_tool_call(
         function.get("name"),
         function.get("arguments"),
         path_style=policy.path_style,
+        custom_contracts=policy.custom_tool_contracts,
     )
 
     if not extraction.applicable:

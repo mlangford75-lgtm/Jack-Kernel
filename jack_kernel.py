@@ -2426,7 +2426,13 @@ def _debugging_tool_is_direct_mutator(tool: Dict[str, Any]) -> bool:
     filtering alone. The Debugging system contract restricts those tools to
     non-mutating diagnostic use; Jack does not claim command-level sandboxing.
     """
-    name = _debugging_tool_name(tool).lower()
+    exact_name = _debugging_tool_name(tool)
+    # Only a startup-owned contract may override the legacy name heuristic.
+    if _RUNTIME_PATH_POLICY is not None:
+        for contract in _RUNTIME_PATH_POLICY.custom_tool_contracts:
+            if exact_name == contract.tool_name:
+                return contract.operation != "inspect"
+    name = exact_name.lower()
     if any(marker in name for marker in _DEBUGGING_DIRECT_MUTATION_NAME_MARKERS):
         return True
     function = tool.get("function") if isinstance(tool, dict) else None
@@ -5339,6 +5345,7 @@ def _phase4_partition_structured_tool_calls(
             function_name,
             raw_arguments,
             path_style=active_policy.path_style,
+            custom_contracts=active_policy.custom_tool_contracts,
         )
 
         if structured.applicable:
@@ -17433,6 +17440,7 @@ def _security_center_summary(cfg: Dict[str, Any]) -> None:
     }[paths.filesystem_protection.value]))
     print(_status_value("Restricted roots", str(len(paths.never_roots))))
     print(_status_value("User NEVER paths", str(len(paths.user_never_roots))))
+    print(_status_value("Custom structured tool contracts", str(len(paths.custom_tool_contracts))))
     import jack_path_policy as path_settings
     path_source = (
         "ADMIN ENVIRONMENT" if os.getenv(path_settings.STATIC_PATH_POLICY_ENV, "").strip()
@@ -17556,6 +17564,17 @@ def _edit_security_center(cfg: Dict[str, Any]) -> None:
                     continue
                 if choice == "1":
                     candidate["workspace_root"] = root
+                    current_mode = candidate.get("workspace_mode", "bounded")
+                    print("Bounded: rejects unclassified commands; not OS containment.")
+                    print("Represented: enforces identified paths; unknown effects are not contained.")
+                    selected = _cli_input(f"Coverage [bounded/represented] (blank keeps {current_mode}): ").strip().lower()
+                    if selected and selected not in {"bounded", "represented"}:
+                        continue
+                    if selected == "represented" and current_mode != "represented":
+                        if _cli_input("Accept represented-only coverage, not full containment? [y/N]: ").strip().lower() != "y":
+                            continue
+                    if selected:
+                        candidate.update(version=2, workspace_mode=selected)
                 else:
                     candidate["never_paths"].append(root)
             elif choice == "2":

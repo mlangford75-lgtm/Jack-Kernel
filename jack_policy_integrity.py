@@ -53,7 +53,7 @@ def _tuple_strings(value: Any) -> list[str]:
 def _canonical_material(kind: PolicyKind, policy: Any, key: bytes) -> bytes:
     """Exact known type grammar; no arbitrary repr(), callbacks or user JSON."""
     if kind == "path":
-        from jack_path_policy import RuntimePathPolicy
+        from jack_path_policy import RuntimePathPolicy, StructuredToolPathContract
 
         if type(policy) is not RuntimePathPolicy:
             raise PolicyIntegrityUnavailable("required path policy type unavailable")
@@ -64,7 +64,23 @@ def _canonical_material(kind: PolicyKind, policy: Any, key: bytes) -> bytes:
             for x in environment
         ):
             raise PolicyIntegrityUnavailable("required path policy schema unavailable")
+        contracts = policy.custom_tool_contracts
+        if type(contracts) is not tuple:
+            raise PolicyIntegrityUnavailable("required tool contract registry unavailable")
+        entries = []
+        for item in contracts:
+            if (type(item) is not StructuredToolPathContract or type(item.default_to_executor_cwd) is not bool
+                    or type(item.argument_types) is not tuple or any(
+                        type(pair) is not tuple or len(pair) != 2 or any(type(v) is not str for v in pair)
+                        for pair in item.argument_types)):
+                raise PolicyIntegrityUnavailable("required tool contract schema unavailable")
+            entries.append({"name": _safe_scalar(item.tool_name), "operation": _safe_scalar(item.operation),
+                            "path_fields": _tuple_strings(item.path_fields),
+                            "required_fields": _tuple_strings(item.required_fields),
+                            "default_to_executor_cwd": item.default_to_executor_cwd,
+                            "argument_types": list(item.argument_types)})
         data = {
+            "tool_contracts": entries,
             "runtime_id": _safe_scalar(policy.runtime_id),
             "lane_id": _safe_scalar(policy.lane_id),
             "workspace_root": _safe_scalar(policy.workspace_root, allow_none=True),

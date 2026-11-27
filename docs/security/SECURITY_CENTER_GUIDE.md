@@ -249,3 +249,25 @@ of agentic mode and backend choice.
 
 See [StreamingIRQ sensitivity](STREAMING_IRQ_SENSITIVITY.md) and
 [Recovery boundaries](RECOVERY_BOUNDARIES.md) for technical details.
+
+
+## Host-owned structured tool contracts (version 1)
+
+For a separately verified agent tool, the operator can set
+`JACK_STRUCTURED_TOOL_CONTRACTS_JSON` before secured startup. Example:
+```json
+{"version":1,"tools":[{"name":"inspect_file","operation":"inspect","path_fields":["filename"],"argument_types":{"filename":"string","limit":"integer"},"required_fields":["filename"]}]}
+```
+The immutable runtime policy seals this registry. The same contract applies to
+workspace rewriting, release checks and the existing executor admission API.
+Only explicitly listed, required string path fields and declared scalar argument
+types are supported. Additional fields, malformed values, duplicate names and
+attempts to override built-in contracts are rejected. The operation classification
+also informs the report-only Code Debugging filter. It does not grant the Windows
+factory read exception to custom tools. Never configure an inspect contract for
+a tool that can mutate files; the operator must verify the actual implementation.
+Model-supplied tool names, descriptions and schemas do not register contracts.
+Unregistered tools are not claimed to have structured filesystem coverage.
+This is represented-target enforcement, not executor attestation, nested path
+schema support or strict containment. Independent agents must integrate the
+existing admission API if execution-time admission is required.
