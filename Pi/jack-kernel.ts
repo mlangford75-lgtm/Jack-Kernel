@@ -19,7 +19,15 @@ const COMMAND_DIALECT_BY_TOOL = new Map([
 
 function resolveValue(value) {
   if (typeof value !== "string") return value;
-  if (value.startsWith("$")) return process.env[value.slice(1)] ?? value;
+  if (value.startsWith("$")) {
+    const resolved = process.env[value.slice(1)];
+    if (resolved === undefined || !resolved.trim()) {
+      // An explicit environment reference is configuration, not a literal
+      // bearer token or a request to silently disable authentication.
+      throw new Error("Jack provider configuration has an unresolved environment reference");
+    }
+    return resolved;
+  }
   return value;
 }
 
@@ -57,7 +65,7 @@ function loadConfig() {
   const runtimeId = String(process.env.JACK_PI_JACK_RUNTIME_ID || "").trim();
 
   return {
-    url: resolveValue(envUrl || parsed.url || DEFAULT_JACK_URL),
+    url: runtimeId ? DEFAULT_JACK_URL : resolveValue(envUrl || parsed.url || DEFAULT_JACK_URL),
     token: envToken !== undefined
       ? resolveValue(String(envToken))
       : (parsed.token ? resolveValue(parsed.token) : undefined),

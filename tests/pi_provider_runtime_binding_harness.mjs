@@ -33,6 +33,7 @@ let activeEffort = "xhigh";
 let mockLoadedContext = 16384;
 let mockMaxContext = 32768;
 const lifecycleReports = [];
+const healthAuth = [];
 const server = http.createServer(async (req, res) => {
   if (req.url === "/jack/tool-lifecycle/observe" && req.method === "POST") {
     const parts = [];
@@ -44,6 +45,7 @@ const server = http.createServer(async (req, res) => {
   }
   res.setHeader("Content-Type", "application/json");
   if (req.url === "/health") {
+    healthAuth.push(req.headers.authorization);
     res.end(JSON.stringify({
       runtime_id: healthRuntimeId,
       lane_id: "lane-agentic-01",
@@ -263,5 +265,30 @@ assert.equal(registrations.length, previousCount,
   "Missing context metadata must not register an invalid model");
 
 console.log("Pi context boundary tests: PASS");
+
+// Explicit environment references must resolve before any network request.
+// A missing token must not be forwarded as a literal or as no authentication.
+mockLoadedContext = 8192;
+mockMaxContext = 32768;
+const envName = "JACK_TEST_PROVIDER_TOKEN_REFERENCE";
+fs.writeFileSync(path.join(cfgDir, "jack-kernel.json"),
+  JSON.stringify({url: "http://127.0.0.1:65530", token: "$" + envName}), "utf8");
+delete process.env[envName];
+const beforeUnresolved = registrations.length;
+const beforeUnresolvedRequests = healthAuth.length;
+for (const fn of handlers.get("before_agent_start") || []) await fn({});
+assert.equal(registrations.length, beforeUnresolved);
+assert.equal(healthAuth.length, beforeUnresolvedRequests);
+process.env[envName] = "";
+for (const fn of handlers.get("before_agent_start") || []) await fn({});
+assert.equal(registrations.length, beforeUnresolved);
+assert.equal(healthAuth.length, beforeUnresolvedRequests);
+process.env[envName] = "synthetic-test-token";
+for (const fn of handlers.get("before_agent_start") || []) await fn({});
+assert.equal(registrations.length, beforeUnresolved + 1);
+assert.equal(registrations.at(-1).provider.apiKey, "synthetic-test-token");
+assert.equal(healthAuth.at(-1), "Bearer synthetic-test-token");
+delete process.env[envName];
+console.log("Pi explicit environment reference resolution: PASS");
 await new Promise((resolve) => server.close(resolve));
 console.log("Pi provider runtime binding harness: PASS");
