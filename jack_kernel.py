@@ -87,7 +87,7 @@ from jack_tool_outcomes import reported_tool_outcome, SUCCESS as TOOL_SUCCESS, F
 from jack_tool_recovery import ToolRecoveryState, ToolRecoveryExhausted, operation_key, POLICY_REPEAT_LIMIT
 from jack_tool_lifecycle import ToolLifecycleObserver
 from jack_phase10_dynamic_authority import PendingAuthority, DynamicAuthorityUnavailable
-from jack_cache_orchestrator import CacheOrchestrator
+from jack_cache_orchestrator import CacheDecision, CacheOrchestrator
 from jack_cache_prefix_diagnostics import CacheBytePrefixProbe
 from jack_stage1_cache_stability import Stage1CacheStabilizer
 from jack_evidence_guard import TOOL_RESUME_PROVENANCE_NOTE, terminal_stream_failure, public_security_failure
@@ -9549,16 +9549,18 @@ class OpenAICompatibleBackend:
             LOG.info("Jack tool-stage system cache stability: %s", json.dumps(report, sort_keys=True))
         except Exception as exc:
             LOG.warning("Tool-stage cache stabilization skipped (nonblocking): %s", type(exc).__name__)
-    async def chat(
+    def _build_stage_request(
         self,
         *,
+        model: str,
         messages: List[Dict[str, Any]],
         secondary_system: str,
         profile: StageProfile,
-        tools: Optional[List[Dict[str, Any]]] = None,
-        tool_choice: Any = None,
-    ) -> Dict[str, Any]:
-        model = await self.resolve_model()
+        tools: Optional[List[Dict[str, Any]]],
+        tool_choice: Any,
+        streamed: bool,
+    ) -> tuple[Dict[str, Any], CacheDecision]:
+        """Build the shared model-facing request; transport owns dispatch and retries."""
         source_view = _agentic_stage2_test_history(messages, profile)
         reasoning_primary = AGENTIC_MODE and profile.name == "Agentic native pass 2"
         projected_artifacts = {} if AGENTIC_MODE and AGENTIC_CONTEXT_ACCOUNTING_ENABLED else None
@@ -9646,7 +9648,8 @@ class OpenAICompatibleBackend:
         payload: Dict[str, Any] = {
             "model": model,
             "messages": stage_messages,
-            "stream": False,
+            "stream": streamed,
+            **({"stream_options": {"include_usage": True}} if streamed else {}),
             **sampling,
         }
         self._apply_qwen_controls(payload, profile)
@@ -9678,6 +9681,22 @@ class OpenAICompatibleBackend:
         if DEEP_REASONING_MODE:
             from jack_tas_context_accounting import emit_tas_context_report
             emit_tas_context_report(stage_messages, payload, profile.name, LOG)
+        return payload, cache_decision
+
+    async def chat(
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        secondary_system: str,
+        profile: StageProfile,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Any = None,
+    ) -> Dict[str, Any]:
+        model = await self.resolve_model()
+        payload, cache_decision = self._build_stage_request(
+            model=model, messages=messages, secondary_system=secondary_system,
+            profile=profile, tools=tools, tool_choice=tool_choice, streamed=False,
+        )
         url = f"{cache_decision.base_url}/chat/completions"
         primary_url = f"{cache_decision.primary_base_url}/chat/completions"
         current_payload = payload
@@ -9768,124 +9787,10 @@ class OpenAICompatibleBackend:
     ) -> AsyncIterator[Dict[str, Any]]:
         """Stream one backend stage as normalized OpenAI-style chunks internally."""
         model = await self.resolve_model()
-        source_view = _agentic_stage2_test_history(messages, profile)
-        reasoning_primary = AGENTIC_MODE and profile.name == "Agentic native pass 2"
-        projected_artifacts = {} if AGENTIC_MODE and AGENTIC_CONTEXT_ACCOUNTING_ENABLED else None
-        prepared_messages = (
-            self._stage_messages_for_profile(source_view, profile)
-            if projected_artifacts is None else
-            self._stage_messages_for_profile(source_view, profile,
-                                             projected_artifacts=projected_artifacts)
+        payload, cache_decision = self._build_stage_request(
+            model=model, messages=messages, secondary_system=secondary_system,
+            profile=profile, tools=tools, tool_choice=tool_choice, streamed=True,
         )
-        # All Agentic profiles use the same source-only memory directive;
-        # authenticated U/A1 stay in canonical history, never in Stage-2 wire.
-        # No legacy summary mode or cache-append prompt substitution.
-        cache_append = False if reasoning_primary else _agentic_cache_append_enabled(profile, tool_choice)
-        stage_system = (
-            AGENTIC_36_STAGE2_PROMPT if reasoning_primary
-            else build_stage_system_prompt(
-                _agentic_caller_system_for_actual_stage(secondary_system, profile),
-                STAGES["extended_initial"] if cache_append else profile,
-                prepared_messages,
-            )
-        )
-        stage_messages = (
-            [{"role": "system", "content": stage_system}] if stage_system else []
-        ) + prepared_messages
-        stage_messages = _tool_stage_system_with_provenance(stage_messages, profile)
-        _agentic_attach_system_stage_control(stage_messages, messages, profile)
-        stage_messages = _coder_isolate_planner_request(stage_messages, profile, tools=tools, source_history=messages)
-        if AGENTIC_CODER_MODE and profile.name == "Agentic native pass 1":
-            _coder_project_executor_request(stage_messages, source_view)
-        if reasoning_primary:
-            # Current-turn failed/unmatched call IDs only; no raw transcript
-            # or repeated successful-call metadata in Stage 2 prefill.
-            evidence_note = (
-                "" if AGENTIC_SOURCE_ONLY_WORKING_STATE
-                else _agentic_stage2_host_tool_evidence_note(messages, failures_only=True)
-            )
-            if evidence_note:
-                stage_messages.insert(1, {"role": "system", "content": evidence_note})
-            if AGENTIC_STAGE2_WITHHOLD_A1:
-                _agentic_stage2_project_historical_evidence(
-                    stage_messages, source_view, prepared_messages, messages
-                )
-            else:
-                _agentic_stage2_put_authenticated_user_last(
-                    stage_messages, source_view, prepared_messages
-                )
-        elif (AGENTIC_TRANSLATED_MODE and profile.name == "Agentic native pass 1"
-              and _agentic_final_review_is_pending(messages)):
-            _agentic_translated_project_completed_answer(stage_messages, messages)
-        elif (AGENTIC_MODE and profile.name == "Agentic native pass 1"
-              and _agentic_final_review_is_pending(messages)):
-            _agentic_stage1_review_put_authenticated_user_last(
-                stage_messages, source_view, prepared_messages
-            )
-        elif (ULTRA_REVIEW_MODE and profile.name == "Ultra native pass"
-              and _ultra_review_pending(messages)):
-            _ultra_project_review_request(
-                stage_messages, source_view, prepared_messages
-            )
-        elif cache_append:
-            evidence_note = _agentic_stage2_host_tool_evidence_note(messages)
-            stage_messages.append({"role": "user", "content": (evidence_note + "\n\n" if evidence_note else "") + AGENTIC_36_STAGE2_PROMPT})
-            LOG.info("AGENTIC CACHE EXPERIMENT: appended Stage-2 directive; only U/R1/A1 projected; no tool schemas")
-        elif (
-            prepared_messages
-            and prepared_messages[-1].get("role") == "assistant"
-            and not (AGENTIC_CODER_MODE and profile.name == "Agentic native pass 1"
-                     and _coder_has_plan(messages) and messages[-1].get("_jack_coder_plan"))
-            and _stage_requires_user_continuation(profile)
-        ):
-            stage_messages.append(_stage_generation_trigger(profile, messages))
-
-        cache_probe_regions = ()
-        if AGENTIC_MODE:
-            try:
-                cache_probe_regions = self._cache_byte_probe.capture_regions(
-                    stage_messages, prepared_messages, stage_system
-                )
-            except Exception as exc:
-                LOG.warning("Jack cache byte-prefix region capture unavailable (nonblocking): %s", type(exc).__name__)
-            stage_messages = self._fold_model_facing_system_messages(stage_messages)
-        if profile.allow_tools:
-            self._stabilize_stage1_tool_cache_system(stage_messages, messages, profile)
-        sampling = self._sampling_for_profile(profile)
-        payload: Dict[str, Any] = {
-            "model": model,
-            "messages": stage_messages,
-            "stream": True,
-            "stream_options": {"include_usage": True},
-            **sampling,
-        }
-        self._apply_qwen_controls(payload, profile)
-        if profile.max_tokens is not None:
-            payload["max_tokens"] = int(profile.max_tokens)
-        stage_seed = self._seed_for_stage(profile, messages)
-        if stage_seed is not None:
-            payload["seed"] = stage_seed
-        if profile.allow_tools and tools:
-            self._apply_tool_policy(payload, tools, tool_choice)
-
-        cache_decision = self._cache_router.plan(profile.name, str(model), stage_messages)
-        self._cache_router.apply_hint(payload, cache_decision)
-        LOG.info("Jack cache routing: %s", self._cache_router.diagnostic(cache_decision))
-        self._agentic_cache_prefix_probe(stage_messages, payload, profile)
-        if AGENTIC_MODE:
-            try:
-                cache_byte_diag = self._cache_byte_probe.observe(
-                    stage_messages, profile.name, cache_probe_regions
-                )
-                if cache_byte_diag is not None:
-                    LOG.info("Jack cache byte-prefix diagnostic: %s", json.dumps(cache_byte_diag, sort_keys=True))
-            except Exception as exc:
-                LOG.warning("Jack cache byte-prefix diagnostic unavailable (nonblocking): %s", type(exc).__name__)
-        _agentic_context_report_request(stage_messages, payload, profile,
-                                        projected_artifacts=projected_artifacts)
-        if DEEP_REASONING_MODE:
-            from jack_tas_context_accounting import emit_tas_context_report
-            emit_tas_context_report(stage_messages, payload, profile.name, LOG)
         url = f"{cache_decision.base_url}/chat/completions"
         primary_url = f"{cache_decision.primary_base_url}/chat/completions"
 
