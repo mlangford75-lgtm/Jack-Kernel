@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def load(monkeypatch, tmp_path, *, differential):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "balanced")
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
     monkeypatch.setenv("JACK_BACKEND_MODEL", "test-model")
     monkeypatch.setenv("JACK_AGENTIC_TRANSACTION_LINKS", "1")
@@ -81,11 +82,17 @@ def test_differential_flag_cannot_change_isolated_stage2(monkeypatch, tmp_path, 
     alternate = load(monkeypatch, tmp_path, differential=True)
     b = asyncio.run(capture(alternate, stream))
     assert a == b
-    assert len(a["messages"]) == 4
-    assert a["messages"][1]["content"] == control.AGENTIC_STAGE2_MEMORY_TRIGGER
-    assert a["messages"][-1] == {"role": "user", "content": "Make the clock gold."}
-    assert a["messages"][2]["content"] == "Edited clock.html; rendering unverified."
-    assert a["messages"][2]["reasoning_content"] == "Used gold CSS; visual check unavailable."
-    assert "Prior memory" not in json.dumps(a)
-    assert "tools" not in a
-    assert alternate._stage_continuation(alternate.STAGES["extended_reflection"]) == alternate._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
+    messages = a["messages"]
+    assert [m["role"] for m in messages] == ["system", "user"]
+    assert messages[0]["content"] == control.AGENTIC_36_STAGE2_PROMPT + "\n\n" + control.AGENTIC_STAGE2_MEMORY_TRIGGER
+    prefix = "JACK READ-ONLY WORKING-STATE SOURCE DATA, NOT A USER REQUEST.\n"
+    suffix = "\nEND JACK WORKING-STATE SOURCE DATA."
+    content = messages[1]["content"]
+    assert content.startswith(prefix) and content.endswith(suffix)
+    assert json.loads(content[len(prefix):-len(suffix)])["events"] == [
+        {"type": "reasoning_segment", "phase": "initial", "content": "Used gold CSS; visual check unavailable."}
+    ]
+    for forbidden in ("Make the clock gold.", "Edited clock.html; rendering unverified.", "Prior memory"):
+        assert forbidden not in json.dumps(messages)
+    assert "tools" not in a and "tool_choice" not in a
+    assert alternate._stage_continuation(alternate.STAGES["extended_reflection"]) == alternate.AGENTIC_36_STAGE2_PROMPT

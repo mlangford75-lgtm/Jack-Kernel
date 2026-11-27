@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def load(monkeypatch, tmp_path, *, anchor="1"):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "thorough")
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
     monkeypatch.setenv("JACK_BACKEND_MODEL", "test-model")
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT", "1")
@@ -62,28 +63,29 @@ def test_large_user_request_stays_in_cached_prefix(monkeypatch, tmp_path):
     original = json.loads(json.dumps(history))
     turn = k._agentic_begin_turn(history, fresh=True)
     stage1_view = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_initial"])
-    marker = f"[JACK LINK turn={turn} | artifact=U]"
-    assert stage1_view[0] == {"role": "system", "content": "Authenticated current work ID: " + turn}
-    assert stage1_view[1]["content"] == huge + "\n" + marker
+    assert stage1_view == [{"role": "user", "content": huge}]
+    assert turn not in json.dumps(stage1_view)
     assert history[0]["content"] == huge
     answer = k.append_extended_candidate_response(history, {"content": "Implemented change", "reasoning_content": "R1 local"})
     k._agentic_forensic_start_stage2(history)
-    stage2_view = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_reflection"])
     stage2_projected = k._agentic_stage2_test_history(history, k.STAGES["extended_reflection"])
-    assert stage2_projected[0]["role"] == "system"
-    assert turn in stage2_projected[0]["content"]
-    assert stage2_projected[1]["content"] == huge
+    assert stage2_projected[0]["content"] == huge
     assert stage2_projected[-1]["content"] == answer
     assert stage2_projected[-1]["reasoning_content"] == "R1 local"
-    suffix = k._stage_continuation(k.STAGES["extended_reflection"], history)
-    assert marker not in suffix
-    assert huge not in suffix
-    assert suffix == k.AGENTIC_36_STAGE2_PROMPT
+    payload, _ = k.BACKEND._build_stage_request(
+        model="test-model", messages=history, secondary_system="",
+        profile=k.STAGES["extended_reflection"], tools=None,
+        tool_choice=None, streamed=False,
+    )
+    wire = json.dumps(payload["messages"])
+    assert turn not in wire and "def foo(): return 42" not in wire and answer not in wire
+    assert "R1 local" in wire
+    assert k._stage_continuation(k.STAGES["extended_reflection"], history) == k.AGENTIC_36_STAGE2_PROMPT
     assert original == [{"role": "user", "content": huge}]
     assert k.AGENTIC_STAGE1_PROMPT.startswith("Reasoning effort is set to xhigh.")
     assert "Carefully reason on the task before using tools." in k.AGENTIC_STAGE1_PROMPT
-    assert "Do not imitate the style, format, or structure of previous turns" in k.AGENTIC_STAGE1_PROMPT
-    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
+    assert "Do not imitate the formatting of previous responses" in k.AGENTIC_STAGE1_PROMPT
+    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
 
 
 def test_tool_repair_keeps_authentic_user_identity(monkeypatch, tmp_path):
@@ -146,6 +148,6 @@ def test_anchor_opt_out_preserves_original_model_facing_bytes(monkeypatch, tmp_p
     turn = k._agentic_begin_turn(h, fresh=True)
     rendered = k.BACKEND._stage_messages_for_profile(h, k.STAGES["extended_initial"])
     assert turn in k._AGENTIC_TURN_LIFECYCLES
-    assert rendered[0] == {"role": "system", "content": "Authenticated current work ID: " + turn}
-    assert rendered[1]["content"] == "Exact original request"
+    assert rendered == [{"role": "user", "content": "Exact original request"}]
+    assert turn not in json.dumps(rendered)
     assert h[0]["content"] == "Exact original request"

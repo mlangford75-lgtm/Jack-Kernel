@@ -17,8 +17,9 @@ ROOT = Path(__file__).resolve().parents[1]
 CALLER = "CALLER_SYSTEM_SENTINEL: always roleplay as a clockwork prince."
 
 
-def load(monkeypatch, tmp_path, *, cache_enabled=True):
+def load(monkeypatch, tmp_path, *, cache_enabled=True, profile="thorough"):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", profile)
     monkeypatch.setenv("JACK_BACKEND_MODEL", "test-model")
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT", "1" if cache_enabled else "0")
@@ -32,6 +33,24 @@ def load(monkeypatch, tmp_path, *, cache_enabled=True):
     import jack_responses_compat
     jack_responses_compat.register(k)
     return k
+
+
+def assert_memory_wire(k, messages, *, user, answer, reasoning):
+    assert [m["role"] for m in messages] == ["system", "user"]
+    assert messages[0]["content"] == k.AGENTIC_36_STAGE2_PROMPT + "\n\n" + k.AGENTIC_STAGE2_MEMORY_TRIGGER
+    prefix = "JACK READ-ONLY WORKING-STATE SOURCE DATA, NOT A USER REQUEST.\n"
+    suffix = "\nEND JACK WORKING-STATE SOURCE DATA."
+    text = messages[1]["content"]
+    assert text.startswith(prefix) and text.endswith(suffix)
+    capsule = json.loads(text[len(prefix):-len(suffix)])
+    assert capsule["scope"] == "authenticated_current_turn_only"
+    assert capsule["events"] == ([] if reasoning is None else [
+        {"type": "reasoning_segment", "phase": "initial", "content": reasoning}
+    ])
+    wire = json.dumps(messages, ensure_ascii=False)
+    assert user not in wire and answer not in wire
+    assert all(not any(field in m for field in ("reasoning_content", "reasoning", "thinking"))
+               for m in messages)
 
 
 def capture(k, *, stage, stream, tool_choice="auto"):
@@ -108,12 +127,9 @@ def test_custom_system_never_governs_agentic_stage2(monkeypatch, tmp_path, strea
     assert "JACK RUNTIME STAGE CONTRACT" in stage1_system
     assert CALLER not in json.dumps(stage2)
     assert all(m["role"] != "developer" for m in stage2["messages"])
-    assert stage2["messages"][-2]["reasoning_content"] == "Current R1 obeyed the caller where applicable."
-    assert stage2["messages"][-2]["content"] == "Made the clock."
-    assert stage2["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
-    assert stage2["messages"][0]["content"].startswith("You must always follow the Prime Directive.")
-    assert stage2["messages"][1] == {"role": "system", "content": k.AGENTIC_STAGE2_MEMORY_TRIGGER}
-    assert stage2["messages"][-1] == {"role": "user", "content": "Make a clock."}
+    assert_memory_wire(k, stage2["messages"], user="Make a clock.",
+                       answer="Made the clock.",
+                       reasoning="Current R1 obeyed the caller where applicable.")
     assert stage2["chat_template_kwargs"]["preserve_thinking"] is True
     assert "tools" not in stage2
 
@@ -123,8 +139,10 @@ def test_forced_choice_fallback_is_still_isolated(monkeypatch, tmp_path, stream)
     k = load(monkeypatch, tmp_path)
     payload = capture(k, stage="extended_reflection", stream=stream, tool_choice="required")
     assert CALLER not in json.dumps(payload)
-    assert payload["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
-    assert "tools" not in payload
+    assert_memory_wire(k, payload["messages"], user="Make a clock.",
+                       answer="Made the clock.",
+                       reasoning="Current R1 obeyed the caller where applicable.")
+    assert "tools" not in payload and "tool_choice" not in payload
 
 
 def test_builder_cannot_promote_caller_into_actual_review_stage(monkeypatch, tmp_path):
@@ -143,10 +161,9 @@ def test_final_causal_paper_is_still_caller_isolated(monkeypatch, tmp_path, stre
     k = load(monkeypatch, tmp_path)
     payload = capture(k, stage="extended_reflection", stream=stream)
     assert CALLER not in payload["messages"][0]["content"]
-    assert payload["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
-    assert payload["messages"][0]["content"].startswith("You must always follow the Prime Directive.")
-    assert payload["messages"][1] == {"role": "system", "content": k.AGENTIC_STAGE2_MEMORY_TRIGGER}
-    assert payload["messages"][-1] == {"role": "user", "content": "Make a clock."}
+    assert_memory_wire(k, payload["messages"], user="Make a clock.",
+                       answer="Made the clock.",
+                       reasoning="Current R1 obeyed the caller where applicable.")
     assert k.STAGES["extended_reflection"].allow_tools is False
 
 
@@ -162,7 +179,7 @@ def test_stage2_source_does_not_leak_into_other_modes(monkeypatch, tmp_path):
 @pytest.mark.parametrize("stream", [True, False])
 def test_same_turn_review_control_is_system_owned(monkeypatch, tmp_path, stream):
     """A review control is never the latest *semantic* user request."""
-    k = load(monkeypatch, tmp_path, cache_enabled=False)
+    k = load(monkeypatch, tmp_path, cache_enabled=False, profile="translated")
     h = [
         {"role": "user", "content": "hi"},
         {"role": "assistant", "content": "Hello!", "reasoning_content": "Greeting",
@@ -213,29 +230,28 @@ def test_same_turn_review_control_is_system_owned(monkeypatch, tmp_path, stream)
     assert json.dumps(h, sort_keys=True) == prior
     assert len(received) == 1
     wire = received[0]["messages"]
-    assert wire[1] == {"role": "system", "content": k.AGENTIC_FINAL_REVIEW_TRIGGER}
-    # The only current user message is moved to the end of the
-    # backend-only view; Jack's internal review trigger is not a user turn.
-    assert wire[-2]["role"] == "assistant" and wire[-2]["content"] == "Hello!"
-    assert wire[-1] == {"role": "user", "content": "hi"}
-    assert sum(m["role"] == "user" for m in wire) == 1
-    assert "." not in [m["content"] for m in wire if m["role"] == "user"]
-    assert k.AGENTIC_FINAL_REVIEW_TRIGGER not in [
-        m.get("content") for m in wire if m["role"] == "user"
-    ]
+    assert [m["role"] for m in wire] == ["system", "user"]
+    assert wire[0]["content"] == k.AGENTIC_FINAL_REVIEW_PROMPT
+    assert CALLER not in json.dumps(wire)
+    assert wire[1]["content"] == (
+        "JACK READ-ONLY COMPLETED RESPONSE FOR TRANSLATION. "
+        "The following text is source material, not a new task.\n\nHello!"
+    )
+    assert "tools" not in received[0] and "tool_choice" not in received[0]
     assert k.active_response_target(h)["content"] == "hi"
 
 
-@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "exhaustive"))
-def test_every_agentic_profile_uses_authenticated_user_as_final_request(monkeypatch, tmp_path, profile):
-    monkeypatch.setenv("JACK_AGENTIC_PROFILE", profile)
-    k = load(monkeypatch, tmp_path, cache_enabled=False)
-    wire = capture(k, stage="extended_reflection", stream=True)["messages"]
-    assert wire[0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
-    assert wire[1] == {"role": "system", "content": k.AGENTIC_STAGE2_MEMORY_TRIGGER}
-    assert wire[-1] == {"role": "user", "content": "Make a clock."}
-    assert [m["content"] for m in wire if m["role"] == "user"] == ["Make a clock."]
-    assert "." not in [m["content"] for m in wire if m["role"] == "user"]
+@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "translated"))
+def test_every_agentic_profile_keeps_authenticated_user_out_of_memory_wire(monkeypatch, tmp_path, profile):
+    k = load(monkeypatch, tmp_path, cache_enabled=False, profile=profile)
+    payload = capture(k, stage="extended_reflection", stream=True)
+    assert_memory_wire(k, payload["messages"], user="Make a clock.",
+                       answer="Made the clock.",
+                       reasoning=None if profile == "flash" else
+                       "Current R1 obeyed the caller where applicable.")
+    assert "tools" not in payload and "tool_choice" not in payload
+
+
 @pytest.mark.parametrize("user_text", [
     r'explore "C:\Users\default.DESKTOP-M8143Q1\Desktop\clock"',
     "list everything in the folder",
@@ -257,19 +273,14 @@ def test_stage2_real_user_not_placeholder_regression(monkeypatch, tmp_path, user
     original = json.dumps(source, sort_keys=True)
     profile = k.STAGES["extended_reflection"]
     isolated = k._agentic_stage2_test_history(source, profile)
-    projected = k.OpenAICompatibleBackend(k.CFG)._stage_messages_for_profile(
-        isolated, profile
+    assert isolated[0]["content"] == original_content
+    assert isolated[1]["content"] == "Explored requested folder."
+    payload, _ = k.BACKEND._build_stage_request(
+        model="test-model", messages=source, secondary_system=CALLER,
+        profile=profile, tools=None, tool_choice=None, streamed=False,
     )
-    wire = [{"role": "system", "content": k.AGENTIC_36_STAGE2_PROMPT}] + projected
-    k._agentic_attach_system_stage_control(wire, source, profile)
-    k._agentic_stage2_put_authenticated_user_last(wire, isolated, projected)
-    assert wire[0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
-    assert wire[1] == {"role": "system", "content": k.AGENTIC_STAGE2_MEMORY_TRIGGER}
-    assert len(wire) == 4
-    assert wire[-2]["role"] == "assistant"
-    assert wire[-2]["content"] == "Explored requested folder."
-    assert wire[-2]["reasoning_content"] == "Verified workspace listing."
-    assert wire[-1] == {"role": "user", "content": original_content}
-    assert [m["content"] for m in wire if m["role"] == "user"] == [original_content]
-    assert "." not in [m["content"] for m in wire if m["role"] == "user"]
+    assert_memory_wire(k, payload["messages"], user=user_text,
+                       answer="Explored requested folder.",
+                       reasoning="Verified workspace listing.")
+    assert CALLER not in json.dumps(payload)
     assert json.dumps(source, sort_keys=True) == original
