@@ -20,7 +20,7 @@ Deep Reasoning, Local Agentic (Preserve Thinking), and Code Debugging are **refe
 >
 > **November 26, 2026 — Adaptive StreamingIRQ:** [PR #178](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/178) merged the adaptive default. Live qualification reported 9/9 supported cognitive configurations and 3/3 security cases passing with `ling-3.0-tiny` at concurrency four. This is scoped live acceptance, not a new formal frozen-phase certification.
 >
-> **Security update (November 25, 2026):** Phase 9B selected executable-identity enforcement is implemented and **mandatory in the secured `--serve` child**, layered after Phase 8. It passed **98 targeted Windows Python 3.14.6 tests**, including a post-start live HTTP executable-tampering test on the real secured server ([CI evidence](https://github.com/mlangford75-lgtm/Jack-Kernel/actions/runs/45606058846)). Phase 8 remains the last formally **fully validated, frozen and tagged** security phase; Phase 9B's full regression, real external side-effect, and comprehensive release gates are not yet complete. See [current security status](CURRENT_SECURITY_STATUS.md) and [Phase 9B evidence](docs/security/README.md).
+> **Security update (November 25, 2026):** Runtime Code Integrity selected executable-identity enforcement is implemented and **mandatory in the secured `--serve` child**, layered after Source Drift Protection. It passed **98 targeted Windows Python 3.14.6 tests**, including a post-start live HTTP executable-tampering test on the real secured server ([CI evidence](https://github.com/mlangford75-lgtm/Jack-Kernel/actions/runs/45606058846)). Source Drift Protection remains the last formally **fully validated, frozen and tagged** security checkpoint; Runtime Code Integrity's full regression, real external side-effect, and comprehensive release gates are not yet complete. See [current security status](CURRENT_SECURITY_STATUS.md) and [Runtime Code Integrity evidence](docs/security/README.md).
 
 ## Architecture at a glance
 
@@ -92,7 +92,7 @@ Stage 1 uses the selected profile's cognition controls with authorized tools and
 
 Agentic tool-result continuations use host-owned checkpoints, not caller-selected stage identifiers. A dropped client stream after Jack accepts a tool result keeps that bounded, process-local checkpoint available for exact-evidence retry; conflicting tool results and concurrent duplicate resumes still fail closed. Once Stage 1 freezes its exact answer, an interrupted retrospective can resume at Stage 2 without rerunning Stage 1 or its tools. The live SSE transport emits keepalives even when streamed executable-tool fragments remain withheld pending authorization. These recovery guarantees are **process-local**: restart-safe recovery of in-flight tool payloads is not yet provided, and explicit terminal failures do not rearm checkpoints.
 
-The tools-off retrospective runs under its **own dedicated system instruction**, distinct from the frozen-answer cognition system; external caller system instructions are excluded. The older Phase 3E cache-append layout is historical: the current buffered and streamed source-only Stage-2 paths explicitly disable it even if the old environment switch is set. Phase 3F byte accounting (`JACK_AGENTIC_CONTEXT_ACCOUNTING=1`) remains opt-in; its reporting threshold is not a token-window limit. The [three-turn Phase 3E checkpoint](Documentation/Agentic/LOCAL_AGENTIC_PHASE3E_CHECKPOINT_2026-10-22.md) is retained as historical evidence, not a current configuration recommendation. See [Current Security Status](CURRENT_SECURITY_STATUS.md) for security validation lineage.
+The tools-off retrospective runs under its **own dedicated system instruction**, distinct from the frozen-answer cognition system; external caller system instructions are excluded. The older cache-append experiment cache-append layout is historical: the current buffered and streamed source-only Stage-2 paths explicitly disable it even if the old environment switch is set. context accounting byte accounting (`JACK_AGENTIC_CONTEXT_ACCOUNTING=1`) remains opt-in; its reporting threshold is not a token-window limit. The [three-turn cache-append experiment checkpoint](Documentation/Agentic/LOCAL_AGENTIC_PHASE3E_CHECKPOINT_2026-10-22.md) is retained as historical evidence, not a current configuration recommendation. See [Current Security Status](CURRENT_SECURITY_STATUS.md) for security validation lineage.
 
 ### Coder Architect and execution authority
 
@@ -102,7 +102,7 @@ Current Coder Flash and Thorough use a **tool-free Architect** to produce a visi
 
 ### Local Agentic (Preserve Thinking) continuation correction
 
-The [PR #45 historical tool-resume fix](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/45) resolves a real stage-resume bug discovered while investigating Phase 9A: when a caller replays historical conversation messages, retired/nonpending tool results must not poison the current live pending transaction. The correction ignores retired results for current transaction selection **without admitting them into the resumed stage history**. Withheld-call results, duplicate live results, incomplete current results, and results spanning conflicting live transactions continue to be rejected. This correctness improvement is **not** Phase 9 Runtime Code Integrity enforcement.
+The [PR #45 historical tool-resume fix](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/45) resolves a real stage-resume bug discovered while investigating runtime-code research: when a caller replays historical conversation messages, retired/nonpending tool results must not poison the current live pending transaction. The correction ignores retired results for current transaction selection **without admitting them into the resumed stage history**. Withheld-call results, duplicate live results, incomplete current results, and results spanning conflicting live transactions continue to be rejected. This correctness improvement is **not** Runtime Code Integrity Runtime Code Integrity enforcement.
 
 ## What Jack owns
 
@@ -121,8 +121,8 @@ Jack's host-authoritative boundary includes, where applicable:
 - deterministic security outcomes and consequence disposition;
 - represented-path policy;
 - the runtime-scoped Authority & Security Ledger;
-- deterministic authority over the closed Phase-7 known-credential set at validated ingress/release/resource boundaries;
-- bounded Phase-8 source authority over the immutable active-runtime protected component set, including suspension on measurement uncertainty and terminal invalidation on confirmed source mismatch.
+- deterministic authority over the closed Credential Isolation and DLP known-credential set at validated ingress/release/resource boundaries;
+- bounded Source Drift Protection source authority over the immutable active-runtime protected component set, including suspension on measurement uncertainty and terminal invalidation on confirmed source mismatch.
 
 Jack does not acquire authority merely because it can observe a value. Observability is not authority, evidence is not authority, a port is not identity, cancellation is not settlement, represented targets are not necessarily resolved host objects, and forensic chronology is not source authority.
 
@@ -130,36 +130,36 @@ Jack does not acquire authority merely because it can observe a value. Observabi
 
 Jack is not a universal operating-system sandbox, filesystem-object attestation layer, shell-effects oracle, distributed consensus ledger, or proof that every represented consequence was physically realized by an external executor.
 
-Phase 8 also does not claim continuous historical attestation, loaded-code/function-binding integrity, authority-state integrity, universal filesystem-object identity, or hostile in-process tamper resistance.
+Source Drift Protection also does not claim continuous historical attestation, loaded-code/function-binding integrity, authority-state integrity, universal filesystem-object identity, or hostile in-process tamper resistance.
 
 See [`CURRENT_SECURITY_STATUS.md`](CURRENT_SECURITY_STATUS.md) for the exact current claims and nonclaims.
 
 ## Current security status
 
-**Phase 8 — Active Source Authority / Source Drift Protection — is the most recent fully validated, merged, documented, tagged and frozen security phase.** Its frozen [validation tag](https://github.com/mlangford75-lgtm/Jack-Kernel/tree/security-layer-phase8-validated-2026-10-06) points to closure commit `cebe9fd75fe30a9c84a0af08d2105af448fc3d00`. Phase 8 protects selected on-disk active source identity through bounded exact measurements and authority gating; it **does not** prove integrity of loaded Python code objects or mutable authority state.
+**Source Drift Protection — is the most recent fully validated, merged, documented, tagged and frozen security checkpoint.** Its frozen [validation tag](https://github.com/mlangford75-lgtm/Jack-Kernel/tree/security-layer-phase8-validated-2026-10-06) points to closure commit `cebe9fd75fe30a9c84a0af08d2105af448fc3d00`. Source Drift Protection protects selected on-disk active source identity through bounded exact measurements and authority gating; it **does not** prove integrity of loaded Python code objects or mutable authority state.
 
 The cumulative validated security controls are:
 
 - **Phases 0–3:** deterministic security outcomes, bounded StreamingIRQ pre-release quarantine, malformed-SSE release protection and Canary controls.
-- **Phase 4:** represented-path restrictions, optional Workspace Lock, tool-release and executor admission checks.
-- **Phase 5:** deterministic, proportionate consequence disposition.
-- **Phase 6:** process-local Authority & Security Ledger.
-- **Phase 7:** closed known-credential isolation and selected model/output/diagnostic DLP boundaries.
-- **Phase 8:** immutable protected-source baseline, bounded remeasurement, source-authority suspension/invalidation and preservation of otherwise safe work.
+- **Restricted Paths / Workspace Lock:** represented-path restrictions, optional Workspace Lock, tool-release and executor admission checks.
+- **Consequence Gate:** deterministic, proportionate consequence disposition.
+- **Authority & Security Ledger:** process-local Authority & Security Ledger.
+- **Credential Isolation and DLP:** closed known-credential isolation and selected model/output/diagnostic DLP boundaries.
+- **Source Drift Protection:** immutable protected-source baseline, bounded remeasurement, source-authority suspension/invalidation and preservation of otherwise safe work.
 
-**Phase 9A research closed without production enforcement.** The [Phase 9A research checkpoint](docs/security/SECURITY_LAYER_PHASE9A_RESEARCH_CHECKPOINT_2026-10-14.md) documents the live binding inventory, experiments, unresolved Phase 9A.4 identity differences, and the decision to defer Phase 9B. The annotated [Phase 9A research-closure tag](https://github.com/mlangford75-lgtm/Jack-Kernel/tree/security-layer-phase9a-research-closed-2026-10-14) identifies that **research milestone**, not a validated integrity guard.
+**runtime-code research closed without production enforcement.** The [runtime-code research checkpoint](docs/security/SECURITY_LAYER_PHASE9A_RESEARCH_CHECKPOINT_2026-10-14.md) documents the live binding inventory, experiments, unresolved runtime-code research identity comparison identity differences, and the decision to defer Runtime Code Integrity. The annotated [runtime-code research-closure tag](https://github.com/mlangford75-lgtm/Jack-Kernel/tree/security-layer-phase9a-research-closed-2026-10-14) identifies that **research milestone**, not a validated integrity guard.
 
-Post-Phase-8 merged maintenance:
+Post-Source Drift Protection merged maintenance:
 
 - [PR #45](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/45): historical tool-result replay in the Agentic (Preserve Thinking) lineage and pending stage-resume correction.
-- [PR #46](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/46): Responses API exception non-disclosure while retaining sanitized Phase-7 diagnostics.
-- [PR #47](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/47): Phase 9A research-closure record and live status reconciliation.
+- [PR #46](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/46): Responses API exception non-disclosure while retaining sanitized Credential Isolation and DLP diagnostics.
+- [PR #47](https://github.com/mlangford75-lgtm/Jack-Kernel/pull/47): runtime-code research-closure record and live status reconciliation.
 
-The verified October 14 post-fix Windows clone at `ef613e46e70181f7fa8d054aabc3b5a744d8f704` passed **527 Python regression tests**. This is not Phase 9 security validation.
+The verified October 14 post-fix Windows clone at `ef613e46e70181f7fa8d054aabc3b5a744d8f704` passed **527 Python regression tests**. This is not Runtime Code Integrity security validation.
 
-**Still unimplemented/unvalidated:** Phase 9 loaded-code/function-binding enforcement, Phase 10 authority-state integrity and Phase 11 comprehensive telemetry/privacy hardening. Jack does not claim hostile in-process tamper resistance, universal OS sandboxing, or proof of external consequences.
+**Qualification boundary:** Runtime Code Integrity, Policy Integrity and Diagnostic Privacy are implemented in the secured experimental candidate; full release qualification and live workstation acceptance remain separate requirements. Jack does not claim hostile in-process tamper resistance, universal OS sandboxing, or proof of external consequences.
 
-For authoritative current implementation claims, exclusions, and exact Phase 8 validation lineage, read [Current Security Status](CURRENT_SECURITY_STATUS.md). Preserve the dated prior-phase checkpoints in [the security archive](docs/security/README.md) as historical validation records.
+For authoritative current implementation claims, exclusions, and exact Source Drift Protection validation lineage, read [Current Security Status](CURRENT_SECURITY_STATUS.md). Preserve the dated prior-phase checkpoints in [the security archive](docs/security/README.md) as historical validation records.
 
 ## Run on Windows
 
