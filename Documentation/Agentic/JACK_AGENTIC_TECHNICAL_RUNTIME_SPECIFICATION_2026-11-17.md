@@ -4,6 +4,8 @@
 
 **Jonathan Michael Langford | Jack Kernel project**
 
+> **November 27, 2026 — experimental audit reconciliation:** This November 17 edition records its original implementation and validation state. For subsequent candidate behavior, including the tool-free Coder Architect, frozen-A1 preservation after retrospective budget exhaustion, and current Responses caller-instruction scope, see the [independent audit remediation register](../Independent_Audit_Remediation_Register.md). This note does not retroactively change the original evidence or claim a merged release.
+
 **A deterministic host contract for multi-stage agentic cognition, execution evidence, prompt authority and cache continuity.**
 
 This is the complete, source-aligned current edition. It replaces contradictory operational claims in the November 12 revision while **preserving the complete November 12 PDF, including its November 6 edition, unchanged** after the archival divider. The present edition is the governing description; historical sections are historical evidence, not instructions to implement obsolete behavior.

@@ -96,6 +96,8 @@ The tools-off retrospective runs under its **own dedicated system instruction**,
 
 ### Coder Architect and execution authority
 
+For the experimental November 27 changes, see the [audit reconciliation](Documentation/Independent_Audit_Remediation_Register.md#candidate-qualification-and-remaining-scope-2026-11-27). This candidate preserves exact frozen A1 when the tools-off retrospective exhausts its generation budget, without committing incomplete memory or retrying tools. Hard security interruptions remain terminal. Responses top-level `instructions` are developer-role context and are not promoted into the caller system contract under the existing policy.
+
 Current Coder Flash and Thorough use a **tool-free Architect** to produce a visible specification for Coder. Coder is the implementation and answer-authority stage with the authorized tools; the Architect specification remains fallible working guidance, not new user authority or evidence of execution. Read-only Architect inspection belongs to a separate proposed Hybrid design, not the current Coder contract. No legacy tool-enabled Architect implementation is retired by this documentation correction.
 
 ### Local Agentic (Preserve Thinking) continuation correction

@@ -179,3 +179,43 @@ Candidate: combine the exact four framed atom updates into one byte-identical up
 ### V-5 early rejection of conflicting credential/Canary configuration
 
 The existing test_canary_collision_fails_instead_of_silently_dropping_policy explicitly requires fail-closed rejection. Preserve that contract, including Tier A ownership and the configured sensitivity; do not silently coalesce values. Security Center validation now invokes the existing Phase-7 credential builder and merge validator against the candidate launch configuration whenever effective custom patterns exist. Candidate values mirror the child environment, including backend-profile fallback, explicit extra header declarations, derived Basic wire credentials and resolved Pi token. No credential values are displayed; conflicts reject the candidate before accepting it or spawning a child. Secured child validation remains authoritative against later environment changes. Six regression cases cover configured and fallback sources, candidate rejection and administrator override rejection. Qualification pending.
+
+
+## Candidate qualification and remaining scope (2026-11-27)
+
+Qualified experimental code head: `753ce5c9e783b9691922870b9640fde5031e10f2` (61 remediation commits). This supersedes the earlier pending statuses in the historical register above; it is not a merge, a frozen security checkpoint, or a clean full-suite result.
+
+| Qualification | Result |
+|---|---|
+| [Full Windows regression](https://github.com/mlangford75-lgtm/Jack-Kernel/actions/runs/46028576584) | 1,716 passed, 218 failed; exact failing identity set unchanged from the preceding qualified 1,712-pass head |
+| [Combined security](https://github.com/mlangford75-lgtm/Jack-Kernel/actions/runs/46028576589) | Passed |
+| [Isolated executable identity and benchmark](https://github.com/mlangford75-lgtm/Jack-Kernel/actions/runs/46028576635) | Passed |
+| [Independent Pi bridge](https://github.com/mlangford75-lgtm/Jack-Kernel/actions/runs/46028576573) | Passed |
+| [Tool-free Coder Architect](https://github.com/mlangford75-lgtm/Jack-Kernel/actions/runs/46028576556) | Passed |
+
+The inherited mainline baseline had 219 failed identities; the earlier exact comparison established one resolved inherited failure and no added identities. The 218 outstanding inherited failures are not suppressed or reclassified as a clean pass.
+
+### Current architectural dispositions
+
+- **M-1–M-13 and C-1–C-6:** remediation accepted against the recorded regression baseline and specialized gates; scope remains selected authority enforcement on the supported Windows runtime, not general OS sandboxing or arbitrary same-process tamper resistance. Explicit extra-header credential designation is not universal discovery. Linux/macOS secured path authority is not qualified.
+- **P-1:** sealed immutable code-tree transcripts reuse byte-identical framing with exact object identity, bounded entries, node/depth limits and live measurement of mutable dependencies. Both Kernel and HTTP release verification, full source-file measurement and terminal/scoped integrity consequences remain. The comparable hosted 1,000-frame mock stream improved from 40.1536 s to 26.8917 s (approximately 33% lower processing time; 24.9 to 37.2 frames/s). The same 199,398 bytes were released in every sample. Profiling walk calls declined from 16,769,430 to 4,112,460. No live inference throughput claim. Remaining per-frame integrity overhead is substantial; a lower verification cadence or periodic-only source verification would be a distinct security-timing decision, not part of this optimization.
+- **P-2:** wire-level evidence confirms leading-system change across Coder turns. Actual backend tokenized cache/prefill comparison is deferred; the Architect specification remains in its current authority placement. A byte prefix is not KV-cache telemetry.
+- **P-3:** qualified repeated-content diagnostic acceleration, 64/128 KiB warm preparation 2.36/3.81 ms versus 56.89/106.49 ms in the recorded hosted runs. Cold content still incurs digest generation.
+- **P-4:** qualified bounded exact-detector retention, weak diagnostic-ledger ownership, non-eviction of live pending owners, shadow matching and vocabulary retirement/reappearance coverage. Long-cycle observation, source suppression and interruption eligibility are preserved.
+- **CL-1:** final unreachable secondary Architect recovery branch removed and qualified. Still-referenced helpers remain; this is not authorization to retire cognitive profiles. **CL-2:** shared request assembly and exact wire-equivalence regression coverage qualified.
+- **CL-3:** the following errata supplement dated technical papers. Historical artifacts and original qualification harnesses remain intact: the cache experiment is explicitly archival, the Phase 3G workflow targets its historical branch or manual dispatch only, and the NVIDIA workflow is a separate optional live-provider qualification (not an active audit gate). Do not delete potentially reusable qualification evidence merely because its original experiment is superseded.
+- **V-1:** after exact A1 freeze, Stage-2 reasoning/output budget exhaustion terminates memory generation, returns exact A1 via the existing degraded-commit path, records memory_failed, and does not commit unverified M or retry tools. Stage-1 budget breaches remain terminal; hard security failures propagate. Both transports and forensic state are qualified.
+- **V-2/V-3:** qualified authenticated M/A1 accounting, host-only tool outcome metadata, explicit standard-wire controls, Pi environment reference resolution, and idle LM Studio model discovery within the recorded scope. No universal cloud or live-provider qualification.
+- **V-4:** top-level Responses instructions deliberately map to developer context, excluded from the current leading caller-system contract; later system/developer messages are not promoted. An explicitly leading system message retains its existing caller authority in permitted stages, never the retrospective stage. The existing behavior is retained and documented rather than silently broadening authority.
+- **V-5:** explicit early rejection of credential/custom Canary collisions retains Tier A ownership and configured sensitivity; child validation remains authoritative.
+- **V-6:** legacy cognitive modes and compatibility switches preserved. No retirement approval or change to legacy selectors.
+
+### Whitepaper errata and document precedence
+
+For the November 26 comprehensive architectural, computational and security whitepaper, sections 21.4 and 21.12 must be read as follows: current Coder Flash and Thorough use a tool-free Architect. Coder alone receives the applicable execution tools. The Architect specification is fallible working guidance, not new user authority or proof of tool execution. Read-only Architect inspection belongs to proposed Coder Hybrid (section 54), not current Coder. Retain the existing historical papers and their measured results; this is an explicit candidate addendum, not a silent revision of their original claims. The standalone November 26 comprehensive paper was not found as an editable source in the repository tree; this register supplies the erratum rather than claiming its original bytes were rewritten.
+
+The November 17 Agentic product paper and runtime specification are dated historical records; their new cross-reference points here for the subsequent candidate contract. No historical benchmark is retroactively restated as a fresh release result.
+
+### Remaining release boundary
+
+P-2 live backend measurement and V-6 optional legacy retirement are deferred. P-1 preserves the present verification cadence; further redesign that changes the observation window is not authorized by performance evidence alone. All implemented corrections have completed regression-baseline and targeted qualification at the code head above. Documentation-only changes still require the ordinary candidate checks. Full CI remains red from inherited failures; no merge or frozen security validation is represented by this record.
