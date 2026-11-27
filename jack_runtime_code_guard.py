@@ -42,10 +42,10 @@ def _function_shape(fn: types.FunctionType, code_memo: dict | None = None) -> by
     digest = hashlib.sha256()
     visited_functions: set[int] = set()
     nodes = 0
-    # Bounded, verification-local memo of *immutable code trees only*. The
-    # original framed byte transcript is replayed, not a substitute digest.
-    # Function bindings, defaults, closure cells, and arbitrary objects are
-    # always measured live. Never retain this memo across verify boundaries.
+    # Bounded memo of *immutable code trees only*. The original framed byte
+    # transcript is replayed, not a substitute digest. Function bindings,
+    # defaults, closure cells and arbitrary objects are measured live on every
+    # call. Cache hits require exact code-object identity and preserve limits.
     capture = None
     capturing = False
     capture_pure = True
@@ -331,6 +331,7 @@ class RuntimeCodeAuthority:
         self._route_tables: list[_RouteTableIdentity] = []
         self._exception_handlers: list[_ExceptionHandlersIdentity] = []
         self._state = "INITIALIZING"
+        self._sealed_code_transcripts = types.MappingProxyType({})
         # Pin the method that performs actual measurement. Checking it before
         # dispatch prevents straightforward descriptor rebinding from making
         # every subsequent verify() report a fabricated success. This is not
@@ -454,9 +455,11 @@ class RuntimeCodeAuthority:
         mismatch_scopes: set[str] = set()
         unavailable_scopes: set[str] = set()
         measurement_error: RuntimeCodeIntegrityUnavailable | None = None
-        # At most 128 immutable transcripts of 64 KiB, owned exclusively by
-        # this synchronous check. No stale cache can authorize a later release.
-        code_memo: dict = {}
+        # Only immutable, exact-identity code transcripts from the verified
+        # startup baseline may persist. Each check owns a fresh bounded memo;
+        # unfamiliar code is measured in full, never enrolled into the baseline.
+        # All mutable executable dependencies and source bytes remain live.
+        code_memo: dict = dict(self._sealed_code_transcripts)
 
         def selected(scope: str) -> bool:
             return scopes is None or scope == "shared" or scope in scopes
@@ -575,6 +578,11 @@ class RuntimeCodeAuthority:
             raise RuntimeCodeIntegrityUnavailable(
                 "protected executable measurement unavailable"
             ) from measurement_error
+        if self._state == "INITIALIZING" and scopes is None:
+            # Publish only after the entire original baseline is verified.
+            # Strong code references prevent identity recycling; immutable
+            # transcript records are capped at 128 x 64 KiB as before.
+            self._sealed_code_transcripts = types.MappingProxyType(code_memo)
         if scopes is not None:
             # Only previously uncertain measurements may recover. Confirmed
             # mismatches remain terminal; no in-place rebaseline is allowed.
