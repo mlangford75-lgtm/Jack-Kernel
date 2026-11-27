@@ -66,9 +66,20 @@ def test_partial_or_invalid_hint_fails_without_inference():
         assert caught.value.status_code == 400
 
 
-def test_stage_prompts_are_not_replaced_by_phase1():
+@pytest.mark.parametrize("profile", ["balanced", "thorough"])
+def test_stage_prompts_are_not_replaced_by_phase1(monkeypatch, profile):
+    # The historical Phase 1/2/3A fixture predates profile-specific prompts.
+    # Keep both cognitive stages checked against the supported baseline.
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", profile)
     k = kernel()
-    assert k.AGENTIC_STAGE1_PROMPT.startswith("Reasoning effort is set to xhigh.")
+    assert k.CFG.agentic_profile == profile
+    assert k.AGENTIC_STAGE1_PROMPT.startswith(
+        "Reasoning effort is set to xhigh." if profile == "thorough"
+        else "Please think carefully through the task"
+    )
     assert "Carefully reason on the task before using tools." in k.AGENTIC_STAGE1_PROMPT
-    assert "Do not imitate the style, format, or structure of previous turns" in k.AGENTIC_STAGE1_PROMPT
-    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
+    assert "Do not imitate the formatting of previous responses unless the current user explicitly requests that format." in k.AGENTIC_STAGE1_PROMPT
+    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
+    assert k.STAGES["extended_initial"].thinking is True
+    assert k.STAGES["extended_reflection"].thinking is (profile == "thorough")
+    assert k.STAGES["extended_reflection"].allow_tools is False
