@@ -35,13 +35,13 @@ def call(i, name, args):
             "function": {"name": name, "arguments": json.dumps(args)}}
 
 
-def history(k, stage, compact):
+def history(k, stage, compact, repetitions=3):
     h = [{"role": "user", "content": "Build a model and verify it."}]
-    for i in range(1, 4):
+    for i in range(1, repetitions + 1):
         for j, (name, args, result) in enumerate([
             ("write", {"path": "resort_model.py", "content": "print(1)"}, "wrote bytes"),
             ("bash", {"command": "python resort_model.py"}, "(no output)")], start=1):
-            if i == 3 and j == 2:
+            if i == repetitions and j == 2:
                 break
             item = call(i * 2 + j, name, args)
             h.append({"role": "assistant", "content": "", "tool_calls": [item],
@@ -64,20 +64,26 @@ STAGES = [
 
 @pytest.mark.parametrize("mode,stage", STAGES)
 @pytest.mark.parametrize("compact", [False, True])
-def test_cycle_spans_compacted_and_native_tool_evidence(monkeypatch, tmp_path, mode, stage, compact):
+@pytest.mark.parametrize("repetitions", [3, 5])
+def test_cycle_spans_compacted_and_native_tool_evidence(monkeypatch, tmp_path, mode, stage, compact, repetitions):
+    monkeypatch.setenv("JACK_TOOL_CYCLE_REPETITIONS", str(repetitions))
     k = load(monkeypatch, tmp_path, mode)
-    h = history(k, stage, compact)
+    h = history(k, stage, compact, repetitions)
     proposed = call(90, "bash", {"command": "python resort_model.py"})
-    assert k._agentic_exact_tool_cycle(h, [proposed], stage_key=stage) == (2, 3)
-    assert k._agentic_exact_tool_cycle(h, [proposed], stage_key="different-stage") is None
+    assert k._agentic_exact_tool_cycle(h, [proposed], repetitions=repetitions, stage_key=stage) == (2, repetitions)
+    assert k._agentic_exact_tool_cycle(h, [proposed], repetitions=repetitions, stage_key="different-stage") is None
+    early = history(k, stage, compact, repetitions - 1)
+    assert k._agentic_exact_tool_cycle(early, [proposed], repetitions=repetitions, stage_key=stage) is None
     changed = call(91, "bash", {"command": "python verify_model.py"})
-    assert k._agentic_exact_tool_cycle(h, [changed], stage_key=stage) is None
+    assert k._agentic_exact_tool_cycle(h, [changed], repetitions=repetitions, stage_key=stage) is None
 
 
 @pytest.mark.parametrize("mode,stage", STAGES)
-def test_all_tool_modes_block_unrecovered_cycle_at_release(monkeypatch, tmp_path, mode, stage):
+@pytest.mark.parametrize("repetitions", [3, 5])
+def test_all_tool_modes_block_unrecovered_cycle_at_release(monkeypatch, tmp_path, mode, stage, repetitions):
+    monkeypatch.setenv("JACK_TOOL_CYCLE_REPETITIONS", str(repetitions))
     k = load(monkeypatch, tmp_path, mode)
-    h = history(k, stage, compact=(mode != "agentic"))
+    h = history(k, stage, compact=(mode != "agentic"), repetitions=repetitions)
     proposed = call(90, "bash", {"command": "python resort_model.py"})
     answer = {"choices": [{"message": {"role": "assistant", "content": "",
                                     "tool_calls": [proposed]}, "finish_reason": "tool_calls"}]}
@@ -143,9 +149,11 @@ def test_malformed_recovery_is_bounded(monkeypatch, tmp_path):
     assert len(attempts) == 2
 
 
-def test_shared_stream_guard_recovers_by_changing_action(monkeypatch, tmp_path):
+@pytest.mark.parametrize("repetitions", [3, 5])
+def test_shared_stream_guard_recovers_by_changing_action(monkeypatch, tmp_path, repetitions):
+    monkeypatch.setenv("JACK_TOOL_CYCLE_REPETITIONS", str(repetitions))
     k = load(monkeypatch, tmp_path)
-    h = history(k, "thesis", compact=True)
+    h = history(k, "thesis", compact=True, repetitions=repetitions)
     requests = []
     class Backend:
         async def chat_stream(self, **kwargs):
@@ -170,6 +178,19 @@ def test_shared_stream_guard_recovers_by_changing_action(monkeypatch, tmp_path):
         # for tool resume/Stage 2, rather than being lost with a retry copy.
         assert any(x.get("_jack_internal_tool_validation_rejection") for x in h)
     asyncio.run(run())
+
+
+def test_default_mutation_cycle_threshold_is_five(monkeypatch, tmp_path):
+    monkeypatch.delenv("JACK_TOOL_CYCLE_REPETITIONS", raising=False)
+    monkeypatch.delenv("JACK_AGENTIC_TOOL_CYCLE_REPETITIONS", raising=False)
+    k = load(monkeypatch, tmp_path)
+    assert k.CFG.tool_cycle_repetitions == 5
+    proposed = call(90, "bash", {"command": "python resort_model.py"})
+    for compact in (False, True):
+        early = history(k, "thesis", compact, 4)
+        reached = history(k, "thesis", compact, 5)
+        assert k._agentic_exact_tool_cycle(early, [proposed], stage_key="thesis") is None
+        assert k._agentic_exact_tool_cycle(reached, [proposed], stage_key="thesis") == (2, 5)
 
 
 @pytest.mark.parametrize("streaming", [False, True])
