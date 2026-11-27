@@ -10,7 +10,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from jack_evidence_guard import public_security_failure
+from jack_evidence_guard import public_security_failure, resolve_tool_fragment_index, native_reasoning_delta
 
 
 def _text(value: Any) -> str:
@@ -255,6 +255,7 @@ async def _stream(
     msg_id, rs_id = f"msg_{uuid.uuid4().hex}", f"rs_{uuid.uuid4().hex}"
     visible: List[str] = []; reasoning: List[str] = []; tool_acc: Dict[int, Dict[str, Any]] = {}; usage = None
     msg_index = rs_index = None
+    tool_identities: Dict[int, Optional[str]] = {}
     try:
         if executor_context is None:
             source_stream = jk.KERNEL.stream(chat)
@@ -272,7 +273,7 @@ async def _stream(
                     if not isinstance(choices, list) or not choices: continue
                     delta = choices[0].get("delta") if isinstance(choices[0], dict) else None
                     if not isinstance(delta, dict): continue
-                    r = delta.get("reasoning_content") if delta.get("reasoning_content") is not None else delta.get("reasoning")
+                    _, r = native_reasoning_delta(delta)
                     if r:
                         if rs_index is None:
                             rs_index = int(msg_index is not None)
@@ -288,9 +289,10 @@ async def _stream(
                             yield _sse("response.output_item.added", {"output_index": msg_index, "item": {"id": msg_id, "type": "message", "role": "assistant", "status": "in_progress", "content": []}})
                         c = str(c); visible.append(c)
                         yield _sse("response.output_text.delta", {"item_id": msg_id, "output_index": msg_index, "content_index": 0, "delta": c, "logprobs": []})
-                    for tc in delta.get("tool_calls") or []:
+                    tool_fragments = delta.get("tool_calls") or []
+                    for tc in tool_fragments:
                         if not isinstance(tc, dict): continue
-                        idx = int(tc.get("index") or 0)
+                        idx = resolve_tool_fragment_index(tool_identities, tc, fragment_count=len(tool_fragments))
                         acc = tool_acc.setdefault(idx, {"id": "", "function": {"name": "", "arguments": ""}})
                         if tc.get("id"): acc["id"] = str(tc["id"])
                         fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}

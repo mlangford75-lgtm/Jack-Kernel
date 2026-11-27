@@ -86,7 +86,7 @@ class CacheBytePrefixProbe:
         """Capture provenance BEFORE Jack consolidates model-facing system roles."""
         if not self.enabled:
             return []
-        reuse = self._signature_index(self._last)
+        reuse = self._signature_index(self._last, *self._last_by_stage.values())
         source_ids = {id(item) for item in prepared_messages if isinstance(item, dict)}
         result = []
         stage_seen = False

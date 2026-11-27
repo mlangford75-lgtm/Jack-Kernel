@@ -546,7 +546,7 @@ export default async function (pi) {
   });
 
   pi.on("before_provider_request", (event, ctx) => {
-    if (!activeRuntimeBinding || String(ctx?.model?.provider || "") !== PROVIDER_NAME) return;
+    if (String(ctx?.model?.provider || "") !== PROVIDER_NAME) return;
     const sessionId = String(ctx?.sessionManager?.getSessionId?.() || "");
     if (!sessionId || sessionId !== outcomeSessionId) return;
     const payload = event?.payload;

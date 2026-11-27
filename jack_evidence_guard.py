@@ -105,6 +105,59 @@ def terminal_stream_failure(exc: Exception) -> bool:
     )
 
 
+def resolve_tool_fragment_index(identities: Dict[int, Optional[str]], call: Dict[str, Any],
+                                *, fragment_count: int = 1) -> int:
+    """Bind a streamed fragment to a unique choice-local tool slot.
+
+    Explicit indices and nonempty call IDs are authoritative protocol facts.
+    A single anonymous stream can use slot zero. Never guess between parallel
+    calls, or silently overwrite contradictory index/ID associations.
+    """
+    raw_index = call.get("index")
+    raw_id = call.get("id")
+    if raw_id is not None and not isinstance(raw_id, str):
+        raise StreamingIRQProtocolError("Invalid streamed tool-call identity")
+    call_id = raw_id if isinstance(raw_id, str) and raw_id.strip() else None
+    known = next((i for i, ident in identities.items()
+                  if call_id is not None and ident == call_id), None)
+    if raw_index is not None:
+        if isinstance(raw_index, bool) or not (
+            isinstance(raw_index, int) or
+            (isinstance(raw_index, str) and raw_index.isascii() and raw_index.isdecimal())
+        ):
+            raise StreamingIRQProtocolError("Invalid streamed tool-call index")
+        try:
+            index = int(raw_index)
+        except (ValueError, OverflowError):
+            raise StreamingIRQProtocolError("Invalid streamed tool-call index") from None
+        if index < 0 or (known is not None and known != index):
+            raise StreamingIRQProtocolError("Conflicting streamed tool-call identity")
+    elif known is not None:
+        index = known
+    elif call_id is not None:
+        if any(ident is None for ident in identities.values()):
+            raise StreamingIRQProtocolError("Ambiguous streamed tool-call identity")
+        index = max(identities, default=-1) + 1
+    elif fragment_count == 1 and len(identities) <= 1:
+        index = next(iter(identities), 0)
+    else:
+        raise StreamingIRQProtocolError("Ambiguous anonymous tool-call fragment")
+    previous = identities.get(index)
+    if previous is not None and call_id is not None and previous != call_id:
+        raise StreamingIRQProtocolError("Conflicting streamed tool-call identity")
+    identities[index] = previous or call_id
+    return index
+
+
+def native_reasoning_delta(delta: Dict[str, Any]) -> Tuple[Optional[str], Any]:
+    """Select one native reasoning alias, preserving existing Qwen precedence."""
+    for field in ("reasoning_content", "reasoning", "thinking"):
+        value = delta.get(field)
+        if isinstance(value, str) and value:
+            return field, value
+    return None, None
+
+
 def checkpoint_retiring_failure(exc: Exception) -> bool:
     """Distinguish temporary measurement uncertainty from terminal authority loss.
 
@@ -1114,6 +1167,7 @@ async def _guarded_stream(
         StreamingCanaryDetector,
     ] = {}
 
+    tool_identities: Dict[int, Dict[int, Optional[str]]] = {}
     last_template: Optional[Dict[str, Any]] = None
     done_seen = False
 
@@ -1303,17 +1357,10 @@ async def _guarded_stream(
                         if not isinstance(call, dict):
                             continue
 
-                        raw_tool_index = call.get(
-                            "index",
-                            0,
+                        tool_index = resolve_tool_fragment_index(
+                            tool_identities.setdefault(choice_index, {}), call,
+                            fragment_count=len(tool_calls),
                         )
-
-                        try:
-                            tool_index = int(
-                                raw_tool_index
-                            )
-                        except (TypeError, ValueError):
-                            tool_index = 0
 
                         function = call.get("function")
 

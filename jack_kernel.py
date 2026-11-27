@@ -81,7 +81,7 @@ import contextvars
 import json
 import logging
 from jack_agentic_forensics import AgenticForensicJournal, ForensicConflict, attempt_id as _new_forensic_attempt_id
-from jack_loop_detector import (ReasoningLoopDetector, RepeatedReasoningLoop, RepeatedLoopInterrupt, PartialOutputLoopInterrupt, LOOP_THRESHOLDS)
+from jack_loop_detector import (ReasoningLoopDetector, RepeatedReasoningLoop, RepeatedLoopInterrupt, PartialOutputLoopInterrupt, LOOP_THRESHOLDS, MIN_CYCLE_WORDS)
 from jack_loop_shadow import LongCycleShadowDetector, LongCycleRepeatedReasoningLoop, source_texts_from_history
 from jack_tool_outcomes import reported_tool_outcome, SUCCESS as TOOL_SUCCESS, FAILED as TOOL_FAILED, UNKNOWN as TOOL_UNKNOWN
 from jack_tool_recovery import ToolRecoveryState, ToolRecoveryExhausted, operation_key, POLICY_REPEAT_LIMIT
@@ -90,7 +90,10 @@ from jack_phase10_dynamic_authority import PendingAuthority, DynamicAuthorityUna
 from jack_cache_orchestrator import CacheDecision, CacheOrchestrator
 from jack_cache_prefix_diagnostics import CacheBytePrefixProbe
 from jack_stage1_cache_stability import Stage1CacheStabilizer
-from jack_evidence_guard import TOOL_RESUME_PROVENANCE_NOTE, checkpoint_retiring_failure, terminal_stream_failure, public_security_failure
+from jack_evidence_guard import (
+    TOOL_RESUME_PROVENANCE_NOTE, checkpoint_retiring_failure, terminal_stream_failure,
+    public_security_failure, resolve_tool_fragment_index, native_reasoning_delta,
+)
 import os
 import shutil
 import socket
@@ -5550,7 +5553,7 @@ def _phase4_executor_admission_decision(
     if (
         command_dialect is not None
         and str(command_dialect).strip().casefold()
-        not in {"bash", "powershell"}
+        not in {"bash", "sh", "zsh", "powershell"}
     ):
         raise HTTPException(
             status_code=400,
@@ -5814,12 +5817,26 @@ def normalize_tool_calls_for_distribution(calls: Any) -> Any:
     if not isinstance(calls, list):
         return calls
     out = copy.deepcopy(calls)
+    # This seam processes newly generated backend calls only, never historical
+    # tool results. Establish an ID before schema validation and transaction ownership.
+    occupied = {call["id"] for call in out if isinstance(call, dict)
+                and isinstance(call.get("id"), str) and call["id"].strip()}
     for call in out:
         if not isinstance(call, dict):
             continue
         function = call.get("function")
         if not isinstance(function, dict):
             continue
+        ident = call.get("id")
+        if (ident is None or isinstance(ident, str) and not ident.strip()) and (
+            isinstance(function.get("name"), str) and function["name"].strip()
+            and isinstance(function.get("arguments"), (str, dict))
+        ):
+            generated = "jack-call-" + uuid.uuid4().hex
+            while generated in occupied:
+                generated = "jack-call-" + uuid.uuid4().hex
+            occupied.add(generated)
+            call["id"] = generated
         name = str(function.get("name") or "").lower()
         if not any(hint in name for hint in SHELL_TOOL_HINTS):
             continue
@@ -9958,17 +9975,14 @@ class OpenAICompatibleBackend:
                 if not line or not line.startswith("data:"):
                     continue
                 data_text = line[5:].strip()
-                if not data_text or data_text == "[DONE]":
+                if not data_text or data_text in {"[DONE]", "ping"}:
                     continue
                 try:
                     chunk = json.loads(data_text)
                 except json.JSONDecodeError as exc:
-                    if AGENTIC_MODE:
-                        raise HTTPException(
-                            status_code=502, detail="Malformed backend SSE chunk during Agentic stage."
-                        ) from exc
-                    LOG.warning("Ignoring malformed backend SSE chunk: %r", data_text[:500])
-                    continue
+                    raise HTTPException(
+                        status_code=502, detail="Malformed backend SSE chunk."
+                    ) from exc
                 if isinstance(chunk, dict) and chunk.get("usage"):
                     cache_usage_reported = (
                         self._agentic_log_optional_backend_cache_usage(chunk, profile)
@@ -10449,6 +10463,8 @@ class JackQwenKernel:
         aggregate_usage(usage, data.get("usage"))
         choice = (data.get("choices") or [{}])[0]
         msg = choice.get("message") or {}
+        if choice.get("finish_reason") in ("STOP", "end_turn"):
+            choice["finish_reason"] = "stop"
         # Nonstream entrypoints cannot interrupt mid-generation; reject an
         # over-budget result before it can commit or release tool calls.
         nonstream_budget = GenerationBudgetMonitor(
@@ -10646,13 +10662,11 @@ class JackQwenKernel:
         """Reconstruct OpenAI streaming tool-call fragments by index."""
         if not isinstance(deltas, list):
             return
+        identities = {index: call.get("id") or None for index, call in state.items()}
         for raw in deltas:
             if not isinstance(raw, dict):
                 continue
-            try:
-                index = int(raw.get("index", 0))
-            except Exception:
-                index = 0
+            index = resolve_tool_fragment_index(identities, raw, fragment_count=len(deltas))
             call = state.setdefault(
                 index,
                 {
@@ -10888,37 +10902,28 @@ class JackQwenKernel:
                 delta = choice.get("delta") or {}
                 observed_phase = "unrecognized_chunk"
 
-                # Qwen/LM Studio may expose native reasoning under either field.
-                reasoning_content = delta.get("reasoning_content")
-                reasoning = delta.get("reasoning")
-                if reasoning_content is not None:
-                    text = str(reasoning_content)
-                    if text:
-                        budget.observe("reasoning", text)
-                        observed_stream_bytes["reasoning"] += len(text.encode("utf-8"))
-                        observed_phase = "reasoning"
+                # Select exactly one alias per chunk. Retain chronological
+                # reasoning even if a compatible backend alternates aliases.
+                field, native_text = native_reasoning_delta(delta)
+                if field is not None:
+                    text = native_text
+                    budget.observe("reasoning", text)
+                    observed_stream_bytes["reasoning"] += len(text.encode("utf-8"))
+                    observed_phase = "reasoning"
+                    if field != "reasoning" and not reasoning_content_parts:
+                        reasoning_content_parts.extend(reasoning_parts)
+                        reasoning_parts.clear()
+                    if field != "reasoning" or reasoning_content_parts:
                         reasoning_content_parts.append(text)
-                        if detector is not None and detector.feed(text):
-                            raise RepeatedReasoningLoop(detector.detected_cycle_words or 128, detector.repetitions)
-                        long_loop = observe_long_cycle(text)
-                        if long_loop is not None:
-                            raise LongCycleRepeatedReasoningLoop(*long_loop)
-                        last_public_activity = time.monotonic()
-                        yield {"kind": "reasoning", "text": text}
-                elif reasoning is not None:
-                    text = str(reasoning)
-                    if text:
-                        budget.observe("reasoning", text)
-                        observed_stream_bytes["reasoning"] += len(text.encode("utf-8"))
-                        observed_phase = "reasoning"
+                    else:
                         reasoning_parts.append(text)
-                        if detector is not None and detector.feed(text):
-                            raise RepeatedReasoningLoop(detector.detected_cycle_words or 128, detector.repetitions)
-                        long_loop = observe_long_cycle(text)
-                        if long_loop is not None:
-                            raise LongCycleRepeatedReasoningLoop(*long_loop)
-                        last_public_activity = time.monotonic()
-                        yield {"kind": "reasoning", "text": text}
+                    if detector is not None and detector.feed(text):
+                        raise RepeatedReasoningLoop(detector.detected_cycle_words or MIN_CYCLE_WORDS, detector.repetitions)
+                    long_loop = observe_long_cycle(text)
+                    if long_loop is not None:
+                        raise LongCycleRepeatedReasoningLoop(*long_loop)
+                    last_public_activity = time.monotonic()
+                    yield {"kind": "reasoning", "text": text}
 
                 content = delta.get("content")
                 if content is not None:
@@ -10999,6 +11004,8 @@ class JackQwenKernel:
 
                 if choice.get("finish_reason"):
                     finish_reason = str(choice["finish_reason"])
+                    if finish_reason in ("STOP", "end_turn"):
+                        finish_reason = "stop"
         except RepeatedReasoningLoop as loop_error:
             # Stage-2 repetition is terminal for memory, NOT for frozen A1.
             # The caller handles this as an explicit A1-only degraded commit.
@@ -12583,7 +12590,7 @@ class JackQwenKernel:
         # Partial text from token-limit/timeout is not a completed frozen answer.
         choice = (data.get("choices") or [{}])[0] or {}
         reason = choice.get("finish_reason")
-        if reason != "stop":
+        if reason not in ("stop", "STOP", "end_turn"):
             raise HTTPException(
                 status_code=502,
                 detail=f"{stage_name} did not finish successfully: {reason}",
@@ -13726,7 +13733,7 @@ class JackQwenKernel:
             ):
                 for choice in (event.get("choices") or []):
                     delta = choice.get("delta") or {}
-                    reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                    _, reasoning = native_reasoning_delta(delta)
                     if isinstance(reasoning, str) and reasoning:
                         yield chunk({"reasoning_content": reasoning})
                     content = delta.get("content")
@@ -14625,7 +14632,7 @@ class JackQwenKernel:
                                     yield event({"content": text})
                             elif kind == "keepalive":
                                 label = str(packet.get("event") or "backend.activity")
-                                yield f": qwen-keepalive {label}\n\n".encode("utf-8")
+                                yield f": jack-keepalive {label}\n\n".encode("utf-8")
                             elif kind == "tool_calls":
                                 raise HTTPException(status_code=502, detail="Code Debugging pre-pass intake attempted a tool call even though intake tools are disabled.")
                             elif kind == "result":
@@ -14752,7 +14759,7 @@ class JackQwenKernel:
                             yield event({"tool_calls": packet["tool_calls"]})
                         elif kind == "keepalive":
                             label = str(packet.get("event") or "backend.activity")
-                            yield f": qwen-keepalive {label}\n\n".encode("utf-8")
+                            yield f": jack-keepalive {label}\n\n".encode("utf-8")
                         elif kind == "result":
                             stage_result = packet["data"]
 
@@ -14863,7 +14870,7 @@ class JackQwenKernel:
                         yield event({"content": packet["text"]})
                     elif kind == "keepalive":
                         label = str(packet.get("event") or "backend.activity")
-                        yield f": qwen-keepalive {label}\n\n".encode("utf-8")
+                        yield f": jack-keepalive {label}\n\n".encode("utf-8")
                     elif kind == "tool_calls":
                         raise HTTPException(status_code=502, detail="Code Debugging final report attempted a tool call")
                     elif kind == "result":
@@ -14919,7 +14926,7 @@ class JackQwenKernel:
                                     yield event({"tool_calls": packet["tool_calls"]})
                             elif kind == "keepalive":
                                 label = str(packet.get("event") or "backend.activity")
-                                yield f": qwen-keepalive {label}\n\n".encode("utf-8")
+                                yield f": jack-keepalive {label}\n\n".encode("utf-8")
                             elif kind == "result":
                                 native_result = packet["data"]
 
@@ -16255,7 +16262,7 @@ def _phase4_executor_context_from_request(
         )
 
     command_dialect = values["command_dialect"].casefold() or None
-    if command_dialect not in {None, "bash", "powershell"}:
+    if command_dialect not in {None, "bash", "sh", "zsh", "powershell"}:
         raise HTTPException(
             status_code=400,
             detail="Unsupported executor transport command dialect",
@@ -18067,7 +18074,7 @@ def _edit_preserve_thinking(cfg: Dict[str, Any]) -> None:
 def _edit_loop_detector(cfg: Dict[str, Any]) -> None:
     _print_back_hint()
     print("Loop Detector - native reasoning and completed tool-cycle repetition")
-    print("Native reasoning: exact cycles of at least 128 words. Tool cycles: identical calls and evidence.")
+    print("Native reasoning: exact cycles of at least 64 words. Tool cycles: identical calls and evidence.")
     current_enabled = bool(cfg.get("loop_detector_enabled", True))
     enabled = _cli_input(f"Enable Loop Detector? [Y/n] [{'Y' if current_enabled else 'N'}]: ").strip().lower()
     if enabled in {"y", "yes"}:
@@ -18184,17 +18191,18 @@ def _edit_model_selection(cfg: Dict[str, Any]) -> None:
     print("  2) Ollama")
     print("  3) Jan.ai")
     print("  4) llama.cpp (raw llama-server)")
-    print("  5) Custom OpenAI-compatible")
+    print("  5) Custom OpenAI-compatible (local/native template controls)")
+    print("  6) Custom OpenAI-standard wire (no native thinking controls)")
     print()
     current_key = _backend_profile_key(cfg)
     current_label = BACKEND_PRESETS[current_key]["label"]
-    choice = _cli_input(f"Select backend [1-5] [{current_label}]: ").strip().lower()
+    choice = _cli_input(f"Select backend [1-6] [{current_label}]: ").strip().lower()
     mapping = {
         "1":"lmstudio", "lmstudio":"lmstudio", "lm studio":"lmstudio",
         "2":"ollama", "ollama":"ollama",
         "3":"jan", "jan":"jan", "jan.ai":"jan",
         "4":"llamacpp", "llamacpp":"llamacpp", "llama.cpp":"llamacpp", "llama cpp":"llamacpp",
-        "5":"custom", "custom":"custom", "vllm":"custom",
+        "5":"custom", "custom":"custom", "vllm":"custom", "6":"custom", "openai_standard":"custom",
     }
     if choice:
         selected = mapping.get(choice)
@@ -18202,6 +18210,9 @@ def _edit_model_selection(cfg: Dict[str, Any]) -> None:
             print("Invalid backend selection; keeping current backend.")
         else:
             _apply_backend_preset(cfg, selected)
+            if choice in {"6", "openai_standard"}:
+                cfg["qwen_control_shape"] = "openai_standard"
+                print("Standard wire omits native thinking controls; cognitive-mode support must be qualified.")
             print(f"Applied {BACKEND_PRESETS[selected]['label']} defaults.")
 
     key = _backend_profile_key(cfg)
@@ -18742,7 +18753,7 @@ def run_server() -> None:
             LOG.info("Coder Planner profile: %s", CFG.coder_planner_profile)
     LOG.info("Preserve thinking: %s", "ON" if CFG.preserve_thinking else "OFF")
     LOG.info("Forensic archive: %s", CFG.forensic_archive_mode.upper())
-    LOG.info("Loop Detector: %s, threshold=%s, min-cycle=128 words",
+    LOG.info("Loop Detector: %s, threshold=%s, min-cycle=64 words",
              "ON" if CFG.loop_detector_enabled else "OFF", CFG.loop_detector_repetitions)
     LOG.info("Live stage streaming: ON for OpenAI stream=true requests")
     LOG.info("Generation budgets (estimated tokens): reasoning=%s output=%s",

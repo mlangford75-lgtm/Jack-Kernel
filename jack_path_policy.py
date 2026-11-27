@@ -883,6 +883,10 @@ def _command_dialect_for_tool(
 ) -> Optional[str]:
     name = str(tool_name or "").strip().casefold()
     dialect = str(explicit_dialect or "").strip().casefold()
+    # Explicit POSIX-shell declarations use only the shared bounded lexical
+    # subset, not a claim that every zsh/sh feature behaves like Bash.
+    if dialect in {"sh", "zsh"}:
+        dialect = "bash"
 
     if name in _BASH_EXACT_TOOL_NAMES:
         return "bash" if dialect in {"", "bash"} else None
@@ -1406,6 +1410,9 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
                 nested_cwd = nested_cwd or segment_cwd
                 nested_ambiguous = nested_ambiguous or segment_ambiguous
             return tuple(targets), nested_cwd, nested_ambiguous
+        targets.extend(_unknown_command_path_operands(args))
+        if not args[0].startswith("-") and args[0] not in targets:
+            targets.append(args[0])
         return tuple(targets), False, True
 
     if command in {"pwd", "echo", "printf", "true", "false", "printenv", "uname", "whoami", "date", "where", "where.exe", "which"}:
@@ -1626,9 +1633,13 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
                     if _looks_path_like_cli_value(value):
                         targets.append(value)
                 return tuple(targets), uses_cwd, ambiguous
+            targets.extend(_unknown_command_path_operands(args[2:]))
             return tuple(targets), False, True
 
         if args[0] in {"-c"}:
+            # Only represented arguments after the program text, not arbitrary
+            # source code, are part of this lexical contract.
+            targets.extend(_unknown_command_path_operands(args[2:]))
             return tuple(targets), False, True
 
         if not args[0].startswith("-"):
@@ -2028,7 +2039,7 @@ def extract_command_paths(
         ):
             ambiguous = True
             continue
-        key = target.casefold()
+        key = target
         if key in seen:
             continue
         seen.add(key)
