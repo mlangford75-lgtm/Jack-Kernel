@@ -46,9 +46,15 @@ def install(jk):
         raise PolicyIntegrityUnavailable("Canary policy ownership mismatch")
     if any(cell.cell_contents is not policy for cell in run_cells + stream_cells):
         raise PolicyIntegrityUnavailable("conflicting Canary policy consumers")
+    evidence_release = getattr(jk, "_project_tool_evidence_release", None)
+    evidence_cells = policy_cells(evidence_release, RuntimeCanaryPolicy)
+    if callable(evidence_release) and (
+        not evidence_cells or any(cell.cell_contents is not policy for cell in evidence_cells)
+    ):
+        raise PolicyIntegrityUnavailable("required tool evidence Canary consumer unavailable")
     guard = RuntimePolicyAuthority()
     labels = []
-    for cell in run_cells + stream_cells:
+    for cell in run_cells + stream_cells + evidence_cells:
         label = "canary-consumer-" + str(len(labels))
         guard.register_cell(label=label, kind="canary", cell=cell)
         labels.append(label)
@@ -82,6 +88,15 @@ def install(jk):
             raise
         finally:
             await source.aclose()
+
+    if callable(evidence_release):
+        @wraps(evidence_release)
+        def guarded_evidence(*args, **kwargs):
+            verify()
+            result = evidence_release(*args, **kwargs)
+            verify()
+            return result
+        jk._project_tool_evidence_release = guarded_evidence
 
     jk.KERNEL.run = guarded_run
     jk.KERNEL.stream = guarded_stream

@@ -2010,6 +2010,68 @@ def _install_recovery_provenance(jk: Any) -> None:
     jk.recover_pi_tool_evidence = guarded
 
 
+def _find_canary_in_evidence_value(canaries: DeterministicCanarySet, value: Any) -> Optional[CanaryMatch]:
+    """Scan decoded evidence keys as well as values, not JSON escape sequences."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            match = _find_canary_in_evidence_value(canaries, key)
+            if match is not None:
+                return match
+            match = _find_canary_in_evidence_value(canaries, item)
+            if match is not None:
+                return match
+        return None
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            match = _find_canary_in_evidence_value(canaries, item)
+            if match is not None:
+                return match
+        return None
+    return canaries.find(value) if isinstance(value, str) else None
+
+
+def _install_tool_evidence_release(jk: Any, canary_policy: RuntimeCanaryPolicy, credential_policy: Any) -> None:
+    """Protect the caller-bound endpoint without modifying host-owned evidence."""
+    if not callable(getattr(jk, "_project_tool_evidence_release", None)):
+        return
+    if credential_policy is None:
+        raise RuntimeError("Tool evidence release credential authority unavailable")
+    from jack_credential_guard import ProtectedCredentialInterrupt
+    from jack_diagnostic_guard import _policy_match
+
+    def guarded_evidence(evidence: Dict[str, Any]) -> Dict[str, Any]:
+        if (canary_policy.runtime_id != jk.RUNTIME_ID or canary_policy.lane_id != jk.LANE_ID
+                or credential_policy.runtime_id != jk.RUNTIME_ID
+                or credential_policy.lane_id != jk.LANE_ID):
+            from jack_policy_integrity import PolicyIntegrityUnavailable
+            raise PolicyIntegrityUnavailable("Tool evidence release policy ownership mismatch")
+        # The underlying recovery helper and hash remain exact. Do not expose
+        # host session storage locations through the public response.
+        projected = {
+            **{key: value for key, value in evidence.items() if key != "session_file"},
+            "status": "ok",
+            "recovery_mode": "exact_tool_call_id",
+        }
+        match = _policy_match(credential_policy, projected,
+                              boundary="tool_evidence_http_release", direction="caller_bound")
+        if match is not None:
+            ledger = getattr(jk, "_JACK_AUTHORITY_LEDGER", None)
+            if ledger is not None:
+                from jack_phase7_ledger import record_credential_match_failsoft
+                record_credential_match_failsoft(
+                    ledger, boundary="tool_evidence_http_release", direction="caller_bound",
+                    credential_id=match.credential_id, credential_class=match.credential_class,
+                    producer_code="phase7.tool_evidence_http",
+                )
+            raise ProtectedCredentialInterrupt(match)
+        canary_match = _find_canary_in_evidence_value(canary_policy.canaries, projected)
+        if canary_match is not None:
+            raise StreamingIRQCanaryInterrupt(canary_match)
+        return projected
+
+    jk._project_tool_evidence_release = guarded_evidence
+
+
 def install(
     jk: Any,
     *,
@@ -2155,3 +2217,4 @@ def install(
     _install_tool_result_origin(jk)
     _install_receipt_provenance(jk)
     _install_recovery_provenance(jk)
+    _install_tool_evidence_release(jk, canary_policy, credential_policy)

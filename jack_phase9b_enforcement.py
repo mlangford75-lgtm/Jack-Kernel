@@ -59,7 +59,10 @@ def _http_authority_scopes(scope: Any) -> tuple[str, ...]:
         # Model result is permitted only after the protected tool-release
         # gate has separately verified executor authority for tool calls.
         return ("model", "authority")
-    if method == "GET" and path in ("/health", "/v1/models", "/api/v1/models"):
+    if method == "GET" and (
+        path in ("/health", "/v1/models", "/api/v1/models")
+        or (path.startswith("/jack/tool-evidence/") and path.count("/") == 3)
+    ):
         return ("model", "authority")
     # Unknown routes are not automatically blessed as diagnostics. Since no
     # dependency graph has been qualified for them, require all consequential
@@ -179,6 +182,7 @@ def _selected_required_routes(jk: Any) -> tuple[Any, ...]:
     required: dict[tuple[str, str], str] = {
         ("/v1/chat/completions", "POST"): "chat",
         ("/v1/responses", "POST"): "responses",
+        ("/jack/tool-evidence/{tool_call_id}", "GET"): "tool-evidence",
         ("/jack/security/path-admission", "POST"): "executor",
         (base + "/tasks", "POST"): "pi-tasks",
         (base + "/tasks/cancel", "POST"): "pi-cancel",
@@ -309,6 +313,9 @@ def install(jk: Any) -> RuntimeCodeAuthority:
         ("executor-context", jk, "_phase4_executor_context_from_request", "model"),
         ("stream-public-release", jk, "_safe_public_stream", "model"),
         ("completion-envelope", jk, "completion_envelope", "model"),
+        ("tool-evidence-recover", jk, "recover_pi_tool_evidence", "model"),
+        ("tool-evidence-release", jk, "_project_tool_evidence_release", "model"),
+        ("tool-evidence-canary-scan", evidence, "_find_canary_in_evidence_value", "model"),
         ("kernel-run", jk.KERNEL, "run", "model"),
         ("kernel-stream", jk.KERNEL, "stream", "model"),
         ("tool-release", jk, "_phase4_partition_structured_tool_calls", "model"),
@@ -345,7 +352,7 @@ def install(jk: Any) -> RuntimeCodeAuthority:
         guard.register_module(name=label, module_name=module.__name__, scope=scope)
 
     for label, route in _selected_required_routes(jk):
-        scope = ("model" if label in ("chat", "responses") else
+        scope = ("model" if label in ("chat", "responses", "tool-evidence") else
                  "executor" if label == "executor" else "orchestration")
         for attribute in ("endpoint", "app"):
             guard.register(name=f"route-{label}-{attribute}",

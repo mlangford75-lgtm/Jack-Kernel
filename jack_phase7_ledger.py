@@ -26,6 +26,7 @@ _CREDENTIAL_BOUNDARIES = frozenset(
         "model_output_release",
         "orchestration_http_release",
         "orchestration_event_release",
+        "tool_evidence_http_release",
         "diagnostic_http_exception_release",
         "diagnostic_stream_exception_release",
         "diagnostic_log_release",

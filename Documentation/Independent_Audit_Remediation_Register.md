@@ -24,7 +24,7 @@ Draft PR: #179. Main is not a target. No item is closed solely on static analysi
 | P-3 | Open; benchmark before redesign | 64/128 KiB serialization and event-loop/RSS measurement |
 | P-4 | Open | Registry lifecycle and buffer measurements |
 | C-1 | Maintainer scope decision | Secret-header identification without false positives |
-| C-2 | Maintainer scope decision | Evidence endpoint disclosure and integrity coverage |
+| C-2 | Candidate caller-bound evidence gate, unchanged exact internal recovery, omission of session storage path, Phase-9B route and Phase-10 policy consumer sealing | Safe exact evidence/hash, credential and partial Canary withholding, auth, missing evidence, route tampering, full regression |
 | C-3 | Maintainer scope decision | Worker-event quarantine and replay semantics |
 | C-4 | Candidate narrow alignment of unknown Bash/PowerShell literal operand extraction with existing represented-path authority; no new shell sandbox claim | Positive NEVER, exact credential resource, benign unlocked commands, locked ambiguity, full regression |
 | C-5 | Maintainer scope decision | Secured operational entrypoint and test escape hatch |
@@ -66,3 +66,9 @@ The actual lifespan already invokes ledger.close off the event loop after orches
 Commit 3ce3c1e2: all four specialized workflows passed; full Windows regression 1,616 passed / 218 failed, zero new failure identities versus main 9a6fe53d. The two additional debugging durability/lifecycle tests passed. Full CI remains red due to inherited failures. Commit 83fbf1b7 qualification remains pending.
 
 C-4 scope choice for the experimental branch: extend the existing represented-path contract to obvious literal operands of otherwise unknown Bash/PowerShell commands. Keep ambiguity, existing Workspace Lock rules, and normal unlocked use for unclassified semantics without a positive prohibited path. Skip URI operands and do not evaluate arbitrary command expressions. Existing Phase-4/5/6/7 admission owns consequences; no new sandbox promise. This is a candidate for review and qualification, not an approved expansion to general command execution control.
+
+### C-2 candidate and completed qualification
+
+Commit 83fbf1b7: 1,619 passed / 218 failed; commit 46d220ed: 1,627 passed / 218 failed. Both passed all four specialized workflows, and both have zero new failure identities compared with main 9a6fe53d. Full regression remains red due to inherited failures.
+
+The public exact-key evidence route now applies the existing merged Canary policy and exact credential policy before caller release, without altering authoritative recovered text or SHA-256. The HTTP projection omits session_file and uses a non-reflecting not-found diagnostic. The secured entrypoint binds the new evidence consumer into both Phase-10 policy authorities and Phase-9B executable/route authority. Direct internal recovery retains full provenance. Credential matches use a distinct tool_evidence_http_release ledger boundary rather than model input/output. Live release and tamper regression cases added. Qualification pending. No universal host-path privacy claim for arbitrary tool results.

@@ -216,6 +216,8 @@ def _integrated_host(tmp_path: Path):
         _phase4_executor_context_from_request=lambda _request: None,
         _safe_public_stream=lambda _body: None,
         completion_envelope=lambda value: value,
+        recover_pi_tool_evidence=lambda call_id, _sha=None: {"result": call_id},
+        _project_tool_evidence_release=lambda evidence: evidence,
     )
     calls = {"run": 0, "executor": 0, "control": 0}
 
@@ -231,6 +233,10 @@ def _integrated_host(tmp_path: Path):
     @app.post("/v1/responses")
     async def responses():
         return await host.KERNEL.run({})
+
+    @app.get("/jack/tool-evidence/{tool_call_id}")
+    async def evidence(tool_call_id: str):
+        return host._project_tool_evidence_release(host.recover_pi_tool_evidence(tool_call_id))
 
     @app.post("/jack/security/path-admission")
     async def executor():
@@ -538,3 +544,26 @@ def test_mandatory_phase9_install_seals_new_guard_and_enforcement_source(tmp_pat
     assert expected.issubset(observed)
     authority.verify_for("model")
     authority.verify_for("observation")
+
+
+def test_tool_evidence_route_and_release_authority_are_pinned(tmp_path):
+    host, _ = _integrated_host(tmp_path)
+    install(host)
+    with TestClient(host.APP) as client:
+        assert client.get("/jack/tool-evidence/call-1").json() == {"result": "call-1"}
+        host._project_tool_evidence_release = lambda evidence: {"result": "untrusted"}
+        blocked = client.get("/jack/tool-evidence/call-1")
+        assert blocked.status_code == 503
+        assert "untrusted" not in blocked.text
+        assert client.get("/").status_code == 200
+
+    host, _ = _integrated_host(tmp_path)
+    install(host)
+    route = next(r for r in host.APP.routes if r.path == "/jack/tool-evidence/{tool_call_id}")
+    async def bypass(tool_call_id: str):
+        return {"result": "untrusted"}
+    route.dependant.call = bypass
+    with TestClient(host.APP) as client:
+        blocked = client.get("/jack/tool-evidence/call-1")
+        assert blocked.status_code == 503
+        assert "untrusted" not in blocked.text

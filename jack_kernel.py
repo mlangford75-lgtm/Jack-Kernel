@@ -16539,6 +16539,11 @@ async def phase4_executor_path_admission(request: Request) -> Dict[str, Any]:
     )
 
 
+def _project_tool_evidence_release(evidence: Dict[str, Any]) -> Dict[str, Any]:
+    """Fail closed until the host-owned credential/Canary release gate is installed."""
+    raise HTTPException(status_code=503, detail="Tool evidence release authority unavailable")
+
+
 @APP.get("/jack/tool-evidence/{tool_call_id}")
 async def jack_tool_evidence(tool_call_id: str, request: Request) -> Dict[str, Any]:
     """Read-only exact-key recovery of a retired Pi tool result.
@@ -16551,13 +16556,17 @@ async def jack_tool_evidence(tool_call_id: str, request: Request) -> Dict[str, A
     try:
         loop = asyncio.get_running_loop()
         evidence = await loop.run_in_executor(None, recover_pi_tool_evidence, tool_call_id, expected_sha256)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return {
-        "status": "ok",
-        "recovery_mode": "exact_tool_call_id",
-        **evidence,
-    }
+    except FileNotFoundError:
+        # Caller-controlled lookup IDs and host paths are not diagnostics.
+        raise HTTPException(status_code=404, detail="Matching Pi tool evidence not found") from None
+    try:
+        return _project_tool_evidence_release(evidence)
+    except Exception as exc:
+        failure = public_security_failure(exc)
+        if failure is None:
+            raise
+        status, code, message = failure
+        raise HTTPException(status_code=status, detail={"error": code, "message": message}) from None
 
 
 @APP.get("/v1/models")

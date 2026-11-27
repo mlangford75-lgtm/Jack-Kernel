@@ -485,6 +485,8 @@ async def evidence_scan_runs_off_event_loop():
 
     m.enforce_kernel_auth = no_auth
     m.recover_pi_tool_evidence = fake_recover
+    # This test isolates worker-thread scheduling; real policy coverage is separate.
+    m._project_tool_evidence_release = lambda evidence: evidence
     request = Request({"type": "http", "method": "GET", "path": "/", "headers": [], "query_string": b""})
     result = await m.jack_tool_evidence("call-1", request)
     assert result["content"] == "ok"
