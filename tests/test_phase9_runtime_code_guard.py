@@ -440,7 +440,7 @@ def test_p1_warm_code_memo_preserves_depth_and_node_limits():
             _function_shape(fn, cache)
 
 
-def test_p1_memo_never_survives_a_verification_boundary():
+def test_p1_sealed_code_memo_never_masks_code_replacement():
     def run():
         return "safe"
 
@@ -454,3 +454,61 @@ def test_p1_memo_never_survives_a_verification_boundary():
     run.__code__ = run.__code__.replace(co_consts=(None, "changed"))
     with pytest.raises(RuntimeCodeIntegrityCompromised):
         guard.verify_for("model")
+
+
+@pytest.mark.parametrize("mutation", ["default", "closure", "mutable_constant"])
+def test_p1_sealed_transcripts_do_not_cache_live_dependencies(mutation):
+    def delegate():
+        return "safe"
+
+    def replacement():
+        return "changed"
+
+    if mutation == "default":
+        def run(*, callback=delegate):
+            return callback()
+    elif mutation == "closure":
+        def run():
+            return delegate()
+    else:
+        def run():
+            return None
+        run.__code__ = run.__code__.replace(co_consts=(None, delegate))
+
+    guard = _guard(SimpleNamespace(go=run))
+    baseline = guard._sealed_code_transcripts
+    assert baseline
+    assert len(baseline) <= 128
+    if mutation == "mutable_constant":
+        assert id(run.__code__) not in baseline
+    else:
+        assert id(run.__code__) in baseline
+    for _ in range(3):
+        guard.verify_for("model")
+        assert guard._sealed_code_transcripts is baseline
+    if mutation == "default":
+        run.__kwdefaults__["callback"] = replacement
+    elif mutation == "closure":
+        run.__closure__[0].cell_contents = replacement
+    else:
+        delegate.__code__ = replacement.__code__
+    with pytest.raises(RuntimeCodeIntegrityCompromised):
+        guard.verify_for("model")
+    assert guard.state == "INVALIDATED"
+
+
+def test_p1_unfamiliar_equivalent_code_does_not_enroll_in_sealed_memo():
+    def run():
+        return "safe"
+
+    guard = _guard(SimpleNamespace(go=run))
+    baseline = guard._sealed_code_transcripts
+    original = run.__code__
+    assert id(original) in baseline
+    run.__code__ = original.replace()
+    assert run.__code__ is not original
+    guard.verify_for("model")
+    assert guard._sealed_code_transcripts is baseline
+    assert id(run.__code__) not in baseline
+    with pytest.raises(TypeError):
+        baseline[id(run.__code__)] = None
