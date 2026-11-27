@@ -12,6 +12,7 @@ on:
       - 'tests/test_phase9_live_kernel_optin.py'
       - 'tests/test_phase9_secure_child_http.py'
       - 'tests/test_phase9_live_security_http_tamper.py'
+      - 'tests/benchmark_secured_stream.py'
       - '.github/workflows/phase9b-qualification.yml'
   workflow_dispatch:
 
@@ -45,3 +46,7 @@ jobs:
         run: python -m pytest -q tests/test_phase9_live_security_http_tamper.py
       - name: Run existing Phase 8 security and preservation gates
         run: python -m pytest -q tests/test_phase8_source_baseline.py tests/test_phase8_runtime_enforcement.py tests/test_phase8_ledger_observation.py tests/test_phase8_adversarial_preservation.py
+
+      - name: Measure P-1 actual bundled versus secured SSE release path
+        timeout-minutes: 35
+        run: python tests/benchmark_secured_stream.py
