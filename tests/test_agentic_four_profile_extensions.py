@@ -60,7 +60,7 @@ def test_profile_matrix(monkeypatch, tmp_path, profile, stage1_thinking, extensi
         assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
     if profile == "translated":
         assert "Spanish" in k.AGENTIC_FINAL_REVIEW_TRIGGER
-        assert "Translate the completed Stage 1 response" in k.AGENTIC_FINAL_REVIEW_TRIGGER
+        assert "Return only the complete translated final response" in k.AGENTIC_FINAL_REVIEW_TRIGGER
         assert k._runtime_identity_details()["agentic_translation_target_language"] == "Spanish"
     else:
         assert "Spanish" not in k.AGENTIC_FINAL_REVIEW_TRIGGER

@@ -47,7 +47,9 @@ def test_factory_policy_keeps_ordinary_work_and_temp_open(factory_windows, targe
             "arguments": json.dumps({"path": target, "content": "synthetic"})}}
     decision = paths.authorize_structured_tool_call(policy, call)
     assert decision.outcome is paths.PathAuthorizationOutcome.ALLOW
-    assert decision.canonical_target is not None
+    facts = paths.inspect_represented_path(policy, target)
+    assert facts.deterministic and facts.canonical_target is not None
+    assert not facts.never_match and not facts.invalid
 
 
 @pytest.mark.parametrize("target", [
