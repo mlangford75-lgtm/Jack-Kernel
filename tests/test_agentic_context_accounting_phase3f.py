@@ -108,7 +108,7 @@ def test_projection_fallback_is_observed_without_modification(monkeypatch):
     result = k._compact_agentic_completed_capsules(inp)
     assert json.dumps(inp, sort_keys=True) == old
     assert result[1]['content'] == capsule
-    matching = [x for x in events if isinstance(x[0], str) and 'Phase 3F projection' in x[0]]
+    matching = [x for x in events if isinstance(x[0], str) and 'context accounting projection' in x[0]]
     assert len(matching) == 1
     # The current Phase 3D/3E public artifact is tag-free ("M\n\nA").
     # Projection still cannot authenticate it without the shadow ledger.

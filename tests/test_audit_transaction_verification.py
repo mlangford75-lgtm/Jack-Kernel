@@ -90,7 +90,7 @@ def test_v2_launcher_linked_artifacts_are_accounted_without_wire_labels(monkeypa
     original = k.LOG.info
 
     def log(message, *args, **kwargs):
-        if message == "Agentic Phase 3F context: %s":
+        if message == "Agentic context accounting context: %s":
             reports.append(json.loads(args[0]))
         return original(message, *args, **kwargs)
 
