@@ -190,5 +190,25 @@ def test_missing_executor_cwd_denial_logs_only_safe_category(
         assert not allowed and errors
         assert "reason=EXECUTOR_CWD_MISSING" in caplog.text
         assert workspace not in caplog.text
+        assert not kernel._immutable_path_denial(errors)
+        assert "no forbidden target was established" in errors[0]
+        assert "explicit authorized target" in errors[0]
+        notice = kernel._tool_rejection_notice(errors, "Agentic native pass 1")
+        assert "immutable host security denial" not in notice["content"]
+        assert "correct the invocation" in notice["content"]
+
+        # A new explicit proposal must independently pass the same gate.
+        call["function"]["arguments"] = json.dumps({
+            "command": "ls -la " + workspace.replace("\\", "/")
+        })
+        allowed, errors = kernel._phase4_partition_structured_tool_calls([call])
+        assert allowed == [call] and not errors
+
+        # A positive outside-workspace target is not a correctable contract error.
+        call["function"]["arguments"] = json.dumps({
+            "command": "ls -la C:/Outside"
+        })
+        allowed, errors = kernel._phase4_partition_structured_tool_calls([call])
+        assert not allowed and kernel._immutable_path_denial(errors)
     finally:
         kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)

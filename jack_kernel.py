@@ -5395,6 +5395,23 @@ def _phase4_partition_structured_tool_calls(
                 reason_code, executor_context is not None, bool(executor_cwd),
                 decision.canonical_target is not None, active_policy.workspace_enabled,
             )
+            # A missing or unresolved command contract is not a positive
+            # forbidden-target finding. No tool is released here; a corrected
+            # proposal must pass the same complete gate again.
+            if not structured.applicable and reason_code in {
+                "EXECUTOR_CWD_MISSING",
+                "COMMAND_TARGET_UNRESOLVED",
+                "COMMAND_CONTRACT_AMBIGUOUS",
+                "WORKSPACE_MEMBERSHIP_UNRESOLVED",
+            } and decision.canonical_target is None:
+                errors.append(
+                    f"tool call {index}: Restricted Paths / Workspace Lock "
+                    f"could not establish command authority ({reason_code}); "
+                    "no forbidden target was established. Supply a deterministic "
+                    "command with an explicit authorized target if needed. "
+                    "Never seek alternate access to a restricted target."
+                )
+                continue
             errors.append(
                 f"tool call {index}: host-owned Restricted Paths / Workspace Lock path policy denied "
                 "the represented filesystem target"
