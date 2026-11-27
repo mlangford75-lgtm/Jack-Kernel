@@ -8666,6 +8666,28 @@ class OpenAICompatibleBackend:
         LOG.info("Resolved currently loaded LM Studio model: %s", self._resolved_model)
         return self._resolved_model
 
+    async def refresh_loaded_model(self) -> str:
+        """Rediscover LM Studio at a Kernel-owned idle discovery boundary."""
+        if self.cfg.backend_profile != "lmstudio":
+            return await self.resolve_model()
+        async with self._model_lock:
+            previous = (self._resolved_model, self._detected_context_length)
+            try:
+                resolved = await self._resolve_lmstudio_model()
+            except Exception:
+                # A failed idle discovery must not leave stale metadata usable
+                # by the next inference. No active transaction is switched here.
+                self._resolved_model = None
+                self._detected_context_length = 0
+                self._model_metadata_checked = False
+                raise
+            if previous != (resolved, self._detected_context_length):
+                self._agentic_previous_prompt_by_stage.clear()
+                self._agentic_previous_prompt = None
+                self._cache_byte_probe = CacheBytePrefixProbe()
+                self._stage1_cache_stabilizer = Stage1CacheStabilizer()
+            return resolved
+
     async def resolve_model(self) -> str:
         if self._resolved_model and (self.cfg.backend_context_length or self._model_metadata_checked):
             return self._resolved_model
@@ -10256,6 +10278,26 @@ class JackQwenKernel:
         self._pending_debugging_intake_resume_lock = asyncio.Lock()
         self._pending_debugging_user_resumes: Dict[str, PendingDebuggingUserResume] = {}
         self._pending_debugging_user_resume_lock = asyncio.Lock()
+        self._model_discovery_lock = asyncio.Lock()
+        self._model_discovery_active = 0
+
+    async def _resolve_discovery_model(self, backend: OpenAICompatibleBackend) -> str:
+        """Public metadata discovery cannot replace an in-use model selection."""
+        async with self._model_discovery_lock:
+            if (
+                backend is self.backend
+                and isinstance(backend, OpenAICompatibleBackend)
+                and backend.cfg.backend_profile == "lmstudio"
+                and backend._resolved_model is not None
+                and not DEEP_REASONING_MODE
+                and self._model_discovery_active == 0
+                and not self._pending_tool_resumes
+                and not self._pending_debugging_intake_resumes
+                and not self._pending_debugging_user_resumes
+                and not _DEBUGGING_RUNS
+            ):
+                return await backend.refresh_loaded_model()
+            return await backend.resolve_model()
 
     async def _activity_update(self, **kwargs: Any) -> None:
         """Best-effort observability update; telemetry never governs cognition."""
@@ -13506,6 +13548,11 @@ class JackQwenKernel:
         Queued or rejected requests never acquire a checkpoint. Cleanup cannot
         unlock another request by scanning its historical messages.
         """
+        # Serialize idle model discovery with admission, but never hold this
+        # lock over inference or settlement. Concurrent requests are counted,
+        # and suspended checkpoints independently prevent model replacement.
+        async with self._model_discovery_lock:
+            self._model_discovery_active += 1
         owner = {
             "kernel": self, "task": asyncio.current_task(), "state": None,
             "debugging_token": object(), "debugging_run": None,
@@ -13579,6 +13626,7 @@ class JackQwenKernel:
                         )
                 finally:
                     _REQUEST_RESUME_OWNER.reset(token)
+                    self._model_discovery_active -= 1
 
     async def _agentic_phase3g_settle_scope(self, scope: Dict[str, Any]) -> None:
         if scope.get("settled"):
@@ -16425,7 +16473,7 @@ async def root() -> Dict[str, Any]:
 @APP.get("/health")
 async def health(request: Request) -> Dict[str, Any]:
     await enforce_kernel_auth(request)
-    model = await BACKEND.resolve_model()
+    model = await KERNEL._resolve_discovery_model(BACKEND)
     preset = BACKEND_PRESETS.get(CFG.backend_profile, BACKEND_PRESETS["custom"])
     return {
         "status": "ok",
@@ -16667,7 +16715,7 @@ async def list_models(request: Request) -> Dict[str, Any]:
     await enforce_kernel_auth(request)
     # Resolve now so configuration errors are surfaced before the first chat and
     # so the loaded backend instance's context metadata is available to clients.
-    backend_model = await BACKEND.resolve_model()
+    backend_model = await KERNEL._resolve_discovery_model(BACKEND)
     context_length = int(BACKEND.context_length or 0)
     item: Dict[str, Any] = {
         "id": CFG.virtual_model,
@@ -16701,7 +16749,7 @@ async def lmstudio_compatible_models(request: Request) -> Dict[str, Any]:
     guessed/static Pi-side value.
     """
     await enforce_kernel_auth(request)
-    backend_model = await BACKEND.resolve_model()
+    backend_model = await KERNEL._resolve_discovery_model(BACKEND)
     context_length = int(BACKEND.context_length or 0)
     if context_length <= 0:
         raise HTTPException(

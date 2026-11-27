@@ -209,3 +209,113 @@ def test_v3_explicit_standard_wire_omits_local_extensions(monkeypatch, tmp_path,
     for field in ("temperature", "top_p", "presence_penalty", "model", "messages", "stream"):
         assert standard[field] == local[field]
     assert standard["messages"] == local["messages"]
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_v3_idle_lmstudio_discovery_preserves_transaction_model(monkeypatch, tmp_path, configured):
+    from dataclasses import replace
+    import httpx
+
+    k = load(monkeypatch, tmp_path, profile="balanced")
+    cfg = replace(k.CFG, backend_profile="lmstudio",
+                  backend_model="first" if configured else "")
+    loaded = [("first", 8192)]
+    requests = []
+
+    def reply(request):
+        requests.append(request.url.path)
+        return httpx.Response(200, json={"models": [
+            {"type": "llm", "key": name, "loaded_instances": [
+                {"id": name, "config": {"context_length": context}}]}
+            for name, context in loaded]})
+
+    async def run():
+        backend = k.OpenAICompatibleBackend(cfg)
+        await backend._client.aclose()
+        backend._client = httpx.AsyncClient(transport=httpx.MockTransport(reply))
+        kernel = k.JackQwenKernel(backend, cfg)
+        try:
+            assert await kernel._resolve_discovery_model(backend) == "first"
+            assert backend.context_length == 8192
+            original_probe = backend._cache_byte_probe
+            loaded[:] = [("second", 16384)]
+            async with kernel._request_resume_scope():
+                assert await kernel._resolve_discovery_model(backend) == "first"
+                assert await backend.resolve_model() == "first"
+                assert len(requests) == 1
+            assert kernel._model_discovery_active == 0
+            for pending in (kernel._pending_tool_resumes,
+                            kernel._pending_debugging_intake_resumes,
+                            kernel._pending_debugging_user_resumes):
+                pending["synthetic-suspended"] = object()
+                assert await kernel._resolve_discovery_model(backend) == "first"
+                assert len(requests) == 1
+                pending.clear()
+            if configured:
+                with pytest.raises(k.HTTPException) as caught:
+                    await kernel._resolve_discovery_model(backend)
+                assert caught.value.status_code == 409
+                assert backend._resolved_model is None
+                assert backend._detected_context_length == 0
+                loaded[:] = [("first", 16384)]
+                assert await kernel._resolve_discovery_model(backend) == "first"
+            else:
+                assert await kernel._resolve_discovery_model(backend) == "second"
+                assert await backend.resolve_model() == "second"
+                assert backend._cache_byte_probe is not original_probe
+            assert backend.context_length == 16384
+        finally:
+            await backend._client.aclose()
+
+    asyncio.run(run())
+
+
+def test_v3_idle_discovery_and_request_admission_are_serialized(monkeypatch, tmp_path):
+    from dataclasses import replace
+    import httpx
+
+    k = load(monkeypatch, tmp_path, profile="balanced")
+    cfg = replace(k.CFG, backend_profile="lmstudio", backend_model="")
+
+    async def run():
+        backend = k.OpenAICompatibleBackend(cfg)
+        await backend._client.aclose()
+        entered, release, admitted = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        calls = 0
+
+        async def reply(request):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                entered.set()
+                await release.wait()
+            model = "first" if calls == 1 else "second"
+            return httpx.Response(200, json={"models": [
+                {"type": "llm", "key": model, "loaded_instances": [
+                    {"id": model, "config": {"context_length": 8192}}]}]})
+
+        backend._client = httpx.AsyncClient(transport=httpx.MockTransport(reply))
+        kernel = k.JackQwenKernel(backend, cfg)
+
+        async def request():
+            async with kernel._request_resume_scope():
+                admitted.set()
+                assert await backend.resolve_model() == "second"
+
+        try:
+            assert await kernel._resolve_discovery_model(backend) == "first"
+            discovery = asyncio.create_task(kernel._resolve_discovery_model(backend))
+            await entered.wait()
+            work = asyncio.create_task(request())
+            await asyncio.sleep(0)
+            assert not admitted.is_set()
+            release.set()
+            assert await discovery == "second"
+            await work
+            assert admitted.is_set()
+            assert kernel._model_discovery_active == 0
+        finally:
+            release.set()
+            await backend._client.aclose()
+
+    asyncio.run(run())
