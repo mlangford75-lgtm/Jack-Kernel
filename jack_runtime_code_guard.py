@@ -509,9 +509,10 @@ class RuntimeCodeAuthority:
                 raise RuntimeCodeIntegrityCompromised(
                     "runtime executable verifier binding changed"
                 )
-            if self._state == "INVALIDATED":
+            if self._state == "INVALIDATED" or self._invalidated_scopes:
                 raise RuntimeCodeIntegrityCompromised("runtime executable authority invalidated")
             if self._state == "INITIALIZING":
                 raise RuntimeCodeIntegrityUnavailable("runtime executable authority not sealed")
             self._check_method(self)
+            self._unavailable_scopes.clear()
             self._state = "ACTIVE"

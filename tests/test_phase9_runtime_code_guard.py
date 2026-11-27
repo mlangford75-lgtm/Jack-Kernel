@@ -334,3 +334,19 @@ def test_scoped_temporary_measurement_suspends_only_affected_authority():
     owner.blocked = False
     guard.verify_for("executor")
     assert guard.state == "ACTIVE"
+
+
+def test_full_verify_cannot_clear_confirmed_scoped_invalidation():
+    original = lambda: "safe"
+    owner = SimpleNamespace(run=original)
+    guard = RuntimeCodeAuthority()
+    guard.register(name="model", owner=owner, attribute="run", scope="model")
+    guard.seal()
+    owner.run = lambda: "tampered"
+    with pytest.raises(RuntimeCodeIntegrityCompromised):
+        guard.verify_for("model")
+    owner.run = original
+    with pytest.raises(RuntimeCodeIntegrityCompromised):
+        guard.verify()
+    guard.verify_for("observation")
+    assert guard.state == "INVALIDATED"

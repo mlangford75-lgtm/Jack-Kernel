@@ -188,6 +188,22 @@ def _selected_required_routes(jk: Any) -> tuple[Any, ...]:
         (base + "/tasks/cancel", "POST"): "pi-cancel",
         (base + "/session/new", "POST"): "pi-session",
     }
+    # The real secured host must pin all consequence-bearing GET routes.
+    # Minimal test hosts may omit them, but any present route is still pinned.
+    extended = {
+        (base + "/status", "GET"): "pi-status",
+        (base + "/events", "GET"): "pi-events",
+        ("/health", "GET"): "health",
+        ("/v1/models", "GET"): "models",
+        ("/api/v1/models", "GET"): "backend-models",
+    }
+    secured = getattr(jk, "_JACK_PHASE10_PATH_AUTHORITY", None) is not None
+    required.update(extended if secured else {
+        key: label for key, label in extended.items()
+        if any(getattr(route, "path", None) == key[0]
+               and key[1] in (getattr(route, "methods", ()) or ())
+               for route in jk.APP.routes)
+    })
     found: dict[str, Any] = {}
     for route in tuple(jk.APP.routes):
         path = getattr(route, "path", None)
@@ -352,7 +368,8 @@ def install(jk: Any) -> RuntimeCodeAuthority:
         guard.register_module(name=label, module_name=module.__name__, scope=scope)
 
     for label, route in _selected_required_routes(jk):
-        scope = ("model" if label in ("chat", "responses", "tool-evidence") else
+        scope = ("model" if label in ("chat", "responses", "tool-evidence",
+                                      "health", "models", "backend-models") else
                  "executor" if label == "executor" else "orchestration")
         for attribute in ("endpoint", "app"):
             guard.register(name=f"route-{label}-{attribute}",
@@ -396,11 +413,14 @@ def install(jk: Any) -> RuntimeCodeAuthority:
         import jack_phase10_dynamic_authority as dynamic
         import jack_phase11_privacy as privacy
         import jack_credential_guard as credential
+        import jack_credential_resource_guard as resource
+        import jack_diagnostic_guard as diagnostic
         for module, scope in (
             (static, "shared"), (path_gate, "shared"),
             (canary_gate, "model"), (credential_gate, "authority"),
             (dynamic, "authority"), (privacy, "shared"),
-            (credential, "authority"),
+            (credential, "authority"), (resource, "authority"),
+            (diagnostic, "shared"),
         ):
             guard.register_module(name="module-" + module.__name__,
                                   module_name=module.__name__, scope=scope)
@@ -454,6 +474,10 @@ def install(jk: Any) -> RuntimeCodeAuthority:
             ("pending-admission", jk.KERNEL, "_phase4_pending_tool_call_snapshot", "executor"),
             ("pending-consume", jk.KERNEL, "_consume_pending_tool_resume", "model"),
             ("pending-create", jk.KERNEL, "_register_stage_tool_resume", "model"),
+            ("credential-resource-fact", resource, "fact_for_canonical_target", "authority"),
+            ("credential-resource-snapshot", path_gate, "_resource_policy_snapshot", "authority"),
+            ("credential-match", credential.RuntimeCredentialPolicy, "find", "authority"),
+            ("diagnostic-policy-match", diagnostic, "_policy_match", "shared"),
             ("credential-post", jk.BACKEND._client, "post", "model"),
             ("credential-build", jk.BACKEND._client, "build_request", "model"),
             ("credential-publish", jk.OrchestrationEventHub, "_publish", "orchestration"),

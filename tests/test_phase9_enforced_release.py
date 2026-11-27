@@ -567,3 +567,23 @@ def test_tool_evidence_route_and_release_authority_are_pinned(tmp_path):
         blocked = client.get("/jack/tool-evidence/call-1")
         assert blocked.status_code == 503
         assert "untrusted" not in blocked.text
+
+
+@pytest.mark.parametrize("path", [
+    "/jack/orchestration/status", "/jack/orchestration/events",
+    "/health", "/v1/models", "/api/v1/models",
+])
+def test_authority_bearing_get_routes_are_pinned(tmp_path, path):
+    host, _calls = _integrated_host(tmp_path)
+
+    @host.APP.get(path)
+    async def read():
+        return {"verified": True}
+
+    guard = install(host)
+    route = next(r for r in host.APP.routes if getattr(r, "path", None) == path)
+    with TestClient(host.APP) as client:
+        assert client.get(path).status_code == 200, guard.mismatched_slots
+        route.dependant.call = lambda: {"unverified": True}
+        assert client.get(path).status_code == 503
+        assert client.get("/").status_code == 200

@@ -314,3 +314,52 @@ jk._JACK_AUTHORITY_LEDGER.close()
         text=True, capture_output=True, check=False, timeout=55,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_phase10_credential_resource_registry_binding_is_terminal(tmp_path):
+    script = r'''
+import json
+import jack_kernel as jk
+import jack_credential_resource_guard as resource
+from jack_phase10_path_enforcement import install
+from jack_policy_integrity import PolicyIntegrityCompromised
+
+jk._install_bundled_runtime_extensions()
+policy = jk._JACK_CREDENTIAL_RESOURCE_POLICY
+key = (jk.RUNTIME_ID, jk.LANE_ID)
+assert resource._RESOURCE_POLICIES[key] is policy
+install(jk)
+call = {"id": "candidate", "type": "function", "function": {
+    "name": "write", "arguments": json.dumps({
+        "path": r"D:\Projects\Jack\safe.txt", "content": "safe"})}}
+allowed, errors = jk._phase4_partition_structured_tool_calls([call])
+assert allowed and not errors
+resource._RESOURCE_POLICIES.pop(key)
+try:
+    jk._phase4_partition_structured_tool_calls([call])
+except PolicyIntegrityCompromised:
+    pass
+else:
+    raise AssertionError("missing credential resource binding was accepted")
+resource._RESOURCE_POLICIES[key] = policy
+try:
+    jk._phase4_partition_structured_tool_calls([call])
+except PolicyIntegrityCompromised:
+    pass
+else:
+    raise AssertionError("confirmed resource compromise was silently cleared")
+jk._JACK_AUTHORITY_LEDGER.close()
+'''
+    env = dict(os.environ)
+    env.update({
+        "JACK_AUTHORITY_LEDGER_DIR": str(tmp_path / "ledger"),
+        "JACK_FORENSIC_ARCHIVE_MODE": "off",
+        "JACK_BACKEND_MODEL": "test-model",
+        "JACK_BACKEND_PROFILE": "lmstudio",
+        "JACK_PATH_POLICY_JSON": '{"version":1,"workspace_root":"D:/Projects/Jack","never_paths":[]}',
+    })
+    result = subprocess.run(
+        [sys.executable, "-c", script], cwd=_ROOT, env=env,
+        text=True, capture_output=True, check=False, timeout=55,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
