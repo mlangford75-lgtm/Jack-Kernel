@@ -111,7 +111,12 @@ def test_workspace_cannot_be_configured_inside_never_root():
         RuntimeError,
         match="workspace_root cannot be inside a NEVER root",
     ):
-        build(workspace=r"C:\Windows\Temp")
+        build(workspace=r"C:\Windows\SystemTemp")
+
+    # Factory Temp is a supported exception, but user-defined NEVER wins.
+    assert build(workspace=r"C:\Windows\Temp").workspace_enabled
+    with pytest.raises(RuntimeError, match="workspace_root cannot be inside a NEVER root"):
+        build(workspace=r"C:\Windows\Temp", never=[r"C:\Windows"])
 
 
 @pytest.mark.parametrize(

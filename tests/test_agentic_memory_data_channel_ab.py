@@ -73,7 +73,7 @@ def unpack(wire):
     return capsules[0], json.loads(body)
 
 
-@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "exhaustive"))
+@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "translated"))
 @pytest.mark.parametrize("label", (False, True))
 def test_enabled_moves_only_authenticated_memory_out_of_assistant_dialogue(monkeypatch, tmp_path, profile, label):
     k = load(monkeypatch, tmp_path, profile, True, label=label)
@@ -98,7 +98,7 @@ def test_enabled_moves_only_authenticated_memory_out_of_assistant_dialogue(monke
     assert all(not key.startswith("_jack_") for m in p for key in m)
 
 
-@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "exhaustive"))
+@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "translated"))
 def test_default_baseline_retains_original_assistant_memory_presentation(monkeypatch, tmp_path, profile):
     k = load(monkeypatch, tmp_path, profile, False)
     h = history()
@@ -111,7 +111,7 @@ def test_default_baseline_retains_original_assistant_memory_presentation(monkeyp
 
 
 def test_memory_payload_is_quoted_and_does_not_break_transport_delimiters(monkeypatch, tmp_path):
-    k = load(monkeypatch, tmp_path, "exhaustive", True)
+    k = load(monkeypatch, tmp_path, "translated", True)
     h = history()
     p = k.OpenAICompatibleBackend(k.CFG)._stage_messages_for_profile(
         h, k.STAGES["extended_initial"])
@@ -183,8 +183,8 @@ def test_data_channel_is_used_by_same_transport_for_stream_and_nonstream(monkeyp
 
 
 @pytest.mark.parametrize("stream", (False, True))
-def test_final_review_keeps_authenticated_request_last_with_memory_capsule(monkeypatch, tmp_path, stream):
-    k = load(monkeypatch, tmp_path, "exhaustive", True)
+def test_translation_does_not_replay_historical_memory_or_authenticated_request(monkeypatch, tmp_path, stream):
+    k = load(monkeypatch, tmp_path, "translated", True)
     h = history()
     h.append({"role": "assistant", "content": "Draft answer to current request",
               "_jack_internal_agentic_final_review_draft": True,
@@ -221,10 +221,13 @@ def test_final_review_keeps_authenticated_request_last_with_memory_capsule(monke
     asyncio.run(run())
     assert h == original
     wire = seen[0]["messages"]
-    assert len(unpack(wire)[1]) == 2
-    assert wire[-1]["role"] == "user" and wire[-1]["content"] == "What remains to do?"
-    assert [m["content"] for m in wire if m["role"] == "user"][-1] == "What remains to do?"
-    assert not any(m["role"] == "user" and m["content"] == "." for m in wire)
+    assert [m["role"] for m in wire] == ["system", "user"]
+    assert wire[0]["content"] == k.AGENTIC_FINAL_REVIEW_PROMPT
+    assert wire[1]["content"].endswith("Draft answer to current request")
+    assert "READ-ONLY COMPLETED RESPONSE FOR TRANSLATION" in wire[1]["content"]
+    for forbidden in (KNOWLEDGE, A1, A2, ID1, ID2, "What remains to do?", "[JACK HISTORICAL MEMORY JSON"):
+        assert forbidden not in json.dumps(wire)
+    assert "tools" not in seen[0] and "tool_choice" not in seen[0]
 
 
 def test_stage2_isolation_and_non_agentic_modes_unchanged(monkeypatch, tmp_path):
