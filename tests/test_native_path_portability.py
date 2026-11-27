@@ -139,3 +139,24 @@ def test_native_host_workspace_release_and_executor_admission(tmp_path, monkeypa
                 assert not allowed and errors
     finally:
         kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
+
+
+@pytest.mark.parametrize("field", ["Private ", " Private", " "])
+def test_posix_structured_literal_spaces_preserve_never_identity(field):
+    root = "/home/operator/project"
+    active = build(root, [root + "/" + field])
+    call = {"function": {"name": "read", "arguments": {"path": field}}}
+    rewritten = paths.rewrite_structured_tool_call_for_workspace_release(active, call)
+    assert json.loads(rewritten["function"]["arguments"])["path"] == root + "/" + field
+    for candidate in (call, rewritten):
+        decision, applied = paths.authorize_executor_tool_call(active, candidate, executor_cwd=root)
+        assert applied and decision.outcome is paths.PathAuthorizationOutcome.HARD_INTERRUPT
+
+
+@pytest.mark.parametrize("invalid", ["", None, 5, []])
+def test_optional_explicit_invalid_path_does_not_become_workspace_default(invalid):
+    active = build("/home/operator/project")
+    call = {"function": {"name": "ls", "arguments": {"path": invalid}}}
+    rewritten = paths.rewrite_structured_tool_call_for_workspace_release(active, call)
+    assert json.loads(rewritten["function"]["arguments"])["path"] == invalid
+    assert paths.authorize_structured_tool_call(active, rewritten).outcome is paths.PathAuthorizationOutcome.DENY_AND_CONTINUE

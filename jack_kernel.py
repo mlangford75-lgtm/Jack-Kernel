@@ -5338,6 +5338,7 @@ def _phase4_partition_structured_tool_calls(
         structured = jack_path_policy.extract_structured_tool_paths(
             function_name,
             raw_arguments,
+            path_style=active_policy.path_style,
         )
 
         if structured.applicable:

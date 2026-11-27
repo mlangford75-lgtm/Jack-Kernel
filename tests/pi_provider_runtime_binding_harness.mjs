@@ -208,6 +208,10 @@ assert.equal(registrations.at(-1).provider.models[0].reasoning, true);
 assert.equal(registrations.at(-1).provider.models[0].thinkingLevelMap.xhigh, undefined,
   "Medium mode must not claim to support a host xhigh stage");
 
+// A routine refresh preserves existing tool outcome ownership.
+assert.equal((handlers.get("before_provider_request") || [])
+  .map(fn => fn(outgoing, outcomeCtx)).filter(Boolean).length, 1);
+
 // The matching model may not be registered if the runtime identity changes.
 
 healthRuntimeId = "wrong-runtime";
@@ -264,6 +268,13 @@ for (const fn of handlers.get("before_agent_start") || []) {
 assert.equal(registrations.length, previousCount,
   "Missing context metadata must not register an invalid model");
 
+// A verified, unchanged runtime binding survives optional metadata failure.
+const headerEvent = {headers: {}};
+for (const fn of handlers.get("before_provider_headers") || []) await fn(headerEvent, outcomeCtx);
+assert.equal(headerEvent.headers["X-Jack-Executor-Runtime-Id"], "runtime-agentic-01");
+assert.equal((handlers.get("before_provider_request") || [])
+  .map(fn => fn(outgoing, outcomeCtx)).filter(Boolean).length, 0,
+  "Outcomes recorded before a runtime identity failure must not be reused");
 console.log("Pi context boundary tests: PASS");
 
 // Explicit environment references must resolve before any network request.

@@ -799,6 +799,8 @@ def _structured_tool_path_contract(
 def extract_structured_tool_paths(
     tool_name: Any,
     arguments: Any,
+    *,
+    path_style: str = "windows",
 ) -> StructuredToolPathExtraction:
     """Extract represented targets only under exact host-owned tool contracts."""
 
@@ -839,13 +841,13 @@ def extract_structured_tool_paths(
 
         value = parsed.get(field_name)
 
-        if not isinstance(value, str) or not value.strip():
+        if not isinstance(value, str) or not (value if path_style == "posix" else value.strip()):
             return StructuredToolPathExtraction(
                 applicable=True,
                 error="structured filesystem path field must be a non-empty string",
             )
 
-        target = value.strip()
+        target = value if path_style == "posix" else value.strip()
 
         if target not in targets:
             targets.append(target)
@@ -2447,6 +2449,7 @@ def authorize_executor_tool_call(
     structured = extract_structured_tool_paths(
         ((call.get("function") or {}).get("name") if isinstance(call, dict) else None),
         ((call.get("function") or {}).get("arguments") if isinstance(call, dict) else None),
+        path_style=policy.path_style,
     )
     if structured.applicable:
         return (
@@ -2600,11 +2603,10 @@ def rewrite_structured_tool_call_for_workspace_release(
         if field_name not in arguments:
             continue
 
-        value = arguments.get(field_name)
-        if not isinstance(value, str) or not value.strip():
-            continue
-
         saw_path = True
+        value = arguments.get(field_name)
+        if not isinstance(value, str) or not (value if policy.path_style == "posix" else value.strip()):
+            continue
         try:
             canonical = policy.normalize(value, base_root=policy.workspace_root)
         except RepresentedPathError:
@@ -2658,6 +2660,7 @@ def authorize_structured_tool_call(
     extraction = extract_structured_tool_paths(
         function.get("name"),
         function.get("arguments"),
+        path_style=policy.path_style,
     )
 
     if not extraction.applicable:

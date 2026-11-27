@@ -252,18 +252,28 @@ export default async function (pi) {
   }
 
   async function refreshProvider() {
-    activeRuntimeBinding = null;
+    let verifiedSameBinding = false;
     try {
       const { url, token, expectedRuntimeId } = resolveJackTarget();
-      const health = await verifyRuntimeIdentity(url, token, expectedRuntimeId);
-      const models = await fetchJackModels(url, token, health);
-      if (!models.length) return;
       const root = String(url || DEFAULT_JACK_URL).replace(/\/+$/, "").replace(/\/v1$/, "");
+      // A changed target or credential cannot inherit the old binding.
+      if (activeRuntimeBinding && (activeRuntimeBinding.root !== root ||
+          activeRuntimeBinding.token !== token ||
+          (expectedRuntimeId && activeRuntimeBinding.runtimeId !== expectedRuntimeId))) {
+        activeRuntimeBinding = null;
+      }
+      const health = await verifyRuntimeIdentity(url, token, expectedRuntimeId);
       const runtimeId = String(health?.runtime_id || "");
       const laneId = String(health?.lane_id || "");
       if (!laneId) {
         throw new Error("Jack runtime did not report lane_id");
       }
+      verifiedSameBinding = Boolean(activeRuntimeBinding &&
+        activeRuntimeBinding.runtimeId === runtimeId && activeRuntimeBinding.laneId === laneId);
+      if (!verifiedSameBinding) activeRuntimeBinding = null;
+      // Optional model metadata must not retire independently reverified authority.
+      const models = await fetchJackModels(url, token, health);
+      if (!models.length) return;
       const provider = {
         baseUrl: `${root}/v1/`,
         api: "openai-completions",
@@ -271,8 +281,9 @@ export default async function (pi) {
         models,
       };
       pi.registerProvider(PROVIDER_NAME, provider);
-      activeRuntimeBinding = { root, token, runtimeId, laneId };
+      if (!verifiedSameBinding) activeRuntimeBinding = { root, token, runtimeId, laneId };
     } catch (error) {
+      if (!verifiedSameBinding) activeRuntimeBinding = null;
       console.error("[jack-kernel] Context/model sync skipped:", error);
     }
   }
@@ -515,15 +526,17 @@ export default async function (pi) {
   const failedToolCalls = new Map();
   const successfulToolCalls = new Map();
   let outcomeSessionId = null;
+  let outcomeRuntimeBinding = null;
   pi.on("tool_execution_end", (event, ctx) => {
-    if (String(ctx?.model?.provider || "") !== PROVIDER_NAME) return;
+    if (!activeRuntimeBinding || String(ctx?.model?.provider || "") !== PROVIDER_NAME) return;
     const callId = String(event?.toolCallId || "");
     const sessionId = String(ctx?.sessionManager?.getSessionId?.() || "");
     if (!callId || !sessionId) return;
-    if (outcomeSessionId !== sessionId) {
+    if (outcomeSessionId !== sessionId || outcomeRuntimeBinding !== activeRuntimeBinding) {
       failedToolCalls.clear();
       successfulToolCalls.clear();
       outcomeSessionId = sessionId;
+      outcomeRuntimeBinding = activeRuntimeBinding;
     }
     if (event?.isError === true) {
       successfulToolCalls.delete(callId);
@@ -548,7 +561,8 @@ export default async function (pi) {
   pi.on("before_provider_request", (event, ctx) => {
     if (String(ctx?.model?.provider || "") !== PROVIDER_NAME) return;
     const sessionId = String(ctx?.sessionManager?.getSessionId?.() || "");
-    if (!sessionId || sessionId !== outcomeSessionId) return;
+    if (!sessionId || sessionId !== outcomeSessionId || !activeRuntimeBinding ||
+        outcomeRuntimeBinding !== activeRuntimeBinding) return;
     const payload = event?.payload;
     if (!payload || typeof payload !== "object" || !Array.isArray(payload.messages)) return;
     let tagged = false;
