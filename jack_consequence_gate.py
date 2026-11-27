@@ -473,9 +473,9 @@ def install(jk: Any) -> None:
                     if decision.containment_scope is not ContainmentScope.EXECUTOR_ADMISSION:
                         raise AssertionError("Executor identity denial escaped admission scope")
                     if not runtime_matches:
-                        raise jk.HTTPException(status_code=409, detail="Phase-4 executor admission runtime identity mismatch")
+                        raise jk.HTTPException(status_code=409, detail="Restricted Paths / Workspace Lock executor admission runtime identity mismatch")
                     if not lane_matches:
-                        raise jk.HTTPException(status_code=409, detail="Phase-4 executor admission lane identity mismatch")
+                        raise jk.HTTPException(status_code=409, detail="Restricted Paths / Workspace Lock executor admission lane identity mismatch")
 
             token = _CURRENT_CONSEQUENCE_BOUNDARY.set(ConsequenceBoundary.EXECUTOR_ADMISSION)
             try:
