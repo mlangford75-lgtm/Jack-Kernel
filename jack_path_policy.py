@@ -907,7 +907,7 @@ def _expand_shell_home(
         return ntpath.join(home, suffix) if suffix else home
     if text.startswith("~"):
         raise RepresentedPathAmbiguous(
-            "named-user home expansion is outside the bounded Phase-4 contract"
+            "named-user home expansion is outside the bounded Restricted Paths / Workspace Lock contract"
         )
     return text
 
@@ -1379,6 +1379,43 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
         targets.extend(nested_targets)
         return tuple(targets), nested_cwd, ambiguous or nested_ambiguous
 
+    if command == "find":
+        # Common directory inspection: one literal starting path (or cwd)
+        # and a small, read-only set of predicates. Do not classify find's
+        # executable, destructive, file-writing or symlink-following forms.
+        # Preserve explicit operands for the ordinary ambiguous-command gate.
+        remaining = list(args)
+        root = None
+        if remaining and not remaining[0].startswith("-"):
+            root = remaining.pop(0)
+        valid = root is None or (
+            bool(root) and not any(char in root for char in "*?[]()!")
+        )
+        index = 0
+        while valid and index < len(remaining):
+            item = remaining[index]
+            if item in {"-print", "-print0", "-empty", "-quit"}:
+                index += 1
+            elif item in {"-maxdepth", "-mindepth", "-type"}:
+                if index + 1 >= len(remaining):
+                    valid = False
+                    break
+                value = remaining[index + 1]
+                valid = (
+                    value in {"b", "c", "d", "f", "l", "p", "s"}
+                    if item == "-type"
+                    else re.fullmatch(r"[0-9]+", value) is not None
+                )
+                index += 2
+            else:
+                valid = False
+        if valid:
+            if root is not None:
+                targets.append(root)
+            return tuple(targets), root is None, ambiguous
+        targets.extend(_unknown_command_path_operands(args))
+        return tuple(targets), False, True
+
     if command in _BASH_PATH_COMMANDS:
         operands = [item for item in args if item and not item.startswith("-")]
 
@@ -1711,7 +1748,7 @@ def extract_command_paths(
             applicable=True,
             dialect=dialect,
             ambiguous=True,
-            error="command could not be tokenized under the bounded Phase-4 contract",
+            error="command could not be tokenized under the bounded Restricted Paths / Workspace Lock contract",
         )
 
     if any(
@@ -1764,7 +1801,7 @@ def extract_command_paths(
         uses_executor_cwd=uses_cwd,
         ambiguous=ambiguous,
         error=(
-            "command semantics exceed the bounded Phase-4 contract"
+            "command semantics exceed the bounded Restricted Paths / Workspace Lock contract"
             if ambiguous
             else None
         ),
@@ -2128,7 +2165,7 @@ def authorize_command_tool_call(
 
     return PathAuthorizationDecision(
         PathAuthorizationOutcome.ALLOW,
-        "command represented targets are authorized by Phase-4 path policy",
+        "command represented targets are authorized by Restricted Paths / Workspace Lock",
     )
 
 
@@ -2178,7 +2215,7 @@ def authorize_executor_tool_call(
     return (
         PathAuthorizationDecision(
             PathAuthorizationOutcome.ALLOW,
-            "no host-owned Phase-4 executor contract applies",
+            "no host-owned Restricted Paths / Workspace Lock executor contract applies",
         ),
         False,
     )
@@ -2482,7 +2519,7 @@ def inspect_represented_path(
     elif inside_workspace is False:
         reason = "represented target is outside the configured workspace"
     else:
-        reason = "represented target is authorized by Phase-4 path policy"
+        reason = "represented target is authorized by Restricted Paths / Workspace Lock"
 
     return RepresentedPathAuthorityFacts(
         canonical_target=canonical,
