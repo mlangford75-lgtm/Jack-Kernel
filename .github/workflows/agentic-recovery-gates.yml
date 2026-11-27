@@ -30,7 +30,7 @@ jobs:
         shell: pwsh
         run: |
           python -m py_compile jack_kernel.py jack_context_monitor.py
-          python -m pytest -q tests/test_agentic_reasoning_primary_memory_experiment.py tests/test_agentic_trailing_tool_result_frontier.py tests/test_context_monitor.py tests/test_agentic_portable_anchor_stream_contract.py tests/test_agentic_task_anchor_release_contract.py tests/test_agentic_transaction_linked_memory.py tests/test_agentic_phase3g_recovery_contract.py
+          python -m pytest -q tests/test_agentic_reasoning_primary_memory_experiment.py tests/test_agentic_trailing_tool_result_frontier.py tests/test_context_monitor.py tests/test_agentic_portable_anchor_stream_contract.py tests/test_agentic_task_anchor_release_contract.py tests/test_agentic_transaction_linked_memory.py tests/test_agentic_delayed_reasoning_recovery_contract.py
       - name: Run Pi control and tool bridge regression harnesses
         shell: pwsh
         run: |
@@ -40,5 +40,5 @@ jobs:
           node tests/pi_control_bridge_retry_recovery_harness.mjs
           node tests/pi_control_bridge_multi_endpoint_harness.mjs
           node tests/pi_provider_runtime_binding_harness.mjs
-          node tests/pi_phase4_executor_admission_harness.mjs
+          node tests/pi_restricted_path_executor_admission_harness.mjs
           node tests/pi_edit_origin_policy_harness.mjs

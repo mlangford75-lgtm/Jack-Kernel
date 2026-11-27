@@ -60,21 +60,21 @@ jobs:
         run: |
           python -c "from pathlib import Path; import hashlib; b=Path('Pi/pi-control-bridge.ts').read_bytes(); lf=b.replace(b'\r\n',b'\n'); crlf=lf.replace(b'\n',b'\r\n'); print('PI_BRIDGE_LF_SHA256='+hashlib.sha256(lf).hexdigest()); print('PI_BRIDGE_CRLF_SHA256='+hashlib.sha256(crlf).hexdigest())"
 
-      - name: Run Phase-5 targeted tests
+      - name: Run Consequence Gate targeted tests
         shell: pwsh
-        run: python -m pytest -q tests/test_phase5_consequence_gate.py tests/test_phase5_path_gate_integration.py tests/test_phase5_runtime_integration.py tests/test_phase5_secure_entrypoint.py
+        run: python -m pytest -q tests/test_consequence_gate.py tests/test_consequence_gate_path_gate_integration.py tests/test_consequence_gate_runtime_integration.py tests/test_consequence_gate_secure_entrypoint.py
 
-      - name: Run Phase-6 targeted tests
+      - name: Run Authority Ledger targeted tests
         shell: pwsh
-        run: python -m pytest -q tests/test_phase6_authority_ledger.py tests/test_phase6_consequence_ledger_integration.py tests/test_phase6_security_event_ledger.py tests/test_phase6_runtime_installation.py
+        run: python -m pytest -q tests/test_authority_ledger.py tests/test_authority_ledger_consequence_ledger_integration.py tests/test_authority_ledger_security_event_ledger.py tests/test_authority_ledger_runtime_installation.py
 
-      - name: Run Phase-7 credential isolation and DLP tests
+      - name: Run Credential Isolation credential isolation and DLP tests
         shell: pwsh
-        run: python -m pytest -q tests/test_phase7_credential_policy.py tests/test_phase7_live_integration.py tests/test_phase7_output_dlp.py tests/test_phase7_orchestration_dlp.py tests/test_phase7_diagnostic_dlp.py tests/test_phase7_diagnostic_headers.py tests/test_phase7_diagnostic_outer_release.py tests/test_phase7_ledger_resources.py tests/test_phase7_ledger_hooks.py
+        run: python -m pytest -q tests/test_credential_policy.py tests/test_credential_live_integration.py tests/test_credential_output_dlp.py tests/test_credential_orchestration_dlp.py tests/test_credential_diagnostic_dlp.py tests/test_credential_diagnostic_headers.py tests/test_credential_diagnostic_outer_release.py tests/test_credential_ledger_resources.py tests/test_credential_ledger_hooks.py
 
-      - name: Run Phase-8 source authority and preservation tests
+      - name: Run Source Drift Protection source authority and preservation tests
         shell: pwsh
-        run: python -m pytest -q tests/test_phase8_source_baseline.py tests/test_phase8_runtime_enforcement.py tests/test_phase8_ledger_observation.py tests/test_phase8_adversarial_preservation.py
+        run: python -m pytest -q tests/test_source_drift_source_baseline.py tests/test_source_drift_runtime_enforcement.py tests/test_source_drift_ledger_observation.py tests/test_source_drift_adversarial_preservation.py
 
       - name: Verify Ultra native review and prefix-preservation contract
         shell: pwsh
@@ -108,7 +108,7 @@ jobs:
         run: |
           cmd /c setup.bat
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cmd /c run-tests.bat tests/test_phase7_ledger_hooks.py tests/test_phase7_ledger_resources.py
+          cmd /c run-tests.bat tests/test_credential_ledger_hooks.py tests/test_credential_ledger_resources.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Full isolated subprocess regression
@@ -128,5 +128,5 @@ jobs:
           node tests/pi_control_bridge_retry_recovery_harness.mjs
           node tests/pi_control_bridge_multi_endpoint_harness.mjs
           node tests/pi_provider_runtime_binding_harness.mjs
-          node tests/pi_phase4_executor_admission_harness.mjs
+          node tests/pi_restricted_path_executor_admission_harness.mjs
           node tests/pi_edit_origin_policy_harness.mjs
