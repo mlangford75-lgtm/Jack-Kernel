@@ -225,8 +225,9 @@ def test_nonstream_workspace_denial_preserves_cognition_and_corrects_same_stage(
 
     if kernel.AGENTIC_MODE:
         assert result.content is not None
-        assert "Phase-4 denial recovered without execution." in result.content
-        assert result.content.endswith(repaired_answer)
+        turn_id, committed = kernel._agentic_unwrap_flash_trailing_id(result.content)
+        assert turn_id is not None
+        assert committed == stage2_memory + "\n\n" + repaired_answer
         assert len(backend.requests) == 3
         assert "DEGRADED COMMIT" not in str(result.reasoning_content or "")
     else:
