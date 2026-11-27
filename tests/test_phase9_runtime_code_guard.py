@@ -477,11 +477,13 @@ def test_p1_sealed_transcripts_do_not_cache_live_dependencies(mutation):
 
     guard = _guard(SimpleNamespace(go=run))
     baseline = guard._sealed_code_transcripts
-    assert baseline
     assert len(baseline) <= 128
     if mutation == "mutable_constant":
+        # A sole slot containing mutable executable constants may yield no
+        # eligible startup transcripts at all. The live traversal is required.
         assert id(run.__code__) not in baseline
     else:
+        assert baseline
         assert id(run.__code__) in baseline
     for _ in range(3):
         guard.verify_for("model")
