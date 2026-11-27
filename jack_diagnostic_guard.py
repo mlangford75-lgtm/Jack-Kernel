@@ -253,36 +253,81 @@ def _install_http_exception_guard(jk: Any, policy: Any) -> bool:
     if getattr(app, "_jack_phase7_diagnostic_http_guard", False):
         return True
 
-    from fastapi.exception_handlers import http_exception_handler as default_handler
+    import json
+    from fastapi.exception_handlers import (
+        http_exception_handler as default_handler,
+        request_validation_exception_handler,
+    )
+    from fastapi.exceptions import RequestValidationError
     from fastapi.responses import JSONResponse
+    from starlette.exceptions import HTTPException as StarletteHTTPException
 
-    previous = getattr(app, "exception_handlers", {}).get(http_exception_type)
-
-    async def guarded_http_exception(request: Any, exc: Any):
-        detail = getattr(exc, "detail", None)
-        detail_match = _policy_match(
-            policy,
-            detail,
-            boundary=BOUNDARY_HTTP_EXCEPTION_RELEASE,
-            direction=DIRECTION_CALLER_BOUND,
-        )
-        safe_headers, header_violation = _safe_headers(
-            policy,
-            getattr(exc, "headers", None),
-            boundary=BOUNDARY_HTTP_EXCEPTION_RELEASE,
-            direction=DIRECTION_CALLER_BOUND,
-        )
-        if detail_match is not None or header_violation:
-            return JSONResponse(
-                status_code=int(getattr(exc, "status_code", 500) or 500),
-                content={"detail": _blocked_payload(BOUNDARY_HTTP_EXCEPTION_RELEASE)},
-                headers=safe_headers,
+    def wrap_http(previous):
+        async def guarded_http_exception(request: Any, exc: Any):
+            detail = getattr(exc, "detail", None)
+            detail_match = _policy_match(
+                policy,
+                detail,
+                boundary=BOUNDARY_HTTP_EXCEPTION_RELEASE,
+                direction=DIRECTION_CALLER_BOUND,
             )
-        if previous is not None:
+            safe_headers, header_violation = _safe_headers(
+                policy,
+                getattr(exc, "headers", None),
+                boundary=BOUNDARY_HTTP_EXCEPTION_RELEASE,
+                direction=DIRECTION_CALLER_BOUND,
+            )
+            if detail_match is not None or header_violation:
+                return JSONResponse(
+                    status_code=int(getattr(exc, "status_code", 500) or 500),
+                    content={"detail": _blocked_payload(BOUNDARY_HTTP_EXCEPTION_RELEASE)},
+                    headers=safe_headers,
+                )
             return await previous(request, exc)
-        return await default_handler(request, exc)
 
-    app.add_exception_handler(http_exception_type, guarded_http_exception)
+        return guarded_http_exception
+
+    for exception_type in dict.fromkeys((http_exception_type, StarletteHTTPException)):
+        previous = app.exception_handlers.get(exception_type, default_handler)
+        app.add_exception_handler(exception_type, wrap_http(previous))
+
+    previous_validation = app.exception_handlers.get(
+        RequestValidationError, request_validation_exception_handler,
+    )
+
+    async def guarded_validation(request: Any, exc: Any):
+        # Inspect the actual released validation diagnostic, not exc.body:
+        # secrets in unrelated, non-reflected input are not release events.
+        response = await previous_validation(request, exc)
+        match_kwargs = {
+            "boundary": BOUNDARY_HTTP_EXCEPTION_RELEASE,
+            "direction": DIRECTION_CALLER_BOUND,
+        }
+        body = response.body
+        match = _policy_match(policy, body, **match_kwargs)
+        if match is None:
+            try:
+                decoded = json.loads(body)
+            except (ValueError, UnicodeError):
+                pass
+            else:
+                match = _policy_match(policy, decoded, **match_kwargs)
+        safe_headers, header_violation = _safe_headers(
+            policy, dict(response.headers), **match_kwargs,
+        )
+        if match is None and not header_violation:
+            return response
+        safe_headers = {
+            key: value for key, value in (safe_headers or {}).items()
+            if key.lower() not in ("content-length", "content-type")
+        }
+        return JSONResponse(
+            status_code=response.status_code,
+            content={"detail": _blocked_payload(BOUNDARY_HTTP_EXCEPTION_RELEASE)},
+            headers=safe_headers,
+        )
+
+    app.add_exception_handler(RequestValidationError, guarded_validation)
     app._jack_phase7_diagnostic_http_guard = True
     return True
 

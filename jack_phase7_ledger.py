@@ -344,30 +344,38 @@ def _install_http_diagnostic_hook(
     http_exception_type = getattr(jk, "HTTPException", None)
     if app is None or http_exception_type is None:
         return
-    current = getattr(app, "exception_handlers", {}).get(http_exception_type)
-    if not callable(current) or getattr(current, "_jack_phase7_ledger", False):
-        return
+    from fastapi.exceptions import RequestValidationError
+    from starlette.exceptions import HTTPException as StarletteHTTPException
 
-    @wraps(current)
-    async def recorded_handler(request: Any, exc: Any):
-        response = await current(request, exc)
-        try:
-            payload = json.loads(response.body.decode("utf-8", "replace"))
-        except Exception:
-            payload = None
-        detail = payload.get("detail") if isinstance(payload, dict) else None
-        if _detail_is_diagnostic_block(detail):
-            record_credential_match_failsoft(
-                ledger,
-                boundary="diagnostic_http_exception_release",
-                direction="caller_bound",
-                producer_code="phase7.diagnostic_http",
-            )
-        return response
+    def wrap_handler(current):
+        @wraps(current)
+        async def recorded_handler(request: Any, exc: Any):
+            response = await current(request, exc)
+            try:
+                payload = json.loads(response.body.decode("utf-8", "replace"))
+            except Exception:
+                payload = None
+            detail = payload.get("detail") if isinstance(payload, dict) else None
+            if _detail_is_diagnostic_block(detail):
+                record_credential_match_failsoft(
+                    ledger,
+                    boundary="diagnostic_http_exception_release",
+                    direction="caller_bound",
+                    producer_code="phase7.diagnostic_http",
+                )
+            return response
 
-    recorded_handler._jack_phase7_ledger = True
-    recorded_handler._jack_phase7_original = current
-    app.add_exception_handler(http_exception_type, recorded_handler)
+        recorded_handler._jack_phase7_ledger = True
+        recorded_handler._jack_phase7_original = current
+        return recorded_handler
+
+    for exception_type in dict.fromkeys((
+        http_exception_type, StarletteHTTPException, RequestValidationError,
+    )):
+        current = app.exception_handlers.get(exception_type)
+        if not callable(current) or getattr(current, "_jack_phase7_ledger", False):
+            continue
+        app.add_exception_handler(exception_type, wrap_handler(current))
 
 
 def _install_orchestration_hooks(

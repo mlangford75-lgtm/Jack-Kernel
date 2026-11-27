@@ -138,6 +138,44 @@ async def exercise():
     )
     assert SECRET not in released.body.decode("utf-8")
 
+    # Actual registered handlers for Starlette and validation errors must
+    # produce one ledger event each, without recording benign diagnostics.
+    from starlette.exceptions import HTTPException as StarletteHTTPException
+    from fastapi.exceptions import RequestValidationError
+
+    before = ledger.active_head.sequence
+    starlette_handler = kernel.APP.exception_handlers[StarletteHTTPException]
+    released = await starlette_handler(
+        None, StarletteHTTPException(429, detail="ordinary",
+            headers={"X-Safe": "retry", "X-Private": SECRET}),
+    )
+    assert released.status_code == 429
+    assert released.headers["x-safe"] == "retry"
+    assert "x-private" not in released.headers
+    assert json.loads(released.body)["detail"]["error"] == "protected_credential_diagnostic_withheld"
+    assert ledger.active_head.sequence == before + 1
+
+    validation_handler = kernel.APP.exception_handlers[RequestValidationError]
+    released = await validation_handler(None, RequestValidationError([
+        {"type": "int_parsing", "loc": ("body", "count"),
+         "msg": "invalid integer", "input": SECRET},
+    ]))
+    assert released.status_code == 422
+    assert SECRET not in released.body.decode("utf-8")
+    assert json.loads(released.body)["detail"]["error"] == "protected_credential_diagnostic_withheld"
+    assert ledger.active_head.sequence == before + 2
+
+    released = await starlette_handler(None, StarletteHTTPException(404, "Not Found"))
+    assert released.status_code == 404
+    assert json.loads(released.body) == {"detail": "Not Found"}
+    released = await validation_handler(None, RequestValidationError([
+        {"type": "int_parsing", "loc": ("body", "count"),
+         "msg": "invalid integer", "input": "not an integer"},
+    ], body={"non_reflected": SECRET}))
+    assert released.status_code == 422
+    assert json.loads(released.body)["detail"][0]["input"] == "not an integer"
+    assert ledger.active_head.sequence == before + 2
+
     # Retained diagnostic state records the raw match before the diagnostic
     # guard stores only its structural placeholder.
     hub._last_error = "retained-" + SECRET
