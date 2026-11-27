@@ -1694,6 +1694,167 @@ def _powershell_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], boo
     return tuple(targets), False, True
 
 
+def _literal_shell_words(command: str, dialect: str) -> Optional[list[Tuple[str, str]]]:
+    """Recognize only plain argv words, retaining their original quote syntax.
+
+    This is a positive literal contract, not a substitute shell grammar.
+    Concatenated quoting, shell expressions, control operators, comments,
+    escapes with dialect-dependent meaning, and redirections use the existing
+    conservative extraction path instead.
+    """
+    words = []
+    index = 0
+    while index < len(command):
+        if command[index] in " \t":
+            index += 1
+            continue
+        start = index
+        quote = command[index]
+        if quote in {"'", '"'}:
+            end = command.find(quote, index + 1)
+            if end < 0:
+                return None
+            value = command[index + 1:end]
+            if "\r" in value or "\n" in value or "\x00" in value:
+                return None
+            if quote == '"':
+                if "$" in value or "\x60" in value:
+                    return None
+                if dialect == "bash" and (value.endswith("\\") or "\\\\" in value):
+                    return None
+            index = end + 1
+            if index < len(command) and command[index] not in " \t":
+                return None
+        else:
+            while index < len(command) and command[index] not in " \t":
+                index += 1
+            value = command[start:index]
+            if any(c in value for c in "'\"\r\n\x00#;&|<>$*?[]{}()\x60"):
+                return None
+            if dialect == "bash" and "\\" in value:
+                return None
+            if dialect == "powershell" and any(c in value for c in "@,+"):
+                return None
+        words.append((command[start:index], value))
+    return words or None
+
+
+def _literal_command_statement(
+    command: str,
+    dialect: str,
+) -> Optional[CommandPathExtraction]:
+    words = _literal_shell_words(command, dialect)
+    if not words or words[0][0] != words[0][1]:
+        return None
+    name = words[0][1]
+    if dialect == "powershell":
+        name = name.casefold()
+    operands = words[1:]
+    args = [value for _, value in operands]
+
+    def result(targets=(), uses_cwd=False):
+        return CommandPathExtraction(
+            applicable=True, dialect=dialect, targets=tuple(targets),
+            uses_executor_cwd=uses_cwd,
+        )
+
+    # Quoted output is data, not a shell expression. Do not transfer that
+    # interpretation to file operands or to another executable.
+    output_commands = (
+        {"echo", "printf", "pwd"} if dialect == "bash"
+        else {"write-output", "write-host", "echo", "get-location", "gl", "pwd"}
+    )
+    if name in output_commands:
+        if name == "printf" and any(arg == "-v" or arg.startswith("-v") for arg in args):
+            return None
+        return result()
+
+    # Windows filenames can contain literal brackets and braces. They are
+    # only literal for Bash when quoted, and for PowerShell when -LiteralPath
+    # is used. Do not interpret environment/tilde syntax as literal paths.
+    def literal_path(value):
+        return bool(value) and not any(c in value for c in "$%~*?\"'<>|\r\n\x00")
+
+    if dialect == "powershell":
+        if (
+            name in {"get-item", "gi", "get-content", "gc", "cat", "type",
+                     "get-childitem", "gci", "dir", "ls", "test-path", "resolve-path",
+                     "get-filehash"}
+            and len(args) == 2 and args[0].casefold() == "-literalpath"
+            and literal_path(args[1])
+        ):
+            return result((args[1],))
+        return None
+
+    if name in {"ls", "cat", "head", "tail"}:
+        # Retain the existing simple-command operand contract. The scanner
+        # above proves that these are literal words, not control operators.
+        if any(value in _COMMAND_CONTROL or value in _REDIRECT_OPS for value in args):
+            return None
+        found, uses_cwd, ambiguous = _bash_segment_targets([name, *args])
+        if ambiguous or not all(literal_path(value) for value in found):
+            return None
+        # Do not reinterpret a quoted option as a filesystem operand or
+        # a Windows path containing an invalid character as an allowed target.
+        return result(found, uses_cwd)
+
+    # Common ordinary inspection tools have a useful literal-path contract.
+    # In particular, checksum verification (-c) may read paths from a manifest,
+    # so it is deliberately not part of the direct checksum contract.
+    read_flags = {
+        "stat": {"-t", "--terse", "--"},
+        "wc": {"--", "--bytes", "--chars", "--lines", "--words", "--max-line-length"},
+        "sha256sum": {"--", "-b", "-t", "-z", "--binary", "--text", "--zero", "--tag"},
+        "md5sum": {"--", "-b", "-t", "-z", "--binary", "--text", "--zero", "--tag"},
+    }
+    if name in read_flags:
+        targets = []
+        end_options = False
+        for arg in args:
+            if not end_options and arg == "--":
+                end_options = True
+            elif not end_options and arg.startswith("-"):
+                if arg not in read_flags[name] and not (
+                    name == "wc" and re.fullmatch(r"-[cmlwL]+", arg)
+                ):
+                    return None
+            elif literal_path(arg):
+                targets.append(arg)
+            else:
+                return None
+        if targets:
+            return result(targets)
+    return None
+
+
+def _literal_command_extraction(
+    command: str,
+    dialect: str,
+) -> Optional[CommandPathExtraction]:
+    """Classify independent literal statements without flattening newlines.
+
+    No cwd-changing command, script interpreter, dynamic expression, or
+    nested shell can enter this path. Every target still reaches authorization.
+    """
+    normalized = command.replace("\r\n", "\n")
+    if "\r" in normalized:
+        return None
+    targets = []
+    uses_cwd = False
+    for statement in normalized.split("\n"):
+        if not statement.strip():
+            continue
+        facts = _literal_command_statement(statement, dialect)
+        if facts is None:
+            return None
+        targets.extend(facts.targets)
+        uses_cwd = uses_cwd or facts.uses_executor_cwd
+    return CommandPathExtraction(
+        applicable=True, dialect=dialect, targets=tuple(dict.fromkeys(targets)),
+        uses_executor_cwd=uses_cwd,
+    )
+
+
 def extract_command_paths(
     tool_name: Any,
     arguments: Any,
@@ -1724,6 +1885,10 @@ def extract_command_paths(
             dialect=dialect,
             error="command text must not be empty",
         )
+
+    literal = _literal_command_extraction(command, dialect)
+    if literal is not None:
+        return literal
 
     dynamic_ambiguous = (
         _has_unresolved_dynamic_shell_syntax(
@@ -1844,7 +2009,7 @@ def _safe_default_read_command(
     if not isinstance(function, dict):
         return False
     command, error = _command_text_from_arguments(function.get("arguments"))
-    if error or not command:
+    if error or not command or "\n" in command or "\r" in command:
         return False
     dialect = extraction.dialect or ""
     tokens = _shell_tokens(command, dialect)
@@ -2196,13 +2361,10 @@ def authorize_executor_tool_call(
             True,
         )
 
-    command = extract_command_paths(
-        ((call.get("function") or {}).get("name") if isinstance(call, dict) else None),
-        ((call.get("function") or {}).get("arguments") if isinstance(call, dict) else None),
-        command_dialect=command_dialect,
-        environment=policy.path_environment(),
-    )
-    if command.applicable:
+    function = call.get("function") if isinstance(call, dict) else None
+    if isinstance(function, dict) and _command_dialect_for_tool(
+        function.get("name"), command_dialect,
+    ) is not None:
         return (
             authorize_command_tool_call(
                 policy,
@@ -2254,11 +2416,10 @@ def rewrite_literal_bash_home_call_for_workspace_release(
     # comments, expansions, or shell control operators.
     if any(c in command for c in "\r\n#;&|<>") or _has_unresolved_dynamic_shell_syntax(command, "bash"):
         return call
-    raw = _shell_tokens(command, "powershell")
-    cooked = _shell_tokens(command, "bash")
-    if not raw or not cooked or len(raw) != len(cooked):
+    words = _literal_shell_words(command, "bash")
+    if not words or words[0][0] != words[0][1]:
         return call
-    if raw[0] != cooked[0] or cooked[0] not in _BASH_PATH_COMMANDS | {"find", "git", "pytest", "py.test", "dotnet"}:
+    if words[0][1] not in _BASH_PATH_COMMANDS | {"find"}:
         return call
     env = policy.path_environment()
     home = _bash_environment_value("HOME", env)
@@ -2271,16 +2432,15 @@ def rewrite_literal_bash_home_call_for_workspace_release(
     if not re.match(r"^[A-Za-z]:\\", home):
         return call
 
-    rewritten = list(cooked)
+    # Keep the original shell spelling of every other word. Re-quoting
+    # unrelated argv would change the command that the model requested.
+    rewritten = [raw for raw, _ in words]
     changed = False
-    for index in range(1, len(raw)):
-        token = raw[index]
-        # A quote or escape changes Bash expansion semantics. Only transform
-        # an exact, unquoted home word. All other forms keep existing checks.
-        if token != cooked[index] or any(c in token for c in "\\\"'"):
+    for index, (raw, value) in enumerate(words[1:], 1):
+        if raw != value or raw.startswith("-"):
             continue
-        if token == "~" or token.startswith("~/"):
-            rewritten[index] = home.replace("\\", "/") + token[1:]
+        if raw == "~" or raw.startswith("~/"):
+            rewritten[index] = shlex.quote(home.replace("\\", "/") + raw[1:])
             changed = True
     if not changed:
         return call
@@ -2290,7 +2450,7 @@ def rewrite_literal_bash_home_call_for_workspace_release(
     parsed = json.loads(arguments) if isinstance(arguments, str) else dict(arguments)
     for key in _COMMAND_TEXT_KEYS:
         if isinstance(parsed.get(key), str) and parsed[key].strip():
-            parsed[key] = shlex.join(rewritten)
+            parsed[key] = " ".join(rewritten)
             break
     candidate_function["arguments"] = (
         json.dumps(parsed) if isinstance(arguments, str) else parsed

@@ -553,3 +553,86 @@ def test_find_explicit_never_root_remains_hard_interrupt():
             executor_cwd=r"D:\Projects\Jack", command_dialect="bash",
         )
         assert decision.outcome is policy.PathAuthorizationOutcome.HARD_INTERRUPT
+
+
+@pytest.mark.parametrize("dialect, command", [
+    ("bash", "ls -la .\ncat clock.html"),
+    ("bash", "echo 'clock [ready] {literal}'\nls -la ."),
+    ("bash", 'ls -la "clock[1].html"'),
+    ("bash", 'cat "clock{1}.html"'),
+    ("bash", "stat clock.html"),
+    ("bash", "wc -l clock.html"),
+    ("bash", "sha256sum clock.html"),
+    ("powershell", "Write-Output 'clock [ready] {literal}'"),
+    ("powershell", 'Get-Item -LiteralPath ".\\clock[1].html"'),
+    ("powershell", 'Get-Item -LiteralPath ".\\clock.html"\nGet-Location'),
+])
+def test_literal_commands_are_not_rejected_for_harmless_syntax(dialect, command):
+    facts = policy.extract_command_paths(dialect, {"command": command})
+    assert facts.applicable and not facts.ambiguous and not facts.error
+    decision, applied = policy.authorize_executor_tool_call(
+        build(), call(dialect, command),
+        executor_cwd=r"D:\Projects\Jack", command_dialect=dialect,
+    )
+    assert applied and decision.outcome is policy.PathAuthorizationOutcome.ALLOW
+
+
+@pytest.mark.parametrize("dialect, command", [
+    ("bash", 'ls -la .\ncat "../Outside/clock[1].html"'),
+    ("bash", 'stat "../Outside/clock[1].html"'),
+    ("bash", 'wc -l "../Outside/clock[1].html"'),
+    ("bash", 'sha256sum "../Outside/clock[1].html"'),
+    ("powershell", 'Get-Item -LiteralPath "..\\Outside\\clock[1].html"'),
+])
+def test_literal_command_contract_preserves_workspace_membership(dialect, command):
+    result = policy.authorize_command_tool_call(
+        build(), call(dialect, command),
+        executor_cwd=r"D:\Projects\Jack", command_dialect=dialect,
+    )
+    assert result.outcome is policy.PathAuthorizationOutcome.DENY_AND_CONTINUE
+
+
+@pytest.mark.parametrize("dialect, command", [
+    ("bash", 'ls -la .\ncat "D:/Sensitive/clock[1].html"'),
+    ("bash", 'stat "D:/Sensitive/clock[1].html"'),
+    ("powershell", 'Get-Item -LiteralPath "D:\\Sensitive\\clock[1].html"'),
+])
+def test_literal_command_contract_preserves_explicit_never_authority(dialect, command):
+    result = policy.authorize_command_tool_call(
+        build(never=(r"D:\Sensitive",)), call(dialect, command),
+        executor_cwd=r"D:\Projects\Jack", command_dialect=dialect,
+    )
+    assert result.outcome is policy.PathAuthorizationOutcome.HARD_INTERRUPT
+
+
+@pytest.mark.parametrize("dialect, command", [
+    ("bash", 'cat "clock[1].html"\ncd ..\ncat clock.html'),
+    ("bash", 'cat "$(pwd)/clock.html"'),
+    ("bash", "sha256sum -c checksums.txt"),
+    ("bash", "cat clock*.html"),
+    ("bash", "echo ready\nunknown-inspector clock.html"),
+    ("powershell", 'Get-Item -Path ".\\clock[1].html"'),
+    ("powershell", 'Get-Item -LiteralPath "$target"'),
+])
+def test_literal_lane_does_not_authorize_unresolved_effects(dialect, command):
+    result = policy.authorize_command_tool_call(
+        build(), call(dialect, command),
+        executor_cwd=r"D:\Projects\Jack", command_dialect=dialect,
+    )
+    assert result.outcome is policy.PathAuthorizationOutcome.DENY_AND_CONTINUE
+
+
+def test_executor_authorization_extracts_command_once(monkeypatch):
+    original = policy.extract_command_paths
+    count = 0
+    def counted(*args, **kwargs):
+        nonlocal count
+        count += 1
+        return original(*args, **kwargs)
+    monkeypatch.setattr(policy, "extract_command_paths", counted)
+    decision, applied = policy.authorize_executor_tool_call(
+        build(), call("bash", "ls -la ."),
+        executor_cwd=r"D:\Projects\Jack", command_dialect="bash",
+    )
+    assert applied and decision.outcome is policy.PathAuthorizationOutcome.ALLOW
+    assert count == 1
