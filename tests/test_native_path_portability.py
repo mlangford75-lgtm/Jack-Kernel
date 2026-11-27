@@ -79,3 +79,63 @@ def test_standard_structured_optional_path_defers_missing_executor_context(monke
         assert allowed == [call] and not errors
     finally:
         kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
+
+
+def test_native_host_workspace_release_and_executor_admission(tmp_path, monkeypatch):
+    """Exercise both Jack boundaries with native path spelling and no model."""
+    import os
+    import sys
+    import jack_kernel as kernel
+
+    workspace = tmp_path / "Agentic_Testing"
+    workspace.mkdir()
+    private = workspace / "Private"
+    other = tmp_path / "Agentic_Testing-other"
+    active = paths.build_runtime_path_policy(
+        runtime_id=kernel.RUNTIME_ID, lane_id=kernel.LANE_ID,
+        raw_json=json.dumps({
+            "version": 2, "workspace_mode": "represented",
+            "workspace_root": str(workspace), "never_paths": [str(private)],
+        }),
+    )
+    assert active.path_style == ("windows" if os.name == "nt" else "posix")
+    monkeypatch.setattr(kernel, "_RUNTIME_PATH_POLICY", active)
+    context = kernel.Phase4ExecutorRequestContext(
+        protocol_version=1, runtime_id=kernel.RUNTIME_ID, lane_id=kernel.LANE_ID,
+        cwd=str(workspace), platform=sys.platform, adapter="native-test",
+    )
+    token = kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.set(context)
+    try:
+        def command_call(command):
+            return {"id": "native", "type": "function", "function": {
+                "name": "bash", "arguments": json.dumps({"command": command})}}
+        for command in ("ls -la .", "python -c 'print(42)'", "unknown-developer-tool"):
+            call = command_call(command)
+            allowed, errors = kernel._phase4_partition_structured_tool_calls([call])
+            assert allowed == [call] and not errors
+            result, applied = paths.authorize_executor_tool_call(
+                active, allowed[0], executor_cwd=str(workspace),
+                executor_platform=sys.platform, command_dialect="bash",
+            )
+            assert applied and result.outcome is paths.PathAuthorizationOutcome.ALLOW
+
+        write = {"id": "write", "type": "function", "function": {
+            "name": "write", "arguments": json.dumps({"path": "clock.html", "content": "clock"})}}
+        allowed, errors = kernel._phase4_partition_structured_tool_calls([write])
+        assert len(allowed) == 1 and not errors
+        assert json.loads(allowed[0]["function"]["arguments"])["path"] == active.normalize(str(workspace / "clock.html"))
+        result, applied = paths.authorize_executor_tool_call(
+            active, allowed[0], executor_cwd=str(workspace),
+            executor_platform=sys.platform,
+        )
+        assert applied and result.outcome is paths.PathAuthorizationOutcome.ALLOW
+        for target in (other, private):
+            call = command_call('ls -la "' + target.as_posix() + '"')
+            if target == private:
+                with pytest.raises(kernel.Phase4RestrictedPathInterrupt):
+                    kernel._phase4_partition_structured_tool_calls([call])
+            else:
+                allowed, errors = kernel._phase4_partition_structured_tool_calls([call])
+                assert not allowed and errors
+    finally:
+        kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
