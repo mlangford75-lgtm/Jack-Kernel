@@ -27,6 +27,7 @@ SYNTHETIC_KEY = "benchmark-test-only-77c9d0ce6e2a4da18d1b"
 MARKER = "P1_BENCHMARK_JSON "
 FRAMES = 1000
 REPEATS = 3
+AUDIT2 = os.environ.get("JACK_BENCHMARK_AUDIT2") == "1"
 
 
 def summary(values):
@@ -179,6 +180,64 @@ def child(mode):
                         stop = True
                         await task
                     gaps.append(summary(sample))
+                concurrent = None
+                counts = None
+                if AUDIT2:
+                    # Timing sample independent of profiler overhead; each
+                    # response is checked for full logical equivalence.
+                    gaps_ms = []
+                    stop_concurrent = False
+                    async def concurrent_ticker():
+                        prior = time.perf_counter()
+                        while not stop_concurrent:
+                            await asyncio.sleep(0)
+                            now = time.perf_counter()
+                            gaps_ms.append((now - prior) * 1000)
+                            prior = now
+                    ticker_task = asyncio.create_task(concurrent_ticker())
+                    await asyncio.sleep(0)
+                    started = time.perf_counter()
+                    try:
+                        concurrent_sizes = await asyncio.gather(request(), request())
+                    finally:
+                        concurrent_seconds = time.perf_counter() - started
+                        stop_concurrent = True
+                        await ticker_task
+                    assert concurrent_sizes == [sizes[0], sizes[0]]
+                    concurrent = {
+                        "requests": 2, "seconds": concurrent_seconds,
+                        "source_frames_per_second": 2 * FRAMES / concurrent_seconds,
+                        "scheduler_gap_ms": summary(gaps_ms), "released_bytes": concurrent_sizes,
+                    }
+                    # A separate instrumented request counts exact bytes
+                    # passed to digest.update, not guessed stat sizes.
+                    from collections import Counter
+                    measured = Counter()
+                    def observer(frame, event, arg):
+                        name = frame.f_code.co_name
+                        module = frame.f_globals.get("__name__", "")
+                        if event == "call" and module == "jack_source_drift_guard":
+                            if name == "_measure_regular_file":
+                                parent = frame.f_back
+                                origin = parent.f_globals.get("__name__", "") if parent else "unknown"
+                                measured["file_measurements:" + origin] += 1
+                            elif name in {"verify_now", "verify_for_authority_boundary"}:
+                                measured["source:" + name] += 1
+                        elif event == "call" and module == "jack_runtime_code_guard" and name in {"verify_for", "_check_locked"}:
+                            measured["executable:" + name] += 1
+                        elif (event == "c_call" and module == "jack_source_drift_guard"
+                              and name == "_sha256_stream" and getattr(arg, "__name__", "") == "update"):
+                            chunk = frame.f_locals.get("chunk")
+                            if isinstance(chunk, bytes):
+                                measured["source_digest_bytes"] += len(chunk)
+                    assert sys.getprofile() is None
+                    sys.setprofile(observer)
+                    try:
+                        counted_size = await request()
+                    finally:
+                        sys.setprofile(None)
+                    assert counted_size == sizes[0]
+                    counts = dict(measured)
                 attribution = None
                 if mode == "secured":
                     # Separate profiling request: do not contaminate wall-clock
@@ -201,6 +260,8 @@ def child(mode):
                     "scheduler_gap_ms": gaps,
                     "released_bytes": sizes,
                     "profile_attribution": attribution,
+                    "audit2_concurrent": concurrent,
+                    "audit2_integrity_counts": counts,
                     "platform": platform.platform(),
                     "python": platform.python_version(),
                 }), flush=True)
@@ -237,6 +298,7 @@ def main():
                 "JACK_REASONING_LEVEL": "off", "JACK_FORENSIC_ARCHIVE_MODE": "off",
                 "JACK_CONTEXT_MONITOR": "0", "JACK_CANARY_POLICY_JSON": "",
                 "JACK_PATH_POLICY_JSON": "",
+                "JACK_BENCHMARK_AUDIT2": "1" if AUDIT2 else "0",
             })
             result = subprocess.run(
                 [sys.executable, str(Path(__file__).resolve()), "--child", mode],

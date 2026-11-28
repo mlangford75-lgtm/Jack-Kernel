@@ -116,3 +116,30 @@ def test_ollama_optional_loaded_context_is_exact_and_not_fabricated(models, expe
             backend._client = client
             assert await backend._ollama_loaded_context("selected") == expected
     asyncio.run(check())
+
+
+def test_rejection_archive_attribution_does_not_change_live_reasoning(monkeypatch):
+    monkeypatch.setattr(jk, "active_response_target", lambda history: {"history_index": 1, "id": "synthetic"})
+    earlier = {"role": "assistant", "_jack_stage_key": "extended_initial", "reasoning": "old turn"}
+    current = {"role": "user", "content": "task"}
+    accepted = {"role": "assistant", "_jack_stage_key": "extended_initial",
+                "_jack_internal_tool_exchange": True, "reasoning": "executed cognition"}
+    history = [earlier, current, accepted]
+    history = jk._tool_rejection_history(history, {"reasoning": "rejected cognition"}, ["invalid"],
+                                        jk.STAGES["extended_initial"].name,
+                                        forensic_stage_key="extended_initial")
+    history = jk._tool_rejection_history(history, {"reasoning": "architect only"}, ["invalid"],
+                                        jk.STAGES["coder_planner"].name,
+                                        forensic_stage_key="coder_planner")
+    final = {"role": "assistant", "content": "done", "reasoning": "final cognition"}
+    live_before = jk.extended_stage1_reasoning_trace(history, final)
+    saved = jk._capture_agentic_stage1_forensic_snapshot(history, final)
+    assert saved["reasoning_trace"] == "executed cognition\n\nrejected cognition\n\nfinal cognition"
+    assert saved["rejected_action_checkpoints"] == [{
+        "history_index": 3, "stage": "extended_initial", "executed": False,
+        "reasoning": "rejected cognition",
+    }]
+    assert saved["tool_trajectory"] == [accepted]
+    assert jk.extended_stage1_reasoning_trace(history, final) == live_before
+    assert "rejected cognition" not in live_before
+    assert "_jack_stage_key" not in history[3]

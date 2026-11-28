@@ -309,3 +309,20 @@ without relaxing production registration or exact inventory assertions.
 Full regression identity comparison for both remains pending at inspection.
 All W1/W2/W3 entries still require exact individual evidence reconciliation
 against the governing inventory. Fresh-clone live acceptance remains mandatory.
+
+### Candidate additions after 4eba8dd
+
+- W6-05: separately attribute rejected-action reasoning checkpoints in optional
+  active-turn Stage-1 archives, with executed=false. No change to live reasoning
+  selection, retirement, journal content or existing privacy-gated archive sink.
+- W6-02/03: use Architect in active launcher labels and Coder-facing terminology;
+  startup Loop Detector display derives its minimum from MIN_CYCLE_WORDS (64).
+  Historical internal stage/profile keys and persisted configuration names remain.
+- W6-04: current Kernel public SSE already uses jack-keepalive; retain framing.
+- W5-02: extend the existing 1,000-frame synthetic benchmark with an opt-in
+  two-request concurrent measurement and separately profiled actual digest bytes,
+  file-measurement origin and verification invocation counts. No production guard
+  changes. The current-run CI benchmark must explicitly enable the option;
+  controlled historical comparisons retain their original methodology.
+- W5-03/04: do not change specification placement or consolidate non-equivalent
+  diagnostic mechanisms before obtaining measured evidence.

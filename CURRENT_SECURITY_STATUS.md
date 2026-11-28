@@ -249,3 +249,15 @@ Permanent Source Drift Protection nonclaim:
 > Do not destroy more state than the violation requires.
 
 Phase 8's frozen historical checkpoint remains intact. Phase 9A was exploratory research; Phase 9B selected enforcement is now implemented and target-qualified but still awaiting complete acceptance. Phase 10 authority-state integrity remains a distinct unvalidated protection boundary.
+## Experimental branch qualification boundary
+
+PR #179 carries the separate Audit 2 remediation campaign. Its exact commit
+and regression evidence are recorded in
+[the remediation register](Documentation/Independent_Audit_Remediation_Register.md).
+The previously frozen checkpoint and historical main-branch evidence above
+remain historical facts, not a certification of this experimental branch.
+The active product subsystem names are Restricted Paths, Workspace Lock,
+StreamingIRQ, Consequence Gate, Authority Ledger, Credential Isolation and DLP,
+Source Drift Protection, Runtime Code Integrity, Policy Integrity and Diagnostic
+Privacy. No strict executor containment, arbitrary in-process tamper resistance,
+or cross-machine filesystem attestation is claimed.

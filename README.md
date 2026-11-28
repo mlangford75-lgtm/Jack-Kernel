@@ -195,3 +195,16 @@ agent -> Jack :8001 -> backend :8000
 ### Factory Security Center path defaults
 
 Workspace Lock is off and no user NEVER paths are configured on a fresh installation. Jack protects represented Windows installation, Boot, Recovery and System Volume Information roots. Ordinary user TEMP/TMP directories and the installation's `Windows\\Temp` subtree are permitted by factory path policy; `Windows\\SystemTemp` and the rest of the Windows installation retain their existing protections. Explicit user NEVER paths (including a repeated Windows root) override the Temp exception; an enabled Workspace Lock continues to apply. Windows permissions and credential protection remain authoritative. This policy is not a filesystem-object sandbox and does not grant privileges.
+
+### Experimental Audit 2 candidate (PR #179)
+
+The candidate builds on the existing named security subsystems. Standard
+filesystem protection does not claim workspace confinement; Represented and
+Bounded Workspace Lock differ in their treatment of unclassified command
+effects. Strict executor containment is not available. Custom structured
+contracts are explicit startup configuration, not agent self-attestation.
+See [Security Center guide](docs/security/SECURITY_CENTER_GUIDE.md) for
+configuration and [remediation register](Documentation/Independent_Audit_Remediation_Register.md)
+for exact qualification status. This experimental branch is not a frozen
+release. Historical development numbers in compatibility identifiers, archived
+validation records and external protocol keys are not present-day product names.

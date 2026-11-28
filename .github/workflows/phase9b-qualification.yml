@@ -47,8 +47,10 @@ jobs:
       - name: Run existing Phase 8 security and preservation gates
         run: python -m pytest -q tests/test_phase8_source_baseline.py tests/test_phase8_runtime_enforcement.py tests/test_phase8_ledger_observation.py tests/test_phase8_adversarial_preservation.py
 
-      - name: Measure P-1 actual bundled versus secured SSE release path
+      - name: Measure secured SSE release path and concurrent integrity overhead
         timeout-minutes: 35
+        env:
+          JACK_BENCHMARK_AUDIT2: '1'
         run: python tests/benchmark_secured_stream.py
 
       - name: Controlled P-1 comparison of the two qualified immutable fingerprint versions
