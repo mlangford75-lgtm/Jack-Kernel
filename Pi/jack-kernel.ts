@@ -132,7 +132,9 @@ async function fetchJson(url, token, timeoutMs = 5000) {
       headers: authHeaders(token),
     });
     if (!response.ok) {
-      throw new Error(`Jack Kernel HTTP status ${response.status}: ${await response.text()}`);
+      const error = new Error(`Jack Kernel HTTP status ${response.status}: ${await response.text()}`);
+      error.status = response.status;
+      throw error;
     }
     return await response.json();
   } finally {
@@ -164,7 +166,15 @@ async function postJson(url, token, payload, timeoutMs = 5000) {
 
 async function verifyRuntimeIdentity(url, token, expectedRuntimeId) {
   const root = String(url || DEFAULT_JACK_URL).replace(/\/+$/, "").replace(/\/v1$/, "");
-  const health = await fetchJson(`${root}/health`, token);
+  let health;
+  try {
+    health = await fetchJson(`${root}/jack/runtime-identity`, token);
+  } catch (error) {
+    // Only an absent endpoint permits legacy compatibility. Authentication
+    // failures and malformed identity responses must remain failures.
+    if (error?.status !== 404) throw error;
+    health = await fetchJson(`${root}/health`, token);
+  }
   const actualRuntimeId = String(health?.runtime_id || "");
   if (!actualRuntimeId) {
     throw new Error("Jack runtime did not report runtime_id");
@@ -218,7 +228,7 @@ async function fetchJackModels(url, token, health) {
     const loadedContext = Number(model?.loaded_instances?.[0]?.config?.context_length || 0);
     const maxContext = Number(model?.max_context_length || 0);
     const contextWindow = loadedContext > 0 ? loadedContext : maxContext;
-    if (!(contextWindow > 0)) {
+    if (!(Number.isSafeInteger(contextWindow) && contextWindow > 0)) {
       throw new Error(`Jack model ${model?.key || "unknown"} did not advertise a usable context length`);
     }
     return {
@@ -227,7 +237,7 @@ async function fetchJackModels(url, token, health) {
       reasoning: runtimeSupportsNativeThinking(health),
       thinkingLevelMap: runtimeThinkingLevelMap(health),
       compat: { supportsDeveloperRole: false, supportsReasoningEffort: false },
-      input: ["text"],
+      input: model?.capabilities?.vision === true ? ["text", "image"] : ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow,
       // Pi maxTokens is an output allowance, not a context capacity.

@@ -271,3 +271,17 @@ Unregistered tools are not claimed to have structured filesystem coverage.
 This is represented-target enforcement, not executor attestation, nested path
 schema support or strict containment. Independent agents must integrate the
 existing admission API if execution-time admission is required.
+
+
+### Runtime identity and model metadata
+
+Authenticated `GET /jack/runtime-identity` identifies the Kernel and its lane
+without contacting the backend. It is not a backend health or readiness check.
+The existing `/health` and model-discovery endpoints retain their provider
+verification behavior. Pi uses the independent endpoint, falling back only
+when an older runtime returns HTTP 404. Missing context capacity still prevents
+stock Pi model registration; no capacity is fabricated. Ollama's loaded-model
+metadata is consulted only when the existing model discovery supplies no
+context value and no operator override exists. Only an exact, unambiguous
+running model match supplies its reported context. LM Studio vision metadata
+is projected to Pi only on a positive provider declaration.

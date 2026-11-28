@@ -326,3 +326,12 @@ def test_existing_bounded_workspace_keeps_coverage_on_blank(factory_windows, mon
     monkeypatch.setattr(jk, "_cli_input", lambda *a, **kw: next(inputs))
     jk._edit_security_center(factory_windows)
     assert jk._security_center_policies(factory_windows)[0].filesystem_protection.value == "bounded"
+
+
+def test_discard_after_workspace_coverage_selection(factory_windows, monkeypatch):
+    before = copy.deepcopy(factory_windows)
+    inputs = iter(["1", r"D:\Projects\Jack", "represented", "y", "m"])
+    monkeypatch.setattr(jk, "_cli_input", lambda *a, **kw: next(inputs))
+    with pytest.raises(jk._ReturnToMainMenu):
+        jk._run_transactional_editor(jk._edit_security_center, factory_windows)
+    assert factory_windows == before

@@ -68,3 +68,50 @@ def test_posix_case_distinct_targets_and_explicit_shells():
         result = paths.extract_command_paths("shell", {"command": "cat /tmp/a /tmp/A | head -n 1"}, command_dialect=shell)
         assert result.applicable
         assert "/tmp/a" in result.targets and "/tmp/A" in result.targets
+
+
+@pytest.mark.asyncio
+async def test_authenticated_runtime_identity_needs_no_backend_discovery(monkeypatch):
+    from types import SimpleNamespace
+    async def unavailable(*args):
+        raise AssertionError("runtime identity must not discover backend models")
+    monkeypatch.setattr(jk.KERNEL, "_resolve_discovery_model", unavailable)
+    monkeypatch.setattr(jk.CFG, "api_key", "synthetic-identity-key")
+    with pytest.raises(jk.HTTPException) as exc:
+        await jk.authenticated_runtime_identity(SimpleNamespace(headers={}))
+    assert exc.value.status_code == 401
+    result = await jk.authenticated_runtime_identity(
+        SimpleNamespace(headers={"authorization": "Bearer synthetic-identity-key"}))
+    assert result["runtime_id"] == jk.RUNTIME_ID
+    assert result["lane_id"] == jk.LANE_ID
+    assert "status" not in result  # identity is not a provider health claim
+
+
+@pytest.mark.parametrize("advertised", [True, False, "true", None])
+def test_lmstudio_vision_requires_positive_documented_capability(advertised):
+    result = jk._parse_lmstudio_v1_loaded_llms({"models": [{
+        "type": "llm", "key": "model", "capabilities": {"vision": advertised},
+        "loaded_instances": [{"id": "loaded", "config": {"context_length": 8192}}],
+    }]})
+    assert result[0]["supports_vision"] is (advertised is True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("models, expected", [
+    ([{"name": "selected", "context_length": 8192}], 8192),
+    ([{"name": "other", "context_length": 8192}], 0),
+    ([{"name": "selected", "context_length": True}], 0),
+    ([{"name": "selected", "context_length": 8192}, {"name": "selected", "context_length": 4096}], 0),
+])
+async def test_ollama_optional_loaded_context_is_exact_and_not_fabricated(models, expected):
+    from types import SimpleNamespace
+    import httpx
+    backend = object.__new__(jk.OpenAICompatibleBackend)
+    backend.cfg = SimpleNamespace(backend_base_url="http://example.invalid/v1")
+    backend._headers = lambda: {}
+    def handle(request):
+        assert request.method == "GET" and request.url.path == "/api/ps"
+        return httpx.Response(200, json={"models": models})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        backend._client = client
+        assert await backend._ollama_loaded_context("selected") == expected

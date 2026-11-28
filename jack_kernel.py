@@ -8570,6 +8570,8 @@ def _parse_lmstudio_v1_loaded_llms(payload: Any) -> List[Dict[str, Any]]:
                 "instance_id": instance_id,
                 "display_name": display_name,
                 "context_length": ctx,
+                "supports_vision": isinstance(model.get("capabilities"), dict)
+                and model["capabilities"].get("vision") is True,
             })
     return out
 
@@ -8601,6 +8603,7 @@ def _parse_lmstudio_v0_loaded_llms(payload: Any) -> List[Dict[str, Any]]:
             "instance_id": model_id,
             "display_name": model_id,
             "context_length": ctx,
+            "supports_vision": model_type == "vlm",
         })
     return out
 
@@ -8623,6 +8626,8 @@ class OpenAICompatibleBackend:
         # verified against the active backend before inference begins.
         self._resolved_model: Optional[str] = None
         self._detected_context_length: int = 0
+        self._detected_context_source: str = "backend_model_metadata"
+        self._supports_vision: bool = False
         self._model_metadata_checked: bool = False
         self._client = httpx.AsyncClient(timeout=cfg.backend_timeout_seconds)
         self._model_lock = asyncio.Lock()
@@ -8654,7 +8659,7 @@ class OpenAICompatibleBackend:
         if self.cfg.backend_context_length > 0:
             return "configured"
         if self._detected_context_length > 0:
-            return "backend_model_metadata"
+            return self._detected_context_source
         return "unknown"
 
     @staticmethod
@@ -8768,6 +8773,7 @@ class OpenAICompatibleBackend:
             self._detected_context_length = int(selected.get("context_length") or 0)
         except Exception:
             self._detected_context_length = 0
+        self._supports_vision = selected.get("supports_vision") is True
         self._model_metadata_checked = True
         if self._detected_context_length > 0 and not self.cfg.backend_context_length:
             LOG.info("Detected loaded LM Studio context length: %d", self._detected_context_length)
@@ -8787,6 +8793,7 @@ class OpenAICompatibleBackend:
                 # by the next inference. No active transaction is switched here.
                 self._resolved_model = None
                 self._detected_context_length = 0
+                self._supports_vision = False
                 self._model_metadata_checked = False
                 raise
             if previous != (resolved, self._detected_context_length):
@@ -8795,6 +8802,25 @@ class OpenAICompatibleBackend:
                 self._cache_byte_probe = CacheBytePrefixProbe()
                 self._stage1_cache_stabilizer = Stage1CacheStabilizer()
             return resolved
+
+    async def _ollama_loaded_context(self, model_id: str) -> int:
+        """Read optional loaded-instance metadata without loading a model."""
+        try:
+            root = _openai_base_to_server_root(self.cfg.backend_base_url)
+            response = await self._client.get(f"{root}/api/ps", headers=self._headers(), timeout=3.0)
+            response.raise_for_status()
+            payload = response.json()
+            models = payload.get("models") if isinstance(payload, dict) else None
+            if not isinstance(models, list):
+                return 0
+            matches = [item for item in models if isinstance(item, dict)
+                       and (item.get("name") == model_id or item.get("model") == model_id)]
+            if len(matches) != 1:
+                return 0
+            value = matches[0].get("context_length")
+            return value if type(value) is int and value > 0 else 0
+        except (httpx.HTTPError, ValueError):
+            return 0
 
     async def resolve_model(self) -> str:
         if self._resolved_model and (self.cfg.backend_context_length or self._model_metadata_checked):
@@ -8848,6 +8874,13 @@ class OpenAICompatibleBackend:
 
             selected_item = next((item for item in data if str(item.get("id", "")) == self._resolved_model), {})
             self._detected_context_length = self._extract_context_length(selected_item)
+            self._detected_context_source = "backend_model_metadata"
+            if (self.cfg.backend_profile == "ollama" and not self.cfg.backend_context_length
+                    and not self._detected_context_length):
+                loaded = await self._ollama_loaded_context(self._resolved_model)
+                if loaded:
+                    self._detected_context_length = loaded
+                    self._detected_context_source = "ollama_loaded_instance"
             if self._detected_context_length > 0 and not self.cfg.backend_context_length:
                 LOG.info("Detected backend context length from model metadata: %d", self._detected_context_length)
             LOG.info("Resolved backend model: %s", self._resolved_model)
@@ -16447,6 +16480,13 @@ async def root() -> Dict[str, Any]:
     }
 
 
+@APP.get("/jack/runtime-identity")
+async def authenticated_runtime_identity(request: Request) -> Dict[str, Any]:
+    """Identify the authenticated Kernel without requiring model discovery."""
+    await enforce_kernel_auth(request)
+    return await root()
+
+
 @APP.get("/health")
 async def health(request: Request) -> Dict[str, Any]:
     await enforce_kernel_auth(request)
@@ -16701,6 +16741,7 @@ async def list_models(request: Request) -> Dict[str, Any]:
         "owned_by": "jack-kernel",
         "backend_model": backend_model,
         "context_length_source": BACKEND.context_length_source,
+        "capabilities": {"vision": getattr(BACKEND, "_supports_vision", False) is True},
     }
     if context_length > 0:
         # Different OpenAI-compatible clients use different metadata spellings.
@@ -16768,6 +16809,7 @@ async def lmstudio_compatible_models(request: Request) -> Dict[str, Any]:
                 "format": "jack-kernel",
                 "capabilities": {
                     "trained_for_tool_use": True,
+                    "vision": getattr(BACKEND, "_supports_vision", False) is True,
                 },
                 "description": f"Jack Kernel virtual model routed to {backend_model}",
                 "variants": [],
@@ -17568,6 +17610,8 @@ def _edit_security_center(cfg: Dict[str, Any]) -> None:
                     print("Bounded: rejects unclassified commands; not OS containment.")
                     print("Represented: enforces identified paths; unknown effects are not contained.")
                     selected = _cli_input(f"Coverage [bounded/represented] (blank keeps {current_mode}): ").strip().lower()
+                    if selected == "m":
+                        raise _ReturnToMainMenu()
                     if selected and selected not in {"bounded", "represented"}:
                         continue
                     if selected == "represented" and current_mode != "represented":
