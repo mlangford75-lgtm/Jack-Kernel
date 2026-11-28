@@ -79,6 +79,57 @@ def run(size):
             "exact_reports_equal": True, "runs": rows}
 
 
+async def cold_digest_latency(size):
+    """Audit 3 6.6: exact cold trajectory and event-loop scheduling delay.
+
+    Synthetic bytes only; no backend, prompt contents, or KV claims.
+    Report timing rather than imposing a host-dependent performance gate.
+    """
+    import asyncio
+    from array import array
+    import hashlib
+
+    probe = CacheBytePrefixProbe(enabled=True, byte_cap=131072)
+    wire = (bytes(range(256)) * ((size + 255) // 256))[:size]
+
+    def previous():
+        h = hashlib.blake2b(digest_size=8, key=probe._key)
+        sigs = array("Q")
+        for item in wire:
+            h.update(bytes((item,)))
+            sigs.append(int.from_bytes(h.copy().digest(), "little"))
+        return {"byte_length": len(wire), "sha256": hashlib.sha256(wire).hexdigest(),
+                "prefix_hashes": sigs}
+
+    def candidate():
+        return probe._signature(wire)
+
+    reference = previous()
+    loop = asyncio.get_running_loop()
+    rows = {"previous": [], "candidate": []}
+    for label in ("previous", "candidate", "candidate", "previous") * 4:
+        fn = previous if label == "previous" else candidate
+        scheduled = loop.create_future()
+        begin = time.perf_counter_ns()
+        loop.call_soon(lambda f=scheduled, t=begin:
+                       f.set_result((time.perf_counter_ns() - t) / 1e6))
+        actual = fn()
+        elapsed = (time.perf_counter_ns() - begin) / 1e6
+        delay = await scheduled
+        assert actual == reference, "exact digest trajectory changed"
+        rows[label].append((elapsed, delay))
+    return {"synthetic_bytes": size, "exact_signatures_equal": True,
+            "trials_per_algorithm": 8, "order": "ABBA x 4",
+            "measurement": "synchronous signature and ready callback latency, not inference",
+            "results": {label: {
+                "signature_median_ms": statistics.median(v[0] for v in values),
+                "event_loop_callback_median_ms": statistics.median(v[1] for v in values),
+            } for label, values in rows.items()}}
+
+
 if __name__ == "__main__":
     for size in (65536, 131072):
         print("A2_W5_01_JSON " + json.dumps(run(size)), flush=True)
+    import asyncio
+    for size in (65536, 131072):
+        print("A3_6_6_JSON " + json.dumps(asyncio.run(cold_digest_latency(size))), flush=True)
