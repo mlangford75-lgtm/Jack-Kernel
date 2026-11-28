@@ -5387,6 +5387,7 @@ def _phase4_partition_structured_tool_calls(
             candidate = jack_path_policy.rewrite_structured_tool_call_for_workspace_release(
                 active_policy,
                 call,
+                executor_cwd=executor_cwd,
             )
             decision = jack_path_policy.authorize_structured_tool_call(
                 active_policy,

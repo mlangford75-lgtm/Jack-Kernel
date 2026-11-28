@@ -2715,13 +2715,14 @@ def rewrite_literal_bash_home_call_for_workspace_release(
 def rewrite_structured_tool_call_for_workspace_release(
     policy: RuntimePathPolicy,
     call: Any,
+    *,
+    executor_cwd: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Canonicalize structured targets before release under Workspace Lock.
 
-    This closes the executor-cwd interpretation gap for exact structured tools:
-    relative paths become absolute workspace-root-relative paths before any
-    caller/executor can observe the executable call. Optional path tools that
-    omitted `path` receive the locked workspace root explicitly.
+    Preserve a cooperating executor's established cwd inside the workspace.
+    Otherwise retain the configured workspace-root default. Explicit paths
+    still pass the normal authority checks after canonicalization.
     """
 
     if not isinstance(call, dict):
@@ -2750,6 +2751,16 @@ def rewrite_structured_tool_call_for_workspace_release(
     if not isinstance(arguments, dict):
         return rewritten
 
+    base_root = policy.workspace_root
+    if executor_cwd is not None:
+        try:
+            canonical_cwd = policy.normalize(executor_cwd)
+            if policy.contains(policy.object_path(canonical_cwd), policy.workspace_root):
+                base_root = canonical_cwd
+        except RepresentedPathError:
+            # Unavailable executor facts do not replace the configured default.
+            pass
+
     saw_path = False
 
     for field_name in contract.path_fields:
@@ -2761,7 +2772,7 @@ def rewrite_structured_tool_call_for_workspace_release(
         if not isinstance(value, str) or not (value if policy.path_style == "posix" else value.strip()):
             continue
         try:
-            canonical = policy.normalize(value, base_root=policy.workspace_root)
+            canonical = policy.normalize(value, base_root=base_root)
         except RepresentedPathError:
             # Preserve the original for authoritative path evaluation. Never
             # replace an unresolved explicit target with a default directory.
@@ -2769,7 +2780,7 @@ def rewrite_structured_tool_call_for_workspace_release(
         arguments[field_name] = canonical
 
     if not saw_path and contract.default_to_executor_cwd:
-        arguments[contract.path_fields[0]] = policy.workspace_root
+        arguments[contract.path_fields[0]] = base_root
 
     function["arguments"] = json.dumps(
         arguments,

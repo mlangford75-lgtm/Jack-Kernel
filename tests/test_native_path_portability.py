@@ -264,3 +264,49 @@ def test_invalid_remote_startup_metadata_is_not_silently_substituted(monkeypatch
     monkeypatch.setenv(paths.EXECUTOR_PATH_ENVIRONMENT_ENV, anchors)
     with pytest.raises(RuntimeError):
         paths.build_runtime_path_policy(runtime_id="remote", lane_id="remote", raw_json="")
+
+
+def test_native_nested_workspace_release_preserves_executor_cwd(tmp_path, monkeypatch):
+    import sys
+    import jack_kernel as kernel
+
+    workspace = tmp_path / "workspace"
+    nested = workspace / "nested"
+    nested.mkdir(parents=True)
+    private = nested / "private"
+    active = paths.build_runtime_path_policy(
+        runtime_id=kernel.RUNTIME_ID, lane_id=kernel.LANE_ID,
+        raw_json=json.dumps({"version": 2, "workspace_mode": "represented",
+                            "workspace_root": str(workspace), "never_paths": [str(private)]}),
+    )
+    monkeypatch.setattr(kernel, "_RUNTIME_PATH_POLICY", active)
+    context = kernel.Phase4ExecutorRequestContext(
+        protocol_version=1, runtime_id=kernel.RUNTIME_ID, lane_id=kernel.LANE_ID,
+        cwd=str(nested), platform=sys.platform, adapter="native-test",
+    )
+    token = kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.set(context)
+    try:
+        for name, arguments, expected in (
+            ("write", {"path": "clock.html", "content": "clock"}, nested / "clock.html"),
+            ("read", {"path": "../clock.html"}, workspace / "clock.html"),
+            ("ls", {}, nested),
+            ("grep", {"pattern": "clock"}, nested),
+            ("find", {"pattern": "*.html"}, nested),
+        ):
+            call = {"id": name, "function": {"name": name, "arguments": json.dumps(arguments)}}
+            allowed, errors = kernel._phase4_partition_structured_tool_calls([call])
+            assert len(allowed) == 1 and not errors
+            assert json.loads(allowed[0]["function"]["arguments"])["path"] == active.normalize(str(expected))
+            assert json.loads(call["function"]["arguments"]) == arguments
+
+        for relative in ("private/secret.txt", "../../outside.txt"):
+            call = {"id": "read", "function": {"name": "read",
+                    "arguments": json.dumps({"path": relative})}}
+            if relative.startswith("private/"):
+                with pytest.raises(kernel.Phase4RestrictedPathInterrupt):
+                    kernel._phase4_partition_structured_tool_calls([call])
+            else:
+                allowed, errors = kernel._phase4_partition_structured_tool_calls([call])
+                assert not allowed and errors
+    finally:
+        kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
