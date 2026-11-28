@@ -285,6 +285,7 @@ def test_source_authority_interruption_closes_without_draining(tmp_path):
         try:
             yield b"safe-prefix"
             target.write_bytes(b"changed-source")
+            assert authority.verify_now().state is source_guard.SourceAuthorityState.INVALIDATED
             yield b"blocked"
             trace.append("unwanted-commit")
             yield b"unwanted"
