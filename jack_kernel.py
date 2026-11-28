@@ -14591,7 +14591,7 @@ class JackQwenKernel:
                             history, usage, agentic_frozen_stage1_answer
                         )
                     except Exception as exc:
-                        if isinstance(exc, GenerationBudgetExceeded):
+                        if isinstance(exc, GenerationBudgetExceeded) or terminal_stream_failure(exc):
                             raise
                         detail = _diagnostic_text(exc.detail if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}")
                         completed = self._agentic_degraded_result(
@@ -14680,7 +14680,9 @@ class JackQwenKernel:
                     _agentic_finish_delayed_one_hop(history)
                     history.clear()
                 except Exception as exc:
-                    if isinstance(exc, GenerationBudgetExceeded):
+                    if isinstance(exc, GenerationBudgetExceeded) or (
+                        terminal_stream_failure(exc) and not isinstance(exc, RepeatedLoopInterrupt)
+                    ):
                         raise
                     if agentic_frozen_stage1_answer is None:
                         raise
