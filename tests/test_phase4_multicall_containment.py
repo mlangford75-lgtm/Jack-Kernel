@@ -488,3 +488,54 @@ def test_partition_materializes_workspace_for_pathless_ls_before_release():
         allowed[0]["function"]["arguments"]
     )
     assert args["path"] == r"d:\projects\jack"
+
+
+def test_schema_failure_preserves_valid_siblings_and_receipt_ownership():
+    calls = [
+        call("safe-a", "read", {"path": "a.txt"}),
+        call("malformed", "read", {"offset": 1}),
+        call("safe-b", "read", {"path": "b.txt"}),
+    ]
+    jack = kernel.JackQwenKernel(FakeBackend(stage_data(calls)), kernel.CFG)
+    usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    history = [{"role": "user", "content": "Read the files."}]
+    data = asyncio.run(jack._run_stage(
+        history, "", active_tool_stage(), usage, tools=tools(), tool_choice="auto", append=False))
+    message = data["choices"][0]["message"]
+    assert [item["id"] for item in message["tool_calls"]] == ["safe-a", "safe-b"]
+    assert message["_jack_phase4_withheld_tool_call_ids"] == ["malformed"]
+    assert "missing required property path" in message["_jack_phase4_deferred_tool_rejection_errors"][0]
+    result = asyncio.run(jack._register_stage_tool_resume(
+        stage_key=active_tool_stage(), history=history, secondary_system="", usage=usage,
+        tools=tools(), tool_choice="auto", data=data))
+    assert [item["id"] for item in result.tool_calls] == ["safe-a", "safe-b"]
+    state = jack._pending_tool_resumes["safe-a"]
+    assert state.expected_tool_call_ids == ("safe-a", "safe-b")
+    assert state.withheld_tool_call_ids == ("malformed",)
+    resumed = jack._pending_tool_resume_history(state, [
+        {"role": "tool", "tool_call_id": "safe-a", "content": "a evidence"},
+        {"role": "tool", "tool_call_id": "safe-b", "content": "b evidence"},
+    ])
+    assert [entry["tool_call_id"] for entry in resumed[-3:-1]] == ["safe-a", "safe-b"]
+    assert "Correct only the failed invocation" in resumed[-1]["content"]
+
+
+def test_schema_correction_does_not_authorize_never_sibling():
+    calls = [
+        call("safe", "read", {"path": "a.txt"}),
+        call("malformed", "read", {}),
+        call("never", "read", {"path": r"C:\Boot\BCD"}),
+    ]
+    jack = kernel.JackQwenKernel(FakeBackend(stage_data(calls)), kernel.CFG)
+    with pytest.raises(kernel.Phase4RestrictedPathInterrupt):
+        asyncio.run(jack._run_stage(
+            [{"role": "user", "content": "Read the files."}], "", active_tool_stage(),
+            {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            tools=tools(), tool_choice="auto", append=False))
+
+
+def test_schema_sibling_partition_never_splits_ambiguous_ids():
+    assert not kernel._recoverable_schema_siblings([
+        call("same", "read", {"path": "a.txt"}),
+        call("same", "read", {}),
+    ], tools())

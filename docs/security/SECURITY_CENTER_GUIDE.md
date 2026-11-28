@@ -338,3 +338,15 @@ credential-resource and StreamingIRQ protections remain unchanged. The
 represented command contract does not contain computed shell expressions or
 effects of changes to the shell's working directory; unknown effects are not
 certified safe.
+
+
+### Tool correction and useful-work preservation
+
+A malformed invocation is a correctable execution problem, not evidence of
+a security threat. Jack provides the advertised schema error and preserves
+valid siblings with unique call identities, which must independently pass
+the existing authority gates before release. Deferred correction feedback
+follows their actual results. No missing arguments are invented, no denied
+target is retried, and no completed action should be repeated. An ambiguous
+batch identity requires correction before release. Tool-free Architect and
+positive security interrupts retain their existing authority.

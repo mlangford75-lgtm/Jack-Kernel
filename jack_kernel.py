@@ -5301,6 +5301,25 @@ def _tool_call_validation_errors(
     return errors
 
 
+def _recoverable_schema_siblings(
+    calls: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """Withhold malformed calls without discarding valid parallel siblings.
+
+    Never split ambiguous identities: the entire malformed batch must then be
+    corrected before any executable release. Do not invent missing arguments.
+    Every returned call still traverses the normal path and security gates.
+    """
+    identities = [
+        call.get("id") if isinstance(call, dict) else None for call in calls
+    ]
+    if any(not isinstance(ident, str) or not ident.strip() for ident in identities):
+        return []
+    if len(set(identities)) != len(identities):
+        return []
+    return [call for call in calls if not _tool_call_validation_errors([call], tools)]
+
+
 def _phase4_partition_structured_tool_calls(
     calls: Any,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
@@ -5713,10 +5732,14 @@ def _tool_rejection_notice(
             )
     else:
         guidance = (
-            "Preserve the useful analysis that led here. If this stage has tool "
-            "authority, correct the invocation if the tool is still needed; "
-            "otherwise continue the same stage without tools."
+            "Correct only the failed invocation using the advertised tool schema or "
+            "an explicit authorized destination. Preserve completed work and continue "
+            "the current user task. Do not repeat a successfully completed action."
         )
+        if any("path policy denied the represented filesystem target" in item for item in items):
+            guidance += " Do not access a denied target or seek alternate access to it."
+        if any("(OUTSIDE_WORKSPACE)" in item for item in items):
+            guidance += " For work intended inside the workspace, correct the destination to a workspace-relative filename."
     notice = {
         "role": "user",
         "content": (
@@ -5784,7 +5807,7 @@ def _tool_recovery_check(
     count = tracker.fail(operation, "; ".join(errors),
                          policy_denial=immutable_denial, policy_key=policy_key)
     advisory = tracker.advice()
-    if advisory:
+    if advisory and not immutable_denial:
         repaired[-1]["content"] += "\n[JACK TOOL RECOVERY GUIDANCE]\n" + advisory
     if tracker.exhausted:
         raise ToolRecoveryExhausted(
@@ -10587,6 +10610,8 @@ class JackQwenKernel:
             profile.allow_tools or SELF_ADVERSARIAL_MODE
             or (CODE_DEBUGGING_MODE and _debugging_pass_from_stage_key(stage_key) is not None)
         )
+        schema_siblings = None
+        schema_rejection_errors: List[str] = []
         if governed_stage and msg.get("tool_calls"):
             if not profile.allow_tools:
                 if AGENTIC_CODER_MODE and stage_key == "coder_planner":
@@ -10601,7 +10626,15 @@ class JackQwenKernel:
             validation_errors = _tool_call_validation_errors(msg.get("tool_calls"), effective_tools)
             if AGENTIC_CODER_MODE and stage_key == "coder_planner":
                 validation_errors += _coder_planner_tool_errors(msg["tool_calls"])
-            if validation_errors:
+            if validation_errors and not (AGENTIC_CODER_MODE and stage_key == "coder_planner"):
+                schema_siblings = _recoverable_schema_siblings(
+                    msg["tool_calls"], effective_tools,
+                )
+                if schema_siblings:
+                    schema_rejection_errors = list(validation_errors)
+                    LOG.info("%s withholding %d malformed tool call(s); validating remaining siblings",
+                             STAGES[stage_key].name, len(msg["tool_calls"]) - len(schema_siblings))
+            if validation_errors and not schema_siblings:
                 if AGENTIC_CODER_MODE and stage_key == "coder_planner":
                     _coder_planner_log_rejection(msg.get("tool_calls"), validation_errors)
                 else:
@@ -10642,13 +10675,15 @@ class JackQwenKernel:
         # Withheld-call provenance is host-owned. Never trust a backend/model-supplied
         # private field with the same name.
         msg.pop("_jack_phase4_withheld_tool_call_ids", None)
+        msg.pop("_jack_phase4_deferred_tool_rejection_errors", None)
         if msg.get("tool_calls"):
             proposed_calls = list(msg.get("tool_calls") or [])
             allowed_calls, path_authorization_errors = (
                 _phase4_partition_structured_tool_calls(
-                    proposed_calls
+                    schema_siblings if schema_siblings is not None else proposed_calls
                 )
             )
+            path_authorization_errors = schema_rejection_errors + path_authorization_errors
             if path_authorization_errors:
                 if not allowed_calls:
                     LOG.warning(
@@ -11310,6 +11345,8 @@ class JackQwenKernel:
             profile.allow_tools or SELF_ADVERSARIAL_MODE
             or (CODE_DEBUGGING_MODE and _debugging_pass_from_stage_key(stage_key) is not None)
         )
+        schema_siblings = None
+        schema_rejection_errors: List[str] = []
         if governed_stage and message.get("tool_calls"):
             if not profile.allow_tools:
                 if AGENTIC_CODER_MODE and stage_key == "coder_planner":
@@ -11324,7 +11361,15 @@ class JackQwenKernel:
             validation_errors = _tool_call_validation_errors(message.get("tool_calls"), effective_tools)
             if AGENTIC_CODER_MODE and stage_key == "coder_planner":
                 validation_errors += _coder_planner_tool_errors(message["tool_calls"])
-            if validation_errors:
+            if validation_errors and not (AGENTIC_CODER_MODE and stage_key == "coder_planner"):
+                schema_siblings = _recoverable_schema_siblings(
+                    message["tool_calls"], effective_tools,
+                )
+                if schema_siblings:
+                    schema_rejection_errors = list(validation_errors)
+                    LOG.info("%s withholding %d malformed tool call(s); validating remaining siblings",
+                             STAGES[stage_key].name, len(message["tool_calls"]) - len(schema_siblings))
+            if validation_errors and not schema_siblings:
                 if AGENTIC_CODER_MODE and stage_key == "coder_planner":
                     _coder_planner_log_rejection(message.get("tool_calls"), validation_errors)
                 else:
@@ -11441,13 +11486,15 @@ class JackQwenKernel:
         # Streaming reconstruction creates host-owned message state, but clear the
         # private field explicitly so this path mirrors non-stream semantics.
         message.pop("_jack_phase4_withheld_tool_call_ids", None)
+        message.pop("_jack_phase4_deferred_tool_rejection_errors", None)
         if message.get("tool_calls"):
             proposed_calls = list(message.get("tool_calls") or [])
             allowed_calls, path_authorization_errors = (
                 _phase4_partition_structured_tool_calls(
-                    proposed_calls
+                    schema_siblings if schema_siblings is not None else proposed_calls
                 )
             )
+            path_authorization_errors = schema_rejection_errors + path_authorization_errors
             if path_authorization_errors:
                 if not allowed_calls:
                     LOG.warning(
