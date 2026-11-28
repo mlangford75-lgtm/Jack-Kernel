@@ -23,7 +23,7 @@ _PHASE9B_MARKER = "_JACK_RUNTIME_CODE_ENFORCEMENT_INSTALLED"
 # Read-only exception paths are deliberately small and proven not to run
 # model inference, Pi transport, or executor-side effects. Never infer read-only
 # authority from GET alone: /health, /v1/models and Pi events have dependencies.
-OBSERVATION_PATHS = frozenset({"/", "/jack/runtime/status", "/jack/runtimes", "/jack/runtime-identity"})
+OBSERVATION_PATHS = frozenset({"/", "/jack/runtime/status", "/jack/runtimes", "/jack/runtime-identity", "/jack/source-authority"})
 
 
 def _http_authority_scopes(scope: Any) -> tuple[str, ...]:
@@ -33,8 +33,12 @@ def _http_authority_scopes(scope: Any) -> tuple[str, ...]:
     # Do not consult a rebindable global exception set on the request path.
     if method == "GET" and path in (
         "/", "/jack/runtime/status", "/jack/runtimes", "/jack/runtime-identity",
+        "/jack/source-authority",
     ):
         return ("observation",)
+    if method == "POST" and path == "/jack/tool-lifecycle/observe":
+        # Passive executor telemetry, not dispatch or execution evidence.
+        return ("observation", "authority")
     if method == "POST" and path == "/jack/security/path-admission":
         return ("executor", "authority")
     if method == "POST" and path == "/jack/orchestration/tasks":
@@ -393,7 +397,8 @@ def install(jk: Any) -> RuntimeCodeAuthority:
     for route in tuple(jk.APP.routes):
         path = getattr(route, "path", None)
         methods = getattr(route, "methods", ()) or ()
-        if path not in OBSERVATION_PATHS or "GET" not in methods:
+        if not ((path in OBSERVATION_PATHS and "GET" in methods)
+                or (path == "/jack/tool-lifecycle/observe" and "POST" in methods)):
             continue
         if not all(callable(getattr(route, attr, None)) for attr in ("endpoint", "app")):
             raise RuntimeCodeIntegrityUnavailable("required observational route not measurable")
@@ -405,6 +410,15 @@ def install(jk: Any) -> RuntimeCodeAuthority:
         if dependency is not None and callable(getattr(dependency, "call", None)):
             guard.register(name=f"route-observation-{safe_name}-dependent",
                            owner=dependency, attribute="call", scope="observation")
+
+    # Pin the passive telemetry consumer as well as its HTTP route, where
+    # present on the real host. No model or executor dispatch is involved.
+    observer = getattr(jk, "TOOL_LIFECYCLE_OBSERVER", None)
+    if observer is not None:
+        guard.register_holder(name="lifecycle-observer-holder", owner=jk,
+                              attribute="TOOL_LIFECYCLE_OBSERVER", scope="observation")
+        guard.register(name="lifecycle-observe", owner=observer,
+                       attribute="observe", scope="observation")
 
     guard.register_source(name="source-phase9-code-guard",
                           path=Path(code_guard.__file__).resolve(), scope="shared")

@@ -589,3 +589,51 @@ def test_authority_bearing_get_routes_are_pinned(tmp_path, path):
         route.dependant.call = lambda: {"unverified": True}
         assert client.get(path).status_code == 503
         assert client.get("/").status_code == 200
+
+
+def test_source_status_and_passive_lifecycle_do_not_depend_on_model_execution(tmp_path):
+    import jack_phase9b_enforcement as phase9
+    host, calls = _integrated_host(tmp_path)
+
+    @host.APP.get("/jack/source-authority")
+    async def source_status():
+        return {"observed": True}
+
+    @host.APP.post("/jack/tool-lifecycle/observe")
+    async def lifecycle():
+        return {"accepted": True}
+
+    guard = install(host)
+    assert phase9._http_authority_scopes({
+        "method": "GET", "path": "/jack/source-authority",
+    }) == ("observation",)
+    assert phase9._http_authority_scopes({
+        "method": "POST", "path": "/jack/tool-lifecycle/observe",
+    }) == ("observation", "authority")
+    host.sanitize_agent_request = lambda body: {"unsafe": True}
+    with TestClient(host.APP) as client:
+        assert client.post("/v1/chat/completions").status_code == 503
+        assert client.get("/jack/source-authority").status_code == 200
+        assert client.post("/jack/tool-lifecycle/observe").status_code == 200
+        host.enforce_kernel_auth = lambda _request: None
+        assert client.get("/jack/source-authority").status_code == 503
+        assert client.post("/jack/tool-lifecycle/observe").status_code == 503
+    assert calls["run"] == 0
+
+
+@pytest.mark.parametrize("path,method", [
+    ("/jack/source-authority", "GET"),
+    ("/jack/tool-lifecycle/observe", "POST"),
+])
+def test_diagnostic_route_binding_remains_sealed(tmp_path, path, method):
+    host, _calls = _integrated_host(tmp_path)
+
+    async def original():
+        return {"verified": True}
+
+    host.APP.add_api_route(path, original, methods=[method])
+    guard = install(host)
+    route = next(r for r in host.APP.routes if getattr(r, "path", None) == path)
+    route.endpoint = lambda: {"untrusted": True}
+    with TestClient(host.APP) as client:
+        assert client.request(method, path).status_code == 503
