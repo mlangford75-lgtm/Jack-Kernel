@@ -2449,8 +2449,23 @@ def _debugging_tool_is_direct_mutator(tool: Dict[str, Any]) -> bool:
                 # Name alone is insufficient to override the legacy filter.
                 break
     name = exact_name.lower()
-    if any(marker in name for marker in _DEBUGGING_DIRECT_MUTATION_NAME_MARKERS):
-        return True
+    # Names are a heuristic only; the host-owned contract above takes
+    # precedence. Recognize words rather than accidental substrings.
+    separated = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", exact_name)
+    separated = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", separated)
+    words = re.findall(r"[a-z0-9]+", separated.casefold())
+    mutation_words = set(words).intersection(_DEBUGGING_DIRECT_MUTATION_NAME_MARKERS)
+    if mutation_words:
+        read_verbs = {"get", "read", "list", "show", "inspect", "view",
+                      "check", "describe", "search", "find", "query", "diff", "log"}
+        # A read verb governing a noun (inspect_patch, check_format) is
+        # different from a compound action (read_and_write). Git log of
+        # commits is also an inspection rather than a commit operation.
+        read_only_name = bool(words and words[0] in read_verbs
+                              and not {"and", "then", "or"}.intersection(words))
+        git_history_name = words in (["git", "commit", "log"], ["git", "log", "commit"])
+        if not (read_only_name or git_history_name):
+            return True
     function = tool.get("function") if isinstance(tool, dict) else None
     description = str((function or {}).get("description") or "").lower()
     if name in _DEBUGGING_GENERIC_FILE_TOOL_NAMES:
@@ -3483,12 +3498,19 @@ If and only if one genuinely material clarification is worth asking before Pass 
 
 def _debugging_pass_system_prompt(pass_number: int) -> str:
     categories = "\n".join(f"- {item}" for item in DEBUGGING_REVIEW_CATEGORIES)
+    instructions = DEBUGGING_INSTRUCTIONS_PATH.read_text(encoding="utf-8")
     return f"""You are a completely fresh Code Debugging forensic-audit instance for Pass {pass_number} of {DEBUGGING_PASS_COUNT}.
 
 Every pass searches the SAME full professional code-review space. No review category belongs to a particular pass or temperature. The cascading temperatures are the control mechanism that changes search behavior across fresh passes. Consider all of these categories when selecting this pass's single strongest credible problem:
 {categories}
 
-Use the caller's inspection tools to read {DEBUGGING_INSTRUCTIONS_PATH} completely before substantive analysis, then follow the instructions exactly. At the start of EVERY fresh pass Jack directly projects the complete user-origin Pass 0 intake as an authoritative user block. Passes 2-5 additionally receive only a compact host-derived confirmed prior-finding registry distilled from already committed outcomes. Pass 1 receives no prior model-authored audit state. The exact user-origin intake outranks any model-authored summary if a requirement, constraint, symptom, or detail was omitted or compressed downstream. If this same pass previously asked the user for diagnostic clarification, the active history may additionally contain that debugger question and the user's reply; those are same-pass evidence, not cross-pass memory. Do not read or reconstruct older pass summaries from any Debugging/Reports/Debugging_Report_*.md file; Jack owns the current run's unique durable report and reserves it for the final reporting stage. No earlier-pass native reasoning, tool calls/results, assistant narration, conversation history, Preserve-Thinking state, or full prior handoff summaries are restored to you.
+Read the authoritative host-supplied instructions below completely before substantive analysis. No executor read of Jack's installation is required.
+
+[BEGIN HOST DEBUGGING INSTRUCTIONS]
+{instructions}
+[END HOST DEBUGGING INSTRUCTIONS]
+
+At the start of EVERY fresh pass Jack directly projects the complete user-origin Pass 0 intake as an authoritative user block. Passes 2-5 additionally receive only a compact host-derived confirmed prior-finding registry distilled from already committed outcomes. Pass 1 receives no prior model-authored audit state. The exact user-origin intake outranks any model-authored summary if a requirement, constraint, symptom, or detail was omitted or compressed downstream. If this same pass previously asked the user for diagnostic clarification, the active history may additionally contain that debugger question and the user's reply; those are same-pass evidence, not cross-pass memory. Do not read or reconstruct older pass summaries from any Debugging/Reports/Debugging_Report_*.md file; Jack owns the current run's unique durable report and reserves it for the final reporting stage. No earlier-pass native reasoning, tool calls/results, assistant narration, conversation history, Preserve-Thinking state, or full prior handoff summaries are restored to you.
 
 SINGLE-PROBLEM RULE: independently survey the full review-category set only far enough to choose the strongest credible candidate problem that has not already been covered by the host-derived prior-finding registry. Do not select a problem merely because a previous pass mentioned, hinted at, or speculated about it; the temperature cascade is intended to produce a genuinely fresh search. Full prior handoff text is not present; use the compact registry only for duplicate avoidance, never as search guidance. Once selected, lock onto that one candidate. All further inspection, diagnostics, user clarification, evidence gathering, and reasoning in this pass must concern that candidate. Do not investigate a second problem. If the candidate is disproved, record that conclusion and end the pass; do not pivot to a replacement candidate. If no credible new candidate exists, say so rather than inventing a defect.
 
@@ -4379,11 +4401,13 @@ STAGES["debug_summary"] = StageProfile(
 def _runtime_activity_stage_number(stage_key: Optional[str]) -> Optional[int]:
     """Return an observability-only stage ordinal without changing cognition."""
     key = str(stage_key or "")
-    if key in {"thesis", "extended_initial"}:
+    if key == "coder_planner":
+        return 0  # Architect precedes the Coder's first execution stage.
+    if key in {"thesis", "extended_initial", "deep_reasoning_thesis"}:
         return 1
-    if key == "extended_reflection":
+    if key in {"extended_reflection", "deep_reasoning_antithesis"}:
         return 2
-    if key == "extended_synthesis":
+    if key in {"extended_synthesis", "deep_reasoning_synthesis"}:
         return 3
     if key == "debug_intake":
         return 0
@@ -5733,8 +5757,8 @@ def _tool_rejection_notice(
             )
     else:
         guidance = (
-            "Correct only the failed invocation using the advertised tool schema or "
-            "an explicit authorized destination. Preserve completed work and continue "
+            "Use the advertised tool schema or an explicit authorized destination to "
+            "correct the invocation that failed. Preserve completed work and continue "
             "the current user task. Do not repeat a successfully completed action."
         )
         if any("path policy denied the represented filesystem target" in item for item in items):
@@ -5824,7 +5848,7 @@ def _tool_recovery_record_results(
     state: "PendingToolResume", results: List[Dict[str, Any]],
     *, tracker: Optional[ToolRecoveryState] = None,
 ) -> None:
-    """Count only explicit host-authenticated failures and successes."""
+    """Track accepted tool returns separately from verified success evidence."""
     if tracker is None:
         tracker = state.tool_recovery
     if tracker is None:
@@ -5845,6 +5869,8 @@ def _tool_recovery_record_results(
             tracker.fail(op, _content_to_text(item.get("content")), call_id=call_id)
         elif status == TOOL_SUCCESS:
             tracker.progress(op, call_id=call_id)
+        elif status == TOOL_UNKNOWN and call_id in state.expected_tool_call_ids and call_id in calls_by_id:
+            tracker.observed_return(call_id=call_id)
 
 
 def _tool_rejection_history(
@@ -9549,8 +9575,6 @@ class OpenAICompatibleBackend:
                 payload["reasoning_effort"] = effort
             elif not profile.thinking:
                 payload["reasoning_effort"] = "none"
-            # Do not send a reasoning_effort field: some LM Studio models expose only
-            # an on/off thinking switch and reject graded effort values.
 
     def _apply_tool_policy(
         self, payload: Dict[str, Any], tools: Optional[List[Dict[str, Any]]], tool_choice: Any
