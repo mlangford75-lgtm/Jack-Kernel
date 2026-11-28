@@ -1377,7 +1377,9 @@ def _looks_path_like_cli_value(value: str) -> bool:
     )
 
 
-def _unknown_command_path_operands(args: list[str]) -> Tuple[str, ...]:
+def _unknown_command_path_operands(
+    args: list[str], *, path_style: str = "windows",
+) -> Tuple[str, ...]:
     """Retain visible path operands without claiming unknown command semantics.
 
     An ambiguous command is still ambiguous. Positive, represented filesystem
@@ -1397,7 +1399,19 @@ def _unknown_command_path_operands(args: list[str]) -> Tuple[str, ...]:
                 value = _strip_token_quotes(candidate)
         if value.startswith("-") or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", value):
             continue
-        if _looks_path_like_cli_value(value):
+        if path_style == "posix":
+            # Retain existing POSIX path coverage; a slash-rooted path is
+            # native syntax there rather than a Windows compatibility guess.
+            represented = _looks_path_like_cli_value(value)
+        else:
+            represented = bool(
+                re.match(r"^[A-Za-z]:[\\/]", value)
+                or re.match(r"^(?:\\\\|//)[^\\/]+[\\/][^\\/]+", value)
+                or re.match(r"^/(?:mnt|cygdrive)/[A-Za-z](?:/|$)", value)
+                or re.match(r"^\.\.[\\/]", value)
+                or re.match(r"^(?:%[A-Za-z_][A-Za-z0-9_()]*%|\$(?:env:[A-Za-z_][A-Za-z0-9_()]*|\{env:[A-Za-z_][A-Za-z0-9_()]*\}|\{[A-Za-z_][A-Za-z0-9_()]*\}|[A-Za-z_][A-Za-z0-9_()]*))[\\/]", value, re.IGNORECASE)
+            )
+        if represented:
             targets.append(value)
     return tuple(targets)
 
@@ -1443,7 +1457,48 @@ def _split_command_segments(tokens: list[str]) -> list[list[str]]:
     return segments
 
 
-def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, bool]:
+def _pytest_path_operands(args: list[str]) -> Tuple[str, ...]:
+    """Separate known pytest expression values from actual test/output paths."""
+    targets = []
+    value_options = {"-k", "-m", "-o", "-W", "-n", "--override-ini",
+                     "--numprocesses", "--dist", "--tb", "--color", "--capture",
+                     "--maxfail", "--verbosity", "--import-mode"}
+    path_options = {"--basetemp", "--rootdir", "--confcutdir", "--junitxml",
+                    "--junit-xml", "-c", "--log-file", "--ignore", "--ignore-glob"}
+    index = 0
+    end_options = False
+    while index < len(args):
+        item = args[index]
+        index += 1
+        if not end_options and item == "--":
+            end_options = True
+            continue
+        if not end_options and item.startswith("-"):
+            option, equal, value = item.partition("=")
+            if option in value_options:
+                if not equal and index < len(args):
+                    index += 1
+                continue
+            if option in path_options:
+                if not equal and index < len(args):
+                    value = args[index]
+                    index += 1
+                if value:
+                    targets.append(value)
+                continue
+            if any(item.startswith(flag) and len(item) > len(flag)
+                   for flag in ("-k", "-m", "-o", "-W", "-n")):
+                continue
+            if equal and _looks_path_like_cli_value(value):
+                targets.append(value)
+            continue
+        if item:
+            # A pytest node id contains a real path before its test selector.
+            targets.append(item.split("::", 1)[0])
+    return tuple(target for target in targets if target)
+
+
+def _bash_segment_targets(tokens: list[str], *, path_style: str = "windows") -> Tuple[Tuple[str, ...], bool, bool]:
     """Return targets, uses_cwd, ambiguous for one simple Bash segment."""
 
     if not tokens:
@@ -1487,7 +1542,7 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
             return tuple(targets), False, ambiguous
 
         found, wrapped_cwd, wrapped_ambiguous = _bash_segment_targets(
-            wrapped
+            wrapped, path_style=path_style
         )
         targets.extend(found)
         return (
@@ -1504,7 +1559,7 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
             return tuple(targets), False, ambiguous
         if not wrapped:
             return tuple(targets), False, True
-        found, wrapped_cwd, wrapped_ambiguous = _bash_segment_targets(wrapped)
+        found, wrapped_cwd, wrapped_ambiguous = _bash_segment_targets(wrapped, path_style=path_style)
         targets.extend(found)
         return tuple(targets), wrapped_cwd, ambiguous or wrapped_ambiguous
 
@@ -1527,7 +1582,7 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
             wrapped.pop(0)
         if not wrapped:
             return tuple(targets), False, True
-        found, wrapped_cwd, wrapped_ambiguous = _bash_segment_targets(wrapped)
+        found, wrapped_cwd, wrapped_ambiguous = _bash_segment_targets(wrapped, path_style=path_style)
         targets.extend(found)
         return tuple(targets), wrapped_cwd, ambiguous or wrapped_ambiguous
 
@@ -1541,12 +1596,12 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
             nested_ambiguous = ambiguous
             nested_cwd = False
             for nested_segment in _split_command_segments(nested_tokens):
-                nested_targets, segment_cwd, segment_ambiguous = _bash_segment_targets(nested_segment)
+                nested_targets, segment_cwd, segment_ambiguous = _bash_segment_targets(nested_segment, path_style=path_style)
                 targets.extend(nested_targets)
                 nested_cwd = nested_cwd or segment_cwd
                 nested_ambiguous = nested_ambiguous or segment_ambiguous
             return tuple(targets), nested_cwd, nested_ambiguous
-        targets.extend(_unknown_command_path_operands(args))
+        targets.extend(_unknown_command_path_operands(args, path_style=path_style))
         if not args[0].startswith("-") and args[0] not in targets:
             targets.append(args[0])
         return tuple(targets), False, True
@@ -1559,7 +1614,7 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
     # command's represented paths; never blanket-whitelist a shell process.
     if command in {"powershell", "powershell.exe", "pwsh", "pwsh.exe"}:
         nested_targets, nested_cwd, nested_ambiguous = _powershell_segment_targets(
-            [_strip_token_quotes(filtered[0]), *args]
+            [_strip_token_quotes(filtered[0]), *args], path_style=path_style
         )
         targets.extend(nested_targets)
         return tuple(targets), nested_cwd, ambiguous or nested_ambiguous
@@ -1580,20 +1635,25 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
                    "md": "mkdir", "copy": "cp", "move": "mv",
                    "type": "cat", "dir": "ls"}
         if nested_name in aliases:
+            # DIR slash switches are command options, not MSYS drive roots.
+            # Retain all actual operands, including drive-qualified paths.
+            if nested_name == "dir":
+                nested_tokens = [nested_tokens[0], *(
+                    token for token in nested_tokens[1:]
+                    if not re.fullmatch(r"/(?:[bsplwqxncd4]|a(?::?[-adhrsilo]+)?|o(?::?[-ngsed]+)?|t(?::?[acw])?)",
+                                        _strip_token_quotes(token), re.IGNORECASE)
+                )]
             nested_tokens[0] = aliases[nested_name]
         elif nested_name not in {"where", "where.exe", "echo", "ver"}:
             # Unknown Windows shell builtins and batch execution remain
             # ambiguous; do not promise that their effects were inspected.
             # An unsupported CMD subcommand is never assumed safe. Retain
             # visibly represented path operands for host policy admission.
-            targets.extend(
-                token for token in nested_tokens[1:]
-                if _looks_path_like_cli_value(token)
-            )
+            targets.extend(_unknown_command_path_operands(nested_tokens[1:], path_style=path_style))
             return tuple(targets), False, True
         if nested_name == "ver":
             return tuple(targets), False, ambiguous
-        nested_targets, nested_cwd, nested_ambiguous = _bash_segment_targets(nested_tokens)
+        nested_targets, nested_cwd, nested_ambiguous = _bash_segment_targets(nested_tokens, path_style=path_style)
         targets.extend(nested_targets)
         return tuple(targets), nested_cwd, ambiguous or nested_ambiguous
 
@@ -1631,7 +1691,7 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
             if root is not None:
                 targets.append(root)
             return tuple(targets), root is None, ambiguous
-        targets.extend(_unknown_command_path_operands(args))
+        targets.extend(_unknown_command_path_operands(args, path_style=path_style))
         return tuple(targets), False, True
 
     if command in _BASH_PATH_COMMANDS:
@@ -1724,7 +1784,7 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
             if subcommand == "clone":
                 # Preserve explicit path operands even though clone's other
                 # effects are not contained by a lexical command contract.
-                targets.extend(_unknown_command_path_operands(args[index + 1:]))
+                targets.extend(_unknown_command_path_operands(args[index + 1:], path_style=path_style))
 
         for item in args:
             lowered = item.casefold()
@@ -1739,18 +1799,8 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
         return tuple(targets), uses_cwd, ambiguous
 
     if command in {"pytest", "py.test"}:
-        uses_cwd = True
-        targets.extend(
-            item for item in args
-            if item and not item.startswith("-") and "::" not in item
-        )
-        for item in args:
-            if "=" not in item or not item.startswith("-"):
-                continue
-            value = item.split("=", 1)[1]
-            if _looks_path_like_cli_value(value):
-                targets.append(value)
-        return tuple(targets), uses_cwd, ambiguous
+        targets.extend(_pytest_path_operands(args))
+        return tuple(targets), True, ambiguous
 
     if command in {"python", "python3", "py"}:
         if not args:
@@ -1760,7 +1810,10 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
             if len(args) < 2:
                 return tuple(targets), False, True
             module_name = args[1].casefold()
-            if module_name in {"pytest", "unittest"}:
+            if module_name == "pytest":
+                targets.extend(_pytest_path_operands(args[2:]))
+                return tuple(targets), True, ambiguous
+            if module_name == "unittest":
                 uses_cwd = True
                 targets.extend(
                     item for item in args[2:]
@@ -1773,13 +1826,13 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
                     if _looks_path_like_cli_value(value):
                         targets.append(value)
                 return tuple(targets), uses_cwd, ambiguous
-            targets.extend(_unknown_command_path_operands(args[2:]))
+            targets.extend(_unknown_command_path_operands(args[2:], path_style=path_style))
             return tuple(targets), False, True
 
         if args[0] in {"-c"}:
             # Only represented arguments after the program text, not arbitrary
             # source code, are part of this lexical contract.
-            targets.extend(_unknown_command_path_operands(args[2:]))
+            targets.extend(_unknown_command_path_operands(args[2:], path_style=path_style))
             return tuple(targets), False, True
 
         if not args[0].startswith("-"):
@@ -1806,11 +1859,11 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
                     targets.append(item)
             return tuple(targets), uses_cwd, ambiguous
 
-    targets.extend(_unknown_command_path_operands(args))
+    targets.extend(_unknown_command_path_operands(args, path_style=path_style))
     return tuple(targets), False, True
 
 
-def _powershell_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, bool]:
+def _powershell_segment_targets(tokens: list[str], *, path_style: str = "windows") -> Tuple[Tuple[str, ...], bool, bool]:
     """Return targets, uses_cwd, ambiguous for one simple PowerShell segment."""
 
     if not tokens:
@@ -1863,7 +1916,7 @@ def _powershell_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], boo
                 nested_ambiguous = ambiguous
                 nested_cwd = False
                 for nested_segment in _split_command_segments(nested_tokens):
-                    nested_targets, segment_cwd, segment_ambiguous = _powershell_segment_targets(nested_segment)
+                    nested_targets, segment_cwd, segment_ambiguous = _powershell_segment_targets(nested_segment, path_style=path_style)
                     targets.extend(nested_targets)
                     nested_cwd = nested_cwd or segment_cwd
                     nested_ambiguous = nested_ambiguous or segment_ambiguous
@@ -1912,9 +1965,9 @@ def _powershell_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], boo
 
     # Common cross-shell developer commands use the same bounded rules.
     if command in {"git", "pytest", "py.test", "python", "python3", "py", "dotnet"}:
-        return _bash_segment_targets(filtered)
+        return _bash_segment_targets(filtered, path_style=path_style)
 
-    targets.extend(_unknown_command_path_operands(args))
+    targets.extend(_unknown_command_path_operands(args, path_style=path_style))
     return tuple(targets), False, True
 
 
@@ -2085,6 +2138,7 @@ def extract_command_paths(
     *,
     command_dialect: Any = None,
     environment: Optional[Mapping[str, str]] = None,
+    path_style: str = "windows",
 ) -> CommandPathExtraction:
     """Extract represented path facts from a bounded command-language contract."""
 
@@ -2155,9 +2209,9 @@ def extract_command_paths(
 
     for segment_index, segment in enumerate(segments):
         if dialect == "bash":
-            found, segment_cwd, segment_ambiguous = _bash_segment_targets(segment)
+            found, segment_cwd, segment_ambiguous = _bash_segment_targets(segment, path_style=path_style)
         else:
-            found, segment_cwd, segment_ambiguous = _powershell_segment_targets(segment)
+            found, segment_cwd, segment_ambiguous = _powershell_segment_targets(segment, path_style=path_style)
 
         targets.extend(found)
         uses_cwd = uses_cwd or segment_cwd
@@ -2476,6 +2530,7 @@ def authorize_command_tool_call(
         function.get("arguments"),
         command_dialect=command_dialect,
         environment=policy.path_environment() if policy.path_style == "windows" else {},
+        path_style=policy.path_style,
     )
 
     if not extraction.applicable:

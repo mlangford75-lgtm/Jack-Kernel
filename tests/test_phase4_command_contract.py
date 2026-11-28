@@ -678,3 +678,36 @@ def test_request_wide_shell_metadata_does_not_classify_unrelated_custom_tools(ke
         assert allowed == [custom] and not errors
     finally:
         kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
+
+
+@pytest.mark.parametrize("command", [
+    'rg "/v1/models" .',
+    'sed -n "/^def /p" jack_kernel.py',
+    'unknown-tool /b /s /a /all /ano',
+    'unknown-tool "%s/%s"',
+    'cmd /c dir /b /a /s',
+    'pytest -k "/v1/models" -m "unit/slow" -o "name=/v1/models" -W "ignore:/v1/models" -n 2',
+    'python -m pytest -k "/v1/models"',
+])
+def test_windows_non_path_arguments_do_not_become_workspace_violations(command):
+    result = policy.authorize_command_tool_call(
+        build(), call("bash", command), executor_cwd=r"D:\Projects\Jack",
+        executor_platform="win32", command_dialect="bash",
+    )
+    assert result.outcome is policy.PathAuthorizationOutcome.ALLOW
+
+
+@pytest.mark.parametrize("command, expected", [
+    ('unknown-tool D:/Outside/file.txt', "DENY_AND_CONTINUE"),
+    ('unknown-tool D:/Sensitive/file.txt', "HARD_INTERRUPT"),
+    ('cmd /c dir /b D:/Sensitive', "HARD_INTERRUPT"),
+    ('pytest -k "/v1/models" --basetemp D:/Sensitive', "HARD_INTERRUPT"),
+    ('python -m pytest -k "/v1/models" D:/Outside/test_x.py::test_x', "DENY_AND_CONTINUE"),
+])
+def test_windows_non_path_argument_correction_retains_positive_targets(command, expected):
+    result = policy.authorize_command_tool_call(
+        build(never=(r"D:\Sensitive",)), call("bash", command),
+        executor_cwd=r"D:\Projects\Jack", executor_platform="win32",
+        command_dialect="bash",
+    )
+    assert result.outcome.value == expected

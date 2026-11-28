@@ -218,7 +218,9 @@ async def exercise_streams():
     ]
     released = await collect_until_interrupt()
     assert secret.encode() not in released
-    assert logical_delta(released, "arguments") == '{"value":"safe-prefix-'
+    assert logical_delta(released, "arguments") == ""
+    assert b'"tool_calls"' not in released
+    assert b"data: [DONE]" not in released
 
     # Unregistered secret-looking text remains useful ordinary model output.
     benign = "sk-not-registered eyJ.fake.jwt highEntropyLooking1234567890"
