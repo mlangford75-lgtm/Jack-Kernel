@@ -16,6 +16,8 @@ STATIC_PATH_POLICY_ENV = "JACK_PATH_POLICY_JSON"
 STATIC_PATH_POLICY_VERSION = 1
 STATIC_TOOL_CONTRACT_ENV = "JACK_STRUCTURED_TOOL_CONTRACTS_JSON"
 POSIX_EXECUTOR_HOME_ENV = "JACK_POSIX_EXECUTOR_HOME"
+EXECUTOR_PATH_STYLE_ENV = "JACK_EXECUTOR_PATH_STYLE"
+EXECUTOR_PATH_ENVIRONMENT_ENV = "JACK_EXECUTOR_PATH_ENV_JSON"
 
 # Phase 4 intentionally snapshots only environment values that are ordinary
 # Windows path anchors. It does not ingest arbitrary process environment into
@@ -740,6 +742,44 @@ def build_runtime_path_policy(
 
     if not isinstance(raw_json, str):
         raise TypeError("raw_json must be a string")
+
+    # Explicit operator-owned executor namespace for a dedicated runtime.
+    # Do not import Kernel-host path anchors into a remote environment.
+    # Explicit programmatic callers retain their existing contract.
+    if path_style is None and host_environment is None:
+        configured_style = os.getenv(EXECUTOR_PATH_STYLE_ENV, "").strip().lower()
+        configured_environment = os.getenv(EXECUTOR_PATH_ENVIRONMENT_ENV, "").strip()
+        if configured_environment and not configured_style:
+            raise RuntimeError("Executor path environment requires an explicit executor path style")
+        if configured_style:
+            if configured_style not in {"windows", "posix"}:
+                raise RuntimeError("Unsupported configured executor path style")
+            path_style = configured_style
+            try:
+                anchors = json.loads(configured_environment) if configured_environment else {}
+                if type(anchors) is not dict or any(
+                    type(key) is not str or type(value) is not str
+                    or key.casefold() not in {name.casefold() for name in PATH_ENVIRONMENT_KEYS}
+                    or any(c in value for c in "\r\n\x00")
+                    for key, value in anchors.items()
+                ):
+                    raise ValueError
+                if len({key.casefold() for key in anchors}) != len(anchors):
+                    raise ValueError
+            except (ValueError, TypeError):
+                raise RuntimeError("Invalid configured executor path environment") from None
+            host_environment = anchors
+            if configured_style == "windows":
+                remote_environment = _normalized_environment(anchors)
+                root = _canonical_windows_root(remote_environment)
+                if not root or not re.fullmatch(r"[a-z]:\\.+", root):
+                    raise RuntimeError("Configured Windows executor requires an absolute SystemRoot")
+                drive = ntpath.splitdrive(root)[0]
+                supplied_drive = remote_environment.get("systemdrive")
+                if supplied_drive and supplied_drive.casefold() != drive.casefold():
+                    raise RuntimeError("Configured Windows executor SystemDrive contradicts SystemRoot")
+                if not supplied_drive:
+                    host_environment = dict(anchors, SystemDrive=drive)
 
     environment = _normalized_environment(host_environment)
     snapshot = tuple(sorted(environment.items()))

@@ -206,3 +206,56 @@ def test_posix_shell_does_not_resolve_kernel_home_environment():
     call = {"function": {"name": "bash", "arguments": {"command": "cat $HOME/clock.html"}}}
     assert paths.authorize_command_tool_call(active, call, executor_cwd="/kernel-home",
         executor_platform="linux").outcome is paths.PathAuthorizationOutcome.DENY_AND_CONTINUE
+
+
+def test_explicit_remote_posix_startup_ignores_kernel_windows_environment(monkeypatch):
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setenv("HOME", "/kernel-home")
+    monkeypatch.setenv(paths.EXECUTOR_PATH_STYLE_ENV, "posix")
+    monkeypatch.delenv(paths.EXECUTOR_PATH_ENVIRONMENT_ENV, raising=False)
+    monkeypatch.setenv(paths.POSIX_EXECUTOR_HOME_ENV, "/remote/home")
+    active = paths.build_runtime_path_policy(
+        runtime_id="remote", lane_id="remote", raw_json=json.dumps({
+            "version": 2, "workspace_mode": "represented",
+            "workspace_root": "/remote", "never_paths": ["/remote/home/Private"],
+        }),
+    )
+    assert active.path_style == "posix"
+    assert active.path_environment() == {}
+    for command, expected in (
+        ("cat ~/clock.html", paths.PathAuthorizationOutcome.ALLOW),
+        ("cat ~/Private/file", paths.PathAuthorizationOutcome.HARD_INTERRUPT),
+    ):
+        call = {"function": {"name": "bash", "arguments": {"command": command}}}
+        assert paths.authorize_executor_tool_call(
+            active, call, executor_cwd="/remote", executor_platform="linux",
+        )[0].outcome is expected
+
+
+def test_explicit_remote_windows_uses_remote_system_roots(monkeypatch):
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setenv(paths.EXECUTOR_PATH_STYLE_ENV, "windows")
+    monkeypatch.setenv(paths.EXECUTOR_PATH_ENVIRONMENT_ENV, json.dumps({
+        "SystemRoot": r"D:\Windows", "USERPROFILE": r"D:\Users\Operator",
+    }))
+    monkeypatch.delenv(paths.POSIX_EXECUTOR_HOME_ENV, raising=False)
+    active = paths.build_runtime_path_policy(runtime_id="remote", lane_id="remote", raw_json="")
+    assert active.path_style == "windows"
+    assert active.path_environment()["systemroot"] == r"D:\Windows"
+    assert paths.authorize_represented_path(active, r"D:\Boot\BCD").outcome is paths.PathAuthorizationOutcome.HARD_INTERRUPT
+    assert paths.authorize_represented_path(active, r"D:\Windows\Temp\clock.html").outcome is paths.PathAuthorizationOutcome.ALLOW
+
+
+@pytest.mark.parametrize("style, anchors", [
+    ("", '{"SystemRoot":"D:/Windows"}'),
+    ("unknown", "{}"),
+    ("windows", "{}"),
+    ("windows", '{"SystemRoot":"D:/Windows","SystemDrive":"C:"}'),
+    ("posix", '{"HOME":4}'),
+    ("posix", '{"HOME":"/a","home":"/b"}'),
+])
+def test_invalid_remote_startup_metadata_is_not_silently_substituted(monkeypatch, style, anchors):
+    monkeypatch.setenv(paths.EXECUTOR_PATH_STYLE_ENV, style)
+    monkeypatch.setenv(paths.EXECUTOR_PATH_ENVIRONMENT_ENV, anchors)
+    with pytest.raises(RuntimeError):
+        paths.build_runtime_path_policy(runtime_id="remote", lane_id="remote", raw_json="")
