@@ -422,3 +422,58 @@ The caller-authority decision and speculative optimizations must not be
 silently treated as implemented. The candidate can enter controlled live
 testing while those investigations remain open; release requires their
 explicit disposition under the governing specification.
+
+
+## Audit 3 — final workstream disposition (November 28, 2026)
+
+Governing baseline: 753ce499c0636b0197404dd33f1ad57fe58f6b94.
+The Audit 3 amendments govern over reviewer implementation suggestions.
+Main remains unchanged. Security is the goal, not brittleness.
+
+- **3.2 — measured, retain security cadence.** Handoff Windows synthetic
+  benchmark: 1,000 frames, 2,010 executable verifications, 28,140 protected
+  file measurements, approximately 408 MB hashed, median 16.94 s. Retain
+  both streaming boundaries: no equivalent reduction in detection timing
+  has been established. This is not live inference throughput.
+- **6.3 — implementation ad20e2a.** Identity-bearing artifacts use the
+  authoritative forensic journal instead of redundant shadow traversal.
+  POSIX home operands require an established executor home; Kernel HOME
+  is not a substitute.
+- **6.6 — implementation dde96f0; equivalence fixture 4671f85.** Reuse an
+  immutable alphabet of all 256 single-byte values and bind loop methods.
+  Retain every keyed prefix digest, SHA-256, capture limit, reuse identity,
+  report schema, diagnostic default and model-facing request. No retained
+  raw prompt data or provider-specific dependencies. Local Linux synthetic
+  128 KiB digest-loop benchmark, seven trials each, median 80.44 ms before
+  and 67.93 ms after (15.5% reduction), exact arrays equal. This does not
+  eliminate synchronous digest generation or prove Windows event-loop
+  latency improvement; candidate CI and live measurements remain required.
+- **8.1 — differential checkpoint ad20e2a.** Windows CI 46134940836:
+  ordinary and isolated each 2,116 passed, 52 failed, two warnings.
+  Ordinary full-suite comparison with reference CI 46121144241: zero new
+  identities, two removed recovery-wording fixture identities. Pi harnesses,
+  fresh-clone bootstrap, native portability, combined security and tool-free
+  Architect passed at that checkpoint. The full suite is still red;
+  candidate-specific exact identity comparison and all specialized checks
+  are required before closure. No tests removed, skipped or weakened.
+- **8.2 — automated live qualification enabled at 9cae2a8.** Existing
+  bounded NVIDIA workflow is supplemental, dependent on available configured
+  credentials and provider service. It does not establish every model,
+  operating system, client, transport, or positive/negative acceptance case.
+  Perform the governing fresh-clone matrix pinned to the final candidate.
+  Use synthetic restricted targets and credentials only. Record unjustified
+  denials as failures even when subsequent recovery completes a task.
+- **8.3 — current documentation disposition.** Sections 21.4 and 21.12
+  erratum above remains controlling: current Coder Flash and Thorough
+  Architect is permanently tool-free; only Coder receives execution tools.
+  Preserve legacy modes and Qwen-specific controls. Represented workspace
+  enforcement is not OS containment. Ordinary malformed calls receive
+  actionable correction, authorized independent siblings remain eligible,
+  genuinely restricted targets are enforced and unresolved facts are not
+  fabricated. Factory settings and historical evidence remain unchanged.
+  Use established Security Center names in user-facing documentation.
+  The historical standalone paper is not an editable repository source
+  established by this review; the explicit erratum is retained.
+
+No approval to elevate Responses API caller-instruction authority, change
+verification cadence, retire legacy modes, or merge Main is implied.
