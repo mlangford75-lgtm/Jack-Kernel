@@ -61,7 +61,7 @@ def test_profile_isolated_and_reasoning_contract(monkeypatch, tmp_path):
     assert k.CODER_PLANNER_PROMPT.startswith(PREFIX)
     assert k.CODER_EXECUTOR_PROMPT.startswith(PREFIX)
     assert "You have no tools and no execution authority" in k.CODER_PLANNER_PROMPT
-    assert "You've been provided a detailed, read-only developer specification prepared by Planner." in k.CODER_EXECUTOR_PROMPT
+    assert "You've been provided a detailed, read-only developer specification prepared by Architect." in k.CODER_EXECUTOR_PROMPT
     assert "read-only developer specification" in k.CODER_EXECUTOR_PROMPT
     assert "sole implementation and answer-authority" in k.CODER_EXECUTOR_PROMPT
     assert "Files in the workspace are previous checkpoints" in k.CODER_EXECUTOR_PROMPT
