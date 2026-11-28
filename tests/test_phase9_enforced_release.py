@@ -207,6 +207,8 @@ def _integrated_host(tmp_path: Path):
         APP=app, KERNEL=SimpleNamespace(run=run, stream=stream),
         _phase4_partition_structured_tool_calls=release,
         _phase4_executor_admission_decision=admit,
+        _debugging_report_only_tool_surface=lambda tools, choice: (tools, choice),
+        _debugging_tool_is_direct_mutator=lambda _tool: False,
         _proxy_pi_control_request=pi,
         _JACK_SOURCE_AUTHORITY=source,
         _JACK_SOURCE_RUNTIME_ENFORCEMENT_INSTALLED=True,

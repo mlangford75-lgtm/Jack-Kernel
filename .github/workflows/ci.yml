@@ -92,6 +92,11 @@ jobs:
         shell: pwsh
         run: python -m pytest -q tests/test_agentic_coder_planner_executor.py
 
+      - name: Measure alternating-stage diagnostic region reuse (Audit 2)
+        if: ${{ !cancelled() && steps.install_test_environment.outcome == 'success' && steps.compile_runtime.outcome == 'success' }}
+        shell: pwsh
+        run: python tests/benchmark_audit2_cache_regions.py
+
       - name: Run Python regression suite
         # Collect all regression failures in one run even if a targeted
         # assertion failed. Earlier failures still fail the job.

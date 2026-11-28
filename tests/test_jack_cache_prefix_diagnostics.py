@@ -152,3 +152,36 @@ def test_reuse_reports_identical_offsets_to_fresh_signature_generation(monkeypat
             regions = probe.capture_regions(messages, [], messages[0]["content"])
             reports.append(probe.observe(messages, stage, regions))
         assert reports[0] == reports[1]
+
+
+def test_alternating_stage_regions_reuse_exact_own_stage_signature():
+    probe = CacheBytePrefixProbe(enabled=True, byte_cap=1024)
+    prepare(probe, "Architect", "architect-only", "shared caller", "task")
+    first = probe._last["regions"][0]["sig"]
+    prepare(probe, "Coder", "coder-only", "shared caller", "task")
+    assert probe._last["regions"][0]["sig"] is not first
+    report = prepare(probe, "Architect", "architect-only", "shared caller", "task")
+    assert probe._last["regions"][0]["sig"] is first
+    assert report["same_stage"]["relation"] == "identical_messages"
+    assert report["immediately_preceding"]["relation"] == "first_message_changed"
+
+
+def test_alternating_stage_changed_regions_match_predecessor_algorithm(monkeypatch):
+    candidate = CacheBytePrefixProbe(enabled=True, byte_cap=1024)
+    predecessor = CacheBytePrefixProbe(enabled=True, byte_cap=1024)
+    original = predecessor.capture_regions
+
+    def previous_capture(*args):
+        retained = predecessor._last_by_stage
+        try:
+            predecessor._last_by_stage = {}
+            return original(*args)
+        finally:
+            predecessor._last_by_stage = retained
+
+    monkeypatch.setattr(predecessor, "capture_regions", previous_capture)
+    for index in range(16):
+        stage = ("Architect", "Coder", "Compactor")[index % 3]
+        inputs = (stage, stage + " directive " + "é" * 600,
+                  "caller " + str(index // 6), "history " + str(index))
+        assert prepare(candidate, *inputs) == prepare(predecessor, *inputs)

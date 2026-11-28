@@ -277,3 +277,35 @@ Use a fresh clone/checkout of the experimental candidate, a disposable workspace
 5. Confirm ordinary multi-turn work and clean startup/shutdown with the local backend/Pi path. Record unexpected stalls, transaction ownership failures, denied ordinary work, or security-policy failures as release blockers. A stochastic formatting deviation alone is not proof of a security regression.
 
 P-2 live backend prefill/KV-cache measurement remains optional performance characterization, not a reason to change Architect authority; V-6 legacy retirement and further P-1 optimization are deferred. No universal OS sandbox or Linux/macOS security qualification is claimed. The release candidate is ready for bounded live acceptance, not represented as merged, fully green, or finally approved. Documentation-only follow-up is distinguishable from the qualified runtime/test revision above.
+
+## Audit 2 follow-up qualification record — 2026-11-28
+
+The governing Audit 2 Specifications remain authoritative. The following
+entries are incremental evidence, not a release approval.
+
+| Requirement | Implementation and current evidence | Remaining qualification |
+|---|---|---|
+| W4-01 | 5b0230d coverage selection; 82c7faf restored cancellation. | Live legitimate work. |
+| W4-02 | 5b0230d host-configured scalar structured tool contracts; c7395e5 inspection schema matching and protected Debugging projection. | Independent executor semantics and live admission; no universal containment claim. |
+| W4-03 | 37ffe7a optional explicit POSIX executor home; no Kernel HOME substitution. | Remote executor identity and cross-platform environment scope. |
+| W4-04 | 89d00b1 case-distinct targets and sh/zsh; 9626c1c literal structured whitespace and malformed target handling; 37ffe7a home support. | Native path workflow 46114922269 passed; full integration open. |
+| W4-05 | 82c7faf runtime identity independent of model discovery; optional Ollama context discovery; c7395e5 repaired test dependency. | Full regression and live provider evidence. |
+| W4-06 | Caller hierarchy unchanged. | Decision-dependent; no implicit authority redesign. |
+| W4-07 | 5b0230d operation classification; c7395e5 seals projection. | Security integration and inspection-schema qualification. |
+| W4-08 | 9626c1c Pi binding retention; 82c7faf authenticated identity and vision projection. | Pi workflow 46114922276 passed; live multimodal work open. |
+| W4-09 | 37ffe7a POSIX source launch documented, frozen support not claimed. | Live secured launch. |
+| W5-01 | 89d00b1 reuses prior stage region signatures. This candidate adds exact alternating-stage comparison and controlled 64/128 KiB ABBA benchmark. | Measured result pending. |
+| W5-02–04 | Earlier security performance work retained; no verification timing changes. | Concurrent cost attribution, live prefix/prefill, overlap measurement. |
+| W6-01–07 | No closure claimed. | Naming, provenance, dead-code proof and documentation reconciliation. |
+
+Regression evidence: 9626c1c (CI 46084723681) 2,032 pass / 52 fail,
+both ordinary and isolated. 5b0230d (46085017565) 2,046 pass / 53 fail,
+one new cancellation identity. 82c7faf (46113326100) 2,052 pass / 57 fail,
+exactly five additional unsupported async-test identities versus 9626c1c;
+cancellation fixed. All five specialized workflows passed for 82c7faf.
+c7395e5 and 37ffe7a exposed stale minimal-host bindings and source inventory
+assertions in the specialized workflows; this candidate updates those fixtures
+without relaxing production registration or exact inventory assertions.
+Full regression identity comparison for both remains pending at inspection.
+All W1/W2/W3 entries still require exact individual evidence reconciliation
+against the governing inventory. Fresh-clone live acceptance remains mandatory.
