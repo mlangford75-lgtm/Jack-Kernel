@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import sys
 import time
 import uuid
@@ -248,101 +249,107 @@ async def _stream(
     *,
     executor_context: Any = None,
 ) -> AsyncIterator[bytes]:
-    rid, created = f"resp_jack_{uuid.uuid4().hex}", int(time.time())
-    stub = {"id": rid, "object": "response", "created_at": created, "status": "in_progress", "model": jk.CFG.virtual_model, "output": []}
-    yield _sse("response.created", {"response": stub})
-    yield _sse("response.in_progress", {"response": stub})
-    msg_id, rs_id = f"msg_{uuid.uuid4().hex}", f"rs_{uuid.uuid4().hex}"
-    visible: List[str] = []; reasoning: List[str] = []; tool_acc: Dict[int, Dict[str, Any]] = {}; usage = None
-    msg_index = rs_index = None
-    tool_identities: Dict[int, Optional[str]] = {}
     try:
-        if executor_context is None:
-            source_stream = jk.KERNEL.stream(chat)
-        else:
-            source_stream = jk.KERNEL.stream(
-                chat,
-                executor_context=executor_context,
-            )
-        async with contextlib.aclosing(source_stream) as owned_stream:
-            async for chunk in owned_stream:
-                for obj in _chat_events(chunk):
-                    if not isinstance(obj, dict): continue
-                    if isinstance(obj.get("usage"), dict): usage = obj["usage"]
-                    choices = obj.get("choices")
-                    if not isinstance(choices, list) or not choices: continue
-                    delta = choices[0].get("delta") if isinstance(choices[0], dict) else None
-                    if not isinstance(delta, dict): continue
-                    _, r = native_reasoning_delta(delta)
-                    if r:
-                        if rs_index is None:
-                            rs_index = int(msg_index is not None)
-                            yield _sse("response.output_item.added", {"output_index": rs_index, "item": {"id": rs_id, "type": "reasoning", "summary": [], "content": [], "status": "in_progress"}})
-                        r = str(r); reasoning.append(r)
-                        # Codex consumes reasoning_summary_text.delta as live reasoning telemetry.
-                        yield _sse("response.reasoning_summary_text.delta", {"item_id": rs_id, "output_index": rs_index, "summary_index": 0, "delta": r})
-                        yield _sse("response.reasoning_text.delta", {"item_id": rs_id, "output_index": rs_index, "content_index": 0, "delta": r})
-                    c = delta.get("content")
-                    if c:
-                        if msg_index is None:
-                            msg_index = int(rs_index is not None)
-                            yield _sse("response.output_item.added", {"output_index": msg_index, "item": {"id": msg_id, "type": "message", "role": "assistant", "status": "in_progress", "content": []}})
-                        c = str(c); visible.append(c)
-                        yield _sse("response.output_text.delta", {"item_id": msg_id, "output_index": msg_index, "content_index": 0, "delta": c, "logprobs": []})
-                    tool_fragments = delta.get("tool_calls") or []
-                    for tc in tool_fragments:
-                        if not isinstance(tc, dict): continue
-                        idx = resolve_tool_fragment_index(tool_identities, tc, fragment_count=len(tool_fragments))
-                        acc = tool_acc.setdefault(idx, {"id": "", "function": {"name": "", "arguments": ""}})
-                        if tc.get("id"): acc["id"] = str(tc["id"])
-                        fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
-                        if fn.get("name"): acc["function"]["name"] += str(fn["name"])
-                        if fn.get("arguments"): acc["function"]["arguments"] += str(fn["arguments"])
-    except Exception as exc:
-        # Preserve Phase-7's canonical, already-sanitized credential interrupt
-        # markers. Never forward arbitrary exception text or dictionary values.
-        security = public_security_failure(exc)
-        code = security[1] if security is not None else "jack_responses_stream_error"
-        message = security[2] if security is not None else "Jack Responses stream failed"
-        if isinstance(exc, HTTPException):
-            detail = exc.detail
-            if (
-                isinstance(detail, dict)
-                and detail.get("error") == "protected_credential_diagnostic_withheld"
-                and detail.get("security_outcome") == "HARD_INTERRUPT"
-                and detail.get("release_boundary") == "diagnostic_stream_exception_release"
-                and set(detail) == {"error", "security_outcome", "release_boundary"}
-            ):
-                message = (
-                    "protected_credential_diagnostic_withheld "
-                    "(diagnostic_stream_exception_release)"
+        rid, created = f"resp_jack_{uuid.uuid4().hex}", int(time.time())
+        stub = {"id": rid, "object": "response", "created_at": created, "status": "in_progress", "model": jk.CFG.virtual_model, "output": []}
+        yield _sse("response.created", {"response": stub})
+        yield _sse("response.in_progress", {"response": stub})
+        msg_id, rs_id = f"msg_{uuid.uuid4().hex}", f"rs_{uuid.uuid4().hex}"
+        visible: List[str] = []; reasoning: List[str] = []; tool_acc: Dict[int, Dict[str, Any]] = {}; usage = None
+        msg_index = rs_index = None
+        tool_identities: Dict[int, Optional[str]] = {}
+        try:
+            if executor_context is None:
+                source_stream = jk.KERNEL.stream(chat)
+            else:
+                source_stream = jk.KERNEL.stream(
+                    chat,
+                    executor_context=executor_context,
                 )
-        failed = {"id": rid, "object": "response", "created_at": created, "completed_at": int(time.time()), "status": "failed",
-                  "error": {"code": code, "message": message}, "model": jk.CFG.virtual_model, "output": []}
-        yield _sse("response.failed", {"response": failed, "error": failed["error"]}); return
+            async with contextlib.aclosing(source_stream) as owned_stream:
+                async for chunk in owned_stream:
+                    for obj in _chat_events(chunk):
+                        if not isinstance(obj, dict): continue
+                        if isinstance(obj.get("usage"), dict): usage = obj["usage"]
+                        choices = obj.get("choices")
+                        if not isinstance(choices, list) or not choices: continue
+                        delta = choices[0].get("delta") if isinstance(choices[0], dict) else None
+                        if not isinstance(delta, dict): continue
+                        _, r = native_reasoning_delta(delta)
+                        if r:
+                            if rs_index is None:
+                                rs_index = int(msg_index is not None)
+                                yield _sse("response.output_item.added", {"output_index": rs_index, "item": {"id": rs_id, "type": "reasoning", "summary": [], "content": [], "status": "in_progress"}})
+                            r = str(r); reasoning.append(r)
+                            # Codex consumes reasoning_summary_text.delta as live reasoning telemetry.
+                            yield _sse("response.reasoning_summary_text.delta", {"item_id": rs_id, "output_index": rs_index, "summary_index": 0, "delta": r})
+                            yield _sse("response.reasoning_text.delta", {"item_id": rs_id, "output_index": rs_index, "content_index": 0, "delta": r})
+                        c = delta.get("content")
+                        if c:
+                            if msg_index is None:
+                                msg_index = int(rs_index is not None)
+                                yield _sse("response.output_item.added", {"output_index": msg_index, "item": {"id": msg_id, "type": "message", "role": "assistant", "status": "in_progress", "content": []}})
+                            c = str(c); visible.append(c)
+                            yield _sse("response.output_text.delta", {"item_id": msg_id, "output_index": msg_index, "content_index": 0, "delta": c, "logprobs": []})
+                        tool_fragments = delta.get("tool_calls") or []
+                        for tc in tool_fragments:
+                            if not isinstance(tc, dict): continue
+                            idx = resolve_tool_fragment_index(tool_identities, tc, fragment_count=len(tool_fragments))
+                            acc = tool_acc.setdefault(idx, {"id": "", "function": {"name": "", "arguments": ""}})
+                            if tc.get("id"): acc["id"] = str(tc["id"])
+                            fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+                            if fn.get("name"): acc["function"]["name"] += str(fn["name"])
+                            if fn.get("arguments"): acc["function"]["arguments"] += str(fn["arguments"])
+        except Exception as exc:
+            if getattr(jk, "AGENTIC_MODE", False):
+                jk._agentic_mark_stage1_failure(type(exc).__name__)
+            # Preserve Phase-7's canonical, already-sanitized credential interrupt
+            # markers. Never forward arbitrary exception text or dictionary values.
+            security = public_security_failure(exc)
+            code = security[1] if security is not None else "jack_responses_stream_error"
+            message = security[2] if security is not None else "Jack Responses stream failed"
+            if isinstance(exc, HTTPException):
+                detail = exc.detail
+                if (
+                    isinstance(detail, dict)
+                    and detail.get("error") == "protected_credential_diagnostic_withheld"
+                    and detail.get("security_outcome") == "HARD_INTERRUPT"
+                    and detail.get("release_boundary") == "diagnostic_stream_exception_release"
+                    and set(detail) == {"error", "security_outcome", "release_boundary"}
+                ):
+                    message = (
+                        "protected_credential_diagnostic_withheld "
+                        "(diagnostic_stream_exception_release)"
+                    )
+            failed = {"id": rid, "object": "response", "created_at": created, "completed_at": int(time.time()), "status": "failed",
+                      "error": {"code": code, "message": message}, "model": jk.CFG.virtual_model, "output": []}
+            yield _sse("response.failed", {"response": failed, "error": failed["error"]}); return
 
-    output: List[Dict[str, Any]] = []; oi = 0
-    completed_items = {}
-    if rs_index is not None:
-        text = "".join(reasoning)
-        item = {"id": rs_id, "type": "reasoning", "summary": [{"type": "summary_text", "text": text}], "content": [{"type": "reasoning_text", "text": text}], "status": "completed"}
-        completed_items[rs_index] = item
-        yield _sse("response.reasoning_summary_text.done", {"item_id": rs_id, "output_index": rs_index, "summary_index": 0, "text": text})
-    if msg_index is not None:
-        text = "".join(visible)
-        item = {"id": msg_id, "type": "message", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": text, "annotations": []}]}
-        completed_items[msg_index] = item
-    for oi, item in sorted(completed_items.items()):
-        output.append(item)
-        yield _sse("response.output_item.done", {"output_index": oi, "item": item})
-    oi = len(output)
-    for idx in sorted(tool_acc):
-        item = _tool_item(tool_acc[idx], kinds); output.append(item)
-        yield _sse("response.output_item.done", {"output_index": oi, "item": item}); oi += 1
-    completed = {"id": rid, "object": "response", "created_at": created, "completed_at": int(time.time()), "status": "completed",
-                 "error": None, "incomplete_details": None, "model": jk.CFG.virtual_model, "output": output,
-                 "output_text": "".join(visible), "usage": _usage(usage), "metadata": {}}
-    yield _sse("response.completed", {"response": completed})
+        output: List[Dict[str, Any]] = []; oi = 0
+        completed_items = {}
+        if rs_index is not None:
+            text = "".join(reasoning)
+            item = {"id": rs_id, "type": "reasoning", "summary": [{"type": "summary_text", "text": text}], "content": [{"type": "reasoning_text", "text": text}], "status": "completed"}
+            completed_items[rs_index] = item
+            yield _sse("response.reasoning_summary_text.done", {"item_id": rs_id, "output_index": rs_index, "summary_index": 0, "text": text})
+        if msg_index is not None:
+            text = "".join(visible)
+            item = {"id": msg_id, "type": "message", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": text, "annotations": []}]}
+            completed_items[msg_index] = item
+        for oi, item in sorted(completed_items.items()):
+            output.append(item)
+            yield _sse("response.output_item.done", {"output_index": oi, "item": item})
+        oi = len(output)
+        for idx in sorted(tool_acc):
+            item = _tool_item(tool_acc[idx], kinds); output.append(item)
+            yield _sse("response.output_item.done", {"output_index": oi, "item": item}); oi += 1
+        completed = {"id": rid, "object": "response", "created_at": created, "completed_at": int(time.time()), "status": "completed",
+                     "error": None, "incomplete_details": None, "model": jk.CFG.virtual_model, "output": output,
+                     "output_text": "".join(visible), "usage": _usage(usage), "metadata": {}}
+        yield _sse("response.completed", {"response": completed})
+    finally:
+        if getattr(jk, "AGENTIC_MODE", False):
+            jk._AGENTIC_ACTIVE_TURN.set(None)
 
 
 def _nonstream(jk: Any, result: Any, kinds: Dict[str, str]) -> Dict[str, Any]:
@@ -445,6 +452,19 @@ def register(jk: Any) -> None:
         # override Jack's model, reasoning, sampling, limits, or stage topology.
         chat = jk.sanitize_agent_request(chat)
         executor_context = jk._phase4_executor_context_from_request(request)
+        tas_owner_enforced = (
+            getattr(jk, "DEEP_REASONING_MODE", False)
+            and os.environ.get("JACK_TAS_R3_OWNER_ENFORCEMENT", "0") == "1"
+        )
+        tas_owner_key = None
+        if tas_owner_enforced:
+            from jack_tas_r3_owner import parse_session_capability, set_current_owner, reset_current_owner
+            try:
+                tas_owner_key = parse_session_capability(request.headers)
+                if tas_owner_key is None:
+                    raise ValueError("Missing TAS session capability")
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail="Invalid TAS session capability") from exc
         if body.get("stream"):
             response_stream = (
                 _stream(jk, chat, kinds)
@@ -456,11 +476,22 @@ def register(jk: Any) -> None:
                     executor_context=executor_context,
                 )
             )
+            if tas_owner_enforced:
+                async def _with_tas_owner(source_stream=response_stream, owner=tas_owner_key):
+                    token = set_current_owner(owner)
+                    try:
+                        async with contextlib.aclosing(source_stream) as owned:
+                            async for chunk in owned:
+                                yield chunk
+                    finally:
+                        reset_current_owner(token)
+                response_stream = _with_tas_owner()
             return StreamingResponse(
                 response_stream,
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
             )
+        tas_token = set_current_owner(tas_owner_key) if tas_owner_enforced else None
         try:
             if executor_context is None:
                 result = await jk.KERNEL.run(chat)
@@ -469,8 +500,11 @@ def register(jk: Any) -> None:
                     chat,
                     executor_context=executor_context,
                 )
-        except HTTPException: raise
         except Exception as exc:
+            if getattr(jk, "AGENTIC_MODE", False):
+                jk._agentic_mark_stage1_failure(type(exc).__name__)
+            if isinstance(exc, HTTPException):
+                raise
             security = public_security_failure(exc)
             if security is not None:
                 status, code, message = security
@@ -481,6 +515,11 @@ def register(jk: Any) -> None:
                 }) from None
             jk.LOG.exception("Responses compatibility request failed")
             raise HTTPException(status_code=500, detail="Jack Responses compatibility failure") from exc
+        finally:
+            if tas_token is not None:
+                reset_current_owner(tas_token)
+            if getattr(jk, "AGENTIC_MODE", False):
+                jk._AGENTIC_ACTIVE_TURN.set(None)
         return JSONResponse(_nonstream(jk, result, kinds))
 
 

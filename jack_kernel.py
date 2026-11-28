@@ -5711,7 +5711,7 @@ def _phase4_executor_admission_decision(
         executor_platform=executor_platform,
     )
 
-    return {
+    result = {
         "protocol_version": PHASE4_EXECUTOR_ADMISSION_PROTOCOL_VERSION,
         "runtime_id": RUNTIME_ID,
         "lane_id": LANE_ID,
@@ -5719,6 +5719,23 @@ def _phase4_executor_admission_decision(
         "outcome": decision.outcome.value,
         "contract_applied": contract_applied,
     }
+    if decision.outcome is jack_path_policy.PathAuthorizationOutcome.DENY_AND_CONTINUE:
+        # Only stable host-defined categories leave admission. Never expose
+        # represented paths, variable names, or free-form policy diagnostics.
+        code = "PATH_AUTHORITY_UNAVAILABLE"
+        for prefix, category in (
+            ("represented target is outside the configured workspace", "OUTSIDE_WORKSPACE"),
+            ("read-only system inspection lies outside", "OUTSIDE_WORKSPACE"),
+            ("represented target is an exact protected credential resource", "PROTECTED_CREDENTIAL_RESOURCE"),
+            ("invalid represented path", "INVALID_REPRESENTED_PATH"),
+            ("default Windows path referenced", "WINDOWS_SYSTEM_CONTRACT"),
+            ("sensitive Windows resource", "WINDOWS_SYSTEM_RESOURCE"),
+        ):
+            if decision.reason.startswith(prefix):
+                code = category
+                break
+        result["reason_code"] = code
+    return result
 
 
 def _immutable_path_denial(errors: Iterable[str]) -> bool:

@@ -41,9 +41,19 @@ function loadControlConfig() {
     DEFAULT_CONTROL_PORT,
   );
   const envToken = process.env.JACK_PI_CONTROL_TOKEN;
-  const token = envToken !== undefined
+  let token = envToken !== undefined
     ? String(envToken)
     : (typeof parsed?.controlToken === "string" ? parsed.controlToken : "");
+  if (token.startsWith("$")) {
+    const resolved = process.env[token.slice(1)];
+    if (resolved === undefined || !resolved.trim()) {
+      // Never authenticate against a literal unresolved reference.
+      console.error("[pi-control] Unresolved control-token environment reference; authentication unavailable.");
+      token = "";
+    } else {
+      token = resolved;
+    }
+  }
   const fallbackDefault = parsed?.controlPortFallback === undefined
     ? true
     : Boolean(parsed.controlPortFallback);

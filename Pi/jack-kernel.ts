@@ -601,13 +601,18 @@ export default async function (pi) {
       return;
     }
 
-    event.headers["X-Jack-Executor-Admission-Version"] =
-      String(EXECUTOR_ADMISSION_PROTOCOL_VERSION);
-    event.headers["X-Jack-Executor-Runtime-Id"] = binding.runtimeId;
-    event.headers["X-Jack-Executor-Lane-Id"] = binding.laneId;
-    event.headers["X-Jack-Executor-Cwd"] = String(ctx?.cwd || "");
-    event.headers["X-Jack-Executor-Platform"] = process.platform;
-    event.headers["X-Jack-Executor-Adapter"] = "pi";
+    // An absent executor cwd must not be advertised as an empty or guessed
+    // path. Omit the entire optional admission metadata group in that case.
+    const cwd = typeof ctx?.cwd === "string" ? ctx.cwd : "";
+    if (cwd.trim()) {
+      event.headers["X-Jack-Executor-Admission-Version"] =
+        String(EXECUTOR_ADMISSION_PROTOCOL_VERSION);
+      event.headers["X-Jack-Executor-Runtime-Id"] = binding.runtimeId;
+      event.headers["X-Jack-Executor-Lane-Id"] = binding.laneId;
+      event.headers["X-Jack-Executor-Cwd"] = cwd;
+      event.headers["X-Jack-Executor-Platform"] = process.platform;
+      event.headers["X-Jack-Executor-Adapter"] = "pi";
+    }
 
     const currentSessionId = String(ctx?.sessionManager?.getSessionId?.() || "");
     if (currentSessionId) {
@@ -684,9 +689,18 @@ export default async function (pi) {
         };
       }
       if (outcome === "DENY_AND_CONTINUE") {
+        const safeReasons = {
+          OUTSIDE_WORKSPACE: "Blocked by Jack Workspace Lock: the target is outside the configured workspace. Correct the destination if the task belongs inside it.",
+          PROTECTED_CREDENTIAL_RESOURCE: "Blocked by Jack credential-resource protection. Do not retry or seek alternate access.",
+          INVALID_REPRESENTED_PATH: "Jack could not authorize the invalid path. Correct the invocation using an explicit authorized path.",
+          WINDOWS_SYSTEM_CONTRACT: "Jack requires a recognized read-only or executable-launch contract for this Windows resource.",
+          WINDOWS_SYSTEM_RESOURCE: "Blocked by Jack Windows system-resource protection.",
+        };
         return {
           block: true,
-          reason: "Blocked by Jack Workspace Lock.",
+          reason: Object.hasOwn(safeReasons, decision?.reason_code)
+            ? safeReasons[decision.reason_code]
+            : "Jack path admission did not authorize this action. It was not executed; correct the invocation if appropriate or continue independent authorized work.",
         };
       }
       return {

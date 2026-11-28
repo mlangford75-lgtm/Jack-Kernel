@@ -181,3 +181,30 @@ def test_stream_item_index_stays_with_item(fields):
         if "output_index" in event:
             item_id = event.get("item_id") or event["item"]["id"]
             assert output[event["output_index"]]["id"] == item_id
+
+
+def test_responses_stream_settles_agentic_turn_on_success_and_failure():
+    from types import SimpleNamespace
+    from contextvars import ContextVar
+
+    for fail in (False, True):
+        active = ContextVar("response_test_active", default=None)
+        failures = []
+
+        async def stream(_chat):
+            active.set("owned-turn")
+            if fail:
+                raise HTTPException(status_code=502, detail="synthetic")
+            yield b'data: {"choices":[{"delta":{"content":"ok"}}]}\\n\\n'
+
+        jk = SimpleNamespace(CFG=SimpleNamespace(virtual_model="test"),
+                             KERNEL=SimpleNamespace(stream=stream), AGENTIC_MODE=True,
+                             _AGENTIC_ACTIVE_TURN=active, _agentic_mark_stage1_failure=failures.append)
+
+        async def run():
+            chunks = [chunk async for chunk in compat._stream(jk, {}, {})]
+            assert active.get() is None
+            assert failures == (["HTTPException"] if fail else [])
+            assert (b"response.failed" if fail else b"response.completed") in b"".join(chunks)
+
+        asyncio.run(run())
