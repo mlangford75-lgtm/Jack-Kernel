@@ -185,3 +185,25 @@ def test_alternating_stage_changed_regions_match_predecessor_algorithm(monkeypat
         inputs = (stage, stage + " directive " + "é" * 600,
                   "caller " + str(index // 6), "history " + str(index))
         assert prepare(candidate, *inputs) == prepare(predecessor, *inputs)
+
+
+def test_exact_prefix_trajectory_matches_original_algorithm():
+    import hashlib
+    from array import array
+
+    probe = CacheBytePrefixProbe(enabled=True, byte_cap=131072)
+    # Every byte value, BLAKE2b block boundaries, multibyte UTF-8, empty
+    # fields, and full capture-cap truncation. Compare the digest values,
+    # not just the eventual first-difference report.
+    for wire in (b"", bytes(range(256)), "é🙂".encode("utf-8") * 100,
+                 bytes(range(256)) * 513):
+        for limit in (0, 1, 127, 128, 129, 1024, probe.byte_cap):
+            h = hashlib.blake2b(digest_size=8, key=probe._key)
+            expected = array("Q")
+            for item in wire[:limit]:
+                h.update(bytes((item,)))
+                expected.append(int.from_bytes(h.copy().digest(), "little"))
+            actual = probe._signature(wire, limit)
+            assert actual["prefix_hashes"] == expected
+            assert actual["sha256"] == hashlib.sha256(wire).hexdigest()
+            assert actual["byte_length"] == len(wire)
