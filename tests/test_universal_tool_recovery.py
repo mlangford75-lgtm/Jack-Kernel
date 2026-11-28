@@ -323,3 +323,30 @@ def test_audit_m9_recovery_checkpoint_survives_stage_return(
                        and "not_advertised" in e["content"] for e in events)
 
     asyncio.run(run())
+
+
+def test_nonstream_cycle_recovers_by_changing_action(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path)
+    h = history(k, "thesis", compact=True, repetitions=5)
+    requests = []
+
+    class Backend:
+        async def chat(self, **kwargs):
+            requests.append(kwargs)
+            cmd = "python resort_model.py" if len(requests) == 1 else "python verify_model.py"
+            return {"choices": [{"message": {"role": "assistant", "content": "",
+                        "tool_calls": [call(150 + len(requests), "bash", {"command": cmd})]},
+                        "finish_reason": "tool_calls"}]}
+
+    k.KERNEL.backend = Backend()
+
+    async def run():
+        result = await k.KERNEL._run_stage(
+            h, "", "thesis", {}, tools=[{"type": "function", "function": {
+                "name": "bash", "parameters": {"type": "object",
+                    "properties": {"command": {"type": "string"}}}}}], tool_choice="auto")
+        assert "verify_model.py" in result["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]
+        assert len(requests) == 2
+        assert any(x.get("_jack_internal_tool_validation_rejection") for x in h)
+
+    asyncio.run(run())

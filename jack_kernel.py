@@ -4788,9 +4788,8 @@ def _agentic_exact_tool_cycle(
     """Detect repeated completed tool cycles without discarding useful work.
 
     Mutation-bearing cycles use the configured threshold (5 repetitions by default).
-    Pure file inspection cycles are eligible after two identical completed
-    inspections, immediately before the third identical call is released.
-    Polling commands and other non-mutating tools remain unaffected.
+    Read-only cycles are not terminal: repeated inspection or polling can
+    remain useful even when the returned bytes have not changed.
     A failed result, incomplete exchange, changed args, or changed evidence
     never authorizes an interrupt. Tool IDs are intentionally ignored.
     """
@@ -4872,14 +4871,11 @@ def _agentic_exact_tool_cycle(
     for cycle_length in range(1, maximum + 1):
         pattern = actions[-cycle_length:]
         mutation_cycle = any(x[2] for x in pattern)
-        # Restrict early read-only detection to the pure file-read tool.
-        # Listing/polling, searches and other observation tools may legitimately
-        # repeat while awaiting changes. The tool name, exact arguments, and
-        # returned evidence must all match; changed file bytes reset detection.
-        stable_file_inspection = all(x[0] == "read" and not x[2] for x in pattern)
-        if not (mutation_cycle or stable_file_inspection):
+        # Only a positively classified mutation-bearing cycle can authorize
+        # a terminal cycle interrupt. Repeated reads are ordinary inspection.
+        if not mutation_cycle:
             continue
-        cycle_repetitions = repeats if mutation_cycle else 3
+        cycle_repetitions = repeats
         required = cycle_repetitions * cycle_length
         if len(actions) < required:
             continue
@@ -5312,17 +5308,34 @@ def _tool_call_validation_errors(
         try:
             args = json.loads(raw_args) if isinstance(raw_args, str) else copy.deepcopy(raw_args)
         except Exception as exc:
-            errors.append(f"{name}: arguments are not valid JSON ({type(exc).__name__})")
+            errors.append(f"tool call {index} ({name}): arguments are not valid JSON ({type(exc).__name__})")
             continue
         if not isinstance(args, dict):
-            errors.append(f"{name}: arguments must be a JSON object")
+            errors.append(f"tool call {index} ({name}): arguments must be a JSON object")
             continue
         parameters = schema.get("parameters") if isinstance(schema.get("parameters"), dict) else {}
         required = parameters.get("required") if isinstance(parameters.get("required"), list) else []
         missing = [str(key) for key in required if str(key) not in args]
         if missing:
-            errors.append(f"{name}: missing required propert{'y' if len(missing)==1 else 'ies'} " + ", ".join(missing))
+            errors.append(f"tool call {index} ({name}): missing required propert{'y' if len(missing)==1 else 'ies'} " + ", ".join(missing))
     return errors
+
+
+def _original_batch_path_errors(
+    original: List[Dict[str, Any]], filtered: List[Dict[str, Any]], errors: List[str],
+) -> List[str]:
+    """Map partition-local indices back to original proposal identity."""
+    indices = {id(call): index for index, call in enumerate(original)}
+    out = []
+    for error in errors:
+        match = re.match(r"^tool call (\d+):", error)
+        if match is not None and int(match.group(1)) < len(filtered):
+            call = filtered[int(match.group(1))]
+            index = indices.get(id(call), int(match.group(1)))
+            name = _debugging_tool_name(call)
+            error = f"tool call {index} ({name}):" + error[match.end():]
+        out.append(error)
+    return out
 
 
 def _recoverable_schema_siblings(
@@ -10548,6 +10561,7 @@ class JackQwenKernel:
         append: bool = True,
         same_stage_resume: bool = False,
         tool_validation_repair_depth: int = 0,
+        tool_cycle_recovery_depth: int = 0,
     ) -> Dict[str, Any]:
         force_native_resume = bool(
             same_stage_resume
@@ -10677,6 +10691,7 @@ class JackQwenKernel:
                 return await self._run_stage(
                     history, secondary_system, stage_key, usage, tools=tools, tool_choice=tool_choice,
                     append=append, same_stage_resume=True, tool_validation_repair_depth=tool_validation_repair_depth + 1,
+                    tool_cycle_recovery_depth=tool_cycle_recovery_depth,
                 )
 
         if (AGENTIC_CODER_MODE and stage_key == "coder_planner"
@@ -10695,6 +10710,7 @@ class JackQwenKernel:
                     tools=tools, tool_choice=tool_choice,
                     append=append, same_stage_resume=True,
                     tool_validation_repair_depth=tool_validation_repair_depth,
+                    tool_cycle_recovery_depth=tool_cycle_recovery_depth,
                 )
 
         # Withheld-call provenance is host-owned. Never trust a backend/model-supplied
@@ -10707,6 +10723,10 @@ class JackQwenKernel:
                 _phase4_partition_structured_tool_calls(
                     schema_siblings if schema_siblings is not None else proposed_calls
                 )
+            )
+            path_authorization_errors = _original_batch_path_errors(
+                proposed_calls, schema_siblings if schema_siblings is not None else proposed_calls,
+                path_authorization_errors,
             )
             path_authorization_errors = schema_rejection_errors + path_authorization_errors
             if path_authorization_errors:
@@ -10730,6 +10750,7 @@ class JackQwenKernel:
                         append=append,
                         same_stage_resume=True,
                         tool_validation_repair_depth=tool_validation_repair_depth + 1,
+                    tool_cycle_recovery_depth=tool_cycle_recovery_depth,
                     )
 
                 LOG.warning(
@@ -10756,6 +10777,28 @@ class JackQwenKernel:
                     path_authorization_errors
                 )
                 msg["_jack_phase4_withheld_tool_call_ids"] = withheld_ids
+
+        if (msg.get("tool_calls") and self.cfg.loop_detector_enabled
+                and self.cfg.tool_cycle_mode == "enforce"
+                and tool_cycle_recovery_depth == 0):
+            cycle = _agentic_exact_tool_cycle(
+                history, msg["tool_calls"], repetitions=self.cfg.tool_cycle_repetitions,
+                stage_key=stage_key,
+            )
+            if cycle is not None:
+                history[:] = _tool_rejection_history(
+                    history, msg,
+                    ["Host rejected another exact repeated mutation-bearing tool/action-result cycle; "
+                     "no tool was executed. Use a different operation or finish the task."],
+                    STAGES[stage_key].name, forensic_stage_key=stage_key,
+                )
+                return await self._run_stage(
+                    history, secondary_system, stage_key, usage,
+                    tools=tools, tool_choice=tool_choice, append=append,
+                    same_stage_resume=True,
+                    tool_validation_repair_depth=tool_validation_repair_depth,
+                    tool_cycle_recovery_depth=1,
+                )
 
         if not msg.get("tool_calls"):
             if AGENTIC_TRANSLATED_MODE and stage_key == "extended_initial":
@@ -11518,6 +11561,10 @@ class JackQwenKernel:
                 _phase4_partition_structured_tool_calls(
                     schema_siblings if schema_siblings is not None else proposed_calls
                 )
+            )
+            path_authorization_errors = _original_batch_path_errors(
+                proposed_calls, schema_siblings if schema_siblings is not None else proposed_calls,
+                path_authorization_errors,
             )
             path_authorization_errors = schema_rejection_errors + path_authorization_errors
             if path_authorization_errors:
@@ -12694,10 +12741,20 @@ class JackQwenKernel:
                     # Mixed batches may execute authorized siblings. Count the
                     # denied siblings once after their actual results return;
                     # never rerun the rejected operation under a new ID.
+                    path_denial = _immutable_path_denial([error])
+                    path_notice = "Restricted Paths / Workspace Lock" in error
+                    if not path_notice and any(
+                        item.get("tool_call_id") in state.expected_tool_call_ids
+                        and (item.get("_jack_tool_outcome") or TOOL_UNKNOWN) != TOOL_FAILED
+                        for item in tool_messages if isinstance(item, dict)
+                    ):
+                        # A valid sibling returned. Keep schema correction in the
+                        # notice but do not erase this batch's recovery progress.
+                        continue
                     tracker.fail(
-                        "phase4_withheld_action", error,
+                        "phase4_withheld_action" if path_notice else "schema_withheld_action", error,
                         call_id=f"{state.resume_id}:withheld:{index}",
-                        policy_denial=_immutable_path_denial([error]),
+                        policy_denial=path_denial,
                     )
                 if tracker.exhausted:
                     raise ToolRecoveryExhausted(

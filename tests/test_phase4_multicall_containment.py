@@ -517,7 +517,9 @@ def test_schema_failure_preserves_valid_siblings_and_receipt_ownership():
         {"role": "tool", "tool_call_id": "safe-b", "content": "b evidence"},
     ])
     assert [entry["tool_call_id"] for entry in resumed[-3:-1]] == ["safe-a", "safe-b"]
-    assert "Correct only the failed invocation" in resumed[-1]["content"]
+    assert "correct the invocation that failed" in resumed[-1]["content"]
+    assert "tool call 1 (read)" in resumed[-1]["content"]
+    assert kernel._TOOL_RECOVERY_STATE.get().consecutive_failures == 0
 
 
 def test_schema_correction_does_not_authorize_never_sibling():
