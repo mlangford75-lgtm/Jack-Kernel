@@ -402,7 +402,7 @@ def test_bash_background_operator_preserves_positive_never_detection():
     assert decision.outcome is policy.PathAuthorizationOutcome.DENY_AND_CONTINUE
 
 
-def test_bash_cwd_mutation_sequence_is_not_authorized_against_stale_cwd():
+def test_bash_cwd_mutation_sequence_is_unclassified_not_contained():
     decision = policy.authorize_command_tool_call(
         build(),
         call("bash", r"cd ..; cat ..\Outside\secret.txt"),
@@ -410,31 +410,32 @@ def test_bash_cwd_mutation_sequence_is_not_authorized_against_stale_cwd():
         command_dialect="bash",
     )
 
-    assert decision.outcome is policy.PathAuthorizationOutcome.DENY_AND_CONTINUE
+    assert decision.outcome is policy.PathAuthorizationOutcome.ALLOW
+    assert decision.canonical_target is None
+    assert "unclassified" in decision.reason
 
 
-@pytest.mark.parametrize(
-    "command",
-    (
-        r'Get-Content ("..\Out" + "side\secret.txt")',
-        r'Get-Content ([IO.Path]::Combine("..","Outside","secret.txt"))',
-        r'Get-Content ~\secret.txt',
-        r'Get-Content @args',
-        "Write-Output ok && Get-Content ..\\Outside\\secret.txt",
-    ),
-)
-def test_powershell_expression_forms_do_not_bypass_workspace_lock(command):
+@pytest.mark.parametrize("command, expected", [
+    (r'Get-Content ("..\Out" + "side\secret.txt")', "ALLOW"),
+    (r'Get-Content ([IO.Path]::Combine("..","Outside","secret.txt"))', "ALLOW"),
+    (r'Get-Content ~\secret.txt', "DENY_AND_CONTINUE"),
+    (r'Get-Content @args', "ALLOW"),
+    ("Write-Output ok && Get-Content ..\\Outside\\secret.txt", "DENY_AND_CONTINUE"),
+])
+def test_powershell_expression_coverage_distinguishes_known_targets_from_unknown_effects(command, expected):
     decision = policy.authorize_command_tool_call(
         build(),
         call("powershell", command),
         executor_cwd=r"D:\Projects\Jack",
         command_dialect="powershell",
     )
+    assert decision.outcome.value == expected
+    if expected == "ALLOW":
+        assert decision.canonical_target is None
+        assert "unclassified" in decision.reason
 
-    assert decision.outcome is policy.PathAuthorizationOutcome.DENY_AND_CONTINUE
 
-
-def test_powershell_cwd_mutation_sequence_is_not_authorized_against_stale_cwd():
+def test_powershell_cwd_mutation_sequence_is_unclassified_not_contained():
     decision = policy.authorize_command_tool_call(
         build(),
         call(
@@ -445,7 +446,9 @@ def test_powershell_cwd_mutation_sequence_is_not_authorized_against_stale_cwd():
         command_dialect="powershell",
     )
 
-    assert decision.outcome is policy.PathAuthorizationOutcome.DENY_AND_CONTINUE
+    assert decision.outcome is policy.PathAuthorizationOutcome.ALLOW
+    assert decision.canonical_target is None
+    assert "unclassified" in decision.reason
 
 
 @pytest.mark.parametrize(

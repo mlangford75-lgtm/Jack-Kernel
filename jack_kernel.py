@@ -5419,7 +5419,7 @@ def _phase4_partition_structured_tool_calls(
             is jack_path_policy.PathAuthorizationOutcome.DENY_AND_CONTINUE
         ):
             # Log only host-defined categories and booleans, never raw arguments,
-            # paths, or exception text. Keep the model-facing denial unchanged.
+            # paths, or exception text. Model recovery uses the same safe category.
             reason = decision.reason
             reason_code = "OTHER_POLICY_DENIAL"
             for prefix, code in (
@@ -5446,26 +5446,32 @@ def _phase4_partition_structured_tool_calls(
                 reason_code, executor_context is not None, bool(executor_cwd),
                 decision.canonical_target is not None, active_policy.workspace_enabled,
             )
-            # A missing or unresolved command contract is not a positive
-            # forbidden-target finding. No tool is released here; a corrected
-            # proposal must pass the same complete gate again.
-            if not structured.applicable and reason_code in {
+            # Missing authority or an invalid invocation is not evidence of
+            # a forbidden target. Distinguish correction from a real denial
+            # for structured tools as well as shell commands.
+            if reason_code in {
                 "EXECUTOR_CWD_MISSING",
+                "EXECUTOR_CWD_INVALID",
                 "COMMAND_TARGET_UNRESOLVED",
                 "COMMAND_CONTRACT_AMBIGUOUS",
                 "WORKSPACE_MEMBERSHIP_UNRESOLVED",
-            } and decision.canonical_target is None:
+                "INVALID_REPRESENTED_PATH",
+            }:
                 errors.append(
                     f"tool call {index}: Restricted Paths / Workspace Lock "
-                    f"could not establish command authority ({reason_code}); "
-                    "no forbidden target was established. Supply a deterministic "
-                    "command with an explicit authorized target if needed. "
+                    f"could not establish path authority ({reason_code}); "
+                    "no forbidden target was established by this check. "
+                    "Correct the invocation with an explicit authorized target if needed. "
                     "Never seek alternate access to a restricted target."
                 )
                 continue
             errors.append(
                 f"tool call {index}: host-owned Restricted Paths / Workspace Lock path policy denied "
-                "the represented filesystem target"
+                f"the represented filesystem target ({reason_code})"
+                + (
+                    ". The proposed location is outside the workspace."
+                    if reason_code == "OUTSIDE_WORKSPACE" else ""
+                )
             )
             continue
 
@@ -5651,7 +5657,7 @@ def _phase4_executor_admission_decision(
 
 
 def _immutable_path_denial(errors: Iterable[str]) -> bool:
-    """Only host-generated represented-target denials, not schema corrections."""
+    """Repeated identical positive denials remain bounded; a different authorized destination is valid."""
     items = list(errors)
     return bool(items) and all(
         "path policy denied the represented filesystem target" in item for item in items
@@ -5690,12 +5696,21 @@ def _tool_rejection_notice(
                 "needed, use an authorized read-only tool; otherwise finish the spec."
             )
     elif _immutable_path_denial(items):
-        guidance = (
-            "This is an immutable host security denial, not a correctable tool error. "
-            "Do not retry the denied target or seek alternate access. "
-            "Preserve completed evidence; continue independent authorized work "
-            "or finish with a clear denial report."
-        )
+        if any("(OUTSIDE_WORKSPACE)" in item for item in items):
+            guidance = (
+                "The proposed location was outside the workspace and was not executed. "
+                "If the requested work belongs in the workspace, correct the destination "
+                "to the intended workspace-relative filename or explicit in-workspace path "
+                "and continue. A leading slash is rooted, not a workspace-relative filename. "
+                "Do not access the denied location. If the task actually requires that location, "
+                "report the restriction. Preserve completed work."
+            )
+        else:
+            guidance = (
+                "Do not retry the denied target or seek alternate access to it. "
+                "Preserve completed work; continue independent authorized operations "
+                "or report the restriction."
+            )
     else:
         guidance = (
             "Preserve the useful analysis that led here. If this stage has tool "

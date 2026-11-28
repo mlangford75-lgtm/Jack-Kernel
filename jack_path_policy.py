@@ -2868,11 +2868,9 @@ def authorize_structured_tool_call(
             )
 
         if decision.outcome is PathAuthorizationOutcome.DENY_AND_CONTINUE:
-            return PathAuthorizationDecision(
-                PathAuthorizationOutcome.DENY_AND_CONTINUE,
-                "structured tool target is not authorized by Workspace Lock",
-                decision.canonical_target,
-            )
+            # Preserve the authoritative reason. The release boundary publishes
+            # only a safe category, not raw paths or exception details.
+            return decision
 
         if (
             decision.canonical_target is None

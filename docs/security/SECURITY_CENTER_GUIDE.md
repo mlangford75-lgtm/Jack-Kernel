@@ -323,3 +323,18 @@ an arbitrary remote executor, sandbox child processes, or automatically discover
 remote credential files. Explicitly configure remote restricted resources as
 needed; retain the Kernel's own credential protections. No new mandatory
 executor, Pi dependency, or default workspace lock is introduced.
+
+
+### Workspace destination correction
+
+An explicit location outside Workspace Lock is still denied; Jack does not
+silently relocate it or execute it. A mistaken output destination is not a
+permanent denial of the user's entire task. The host reports the safe
+outside-workspace reason and allows a different, independently authorized
+destination when that fulfills the request. For a new file in the workspace,
+a relative filename or explicit in-workspace path is appropriate; a leading
+slash is rooted. The same target remains denied, and explicit NEVER,
+credential-resource and StreamingIRQ protections remain unchanged. The
+represented command contract does not contain computed shell expressions or
+effects of changes to the shell's working directory; unknown effects are not
+certified safe.

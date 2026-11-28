@@ -335,3 +335,65 @@ def test_unresolved_workspace_rewrite_routes_through_authority(installed_path_ga
     assert [item["id"] for item in allowed] == ["good"]
     assert len(errors) == 1
     assert len(observations) == 2 and not observations[0]["deterministic"]
+
+
+@pytest.mark.parametrize("requested", ["/cuckoo-clock.svg", r"C:\cuckoo-clock.svg"])
+def test_workspace_destination_correction_preserves_actual_policy_and_useful_work(
+    installed_path_gate, monkeypatch, requested,
+):
+    workspace = r"C:\Users\Operator.DESKTOP-TEST\Desktop\clock\Agentic_Testing"
+    active = path_policy.build_runtime_path_policy(
+        runtime_id=kernel.RUNTIME_ID, lane_id=kernel.LANE_ID,
+        raw_json=json.dumps({"version": 1, "workspace_root": workspace,
+                             "never_paths": [workspace + r"\Private"]}),
+        host_environment=HOST_ENV,
+    )
+    monkeypatch.setattr(kernel, "_RUNTIME_PATH_POLICY", active)
+    context = kernel.Phase4ExecutorRequestContext(
+        protocol_version=1, runtime_id=kernel.RUNTIME_ID, lane_id=kernel.LANE_ID,
+        cwd=workspace, platform="win32", adapter="test",
+    )
+    token = kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.set(context)
+    def write(ident, target):
+        return {"id": ident, "type": "function", "function": {
+            "name": "write", "arguments": json.dumps({"path": target, "content": "<svg/>"})}}
+    try:
+        wrong = write("wrong", requested)
+        good = write("good", "cuckoo-clock.svg")
+        allowed, errors = kernel._phase4_partition_structured_tool_calls([wrong, good])
+        assert [item["id"] for item in allowed] == ["good"]
+        assert "(OUTSIDE_WORKSPACE)" in errors[0]
+        assert requested not in errors[0]
+        assert kernel._immutable_path_denial(errors)
+        notice = kernel._tool_rejection_notice(errors, "Agentic native pass 1")["content"]
+        assert "correct the destination" in notice
+        assert "Do not access the denied location" in notice
+        assert "immutable host security denial" not in notice
+        assert "Execution evidence: NONE" in notice
+        assert json.loads(allowed[0]["function"]["arguments"])["path"] == active.normalize(
+            workspace + r"\cuckoo-clock.svg")
+        for corrected in (good, write("absolute", workspace + r"\cuckoo-clock.svg")):
+            released, problems = kernel._phase4_partition_structured_tool_calls([corrected])
+            assert len(released) == 1 and not problems
+            decision, applied = path_policy.authorize_executor_tool_call(
+                active, released[0], executor_cwd=workspace, executor_platform="win32")
+            assert applied and decision.outcome is path_policy.PathAuthorizationOutcome.ALLOW
+        # The original operation is still denied, not silently redirected.
+        assert not kernel._phase4_partition_structured_tool_calls([wrong])[0]
+        with pytest.raises(kernel.Phase4RestrictedPathInterrupt):
+            kernel._phase4_partition_structured_tool_calls([write("never", r"Private\x.svg")])
+    finally:
+        kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
+
+
+def test_unresolved_structured_target_has_correctable_not_immutable_notice(installed_path_gate, monkeypatch):
+    active = build()
+    monkeypatch.setattr(kernel, "_RUNTIME_PATH_POLICY", active)
+    call = {"id": "unknown", "type": "function", "function": {
+        "name": "write", "arguments": json.dumps({"path": r"%UNKNOWN_ENV%\clock.svg", "content": "<svg/>"})}}
+    allowed, errors = kernel._phase4_partition_structured_tool_calls([call])
+    assert not allowed and len(errors) == 1
+    assert not kernel._immutable_path_denial(errors)
+    assert "(WORKSPACE_MEMBERSHIP_UNRESOLVED)" in errors[0]
+    assert "correct the invocation" in kernel._tool_rejection_notice(
+        errors, "Agentic native pass 1")["content"].lower()

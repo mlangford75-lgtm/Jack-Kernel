@@ -121,8 +121,9 @@ class ToolRecoveryState:
             return (
                 "The host security policy denied this operation before execution. "
                 "Do not retry it, change its spelling, switch tools, or seek alternative "
-                "access to the same restricted target. Record the denial. Continue only "
-                "with independent authorized operations or report the outcome."
+                "access to the same restricted target. A genuinely different authorized "
+                "destination is valid if it fulfills the user's request. Preserve completed "
+                "work and continue authorized operations or report the restriction."
             )
         n = self.consecutive_failures
         if n == SOFT_ATTEMPTS:
