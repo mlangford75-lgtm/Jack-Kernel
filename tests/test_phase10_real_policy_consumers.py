@@ -200,6 +200,12 @@ payload = {
 # Removing the optional holder would bypass the legacy partition's None branch.
 jk._RUNTIME_PATH_POLICY = None
 try:
+    jk._debugging_report_only_tool_surface([{"function": {"name": "read"}}], None)
+except PolicyIntegrityCompromised:
+    pass
+else:
+    raise AssertionError("debugging projection accepted missing path policy")
+try:
     jk._phase4_partition_structured_tool_calls([outside])
 except PolicyIntegrityCompromised:
     pass

@@ -51,6 +51,7 @@ def install(jk):
         resource_snapshot = _resource_policy_snapshot(jk, resource_key, resource_policy)
     partition = jk._phase4_partition_structured_tool_calls
     admission = jk._phase4_executor_admission_decision
+    debugging_surface = jk._debugging_report_only_tool_surface
 
     def verify():
         nonlocal resource_invalid
@@ -98,6 +99,14 @@ def install(jk):
             raise jk.HTTPException(status_code=503,
                 detail="Authority policy measurement unavailable") from None
 
+    @wraps(debugging_surface)
+    def guarded_debugging_surface(*args, **kwargs):
+        verify()
+        result = debugging_surface(*args, **kwargs)
+        verify()
+        return result
+
+    jk._debugging_report_only_tool_surface = guarded_debugging_surface
     jk._phase4_partition_structured_tool_calls = guarded_partition
     jk._phase4_executor_admission_decision = guarded_admission
     jk._JACK_PHASE10_PATH_AUTHORITY = guard

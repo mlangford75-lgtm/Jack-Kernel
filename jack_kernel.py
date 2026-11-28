@@ -2431,7 +2431,23 @@ def _debugging_tool_is_direct_mutator(tool: Dict[str, Any]) -> bool:
     if _RUNTIME_PATH_POLICY is not None:
         for contract in _RUNTIME_PATH_POLICY.custom_tool_contracts:
             if exact_name == contract.tool_name:
-                return contract.operation != "inspect"
+                if contract.operation != "inspect":
+                    return True
+                function = tool.get("function") if isinstance(tool, dict) else None
+                schema = (function or {}).get("parameters")
+                if isinstance(schema, dict) and schema.get("type") == "object":
+                    properties = schema.get("properties")
+                    required = schema.get("required", [])
+                    if (isinstance(properties, dict) and isinstance(required, list)
+                            and all(isinstance(v, str) for v in required)
+                            and len(required) == len(set(required))
+                            and set(required) == set(contract.required_fields)
+                            and set(properties) == set(dict(contract.argument_types))
+                            and all(isinstance(properties[key], dict) and properties[key].get("type") == kind
+                                    for key, kind in contract.argument_types)):
+                        return False
+                # Name alone is insufficient to override the legacy filter.
+                break
     name = exact_name.lower()
     if any(marker in name for marker in _DEBUGGING_DIRECT_MUTATION_NAME_MARKERS):
         return True

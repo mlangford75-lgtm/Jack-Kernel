@@ -152,6 +152,13 @@ def test_custom_contract_is_sealed_and_drives_debugging_classification(monkeypat
     active = custom_policy([custom_contract(), custom_contract("perform_operation", "mutate")])
     monkeypatch.setattr(kernel, "_RUNTIME_PATH_POLICY", active)
     assert _canonical_material("path", active, b"x" * 32) != _canonical_material("path", custom_policy([]), b"x" * 32)
-    assert not kernel._debugging_tool_is_direct_mutator({"function": {"name": "inspect_format"}})
+    assert kernel._debugging_tool_is_direct_mutator({"function": {"name": "inspect_format"}})
+    declaration = {"function": {"name": "inspect_format", "parameters": {
+        "type": "object", "properties": {"filename": {"type": "string"}, "limit": {"type": "integer"}},
+        "required": ["filename"],
+    }}}
+    assert not kernel._debugging_tool_is_direct_mutator(declaration)
+    declaration["function"]["parameters"]["properties"]["limit"]["type"] = "string"
+    assert kernel._debugging_tool_is_direct_mutator(declaration)
     assert kernel._debugging_tool_is_direct_mutator({"function": {"name": "perform_operation"}})
     assert kernel._debugging_tool_is_direct_mutator({"function": {"name": "unregistered_format"}})

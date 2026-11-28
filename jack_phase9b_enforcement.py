@@ -23,7 +23,7 @@ _PHASE9B_MARKER = "_JACK_RUNTIME_CODE_ENFORCEMENT_INSTALLED"
 # Read-only exception paths are deliberately small and proven not to run
 # model inference, Pi transport, or executor-side effects. Never infer read-only
 # authority from GET alone: /health, /v1/models and Pi events have dependencies.
-OBSERVATION_PATHS = frozenset({"/", "/jack/runtime/status", "/jack/runtimes"})
+OBSERVATION_PATHS = frozenset({"/", "/jack/runtime/status", "/jack/runtimes", "/jack/runtime-identity"})
 
 
 def _http_authority_scopes(scope: Any) -> tuple[str, ...]:
@@ -32,7 +32,7 @@ def _http_authority_scopes(scope: Any) -> tuple[str, ...]:
     # Keep this classification in the executable's own literal bytecode.
     # Do not consult a rebindable global exception set on the request path.
     if method == "GET" and path in (
-        "/", "/jack/runtime/status", "/jack/runtimes",
+        "/", "/jack/runtime/status", "/jack/runtimes", "/jack/runtime-identity",
     ):
         return ("observation",)
     if method == "POST" and path == "/jack/security/path-admission":
@@ -343,6 +343,8 @@ def install(jk: Any) -> RuntimeCodeAuthority:
         ("path-represented", path_policy, "authorize_represented_path", "shared"),
         ("path-structured", path_policy, "authorize_structured_tool_call", "shared"),
         ("path-executor", path_policy, "authorize_executor_tool_call", "shared"),
+        ("debugging-tool-surface", jk, "_debugging_report_only_tool_surface", "model"),
+        ("debugging-tool-classification", jk, "_debugging_tool_is_direct_mutator", "model"),
         ("consequence", consequence, "evaluate_consequence", "shared"),
         ("responses-stream", responses, "_stream", "model"),
         ("responses-nonstream", responses, "_nonstream", "model"),
