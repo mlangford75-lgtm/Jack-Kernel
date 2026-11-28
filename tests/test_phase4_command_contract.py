@@ -711,3 +711,28 @@ def test_windows_non_path_argument_correction_retains_positive_targets(command, 
         command_dialect="bash",
     )
     assert result.outcome.value == expected
+
+
+def test_represented_unresolved_shell_expansion_continues_independent_target_checks(monkeypatch):
+    # Exercise the release contract at the extraction/preparation seam;
+    # the actual shell is not evaluated or simulated.
+    original = policy._prepare_command_target
+
+    def prepare(active, target, **kwargs):
+        if target == "unresolved.txt":
+            raise policy.RepresentedPathAmbiguous("synthetic unresolved shell expansion")
+        return original(active, target, **kwargs)
+
+    monkeypatch.setattr(policy, "_prepare_command_target", prepare)
+    for command, expected in (
+        ("cat unresolved.txt", policy.PathAuthorizationOutcome.ALLOW),
+        ("cat unresolved.txt D:/Outside/file.txt", policy.PathAuthorizationOutcome.DENY_AND_CONTINUE),
+        ("cat unresolved.txt D:/Sensitive/file.txt", policy.PathAuthorizationOutcome.HARD_INTERRUPT),
+    ):
+        result = policy.authorize_command_tool_call(
+            build(never=(r"D:\Sensitive",)), call("bash", command),
+            executor_cwd=r"D:\Projects\Jack", command_dialect="bash",
+        )
+        assert result.outcome is expected
+        if expected is policy.PathAuthorizationOutcome.ALLOW:
+            assert "unclassified" in result.reason

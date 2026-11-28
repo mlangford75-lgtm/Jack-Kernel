@@ -2559,6 +2559,7 @@ def authorize_command_tool_call(
             canonical_cwd = None
 
     verified_read = _safe_default_read_command(call, extraction) if policy.path_style == "windows" else False
+    unresolved_shell_operand = False
     for target in extraction.targets:
         try:
             prepared_target = _prepare_command_target(
@@ -2570,6 +2571,13 @@ def authorize_command_tool_call(
         except NonFilesystemPowerShellTarget:
             continue
         except RepresentedPathAmbiguous:
+            # _prepare_command_target only raises this for unresolved shell
+            # expansions. In represented protection this is not a canonical
+            # path violation; continue checking every independently identified
+            # target. Other path/authority failures retain their own rules.
+            if policy.filesystem_protection is FilesystemProtection.REPRESENTED:
+                unresolved_shell_operand = True
+                continue
             if policy.workspace_enabled:
                 return PathAuthorizationDecision(
                     PathAuthorizationOutcome.DENY_AND_CONTINUE,
@@ -2605,7 +2613,7 @@ def authorize_command_tool_call(
         if decision.outcome is not PathAuthorizationOutcome.ALLOW:
             return decision
 
-    if extraction.ambiguous or extraction.error:
+    if extraction.ambiguous or extraction.error or unresolved_shell_operand:
         if policy.filesystem_protection is FilesystemProtection.REPRESENTED:
             # Parser uncertainty is not a positive policy violation. The
             # represented targets above still have full policy authority.
