@@ -622,34 +622,24 @@ def _install_kernel_release_enforcement(
         @wraps(original_stream)
         async def source_governed_stream(*args: Any, **kwargs: Any):
             authority.verify_for_authority_boundary()
-            blocked: Optional[SourceAuthorityUnavailable] = None
             source_stream = original_stream(*args, **kwargs)
             try:
                 async for chunk in source_stream:
-                    if blocked is not None:
-                        # Preserve safe cognition by draining the predecessor stream,
-                        # but never reopen release within this interrupted transaction.
-                        continue
                     try:
                         with authority.admit():
                             pass
                     except SourceAuthorityUnavailable as exc:
-                        blocked = exc
+                        # Notify the suspended transaction owner before closing.
+                        # Never advance an interrupted stream toward a commit.
                         note = getattr(kernel, "_note_outer_stream_failure", None)
                         if callable(note):
                             note(exc)
-                        continue
+                        raise
                     yield chunk
-            except Exception:
-                if blocked is not None:
-                    raise blocked
-                raise
             finally:
                 close = getattr(source_stream, "aclose", None)
                 if callable(close):
                     await close()
-            if blocked is not None:
-                raise blocked
 
         source_governed_stream._jack_phase8_source_authority = True
         source_governed_stream._jack_phase8_original = original_stream
