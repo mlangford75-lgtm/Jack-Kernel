@@ -209,3 +209,37 @@ def test_metadata_does_not_modify_frozen_prompts_or_context_pruning(monkeypatch,
     assert k.AGENTIC_CACHE_APPEND_EXPERIMENT  # explicitly enabled by fixture
     assert k.STAGES["extended_reflection"].allow_tools is False
     assert k._stage_continuation(k.STAGES["extended_reflection"]) == k.AGENTIC_36_STAGE2_PROMPT
+
+
+def test_identity_bearing_history_bypasses_shadow_scan_without_changing_projection(monkeypatch, tmp_path):
+    k = load_kernel(monkeypatch, tmp_path)
+    original = {"role": "user", "content": "Create a clock."}
+    history = [dict(original)]
+    turn = k._agentic_begin_turn(history, fresh=True)
+    answer = k.append_extended_candidate_response(history, {
+        "content": "Exact clock A1", "reasoning_content": "clock evidence",
+    })
+    k._agentic_forensic_start_stage2(history)
+    completed = asyncio.run(k.KERNEL._complete_commit(
+        history, "", {}, answer, "Verified clock memory",
+    ))
+    visible = k._format_agentic_completed_response(
+        completed.frozen_xml, completed.frozen_answer, turn_id=turn,
+    )
+    expected = k._agentic_forensic_project_visible([dict(original)], visible)
+    assert expected is not None
+    assert expected[-1]["content"] == answer
+
+    class NoShadowTraversal(dict):
+        def values(self):
+            raise AssertionError("Identity-bearing history must not scan shadow records")
+
+    monkeypatch.setattr(k, "_AGENTIC_SHADOW_LEDGER", NoShadowTraversal(k._AGENTIC_SHADOW_LEDGER))
+    assert k._agentic_project_committed_artifact_pair([dict(original)], visible) is None
+    caller = [dict(original), {"role": "assistant", "content": visible},
+              {"role": "user", "content": "Continue."}]
+    projected = k.compact_incoming_history(caller)
+    assert projected[1:3] == expected
+    tampered = visible.replace("Exact clock A1", "Changed clock A1")
+    assert k._agentic_project_committed_artifact_pair([dict(original)], tampered) is None
+    assert k._agentic_forensic_project_visible([dict(original)], tampered) is None

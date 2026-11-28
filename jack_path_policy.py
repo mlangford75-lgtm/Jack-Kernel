@@ -2575,7 +2575,11 @@ def authorize_command_tool_call(
             # expansions. In represented protection this is not a canonical
             # path violation; continue checking every independently identified
             # target. Other path/authority failures retain their own rules.
-            if policy.filesystem_protection is FilesystemProtection.REPRESENTED:
+            # Literal POSIX home operands have an explicit executor-owned
+            # home contract. Its absence is a missing required fact, not
+            # generic parser uncertainty; never substitute Kernel HOME.
+            requires_posix_home = policy.path_style == "posix" and str(target).startswith("~")
+            if policy.filesystem_protection is FilesystemProtection.REPRESENTED and not requires_posix_home:
                 unresolved_shell_operand = True
                 continue
             if policy.workspace_enabled:

@@ -7822,7 +7822,12 @@ def _agentic_project_committed_artifact_pair(
         return None
     # Identity-bearing committed capsules are validated through the durable
     # journal, not through process-local records or content-based matching.
-    if _agentic_unwrap_visible_memory(assistant_text)[0] is not None:
+    if (_agentic_unwrap_visible_memory(assistant_text)[0] is not None
+            or _FLASH_TRAILING_WORK_ID_RE.search(assistant_text)):
+        # Current two-stage and Flash artifacts carry a host-owned trailing
+        # Work ID. The durable journal already authenticates that exact
+        # identity and all artifact boundaries. A shadow scan cannot improve
+        # its authority and would compare up to 128 unrelated records.
         return None
     latest_user = next(
         (item for item in reversed(retained)
