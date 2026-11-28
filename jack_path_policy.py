@@ -15,6 +15,7 @@ import jack_posix_paths
 STATIC_PATH_POLICY_ENV = "JACK_PATH_POLICY_JSON"
 STATIC_PATH_POLICY_VERSION = 1
 STATIC_TOOL_CONTRACT_ENV = "JACK_STRUCTURED_TOOL_CONTRACTS_JSON"
+POSIX_EXECUTOR_HOME_ENV = "JACK_POSIX_EXECUTOR_HOME"
 
 # Phase 4 intentionally snapshots only environment values that are ordinary
 # Windows path anchors. It does not ingest arbitrary process environment into
@@ -266,6 +267,7 @@ class RuntimePathPolicy:
     workspace_mode: str = "bounded"
     path_style: str = "windows"
     custom_tool_contracts: Tuple[StructuredToolPathContract, ...] = ()
+    posix_executor_home: Optional[str] = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.runtime_id, str) or not self.runtime_id:
@@ -279,6 +281,12 @@ class RuntimePathPolicy:
             raise TypeError("custom tool contracts must be an immutable tuple")
         if self.path_style not in {"windows", "posix"}:
             raise ValueError("unsupported host path style")
+        if self.posix_executor_home is not None:
+            if self.path_style != "posix":
+                raise ValueError("POSIX executor home requires POSIX path policy")
+            jack_posix_paths.require_absolute(self.posix_executor_home)
+            if any(c in self.posix_executor_home for c in "\r\n\x00"):
+                raise ValueError("POSIX executor home contains unsupported control characters")
         protection = effective_protection(self.workspace_root is not None, self.workspace_mode)
         if protection is FilesystemProtection.STRICT:
             # The native runtime has no qualified containment integration.
@@ -722,6 +730,7 @@ def build_runtime_path_policy(
     host_environment: Optional[Mapping[str, Any]] = None,
     path_style: Optional[str] = None,
     tool_contracts_json: Optional[str] = None,
+    posix_executor_home: Optional[str] = None,
 ) -> RuntimePathPolicy:
     """Build one immutable host-owned Phase-4 startup policy snapshot.
 
@@ -819,6 +828,16 @@ def build_runtime_path_policy(
         if canonical not in user_never_roots:
             user_never_roots.append(canonical)
 
+    configured_home = (os.getenv(POSIX_EXECUTOR_HOME_ENV, "") if posix_executor_home is None else posix_executor_home)
+    if configured_home:
+        try:
+            if style != "posix":
+                raise ValueError
+            jack_posix_paths.require_absolute(configured_home)
+            if any(c in configured_home for c in "\r\n\x00"):
+                raise ValueError
+        except (ValueError, TypeError):
+            raise RuntimeError("Invalid configured POSIX executor home") from None
     policy = RuntimePathPolicy(
         runtime_id=runtime_id,
         lane_id=lane_id,
@@ -828,6 +847,7 @@ def build_runtime_path_policy(
         user_never_roots=tuple(user_never_roots),
         workspace_mode=workspace_mode,
         path_style=style,
+        posix_executor_home=configured_home or None,
         custom_tool_contracts=_parse_custom_tool_contracts(
             os.getenv(STATIC_TOOL_CONTRACT_ENV, "") if tool_contracts_json is None else tool_contracts_json
         ),
@@ -1119,12 +1139,12 @@ def _prepare_command_target(
 ) -> str:
     environment = policy.path_environment()
     if policy.path_style == "posix":
-        prepared = _strip_token_quotes(str(target or ""))
+        prepared = str(target or "")
         if prepared.startswith("~"):
             # Shell-dependent home expansion must not be treated as a literal.
             raise RepresentedPathAmbiguous("shell home expansion is executor-dependent")
-        if dialect == "bash":
-            prepared = _expand_known_bash_environment(prepared, environment)
+        if dialect == "bash" and _ENV_BASH_RE.search(prepared):
+            raise RepresentedPathAmbiguous("shell environment is executor-dependent")
         return prepared
     prepared = _strip_token_quotes(str(target or "").strip())
     if dialect == "powershell":
@@ -2398,11 +2418,18 @@ def authorize_command_tool_call(
             "no command capability was identified",
         )
 
+    # POSIX home expansion is limited to explicitly configured executor
+    # metadata and literal unquoted operands. Never substitute Kernel HOME.
+    if policy.path_style == "posix":
+        candidate = rewrite_literal_bash_home_call_for_workspace_release(
+            policy, call, command_dialect=command_dialect, executor_platform=executor_platform,
+        )
+        function = candidate["function"]
     extraction = extract_command_paths(
         function.get("name"),
         function.get("arguments"),
         command_dialect=command_dialect,
-        environment=policy.path_environment(),
+        environment=policy.path_environment() if policy.path_style == "windows" else {},
     )
 
     if not extraction.applicable:
@@ -2575,7 +2602,13 @@ def rewrite_literal_bash_home_call_for_workspace_release(
     """
     import shlex
 
-    if policy.path_style != "windows" or not policy.workspace_enabled or str(executor_platform or "").casefold() not in {"win32", "windows"}:
+    platform = str(executor_platform or "").casefold()
+    if policy.path_style == "windows":
+        if not policy.workspace_enabled or platform not in {"win32", "windows"}:
+            return call
+    elif not policy.posix_executor_home or platform not in {
+        "linux", "darwin", "freebsd", "openbsd", "netbsd", "aix", "sunos",
+    }:
         return call
     if not isinstance(call, dict) or not isinstance(call.get("function"), dict):
         return call
@@ -2595,16 +2628,22 @@ def rewrite_literal_bash_home_call_for_workspace_release(
         return call
     if words[0][1] not in _BASH_PATH_COMMANDS | {"find"}:
         return call
-    env = policy.path_environment()
-    home = _bash_environment_value("HOME", env)
-    if not home:
-        return call
-    try:
-        home = normalize_represented_windows_path(home, environment=env)
-    except RepresentedPathError:
-        return call
-    if not re.match(r"^[A-Za-z]:\\", home):
-        return call
+    if policy.path_style == "windows":
+        env = policy.path_environment()
+        home = _bash_environment_value("HOME", env)
+        if not home:
+            return call
+        try:
+            home = normalize_represented_windows_path(home, environment=env)
+        except RepresentedPathError:
+            return call
+        if not re.match(r"^[A-Za-z]:\\", home):
+            return call
+        home = home.replace("\\", "/")
+    else:
+        home = policy.posix_executor_home
+        if not home or home != home.strip() or any(c in home for c in "$%~*?\"'<>|\\[]{}"):
+            return call
 
     # Keep the original shell spelling of every other word. Re-quoting
     # unrelated argv would change the command that the model requested.
@@ -2614,7 +2653,7 @@ def rewrite_literal_bash_home_call_for_workspace_release(
         if raw != value or raw.startswith("-"):
             continue
         if raw == "~" or raw.startswith("~/"):
-            rewritten[index] = shlex.quote(home.replace("\\", "/") + raw[1:])
+            rewritten[index] = shlex.quote(home.rstrip("/") + raw[1:] if raw != "~" else home)
             changed = True
     if not changed:
         return call

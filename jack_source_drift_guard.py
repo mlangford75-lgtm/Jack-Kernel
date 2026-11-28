@@ -513,6 +513,8 @@ class RuntimeSourceAuthority:
 _REQUIRED_AUTHORITY_MODULES: Tuple[Tuple[str, str], ...] = (
     ("jack_evidence_guard.py", "jack_evidence_guard"),
     ("jack_path_policy.py", "jack_path_policy"),
+    ("jack_posix_paths.py", "jack_posix_paths"),
+    ("jack_executor_contract.py", "jack_executor_contract"),
     ("jack_consequence_gate.py", "jack_consequence_gate"),
     ("jack_authority_ledger.py", "jack_authority_ledger"),
     ("jack_responses_compat.py", "jack_responses_compat"),

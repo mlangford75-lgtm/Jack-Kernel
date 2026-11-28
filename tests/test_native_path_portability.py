@@ -160,3 +160,49 @@ def test_optional_explicit_invalid_path_does_not_become_workspace_default(invali
     rewritten = paths.rewrite_structured_tool_call_for_workspace_release(active, call)
     assert json.loads(rewritten["function"]["arguments"])["path"] == invalid
     assert paths.authorize_structured_tool_call(active, rewritten).outcome is paths.PathAuthorizationOutcome.DENY_AND_CONTINUE
+
+
+def test_posix_home_is_operator_owned_not_kernel_home():
+    def active(home):
+        return paths.build_runtime_path_policy(
+            runtime_id="posix-test", lane_id="posix-lane",
+            raw_json=json.dumps({"version": 1, "workspace_root": "/executor",
+                                 "never_paths": ["/executor/home/Private"]}),
+            host_environment={"HOME": "/kernel-home"}, path_style="posix",
+            posix_executor_home=home,
+        )
+    call = {"function": {"name": "bash", "arguments": {"command": "cat ~/clock.html"}}}
+    original = active("")
+    configured = active("/executor/home")
+    assert paths.rewrite_literal_bash_home_call_for_workspace_release(
+        original, call, executor_platform="linux") == call
+    assert paths.authorize_command_tool_call(original, call, executor_cwd="/executor",
+        executor_platform="linux").outcome is paths.PathAuthorizationOutcome.DENY_AND_CONTINUE
+    rewritten = paths.rewrite_literal_bash_home_call_for_workspace_release(
+        configured, call, executor_platform="linux")
+    assert rewritten["function"]["arguments"]["command"] == "cat /executor/home/clock.html"
+    assert paths.authorize_command_tool_call(configured, call, executor_cwd="/executor",
+        executor_platform="linux").outcome is paths.PathAuthorizationOutcome.ALLOW
+    protected = {"function": {"name": "bash", "arguments": {"command": "cat ~/Private/secret.txt"}}}
+    assert paths.authorize_command_tool_call(configured, protected, executor_cwd="/executor",
+        executor_platform="linux").outcome is paths.PathAuthorizationOutcome.HARD_INTERRUPT
+    for platform in (None, "win32"):
+        assert paths.rewrite_literal_bash_home_call_for_workspace_release(
+            configured, call, executor_platform=platform) == call
+    quoted = {"function": {"name": "bash", "arguments": {"command": "cat '~/clock.html'"}}}
+    assert paths.rewrite_literal_bash_home_call_for_workspace_release(
+        configured, quoted, executor_platform="linux") == quoted
+    from jack_policy_integrity import _canonical_material
+    assert _canonical_material("path", original, b"x" * 32) != _canonical_material("path", configured, b"x" * 32)
+
+
+def test_posix_shell_does_not_resolve_kernel_home_environment():
+    active = paths.build_runtime_path_policy(
+        runtime_id="posix-test", lane_id="posix-lane",
+        raw_json=json.dumps({"version": 1, "workspace_root": "/kernel-home", "never_paths": []}),
+        host_environment={"HOME": "/kernel-home"}, path_style="posix",
+        posix_executor_home="",
+    )
+    call = {"function": {"name": "bash", "arguments": {"command": "cat $HOME/clock.html"}}}
+    assert paths.authorize_command_tool_call(active, call, executor_cwd="/kernel-home",
+        executor_platform="linux").outcome is paths.PathAuthorizationOutcome.DENY_AND_CONTINUE

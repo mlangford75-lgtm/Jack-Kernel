@@ -237,6 +237,8 @@ def install(jk: Any) -> RuntimeCodeAuthority:
     import jack_consequence_gate as consequence
     import jack_evidence_guard as evidence
     import jack_path_policy as path_policy
+    import jack_posix_paths as posix_paths
+    import jack_executor_contract as executor_contract
     import jack_responses_compat as responses
     import jack_source_drift_guard as source
     import jack_runtime_code_guard as code_guard
@@ -364,6 +366,8 @@ def install(jk: Any) -> RuntimeCodeAuthority:
         ("module-code-guard", code_guard, "shared"),
         ("module-phase9b-enforcement", sys.modules[__name__], "shared"),
         ("module-path-policy", path_policy, "shared"),
+        ("module-posix-paths", posix_paths, "shared"),
+        ("module-executor-contract", executor_contract, "shared"),
         ("module-consequence", consequence, "shared"),
         ("module-evidence", evidence, "shared"),
         ("module-responses", responses, "model"),

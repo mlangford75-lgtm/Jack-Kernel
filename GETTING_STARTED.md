@@ -350,3 +350,23 @@ Historical evidence:
 - `docs/security/` — detailed immutable security phase checkpoint records.
 
 Historical statements remain preserved as evidence of what was true at their checkpoint. They must not be substituted for current-state documentation when determining present behavior.
+
+## POSIX source entrypoint (experimental branch)
+
+Use a repository-local virtual environment from the repository root, rather
+than invoking the unsecured test server:
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt -c constraints.txt
+.venv/bin/python -m pip install -r requirements-test.txt -c constraints.txt
+.venv/bin/python -m pytest -q tests/test_native_path_portability.py
+.venv/bin/python jack_secure_entrypoint.py
+```
+
+Headless source launch uses `.venv/bin/python jack_secure_entrypoint.py --serve`
+with the intended startup environment configured explicitly. The same mandatory
+security initializer is used. Native-path CI covers Linux, macOS and Windows;
+that result does not establish complete live POSIX serving qualification.
+Packaged/frozen executable support is not claimed: the secured source entrypoint
+requires measurable source and the supported interpreter-based child launch.

@@ -285,3 +285,16 @@ metadata is consulted only when the existing model discovery supplies no
 context value and no operator override exists. Only an exact, unambiguous
 running model match supplies its reported context. LM Studio vision metadata
 is projected to Pi only on a positive provider declaration.
+
+### POSIX executor home scope
+
+For a POSIX runtime dedicated to a known executor environment, an operator may
+set `JACK_POSIX_EXECUTOR_HOME` to its canonical absolute home directory at
+startup. Static Policy Integrity binds this value. Only the supported literal
+unquoted tilde operands with declared POSIX executor platform are resolved.
+The Kernel's own HOME is never substituted for POSIX shell environment data.
+Quoted tilde, named-user expansion and general shell-variable expressions are
+not certified as resolved by this contract. Workspace coverage continues to
+require determinable targets; Standard coverage does not introduce a blanket
+parser restriction. This is not remote-host or filesystem attestation; do not
+reuse a dedicated runtime home configuration for unrelated executors.

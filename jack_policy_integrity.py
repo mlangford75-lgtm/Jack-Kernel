@@ -86,6 +86,7 @@ def _canonical_material(kind: PolicyKind, policy: Any, key: bytes) -> bytes:
             "workspace_root": _safe_scalar(policy.workspace_root, allow_none=True),
             "workspace_mode": _safe_scalar(policy.workspace_mode),
             "path_style": _safe_scalar(policy.path_style),
+            "posix_executor_home": _safe_scalar(policy.posix_executor_home, allow_none=True),
             "never_roots": _tuple_strings(policy.never_roots),
             "user_never_roots": _tuple_strings(policy.user_never_roots),
             "path_environment": [[k, v] for k, v in environment],
