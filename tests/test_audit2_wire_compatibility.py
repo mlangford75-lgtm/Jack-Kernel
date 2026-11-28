@@ -76,7 +76,8 @@ def test_authenticated_runtime_identity_needs_no_backend_discovery(monkeypatch):
     async def unavailable(*args):
         raise AssertionError("runtime identity must not discover backend models")
     monkeypatch.setattr(jk.KERNEL, "_resolve_discovery_model", unavailable)
-    monkeypatch.setattr(jk.CFG, "api_key", "synthetic-identity-key")
+    from dataclasses import replace
+    monkeypatch.setattr(jk, "CFG", replace(jk.CFG, api_key="synthetic-identity-key"))
     with pytest.raises(jk.HTTPException) as exc:
         asyncio.run(jk.authenticated_runtime_identity(SimpleNamespace(headers={})))
     assert exc.value.status_code == 401
