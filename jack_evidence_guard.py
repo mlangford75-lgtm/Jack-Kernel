@@ -1168,6 +1168,9 @@ async def _guarded_stream(
     ] = {}
 
     tool_identities: Dict[int, Dict[int, Optional[str]]] = {}
+    # A tool proposal is consequential, unlike a text prefix. With active
+    # Canaries, keep its original fragments until a normal tool-call finish.
+    pending_tool_frames: Dict[int, list] = {}
     last_template: Optional[Dict[str, Any]] = None
     done_seen = False
 
@@ -1190,6 +1193,8 @@ async def _guarded_stream(
             )
 
             if text.strip() == "data: [DONE]":
+                if pending_tool_frames:
+                    raise StreamingIRQProtocolError("Unfinished guarded tool proposal")
                 flushed = _flush_event(
                     last_template,
                     filters,
@@ -1233,7 +1238,6 @@ async def _guarded_stream(
 
             field_entries = []
             detections = []
-            tool_argument_entries = []
             tool_detections = []
 
             # ------------------------------------------------
@@ -1391,22 +1395,7 @@ async def _guarded_stream(
                             )
                         )
 
-                        (
-                            raw_released,
-                            detection,
-                        ) = detector.feed_guarded(
-                            arguments
-                        )
-
-                        tool_argument_entries.append(
-                            (
-                                choice_index,
-                                tool_index,
-                                call,
-                                arguments,
-                                raw_released,
-                            )
-                        )
+                        _, detection = detector.feed_guarded(arguments)
 
                         if detection is not None:
                             tool_detections.append(
@@ -1449,20 +1438,6 @@ async def _guarded_stream(
                     ) in detections
                 }
 
-                detected_tool_keys = {
-                    (
-                        choice_index,
-                        tool_index,
-                    )
-                    for (
-                        _ordinal,
-                        _tool_order,
-                        choice_index,
-                        tool_index,
-                        _detection,
-                    ) in tool_detections
-                }
-
                 raw_safe: Dict[
                     Tuple[int, str],
                     str,
@@ -1501,71 +1476,11 @@ async def _guarded_stream(
                         + detector.flush_safe()
                     )
 
-                safe_tool_calls: Dict[
-                    int,
-                    list,
-                ] = {}
-
-                if tool_detections:
-                    for (
-                        choice_index,
-                        _tool_index,
-                        call,
-                        _original_arguments,
-                        raw_released,
-                    ) in tool_argument_entries:
-                        safe_call = dict(call)
-                        safe_function = safe_call.get(
-                            "function"
-                        )
-
-                        if isinstance(
-                            safe_function,
-                            dict,
-                        ):
-                            safe_function = dict(
-                                safe_function
-                            )
-                            safe_function[
-                                "arguments"
-                            ] = raw_released
-                            safe_call[
-                                "function"
-                            ] = safe_function
-
-                        safe_tool_calls.setdefault(
-                            choice_index,
-                            [],
-                        ).append(safe_call)
-
-                for key, detector in (
-                    tool_canary_detectors.items()
-                ):
-                    if key in detected_tool_keys:
-                        detector.flush()
-                        continue
-
-                    tail = detector.flush_safe()
-
-                    if not tail:
-                        continue
-
-                    (
-                        choice_index,
-                        tool_index,
-                    ) = key
-
-                    safe_tool_calls.setdefault(
-                        choice_index,
-                        [],
-                    ).append(
-                        {
-                            "index": tool_index,
-                            "function": {
-                                "arguments": tail,
-                            },
-                        }
-                    )
+                # A terminal Canary invalidates every unfinished tool proposal
+                # in this response. Never flush a truncated executable delta.
+                pending_tool_frames.clear()
+                for detector in tool_canary_detectors.values():
+                    detector.flush()
 
                 by_choice: Dict[
                     int,
@@ -1648,18 +1563,6 @@ async def _guarded_stream(
                             choice_index,
                             {},
                         )[field] = released
-
-                for (
-                    choice_index,
-                    calls,
-                ) in sorted(
-                    safe_tool_calls.items()
-                ):
-                    if calls:
-                        by_choice.setdefault(
-                            choice_index,
-                            {},
-                        )["tool_calls"] = calls
 
                 if by_choice:
                     safe_choices = [
@@ -1752,22 +1655,23 @@ async def _guarded_stream(
 
                 delta[field] = released
 
-            for (
-                _choice_index,
-                _tool_index,
-                call,
-                original_arguments,
-                raw_released,
-            ) in tool_argument_entries:
-                function = call.get("function")
-
-                if not isinstance(function, dict):
-                    continue
-
-                if raw_released != original_arguments:
+            if canary_enabled:
+                for ordinal, choice in enumerate(choices):
+                    if not isinstance(choice, dict):
+                        continue
+                    delta = choice.get("delta")
+                    if not isinstance(delta, dict):
+                        continue
+                    calls = delta.get("tool_calls")
+                    if not isinstance(calls, list) or not calls:
+                        continue
+                    try:
+                        choice_index = int(choice.get("index", ordinal))
+                    except (TypeError, ValueError):
+                        choice_index = ordinal
+                    pending_tool_frames.setdefault(choice_index, []).append(calls)
+                    del delta["tool_calls"]
                     changed = True
-
-                function["arguments"] = raw_released
 
             # ------------------------------------------------
             # NORMAL FINISH
@@ -1861,35 +1765,23 @@ async def _guarded_stream(
                         )
                         changed = True
 
-                for (
-                    tool_choice_index,
-                    tool_index,
-                ), detector in sorted(
-                    tool_canary_detectors.items()
-                ):
-                    if tool_choice_index != choice_index:
-                        continue
-
-                    tail = detector.flush_safe()
-
-                    if not tail:
-                        continue
-
-                    tool_calls = delta.get("tool_calls")
-
-                    if not isinstance(tool_calls, list):
-                        tool_calls = []
-                        delta["tool_calls"] = tool_calls
-
-                    tool_calls.append(
-                        {
-                            "index": tool_index,
-                            "function": {
-                                "arguments": tail,
-                            },
-                        }
-                    )
-                    changed = True
+                if canary_enabled:
+                    frames = pending_tool_frames.pop(choice_index, [])
+                    for key, detector in tool_canary_detectors.items():
+                        if key[0] == choice_index:
+                            detector.flush()
+                    if choice.get("finish_reason") == "tool_calls":
+                        # Preserve the original fragment ordering and indices.
+                        # All fragments in this choice have now been inspected.
+                        for calls in frames:
+                            yield _encode_sse_object({
+                                **last_template,
+                                "choices": [{
+                                    "index": choice_index,
+                                    "delta": {"tool_calls": calls},
+                                    "finish_reason": None,
+                                }],
+                            })
 
             yield (
                 _encode_sse_object(obj)
@@ -1898,6 +1790,7 @@ async def _guarded_stream(
             )
 
     except Exception as exc:
+        pending_tool_frames.clear()
         # Abnormal termination cannot certify an incomplete Canary prefix.
         for detector in (*canary_detectors.values(), *tool_canary_detectors.values()):
             detector.flush()
@@ -1923,7 +1816,10 @@ async def _guarded_stream(
     if not done_seen:
         # A terminal choice already finalized its own fields. Any remaining
         # Canary carry at EOF belongs to an incomplete choice.
-        incomplete = any(d.held_length for d in (*canary_detectors.values(), *tool_canary_detectors.values()))
+        incomplete = bool(pending_tool_frames) or any(
+            d.held_length for d in (*canary_detectors.values(), *tool_canary_detectors.values())
+        )
+        pending_tool_frames.clear()
         if incomplete:
             for detector in (*canary_detectors.values(), *tool_canary_detectors.values()):
                 detector.flush()

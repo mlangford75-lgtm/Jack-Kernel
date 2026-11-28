@@ -926,7 +926,7 @@ def test_tool_argument_gate_preserves_benign_fragmented_call():
     assert chunks[-1] == b"data: [DONE]\n\n"
 
 
-def test_same_delta_tool_argument_canary_releases_only_safe_prefix():
+def test_same_delta_tool_argument_canary_withholds_entire_proposal():
     secret = "TOOL-ARG-CANARY"
 
     canaries = make_canaries(
@@ -964,10 +964,7 @@ def test_same_delta_tool_argument_canary_releases_only_safe_prefix():
         canaries=canaries,
     )
 
-    assert streamed_tool_arguments(
-        chunks,
-        index=0,
-    ) == "safe-"
+    assert streamed_tool_indexes(chunks) == []
 
     serialized = b"".join(chunks).decode(
         "utf-8",
@@ -989,7 +986,7 @@ def test_same_delta_tool_argument_canary_releases_only_safe_prefix():
     )
 
 
-def test_cross_boundary_tool_argument_canary_preserves_safe_prefix():
+def test_cross_boundary_tool_argument_canary_withholds_entire_proposal():
     secret = "ABCDEF"
 
     canaries = make_canaries(
@@ -1032,10 +1029,8 @@ def test_cross_boundary_tool_argument_canary_preserves_safe_prefix():
         canaries=canaries,
     )
 
-    assert streamed_tool_arguments(
-        chunks,
-        index=0,
-    ) == "safe-xx"
+    assert streamed_tool_indexes(chunks) == []
+    assert streamed_finish_reasons(chunks) == []
 
     assert exc.match.canary_id == (
         "tool-cross-boundary"
@@ -1101,7 +1096,7 @@ def test_tool_argument_canary_state_is_isolated_by_tool_index():
     ) == ["tool_calls"]
 
 
-def test_ordinary_failure_preserves_cleared_tool_prefix_discards_unverified_carry():
+def test_ordinary_failure_withholds_unfinished_tool_proposal():
     secret = "UNSEEN-TOOL-CANARY"
 
     canaries = make_canaries(secret)
@@ -1151,15 +1146,12 @@ def test_ordinary_failure_preserves_cleared_tool_prefix_discards_unverified_carr
 
     chunks, exc = asyncio.run(run())
 
-    assert streamed_tool_arguments(
-        chunks,
-        index=0,
-    ) == "verified-safe-prefix;"
+    assert streamed_tool_indexes(chunks) == []
 
     assert str(exc) == "ordinary transport failure"
 
 
-def test_text_canary_preserves_prior_safe_tool_tail_but_blocks_current_tool():
+def test_text_canary_preserves_safe_text_but_withholds_unfinished_tools():
     secret = "TEXT-CANARY"
 
     canaries = make_canaries(secret)
@@ -1205,12 +1197,7 @@ def test_text_canary_preserves_prior_safe_tool_tail_but_blocks_current_tool():
 
     assert visible_text(chunks) == "safe-"
 
-    assert streamed_tool_arguments(
-        chunks,
-        index=0,
-    ) == "benign-tool-args"
-
-    assert 1 not in streamed_tool_indexes(chunks)
+    assert streamed_tool_indexes(chunks) == []
 
 
 def test_audit_m2_malformed_frame_does_not_release_held_canary_tail():
@@ -1291,3 +1278,71 @@ def test_terminal_stage_interrupt_discards_outstanding_quarantine():
         raise AssertionError("terminal failure must propagate")
 
     assert asyncio.run(run()) == "ordinary sample"[:-8]
+
+
+def test_canary_in_parallel_tool_withholds_all_unfinished_calls():
+    secret = "TOOL-CANARY-SECRET"
+    canaries = make_canaries(secret)
+
+    async def source(_body):
+        yield event({"content": "ordinary text", "tool_calls": [
+            {"index": 0, "id": "valid", "type": "function",
+             "function": {"name": "read_file", "arguments": '{"path":"a.txt"}'}},
+            {"index": 1, "id": "violating", "type": "function",
+             "function": {"name": "write_file", "arguments": '{"content":"' + secret[:8]}},
+        ]})
+        yield event({"tool_calls": [{"index": 1, "function": {
+            "arguments": secret[8:] + '"}'}}]}, finish_reason="tool_calls")
+        yield b"data: [DONE]\n\n"
+
+    chunks, exc = collect_until_canary_interrupt(source, canaries=canaries)
+    assert isinstance(exc, guard.StreamingIRQCanaryInterrupt)
+    assert visible_text(chunks) == "ordinary text"
+    assert streamed_tool_indexes(chunks) == []
+    assert streamed_finish_reasons(chunks) == []
+    assert b"data: [DONE]" not in b"".join(chunks)
+
+
+def test_active_canary_withholds_tool_until_normal_finish():
+    canaries = make_canaries("UNSEEN-CANARY")
+
+    async def run():
+        chunks = []
+
+        async def source(_body):
+            yield event({"tool_calls": [{"index": 0, "id": "read", "type": "function",
+                                       "function": {"name": "read", "arguments": "{}"}}]})
+            assert streamed_tool_indexes(chunks) == []
+            yield event({}, finish_reason="tool_calls")
+            yield b"data: [DONE]\n\n"
+
+        async for chunk in guard._guarded_stream(source, {}, canaries=canaries):
+            chunks.append(chunk)
+        return chunks
+
+    chunks = asyncio.run(run())
+    assert streamed_tool_arguments(chunks) == "{}"
+    assert streamed_finish_reasons(chunks) == ["tool_calls"]
+
+
+def test_active_canary_done_without_tool_finish_releases_no_proposal():
+    canaries = make_canaries("UNSEEN-CANARY")
+
+    async def run():
+        chunks = []
+
+        async def source(_body):
+            yield event({"tool_calls": [{"index": 0, "id": "read", "type": "function",
+                                       "function": {"name": "read", "arguments": "{}"}}]})
+            yield b"data: [DONE]\n\n"
+
+        try:
+            async for chunk in guard._guarded_stream(source, {}, canaries=canaries):
+                chunks.append(chunk)
+        except guard.StreamingIRQProtocolError:
+            return chunks
+        raise AssertionError("Incomplete tool proposal was not rejected")
+
+    chunks = asyncio.run(run())
+    assert streamed_tool_indexes(chunks) == []
+    assert b"data: [DONE]" not in b"".join(chunks)
