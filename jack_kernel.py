@@ -11162,6 +11162,10 @@ class JackQwenKernel:
 
                 tool_deltas = delta.get("tool_calls")
                 if tool_deltas:
+                    if AGENTIC_CODER_MODE and stage_key == "coder_planner":
+                        early_planner_denial = "Tool-free Architect proposed a tool; no call released"
+                        LOG.warning("Tool-free Architect proposed a streamed tool; handing off to Coder")
+                        break
                     # Function names and arguments are generated output even when
                     # Jack withholds them from Pi pending validation.
                     for tool_delta in tool_deltas:
@@ -11183,23 +11187,6 @@ class JackQwenKernel:
                         and isinstance(part.get("function"), dict) for key in ("name", "arguments")
                     )
                     observed_phase = "tool_arguments"
-                    if AGENTIC_CODER_MODE and stage_key == "coder_planner":
-                        # Do not mistake a legitimate read-only tool proposal
-                        # for role collapse. Withhold every fragment until
-                        # ordinary completed-call validation. Interrupt early
-                        # only when the reconstructed name is conclusively
-                        # outside Architect's inspection-only allowlist.
-                        for pending in tool_state.values():
-                            fn = pending.get("function") if isinstance(pending, dict) else None
-                            name = fn.get("name") if isinstance(fn, dict) else None
-                            if (isinstance(name, str) and name
-                                    and name not in _CODER_PLANNER_READ_TOOLS
-                                    and not any(allowed.startswith(name) for allowed in _CODER_PLANNER_READ_TOOLS)):
-                                early_planner_denial = "Architect proposed a forbidden tool; no call released"
-                                LOG.warning("Architect streamed a non-inspection tool name; no call released")
-                                break
-                        if early_planner_denial is not None:
-                            break
 
                 # Observational only: <=1 update/second for a stable phase.
                 # Never expose tool arguments or raw model text in telemetry.
@@ -14695,6 +14682,9 @@ class JackQwenKernel:
 
                     if stage_key == "coder_planner":
                         _coder_append_plan(history, stage_result)
+                        if pending_state is not None and resume_stage_key == stage_key:
+                            await self._retire_pending_tool_resume(pending_state)
+                            pending_state = None
                         LOG.debug("Coder Planner specification captured and delivered to Coder")
                     if stage_key == "extended_initial":
                         first_msg = ((stage_result.get("choices") or [{}])[0].get("message") or {})
@@ -17893,6 +17883,20 @@ def _edit_security_center(cfg: Dict[str, Any]) -> None:
             settings = {"max_window": ceiling}
             if percent is not None:
                 settings["sensitivity_percent"] = percent
+            trial = dict(cfg, security_irq_settings=settings)
+            try:
+                _, candidate_policy, _, _ = _security_center_policies(trial)
+                effective = _security_center_effective_canaries(trial, candidate_policy)
+                minimum = min((item.match_chars for item in effective.canaries._patterns), default=None)
+            except Exception:
+                print("Invalid or conflicting security setting; previous setting retained.")
+                continue
+            if minimum is not None:
+                print(f"Shortest effective Canary match: {minimum} characters (values hidden).")
+                if minimum < 8:
+                    print("Warning: effective match is shorter than eight characters; false positives likely.")
+                    if _cli_input("Apply anyway? [y/N]: ").strip().lower() != "y":
+                        continue
             apply_candidate("security_irq_settings", settings)
         elif choice == "10":
             if override(evidence.STATIC_CANARY_POLICY_ENV):

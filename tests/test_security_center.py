@@ -339,3 +339,17 @@ def test_discard_after_workspace_coverage_selection(factory_windows, monkeypatch
     with pytest.raises(jk._ReturnToMainMenu):
         jk._run_transactional_editor(jk._edit_security_center, factory_windows)
     assert factory_windows == before
+
+
+def test_global_irq_short_effective_match_requires_confirmation(cfg, monkeypatch, capsys):
+    monkeypatch.setattr(jk, "_load_pi_control_bridge", lambda: {})
+    cfg["api_key"] = "synthetic-credential"
+    inputs = iter(["9", "maximum", "", "y", "n", "s"])
+    monkeypatch.setattr(jk, "_cli_input", lambda *a, **k: next(inputs))
+    before = cfg.get("security_irq_settings")
+    jk._run_transactional_editor(jk._edit_security_center, cfg)
+    assert cfg.get("security_irq_settings") == before
+    out = capsys.readouterr().out
+    assert "Shortest effective Canary match:" in out
+    assert "false positives likely" in out
+    assert cfg["api_key"] not in out

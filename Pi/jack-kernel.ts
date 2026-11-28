@@ -222,8 +222,23 @@ function runtimeThinkingLevelMap(health) {
 
 async function fetchJackModels(url, token, health) {
   const root = String(url || DEFAULT_JACK_URL).replace(/\/+$/, "").replace(/\/v1$/, "");
-  const payload = await fetchJson(`${root}/api/v1/models`, token);
-  const models = Array.isArray(payload?.models) ? payload.models : [];
+  let models;
+  try {
+    const payload = await fetchJson(`${root}/api/v1/models`, token);
+    models = Array.isArray(payload?.models) ? payload.models : [];
+  } catch (error) {
+    if (![404, 503].includes(error?.status)) throw error;
+    // Ordinary OpenAI-compatible discovery is valid independently of the
+    // LM Studio-shaped metadata route. Never invent context capacity.
+    const payload = await fetchJson(`${root}/v1/models`, token);
+    models = (Array.isArray(payload?.data) ? payload.data : []).map(model => ({
+      key: model.id,
+      display_name: model.display_name || model.id,
+      max_context_length: model.context_length || model.context_window ||
+        model.contextWindow || model.max_context_length || model.max_model_len,
+      capabilities: model.capabilities,
+    }));
+  }
   return models.map((model) => {
     const loadedContext = Number(model?.loaded_instances?.[0]?.config?.context_length || 0);
     const maxContext = Number(model?.max_context_length || 0);
@@ -280,8 +295,9 @@ export default async function (pi) {
       }
       verifiedSameBinding = Boolean(activeRuntimeBinding &&
         activeRuntimeBinding.runtimeId === runtimeId && activeRuntimeBinding.laneId === laneId);
-      if (!verifiedSameBinding) activeRuntimeBinding = null;
+      if (!verifiedSameBinding) activeRuntimeBinding = { root, token, runtimeId, laneId };
       // Optional model metadata must not retire independently reverified authority.
+      verifiedSameBinding = true;
       const models = await fetchJackModels(url, token, health);
       if (!models.length) return;
       const provider = {
@@ -291,7 +307,6 @@ export default async function (pi) {
         models,
       };
       pi.registerProvider(PROVIDER_NAME, provider);
-      if (!verifiedSameBinding) activeRuntimeBinding = { root, token, runtimeId, laneId };
     } catch (error) {
       if (!verifiedSameBinding) activeRuntimeBinding = null;
       console.error("[jack-kernel] Context/model sync skipped:", error);

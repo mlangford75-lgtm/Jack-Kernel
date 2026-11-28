@@ -34,6 +34,8 @@ let mockLoadedContext = 16384;
 let mockMaxContext = 32768;
 let mockVision = false;
 let identityStatus = 200;
+let modelMetadataStatus = 200;
+let standardContext = 0;
 let legacyHealthRequests = 0;
 const lifecycleReports = [];
 const healthAuth = [];
@@ -67,7 +69,16 @@ const server = http.createServer(async (req, res) => {
     }));
     return;
   }
+  if (req.url === "/v1/models") {
+    res.end(JSON.stringify({ data: [{ id: "test-model", context_length: standardContext }] }));
+    return;
+  }
   if (req.url === "/api/v1/models") {
+    if (modelMetadataStatus !== 200) {
+      res.statusCode = modelMetadataStatus;
+      res.end(JSON.stringify({ error: "metadata unavailable" }));
+      return;
+    }
     res.end(JSON.stringify({
       models: [{
         key: "test-model",
@@ -280,11 +291,25 @@ assert.equal(registrations.length, previousCount,
 
 // A verified, unchanged runtime binding survives optional metadata failure.
 const headerEvent = {headers: {}};
-for (const fn of handlers.get("before_provider_headers") || []) await fn(headerEvent, outcomeCtx);
+for (const fn of handlers.get("before_provider_headers") || []) await fn(headerEvent, { ...outcomeCtx, cwd: tempHome });
 assert.equal(headerEvent.headers["X-Jack-Executor-Runtime-Id"], "runtime-agentic-01");
 assert.equal((handlers.get("before_provider_request") || [])
   .map(fn => fn(outgoing, outcomeCtx)).filter(Boolean).length, 0,
   "Outcomes recorded before a runtime identity failure must not be reused");
+// Standard OpenAI model metadata may be available independently.
+modelMetadataStatus = 503;
+standardContext = 24576;
+const beforeFallback = registrations.length;
+for (const fn of handlers.get("before_agent_start") || []) await fn({});
+assert.equal(registrations.length, beforeFallback + 1);
+assert.equal(registrations.at(-1).provider.models[0].contextWindow, standardContext);
+standardContext = 0;
+for (const fn of handlers.get("before_agent_start") || []) await fn({});
+assert.equal(registrations.length, beforeFallback + 1);
+const fallbackHeaders = { headers: {} };
+for (const fn of handlers.get("before_provider_headers") || []) await fn(fallbackHeaders, { ...outcomeCtx, cwd: tempHome });
+assert.equal(fallbackHeaders.headers["X-Jack-Executor-Runtime-Id"], "runtime-agentic-01");
+modelMetadataStatus = 200;
 console.log("Pi context boundary tests: PASS");
 
 // Explicit environment references must resolve before any network request.
