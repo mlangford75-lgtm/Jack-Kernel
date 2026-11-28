@@ -38,9 +38,10 @@ def authorize(active, command):
     "git clone https://example.invalid/project project",
     "cat clock*.html",
 ])
-def test_opt_in_represented_command_coverage(command):
+def test_ordinary_and_legacy_workspace_do_not_require_parser_completeness(command):
     assert authorize(policy("represented"), command) is path.PathAuthorizationOutcome.ALLOW
-    assert authorize(policy(), command) is path.PathAuthorizationOutcome.DENY_AND_CONTINUE
+    assert authorize(policy(), command) is path.PathAuthorizationOutcome.ALLOW
+    assert authorize(policy("bounded"), command) is path.PathAuthorizationOutcome.ALLOW
     assert authorize(policy(workspace=None), command) is path.PathAuthorizationOutcome.ALLOW
 
 
@@ -51,12 +52,14 @@ def test_opt_in_represented_command_coverage(command):
     ("rm C:/Boot/BCD", path.PathAuthorizationOutcome.HARD_INTERRUPT),
 ])
 def test_represented_mode_keeps_positive_path_authority(command, expected):
-    assert authorize(policy("represented"), command) is expected
+    for active in (policy(), policy("bounded"), policy("represented")):
+        assert authorize(active, command) is expected
 
 
 def test_modes_are_explicit_and_strict_is_not_emulated():
     assert policy(workspace=None).filesystem_protection is FilesystemProtection.STANDARD
-    assert policy().filesystem_protection is FilesystemProtection.BOUNDED
+    assert policy().filesystem_protection is FilesystemProtection.REPRESENTED
+    assert policy("bounded").filesystem_protection is FilesystemProtection.REPRESENTED
     assert policy("represented").filesystem_protection is FilesystemProtection.REPRESENTED
     with pytest.raises(RuntimeError, match="no qualified adapter"):
         policy("strict")
@@ -226,3 +229,29 @@ def test_independent_http_executor_client_uses_kernel_owned_admission(monkeypatc
             assert (await client.post(route, json=changed, headers=headers)).status_code == 400
 
     asyncio.run(check())
+
+
+@pytest.mark.parametrize("mode", [None, "bounded", "represented"])
+def test_live_workspace_listing_with_unclassified_shell_syntax_does_not_block(mode):
+    active = policy(mode)
+    for command in ('ls -a "$(pwd)"', "ls -a | wc -l", "ls -a --color=never", 'ls -a "D:/Projects/Jack"'):
+        assert authorize(active, command) is path.PathAuthorizationOutcome.ALLOW
+    assert authorize(active, 'ls -a "D:/Other"') is path.PathAuthorizationOutcome.DENY_AND_CONTINUE
+    assert authorize(active, 'ls -a "D:/Sensitive"') is path.PathAuthorizationOutcome.HARD_INTERRUPT
+
+
+def test_unclassified_generic_executor_dialect_does_not_block_release(monkeypatch):
+    import jack_kernel as kernel
+    active = replace(policy(), runtime_id=kernel.RUNTIME_ID, lane_id=kernel.LANE_ID)
+    monkeypatch.setattr(kernel, "_RUNTIME_PATH_POLICY", active)
+    token = kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.set(None)
+    try:
+        call = {"id": "ordinary-shell", "type": "function", "function": {
+            "name": "shell", "arguments": json.dumps({"command": "git status"}),
+        }}
+        allowed, errors = kernel._phase4_partition_structured_tool_calls([call])
+        assert allowed == [call] and not errors
+        decision, applied = path.authorize_executor_tool_call(active, call)
+        assert not applied and decision.outcome is path.PathAuthorizationOutcome.ALLOW
+    finally:
+        kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)

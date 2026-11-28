@@ -265,7 +265,7 @@ class RuntimePathPolicy:
     )
     # Preserve explicit intent even when the same root also ships by default.
     user_never_roots: Tuple[str, ...] = ()
-    # Legacy locks keep bounded admission; represented coverage is opt-in.
+    # Preserve the legacy serialized spelling; ordinary locks enforce represented paths.
     workspace_mode: str = "bounded"
     path_style: str = "windows"
     custom_tool_contracts: Tuple[StructuredToolPathContract, ...] = ()
@@ -2545,13 +2545,8 @@ def authorize_command_tool_call(
             return decision
 
     if extraction.ambiguous or extraction.error:
-        if policy.requires_bounded_command_contract:
-            return PathAuthorizationDecision(
-                PathAuthorizationOutcome.DENY_AND_CONTINUE,
-                "Workspace Lock requires command semantics to fit the bounded host-owned contract",
-            )
         if policy.filesystem_protection is FilesystemProtection.REPRESENTED:
-            # A deliberate represented-only policy is not containment. The
+            # Parser uncertainty is not a positive policy violation. The
             # represented targets above still have full policy authority.
             # Invalid command envelopes are not a request to execute.
             command, error = _command_text_from_arguments(function.get("arguments"))

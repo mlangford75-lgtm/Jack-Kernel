@@ -311,26 +311,30 @@ def test_short_effective_canary_warning_does_not_disclose_or_change_policy(cfg, 
     assert secret not in output
 
 
-def test_new_workspace_exposes_explicit_coverage_selection(factory_windows, monkeypatch):
-    inputs = iter(["1", r"D:\Projects\Jack", "represented", "y", "s"])
+def test_new_workspace_needs_no_parser_mode_selection(factory_windows, monkeypatch):
+    inputs = iter(["1", r"D:\Projects\Jack", "s"])
     monkeypatch.setattr(jk, "_cli_input", lambda *a, **kw: next(inputs))
     jk._edit_security_center(factory_windows)
     assert jk._security_center_policies(factory_windows)[0].filesystem_protection.value == "represented"
 
 
-def test_existing_bounded_workspace_keeps_coverage_on_blank(factory_windows, monkeypatch):
+def test_existing_workspace_migrates_without_disabling_lock(factory_windows, monkeypatch):
     factory_windows["security_path_policy"] = {
         "version": 1, "workspace_root": r"D:\Old", "never_paths": [],
     }
-    inputs = iter(["1", r"D:\New", "", "s"])
+    assert jk._security_center_policies(factory_windows)[0].filesystem_protection.value == "represented"
+    inputs = iter(["1", r"D:\New", "s"])
     monkeypatch.setattr(jk, "_cli_input", lambda *a, **kw: next(inputs))
     jk._edit_security_center(factory_windows)
-    assert jk._security_center_policies(factory_windows)[0].filesystem_protection.value == "bounded"
+    active = jk._security_center_policies(factory_windows)[0]
+    assert active.filesystem_protection.value == "represented"
+    assert active.workspace_enabled
+    assert active.workspace_root == active.normalize(r"D:\New")
 
 
 def test_discard_after_workspace_coverage_selection(factory_windows, monkeypatch):
     before = copy.deepcopy(factory_windows)
-    inputs = iter(["1", r"D:\Projects\Jack", "represented", "y", "m"])
+    inputs = iter(["1", r"D:\Projects\Jack", "m"])
     monkeypatch.setattr(jk, "_cli_input", lambda *a, **kw: next(inputs))
     with pytest.raises(jk._ReturnToMainMenu):
         jk._run_transactional_editor(jk._edit_security_center, factory_windows)

@@ -29,6 +29,12 @@ def effective_protection(workspace_configured: bool, workspace_mode: str) -> Fil
         if workspace_mode != "bounded":
             raise ValueError("explicit workspace enforcement requires a workspace")
         return FilesystemProtection.STANDARD
+    # Legacy configurations used "bounded" for ordinary Workspace Lock.
+    # Do not require a finite command parser to certify arbitrary legitimate
+    # work. Both persisted spellings now enforce represented path facts.
+    # Strict remains a separate, explicitly qualified executor contract.
+    if workspace_mode == "bounded":
+        return FilesystemProtection.REPRESENTED
     return FilesystemProtection(workspace_mode)
 
 

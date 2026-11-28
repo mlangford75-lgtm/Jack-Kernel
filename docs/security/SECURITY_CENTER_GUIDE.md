@@ -131,13 +131,16 @@ permission to read protected system resources or bypass Workspace Lock.
 ### Command coverage and universality
 
 The default is standard represented-target protection without Workspace Lock.
-Existing version-1 Workspace Lock configurations keep bounded command
-admission; they are not silently weakened or advertised as an OS sandbox.
-Option 12 permits an explicit, confirmed switch to represented workspace
-coverage. Identified workspace escapes and NEVER roots remain enforced;
-unclassified shell effects are not contained. For administrator configuration,
-version 2 adds the required field `"workspace_mode": "represented"` or
-`"workspace_mode": "bounded"`, alongside the existing workspace and NEVER fields.
+Workspace Lock enforces represented filesystem targets without demanding
+complete command classification. Existing version-1 and version-2
+`"bounded"` configurations retain the configured workspace and NEVER roots;
+the obsolete parser-only denial mode now resolves to represented protection.
+Security Center reports this compatibility migration. New workspaces use
+`"workspace_mode": "represented"` without an additional coverage prompt.
+Option 12 describes the protection scope. Identified workspace escapes and
+NEVER roots remain enforced; unclassified effects are not contained.
+This is an intentional policy change after the live empty-workspace test
+exposed a false denial; it is not an OS sandbox.
 
 The platform-independent executor contract distinguishes strict containment
 from both modes. Strict requires a qualified executor with object-level

@@ -5394,17 +5394,8 @@ def _phase4_partition_structured_tool_calls(
             )
             candidate = copy.deepcopy(candidate)
 
-        if (
-            not contract_applied
-            and active_policy.requires_bounded_command_contract
-            and jack_path_policy.is_command_capability_tool_name(function_name)
-        ):
-            errors.append(
-                f"tool call {index}: Workspace Lock requires a deterministic "
-                "command dialect/executor contract"
-            )
-            continue
-
+        # An unavailable command contract is not a forbidden target. Do not
+        # claim coverage or block the tool merely for an unfamiliar dialect.
         if not contract_applied:
             allowed.append(candidate)
             continue
@@ -17524,6 +17515,8 @@ def _security_center_summary(cfg: Dict[str, Any]) -> None:
         "represented": "REPRESENTED WORKSPACE (unknown command effects not contained)",
         "strict": "STRICT EXECUTOR CONTAINMENT",
     }[paths.filesystem_protection.value]))
+    if paths.workspace_enabled and paths.workspace_mode == "bounded":
+        print("Legacy Workspace Lock: represented-path protection is active; parser-only denials retired.")
     print(_status_value("Restricted roots", str(len(paths.never_roots))))
     print(_status_value("User NEVER paths", str(len(paths.user_never_roots))))
     print(_status_value("Custom structured tool contracts", str(len(paths.custom_tool_contracts))))
@@ -17600,7 +17593,7 @@ def _edit_security_center(cfg: Dict[str, Any]) -> None:
         print("9  StreamingIRQ sensitivity and quarantine ceiling")
         print("10 Set or clear an individual Canary sensitivity override")
         print("11 Restore factory path defaults (clear optional path restrictions)")
-        print("12 Select workspace command coverage (bounded or represented)")
+        print("12 View Workspace Lock protection scope")
         print("S  Save and apply settings    M  Discard and return")
         choice = _cli_input("Security > ").strip().lower()
         if choice == "s":
@@ -17620,23 +17613,8 @@ def _edit_security_center(cfg: Dict[str, Any]) -> None:
                 apply_candidate("security_path_policy", None)
             continue
         if choice == "12":
-            if override(paths.STATIC_PATH_POLICY_ENV):
-                continue
-            candidate = copy.deepcopy(cfg.get("security_path_policy") or {})
-            if not candidate.get("workspace_root"):
-                print("Configure a workspace directory first.")
-                continue
-            print("Bounded: rejects unclassified commands; not OS containment.")
-            print("Represented: enforces identified paths; unknown effects are not contained.")
-            selected = _cli_input("Coverage [bounded/represented] (blank cancels): ").strip().lower()
-            if selected not in {"bounded", "represented"}:
-                continue
-            if selected == "represented":
-                if _cli_input("Accept represented-only coverage, not full containment? [y/N]: ").strip().lower() != "y":
-                    continue
-            candidate["version"] = 2
-            candidate["workspace_mode"] = selected
-            apply_candidate("security_path_policy", candidate)
+            print("Workspace Lock enforces identifiable paths, not parser completeness.")
+            print("Unclassified command effects are not contained. Strict containment requires a qualified executor.")
             continue
         if choice in {"1", "2", "3", "4"}:
             if override(paths.STATIC_PATH_POLICY_ENV):
@@ -17650,19 +17628,10 @@ def _edit_security_center(cfg: Dict[str, Any]) -> None:
                     continue
                 if choice == "1":
                     candidate["workspace_root"] = root
-                    current_mode = candidate.get("workspace_mode", "bounded")
-                    print("Bounded: rejects unclassified commands; not OS containment.")
-                    print("Represented: enforces identified paths; unknown effects are not contained.")
-                    selected = _cli_input(f"Coverage [bounded/represented] (blank keeps {current_mode}): ").strip().lower()
-                    if selected == "m":
-                        raise _ReturnToMainMenu()
-                    if selected and selected not in {"bounded", "represented"}:
-                        continue
-                    if selected == "represented" and current_mode != "represented":
-                        if _cli_input("Accept represented-only coverage, not full containment? [y/N]: ").strip().lower() != "y":
-                            continue
-                    if selected:
-                        candidate.update(version=2, workspace_mode=selected)
+                    # Keep the operator's directory and explicit NEVER roots;
+                    # no parser-completeness mode is offered for ordinary work.
+                    candidate.update(version=2, workspace_mode="represented")
+                    print("Workspace Lock enforces identifiable paths; it is not OS containment.")
                 else:
                     candidate["never_paths"].append(root)
             elif choice == "2":
