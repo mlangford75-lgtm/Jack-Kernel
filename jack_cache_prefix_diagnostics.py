@@ -13,6 +13,10 @@ import os
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 
+# Immutable public byte alphabet; never retains prompt-derived data.
+_SINGLE_BYTES = tuple(bytes((value,)) for value in range(256))
+
+
 class CacheBytePrefixProbe:
     SCHEMA = "jack.cache.byte_prefix.v1"
 
@@ -67,9 +71,13 @@ class CacheBytePrefixProbe:
         limited = wire[:limit]
         h = hashlib.blake2b(digest_size=8, key=self._key)
         sigs = array("Q")
+        update = h.update
+        copy = h.copy
+        append = sigs.append
+        from_bytes = int.from_bytes
         for item in limited:
-            h.update(bytes((item,)))
-            sigs.append(int.from_bytes(h.copy().digest(), "little"))
+            update(_SINGLE_BYTES[item])
+            append(from_bytes(copy().digest(), "little"))
         signature = {
             "byte_length": len(wire),
             "sha256": digest,
