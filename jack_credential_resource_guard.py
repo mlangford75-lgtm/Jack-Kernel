@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ntpath
+import jack_posix_paths
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -88,20 +89,23 @@ _RESOURCE_POLICIES: dict[tuple[str, str], RuntimeCredentialResourcePolicy] = {}
 
 
 def _canonical_resource_path(value: Any) -> str:
-    text = str(value or "").strip().replace("/", "\\")
+    text = str(value or "")
+    if text.startswith("/") and not text.startswith("//"):
+        return jack_posix_paths.normalize(text)
+    text = text.strip().replace("/", "\\")
     if not text:
-        raise RuntimeError("Phase-7 credential resource path is empty")
+        raise RuntimeError("Credential Isolation and DLP credential resource path is empty")
     canonical = ntpath.normcase(ntpath.normpath(text))
     drive, tail = ntpath.splitdrive(canonical)
     if not drive or not (tail.startswith("\\") or drive.startswith("\\\\")):
         raise RuntimeError(
-            "Phase-7 credential resource path is not an absolute Windows path"
+            "Credential Isolation and DLP credential resource path is not an absolute Windows path"
         )
     return canonical
 
 
 def _resource_id_for_path(canonical: str) -> str:
-    lowered = canonical.casefold()
+    lowered = canonical.replace("/", "\\").casefold()
     if lowered.endswith(r"\jackkernellmstudio\config.json") or lowered.endswith(
         r"\.jack-kernel-lm-studio\config.json"
     ):
@@ -110,7 +114,7 @@ def _resource_id_for_path(canonical: str) -> str:
         return RESOURCE_JACK_CURRENT_CONFIG
     if lowered.endswith(r"\.pi\agent\jack-kernel.json"):
         return RESOURCE_PI_CONFIG
-    raise RuntimeError("Phase-7 encountered an unknown protected credential resource")
+    raise RuntimeError("Credential Isolation and DLP encountered an unknown protected credential resource")
 
 
 def build_runtime_credential_resource_policy(
@@ -143,21 +147,21 @@ def install(
     existing = getattr(jk, "_JACK_CREDENTIAL_RESOURCE_POLICY", None)
     if getattr(jk, "_JACK_CREDENTIAL_RESOURCE_GUARD_INSTALLED", False):
         if not isinstance(existing, RuntimeCredentialResourcePolicy):
-            raise RuntimeError("Phase-7 credential resource policy state is invalid")
+            raise RuntimeError("Credential Isolation and DLP credential resource policy state is invalid")
         return existing
 
     policy = build_runtime_credential_resource_policy(credential_policy)
     runtime_id = str(getattr(jk, "RUNTIME_ID", "") or "").strip()
     lane_id = str(getattr(jk, "LANE_ID", "") or "").strip()
     if policy.runtime_id != runtime_id or policy.lane_id != lane_id:
-        raise RuntimeError("Phase-7 credential resource ownership mismatch")
+        raise RuntimeError("Credential Isolation and DLP credential resource ownership mismatch")
 
     key = (policy.runtime_id, policy.lane_id)
     with _REGISTRY_LOCK:
         prior = _RESOURCE_POLICIES.get(key)
         if prior is not None and prior != policy:
             raise RuntimeError(
-                "Phase-7 credential resource identity cannot be rebound to a different policy"
+                "Credential Isolation and DLP credential resource identity cannot be rebound to a different policy"
             )
         _RESOURCE_POLICIES[key] = policy
 
@@ -189,7 +193,14 @@ def fact_for_canonical_target(
     if policy is None:
         return None
 
-    canonical = ntpath.normcase(ntpath.normpath(canonical_target))
+    # Path authority and credential identity share the selected host semantics.
+    from jack_path_policy import RepresentedPathError
+    try:
+        canonical = path_policy.object_path(canonical_target)
+    except RepresentedPathError:
+        # No deterministic object identity; the path consequence remains
+        # authoritative. Do not invent an unprotected resource fact.
+        return None
     for resource in policy.resources:
         if canonical == resource.canonical_path:
             return CredentialResourceAuthorityFact(

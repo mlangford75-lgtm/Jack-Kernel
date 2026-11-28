@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import sys
 import uuid
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -152,9 +153,20 @@ def test_shadow_is_bounded_and_per_session_keyed():
     assert ("s", f"user-{k._AGENTIC_SHADOW_LIMIT+1}", k._AGENTIC_SHADOW_LIMIT+2) in k._AGENTIC_SHADOW_LEDGER
 
 
-def test_phase2_does_not_change_cognitive_prompts():
+@pytest.mark.parametrize("profile", ["balanced", "thorough"])
+def test_phase2_does_not_change_cognitive_prompts(monkeypatch, profile):
+    # The historical Phase 1/2/3A fixture predates profile-specific prompts.
+    # Keep both cognitive stages checked against the supported baseline.
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", profile)
     k = load()
-    assert k.AGENTIC_STAGE1_PROMPT.startswith("Reasoning effort is set to xhigh.")
+    assert k.CFG.agentic_profile == profile
+    assert k.AGENTIC_STAGE1_PROMPT.startswith(
+        "Reasoning effort is set to xhigh." if profile == "thorough"
+        else "Please think carefully through the task"
+    )
     assert "Carefully reason on the task before using tools." in k.AGENTIC_STAGE1_PROMPT
-    assert "Do not imitate the style, format, or structure of previous turns" in k.AGENTIC_STAGE1_PROMPT
-    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
+    assert "Do not imitate the formatting of previous responses unless the current user explicitly requests that format." in k.AGENTIC_STAGE1_PROMPT
+    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
+    assert k.STAGES["extended_initial"].thinking is True
+    assert k.STAGES["extended_reflection"].thinking is (profile == "thorough")
+    assert k.STAGES["extended_reflection"].allow_tools is False

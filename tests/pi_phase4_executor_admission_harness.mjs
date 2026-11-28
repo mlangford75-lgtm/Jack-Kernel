@@ -105,6 +105,9 @@ assert.equal(headerEvent.headers["X-Jack-Executor-Lane-Id"], "lane-phase4-01");
 assert.equal(headerEvent.headers["X-Jack-Executor-Cwd"], "D:\\Projects\\Jack");
 assert.equal(headerEvent.headers["X-Jack-Executor-Platform"], process.platform);
 assert.equal(headerEvent.headers["X-Jack-Executor-Adapter"], "pi");
+const missingCwd = { headers: {} };
+await headerHandlers[0](missingCwd, { model: { provider: "jack-kernel" } });
+assert.equal(Object.keys(missingCwd.headers).filter(key => key.startsWith("X-Jack-Executor-")).length, 0);
 
 const toolHandlers = handlers.get("tool_call") || [];
 assert.equal(toolHandlers.length, 1);
@@ -139,7 +142,7 @@ result = await toolCall({
 }, { ...ctx, cwd: "D:\\OtherProject" });
 assert.equal(result?.block, true);
 assert.equal(result?.terminate, undefined);
-assert.match(result?.reason || "", /Workspace Lock/);
+assert.match(result?.reason || "", /path admission did not authorize/);
 
 outcome = "HARD_INTERRUPT";
 result = await toolCall({

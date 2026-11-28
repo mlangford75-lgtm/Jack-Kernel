@@ -23,8 +23,11 @@ def install(jk):
     guard.register_attribute(label="credential-holder", kind="credential",
                              holder=jk, attribute="_JACK_RUNTIME_CREDENTIAL_POLICY")
     labels = ["credential-holder"]
-    for name, target in (("post", post), ("build", build),
-                         ("proxy", proxy), ("publish", publish)):
+    consumers = [("post", post), ("build", build), ("proxy", proxy), ("publish", publish)]
+    evidence_release = getattr(jk, "_project_tool_evidence_release", None)
+    if callable(evidence_release):
+        consumers.append(("evidence", evidence_release))
+    for name, target in consumers:
         cells = policy_cells(target, RuntimeCredentialPolicy)
         if not cells or any(c.cell_contents is not policy for c in cells):
             raise PolicyIntegrityUnavailable("required credential consumer unavailable")
@@ -66,6 +69,15 @@ def install(jk):
     async def guarded_publish(*args, **kwargs):
         verify()
         return await publish(*args, **kwargs)
+
+    if callable(evidence_release):
+        @wraps(evidence_release)
+        def guarded_evidence(*args, **kwargs):
+            verify()
+            result = evidence_release(*args, **kwargs)
+            verify()
+            return result
+        jk._project_tool_evidence_release = guarded_evidence
 
     client.post = guarded_post
     client.build_request = guarded_build

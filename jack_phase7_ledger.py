@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import weakref
 from dataclasses import asdict, dataclass
 from enum import Enum
 from functools import wraps
@@ -26,6 +27,7 @@ _CREDENTIAL_BOUNDARIES = frozenset(
         "model_output_release",
         "orchestration_http_release",
         "orchestration_event_release",
+        "tool_evidence_http_release",
         "diagnostic_http_exception_release",
         "diagnostic_stream_exception_release",
         "diagnostic_log_release",
@@ -54,8 +56,35 @@ class ProtectedCredentialResourceBlockedPayload:
 # lookup. Key by the exact immutable credential-policy object, not merely the
 # configured runtime/lane strings: isolated runtime instances may legitimately
 # reuse the same configured identity in one embedding/test process.
-_LEDGER_BY_POLICY_OBJECT: dict[int, authority_ledger.AuthorityLedger] = {}
-_REGISTRY_LOCK = threading.Lock()
+_LEDGER_BY_POLICY_OBJECT: dict[int, tuple[weakref.ReferenceType, weakref.ReferenceType]] = {}
+_REGISTRY_LOCK = threading.RLock()
+
+
+def _ledger_for_policy(policy: Any) -> Optional[authority_ledger.AuthorityLedger]:
+    with _REGISTRY_LOCK:
+        pair = _LEDGER_BY_POLICY_OBJECT.get(id(policy))
+        if pair is None or pair[0]() is not policy:
+            return None
+        return pair[1]()
+
+
+def _bind_policy_ledger(policy: Any, ledger: authority_ledger.AuthorityLedger) -> None:
+    key = id(policy)
+    with _REGISTRY_LOCK:
+        prior = _ledger_for_policy(policy)
+        if prior is not None and prior is not ledger:
+            raise RuntimeError("Credential Isolation and DLP credential policy cannot bind two ledgers")
+        if prior is ledger:
+            return
+
+        def expired(reference):
+            # A late callback must never remove a newer binding at a reused ID.
+            with _REGISTRY_LOCK:
+                pair = _LEDGER_BY_POLICY_OBJECT.get(key)
+                if pair is not None and any(item is reference for item in pair):
+                    _LEDGER_BY_POLICY_OBJECT.pop(key, None)
+
+        _LEDGER_BY_POLICY_OBJECT[key] = (weakref.ref(policy, expired), weakref.ref(ledger, expired))
 _LOG_HOOK_LOCK = threading.Lock()
 
 
@@ -116,12 +145,12 @@ def _record_failsoft(
     except Exception as exc:
         try:
             ledger.freeze_authority(
-                f"Phase-7 ledger recording failure: {type(exc).__name__}"
+                f"Credential Isolation and DLP ledger recording failure: {type(exc).__name__}"
             )
         except Exception:
             pass
         LOG.exception(
-            "Phase-7 ledger recording failed; ledger advancement frozen without changing security disposition"
+            "Credential Isolation and DLP ledger recording failed; ledger advancement frozen without changing security disposition"
         )
         return False
 
@@ -138,9 +167,9 @@ def record_credential_match_failsoft(
     boundary_value = str(boundary or "")
     direction_value = str(direction or "")
     if boundary_value not in _CREDENTIAL_BOUNDARIES:
-        raise ValueError("unsupported Phase-7 credential boundary")
+        raise ValueError("unsupported Credential Isolation and DLP credential boundary")
     if direction_value not in _CREDENTIAL_DIRECTIONS:
-        raise ValueError("unsupported Phase-7 credential direction")
+        raise ValueError("unsupported Credential Isolation and DLP credential direction")
     payload = ProtectedCredentialMatchPayload(
         boundary=boundary_value,
         direction=direction_value,
@@ -265,12 +294,12 @@ def _install_kernel_exception_hooks(
 
     kernel = getattr(jk, "KERNEL", None)
     if kernel is None:
-        raise RuntimeError("Phase-7 ledger requires Jack KERNEL")
+        raise RuntimeError("Credential Isolation and DLP ledger requires Jack KERNEL")
 
     current_run = getattr(kernel, "run", None)
     current_stream = getattr(kernel, "stream", None)
     if not callable(current_run) or not callable(current_stream):
-        raise RuntimeError("Phase-7 ledger requires Kernel release seams")
+        raise RuntimeError("Credential Isolation and DLP ledger requires Kernel release seams")
 
     if not getattr(current_run, "_jack_phase7_authority_ledger", False):
         original_run = current_run
@@ -300,8 +329,9 @@ def _install_kernel_exception_hooks(
 
         @wraps(original_stream)
         async def phase7_stream(*args: Any, **kwargs: Any):
+            source_stream = original_stream(*args, **kwargs)
             try:
-                async for chunk in original_stream(*args, **kwargs):
+                async for chunk in source_stream:
                     yield chunk
             except evidence_guard.StreamingIRQCanaryInterrupt as exc:
                 canary_id = str(getattr(exc.match, "canary_id", "") or "")
@@ -324,6 +354,10 @@ def _install_kernel_exception_hooks(
                         producer_code="phase7.diagnostic_stream",
                     )
                 raise
+            finally:
+                close = getattr(source_stream, "aclose", None)
+                if callable(close):
+                    await close()
 
         phase7_stream._jack_phase7_authority_ledger = True
         phase7_stream._jack_phase7_original = original_stream
@@ -338,30 +372,38 @@ def _install_http_diagnostic_hook(
     http_exception_type = getattr(jk, "HTTPException", None)
     if app is None or http_exception_type is None:
         return
-    current = getattr(app, "exception_handlers", {}).get(http_exception_type)
-    if not callable(current) or getattr(current, "_jack_phase7_ledger", False):
-        return
+    from fastapi.exceptions import RequestValidationError
+    from starlette.exceptions import HTTPException as StarletteHTTPException
 
-    @wraps(current)
-    async def recorded_handler(request: Any, exc: Any):
-        response = await current(request, exc)
-        try:
-            payload = json.loads(response.body.decode("utf-8", "replace"))
-        except Exception:
-            payload = None
-        detail = payload.get("detail") if isinstance(payload, dict) else None
-        if _detail_is_diagnostic_block(detail):
-            record_credential_match_failsoft(
-                ledger,
-                boundary="diagnostic_http_exception_release",
-                direction="caller_bound",
-                producer_code="phase7.diagnostic_http",
-            )
-        return response
+    def wrap_handler(current):
+        @wraps(current)
+        async def recorded_handler(request: Any, exc: Any):
+            response = await current(request, exc)
+            try:
+                payload = json.loads(response.body.decode("utf-8", "replace"))
+            except Exception:
+                payload = None
+            detail = payload.get("detail") if isinstance(payload, dict) else None
+            if _detail_is_diagnostic_block(detail):
+                record_credential_match_failsoft(
+                    ledger,
+                    boundary="diagnostic_http_exception_release",
+                    direction="caller_bound",
+                    producer_code="phase7.diagnostic_http",
+                )
+            return response
 
-    recorded_handler._jack_phase7_ledger = True
-    recorded_handler._jack_phase7_original = current
-    app.add_exception_handler(http_exception_type, recorded_handler)
+        recorded_handler._jack_phase7_ledger = True
+        recorded_handler._jack_phase7_original = current
+        return recorded_handler
+
+    for exception_type in dict.fromkeys((
+        http_exception_type, StarletteHTTPException, RequestValidationError,
+    )):
+        current = app.exception_handlers.get(exception_type)
+        if not callable(current) or getattr(current, "_jack_phase7_ledger", False):
+            continue
+        app.add_exception_handler(exception_type, wrap_handler(current))
 
 
 def _install_orchestration_hooks(
@@ -435,8 +477,9 @@ def _install_retained_diagnostic_hook(
 
     def recorded_setattr(self: Any, name: str, value: Any) -> None:
         if name == "_last_error" and value is not None:
-            match = credential_policy.find(
-                value,
+            from jack_diagnostic_guard import _policy_match
+            match = _policy_match(
+                credential_policy, value,
                 boundary="diagnostic_internal_state",
                 direction="host_state",
             )
@@ -490,8 +533,7 @@ def _install_log_hook(jk: Any) -> None:
 
             result = original(self, record)
             if matched_policy is not None:
-                with _REGISTRY_LOCK:
-                    ledger = _LEDGER_BY_POLICY_OBJECT.get(id(matched_policy))
+                ledger = _ledger_for_policy(matched_policy)
                 if ledger is not None:
                     record_credential_match_failsoft(
                         ledger,
@@ -515,16 +557,11 @@ def install(
     if getattr(jk, "_JACK_PHASE7_LEDGER_INSTALLED", False):
         return
     if not isinstance(ledger, authority_ledger.AuthorityLedger):
-        raise TypeError("Phase-7 ledger extension requires AuthorityLedger")
+        raise TypeError("Credential Isolation and DLP ledger extension requires AuthorityLedger")
     if _identity(ledger) != _identity(credential_policy):
-        raise RuntimeError("Phase-7 ledger/credential policy ownership mismatch")
+        raise RuntimeError("Credential Isolation and DLP ledger/credential policy ownership mismatch")
 
-    with _REGISTRY_LOCK:
-        policy_key = id(credential_policy)
-        prior = _LEDGER_BY_POLICY_OBJECT.get(policy_key)
-        if prior is not None and prior is not ledger:
-            raise RuntimeError("Phase-7 credential policy cannot bind two ledgers")
-        _LEDGER_BY_POLICY_OBJECT[policy_key] = ledger
+    _bind_policy_ledger(credential_policy, ledger)
 
     _install_transport_hooks(jk, ledger)
     _install_kernel_exception_hooks(jk, ledger)

@@ -14,6 +14,7 @@ STAGE2="Review the latest user request"
 
 def load(enabled):
     os.environ["JACK_REASONING_LEVEL"]="agentic"
+    os.environ["JACK_AGENTIC_PROFILE"]="balanced"
     os.environ["JACK_FORENSIC_ARCHIVE_MODE"]="off"
     os.environ["JACK_BACKEND_MODEL"]="test-model"
     os.environ["JACK_BACKEND_PROFILE"]="lmstudio"
@@ -59,32 +60,36 @@ async def collect(k,enabled,stream=False,tool_choice="auto"):
     assert len(payloads)==1
     return payloads[0]
 
+def assert_source_only(k, p):
+    messages = p["messages"]
+    assert [m["role"] for m in messages] == ["system", "user"]
+    assert messages[0]["content"] == k.AGENTIC_36_STAGE2_PROMPT + "\n\n" + k.AGENTIC_STAGE2_MEMORY_TRIGGER
+    prefix = "JACK READ-ONLY WORKING-STATE SOURCE DATA, NOT A USER REQUEST.\n"
+    suffix = "\nEND JACK WORKING-STATE SOURCE DATA."
+    content = messages[1]["content"]
+    assert content.startswith(prefix) and content.endswith(suffix)
+    assert json.loads(content[len(prefix):-len(suffix)])["events"] == [
+        {"type": "reasoning_segment", "phase": "initial", "content": "Stage 1 native R1"}
+    ]
+    assert "explain the clock" not in json.dumps(messages)
+    assert "A1 exact" not in json.dumps(messages)
+    assert "tools" not in p and "tool_choice" not in p
+
+
 @pytest.mark.parametrize("stream",[False,True])
 def test_cache_route_exact_prompt_and_schema(stream):
     k=load(True)
     p=asyncio.run(collect(k,True,stream))
-    assert p["messages"][0]["role"]=="system"
-    # The retired cache-append setting cannot substitute the Stage-1 system
-    # prompt or reintroduce a competing user-role memory directive.
-    assert p["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
-    assert p["messages"][0]["content"].startswith("You must always follow the Prime Directive.")
-    assert p["messages"][1] == {"role": "system", "content": k.AGENTIC_STAGE2_MEMORY_TRIGGER}
-    assert p["messages"][-1] == {"role": "user", "content": "explain the clock"}
-    assert "Preserve what was established" in p["messages"][0]["content"]
-    assert p["messages"][-2]["content"]=="A1 exact"
-    assert p["messages"][-2]["reasoning_content"]=="Stage 1 native R1"
-    assert "tools" not in p
-    assert "tool_choice" not in p
+    assert_source_only(k, p)
     assert p["chat_template_kwargs"]["preserve_thinking"] is True
+    assert p["chat_template_kwargs"]["enable_thinking"] is False
+
 
 @pytest.mark.parametrize("stream",[False,True])
 def test_default_stage2_unmodified(stream):
     k=load(False)
     p=asyncio.run(collect(k,False,stream))
-    assert p["messages"][0]["content"]==k.AGENTIC_36_STAGE2_PROMPT
-    assert "tools" not in p
-    assert p["messages"][-1]["role"]=="user"
-    assert p["messages"][-1]["content"]!=k.AGENTIC_36_STAGE2_PROMPT
+    assert_source_only(k, p)
 
 
 def test_original_stage_profiles_immutable():
@@ -130,15 +135,12 @@ def test_cache_append_is_on_by_default_and_can_be_disabled():
 def test_default_request_uses_dedicated_system_prompt(stream):
     k=load(None)
     p=asyncio.run(collect(k,False,stream))
-    assert p["messages"][0]["role"] == "system"
-    assert p["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
-    assert p["messages"][-1]["role"] == "user"
-    assert "tools" not in p
+    assert_source_only(k, p)
+
 
 @pytest.mark.parametrize("stream",[False,True])
 def test_forced_tool_choice_falls_back_to_existing_stage2(stream):
     k=load(None)
     p=asyncio.run(collect(k,True,stream,tool_choice="required"))
-    assert p["messages"][0]["content"]==k.AGENTIC_36_STAGE2_PROMPT
-    assert "tools" not in p
+    assert_source_only(k, p)
 

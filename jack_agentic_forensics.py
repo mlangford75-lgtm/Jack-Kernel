@@ -38,7 +38,7 @@ class AgenticForensicJournal:
         )
         self.path.parent.mkdir(parents=True, exist_ok=True)
         was_absent = not self.path.exists()
-        with self._read() as db:
+        with self._write() as db:
             db.execute(
                 """CREATE TABLE IF NOT EXISTS turns (
                 turn_id TEXT PRIMARY KEY,

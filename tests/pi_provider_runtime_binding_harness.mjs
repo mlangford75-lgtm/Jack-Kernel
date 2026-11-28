@@ -32,7 +32,13 @@ let activeMode = "agentic";
 let activeEffort = "xhigh";
 let mockLoadedContext = 16384;
 let mockMaxContext = 32768;
+let mockVision = false;
+let identityStatus = 200;
+let modelMetadataStatus = 200;
+let standardContext = 0;
+let legacyHealthRequests = 0;
 const lifecycleReports = [];
+const healthAuth = [];
 const server = http.createServer(async (req, res) => {
   if (req.url === "/jack/tool-lifecycle/observe" && req.method === "POST") {
     const parts = [];
@@ -43,7 +49,14 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   res.setHeader("Content-Type", "application/json");
-  if (req.url === "/health") {
+  if (req.url === "/health" || req.url === "/jack/runtime-identity") {
+    if (req.url === "/health") legacyHealthRequests++;
+    if (req.url === "/jack/runtime-identity" && identityStatus !== 200) {
+      res.statusCode = identityStatus;
+      res.end(JSON.stringify({error: "identity unavailable"}));
+      return;
+    }
+    healthAuth.push(req.headers.authorization);
     res.end(JSON.stringify({
       runtime_id: healthRuntimeId,
       lane_id: "lane-agentic-01",
@@ -56,12 +69,22 @@ const server = http.createServer(async (req, res) => {
     }));
     return;
   }
+  if (req.url === "/v1/models") {
+    res.end(JSON.stringify({ data: [{ id: "test-model", context_length: standardContext }] }));
+    return;
+  }
   if (req.url === "/api/v1/models") {
+    if (modelMetadataStatus !== 200) {
+      res.statusCode = modelMetadataStatus;
+      res.end(JSON.stringify({ error: "metadata unavailable" }));
+      return;
+    }
     res.end(JSON.stringify({
       models: [{
         key: "test-model",
         display_name: "Test Model",
         max_context_length: mockMaxContext,
+        capabilities: {vision: mockVision},
         loaded_instances: [{ config: { context_length: mockLoadedContext } }],
       }],
     }));
@@ -206,6 +229,10 @@ assert.equal(registrations.at(-1).provider.models[0].reasoning, true);
 assert.equal(registrations.at(-1).provider.models[0].thinkingLevelMap.xhigh, undefined,
   "Medium mode must not claim to support a host xhigh stage");
 
+// A routine refresh preserves existing tool outcome ownership.
+assert.equal((handlers.get("before_provider_request") || [])
+  .map(fn => fn(outgoing, outcomeCtx)).filter(Boolean).length, 1);
+
 // The matching model may not be registered if the runtime identity changes.
 
 healthRuntimeId = "wrong-runtime";
@@ -262,6 +289,71 @@ for (const fn of handlers.get("before_agent_start") || []) {
 assert.equal(registrations.length, previousCount,
   "Missing context metadata must not register an invalid model");
 
+// A verified, unchanged runtime binding survives optional metadata failure.
+const headerEvent = {headers: {}};
+for (const fn of handlers.get("before_provider_headers") || []) await fn(headerEvent, { ...outcomeCtx, cwd: tempHome });
+assert.equal(headerEvent.headers["X-Jack-Executor-Runtime-Id"], "runtime-agentic-01");
+assert.equal((handlers.get("before_provider_request") || [])
+  .map(fn => fn(outgoing, outcomeCtx)).filter(Boolean).length, 0,
+  "Outcomes recorded before a runtime identity failure must not be reused");
+// Standard OpenAI model metadata may be available independently.
+modelMetadataStatus = 503;
+standardContext = 24576;
+const beforeFallback = registrations.length;
+for (const fn of handlers.get("before_agent_start") || []) await fn({});
+assert.equal(registrations.length, beforeFallback + 1);
+assert.equal(registrations.at(-1).provider.models[0].contextWindow, standardContext);
+standardContext = 0;
+for (const fn of handlers.get("before_agent_start") || []) await fn({});
+assert.equal(registrations.length, beforeFallback + 1);
+const fallbackHeaders = { headers: {} };
+for (const fn of handlers.get("before_provider_headers") || []) await fn(fallbackHeaders, { ...outcomeCtx, cwd: tempHome });
+assert.equal(fallbackHeaders.headers["X-Jack-Executor-Runtime-Id"], "runtime-agentic-01");
+modelMetadataStatus = 200;
 console.log("Pi context boundary tests: PASS");
+
+// Explicit environment references must resolve before any network request.
+// A missing token must not be forwarded as a literal or as no authentication.
+mockLoadedContext = 8192;
+mockMaxContext = 32768;
+const envName = "JACK_TEST_PROVIDER_TOKEN_REFERENCE";
+fs.writeFileSync(path.join(cfgDir, "jack-kernel.json"),
+  JSON.stringify({url: "http://127.0.0.1:65530", token: "$" + envName}), "utf8");
+delete process.env[envName];
+const beforeUnresolved = registrations.length;
+const beforeUnresolvedRequests = healthAuth.length;
+for (const fn of handlers.get("before_agent_start") || []) await fn({});
+assert.equal(registrations.length, beforeUnresolved);
+assert.equal(healthAuth.length, beforeUnresolvedRequests);
+process.env[envName] = "";
+for (const fn of handlers.get("before_agent_start") || []) await fn({});
+assert.equal(registrations.length, beforeUnresolved);
+assert.equal(healthAuth.length, beforeUnresolvedRequests);
+process.env[envName] = "synthetic-test-token";
+for (const fn of handlers.get("before_agent_start") || []) await fn({});
+assert.equal(registrations.length, beforeUnresolved + 1);
+assert.equal(registrations.at(-1).provider.apiKey, "synthetic-test-token");
+assert.equal(healthAuth.at(-1), "Bearer synthetic-test-token");
+delete process.env[envName];
+console.log("Pi explicit environment reference resolution: PASS");
+// Vision is advertised only when the resolved provider reports support.
+fs.writeFileSync(path.join(cfgDir, "jack-kernel.json"), JSON.stringify({}), "utf8");
+mockVision = true;
+for (const fn of handlers.get("before_agent_start") || []) await fn({});
+assert.deepEqual(registrations.at(-1).provider.models[0].input, ["text", "image"]);
+mockVision = "true";
+for (const fn of handlers.get("before_agent_start") || []) await fn({});
+assert.deepEqual(registrations.at(-1).provider.models[0].input, ["text"]);
+// Authorization failures never fall back to the old health endpoint.
+identityStatus = 401;
+const priorLegacy = legacyHealthRequests;
+const priorRegistrations = registrations.length;
+for (const fn of handlers.get("before_agent_start") || []) await fn({});
+assert.equal(legacyHealthRequests, priorLegacy);
+assert.equal(registrations.length, priorRegistrations);
+identityStatus = 404;
+for (const fn of handlers.get("before_agent_start") || []) await fn({});
+assert.equal(legacyHealthRequests, priorLegacy + 1);
+assert.equal(registrations.length, priorRegistrations + 1);
 await new Promise((resolve) => server.close(resolve));
 console.log("Pi provider runtime binding harness: PASS");

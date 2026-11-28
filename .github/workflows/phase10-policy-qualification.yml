@@ -1,4 +1,4 @@
-name: Combined Phase 9B 10 11 security qualification
+name: Combined runtime integrity, policy authority and diagnostic privacy qualification
 
 on:
   push:
@@ -53,9 +53,9 @@ jobs:
         run: |
           python -m pip install pip==26.2.1
           python -m pip install -r requirements-test.txt
-      - name: Compile Phase 10 static enforcement candidate
+      - name: Compile static Policy Integrity candidate
         run: python -m py_compile jack_secure_entrypoint.py jack_phase10_path_enforcement.py jack_phase10_canary_enforcement.py jack_phase10_credential_enforcement.py jack_policy_integrity.py tests/test_phase10_policy_identity.py tests/test_phase10_real_policy_consumers.py
-      - name: Run Phase 10 static-policy identity and tamper controls
+      - name: Run static Policy Integrity identity and tamper controls
         run: python -m pytest -q tests/test_phase10_policy_identity.py
       - name: Run real Jack Kernel path Canary and credential consumer identity proof
         run: python -m pytest -q tests/test_phase10_real_policy_consumers.py
@@ -63,9 +63,9 @@ jobs:
         run: python -m py_compile jack_phase10_dynamic_authority.py jack_phase11_privacy.py tests/test_phase10_dynamic_and_phase11_privacy.py
       - name: Qualify dynamic pending authority and diagnostic privacy
         run: python -m pytest -q tests/test_phase10_dynamic_and_phase11_privacy.py
-      - name: Run previous Phase 7 credential and Phase 8 policy/security controls
+      - name: Run Credential Isolation and Source Drift Protection controls
         run: python -m pytest -q tests/test_phase7_credential_policy.py tests/test_phase8_source_baseline.py tests/test_phase8_runtime_enforcement.py
-      - name: Preserve Phase 7 diagnostic and orchestration release controls
+      - name: Preserve diagnostic and orchestration DLP release controls
         run: python -m pytest -q tests/test_phase7_diagnostic_dlp.py tests/test_phase7_diagnostic_headers.py tests/test_phase7_diagnostic_outer_release.py tests/test_phase7_orchestration_dlp.py tests/test_phase7_output_dlp.py
       - name: Verify loaded executable and source security
         run: python -m pytest -q tests/test_phase9_runtime_code_guard.py tests/test_phase9_enforced_release.py tests/test_phase9_source_closure.py

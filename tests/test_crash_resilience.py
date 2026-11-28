@@ -202,6 +202,8 @@ async def pending_debugging_resumes_require_positive_identity():
             await kernel._rearm_pending_debugging_resumes_for_messages(unrelated)
             assert intake_state.in_flight is True
             await kernel._rearm_pending_debugging_resumes_for_messages(intake_reply)
+            assert intake_state.in_flight is True
+            await kernel._rearm_pending_debugging_intake_resume(intake_state)
             assert intake_state.in_flight is False
 
             clarification_run = m._debugging_create_run("Audit project C.")
@@ -237,6 +239,8 @@ async def pending_debugging_resumes_require_positive_identity():
             await kernel._rearm_pending_debugging_resumes_for_messages(unrelated)
             assert clarification_state.in_flight is True
             await kernel._rearm_pending_debugging_resumes_for_messages(clarification_reply)
+            assert clarification_state.in_flight is True
+            await kernel._rearm_pending_debugging_user_resume(clarification_state)
             assert clarification_state.in_flight is False
 
 
@@ -440,7 +444,7 @@ async def completed_runs_leave_live_memory():
             start_pass=1,
         )
         assert "no material findings" in (result.content or "").lower()
-        assert run.run_id in m._DEBUGGING_RUNS
+        assert run.run_id not in m._DEBUGGING_RUNS
         assert run.final_report_committed is True
         assert run.final_report == (result.content or "")
 
@@ -450,8 +454,10 @@ async def completed_runs_leave_live_memory():
             {"role": "user", "content": "Where is the report saved?"},
         ]
         matched = m._debugging_completed_run_for_history(followup_messages)
-        assert matched is run
-        projected = m._debugging_followup_history(run, followup_messages)
+        assert matched is not None
+        assert matched.run_id == run.run_id
+        assert matched.report_path == run.report_path
+        projected = m._debugging_followup_history(matched, followup_messages)
         assert str(run.report_path) in projected[-1]["content"]
         assert "Where is the report saved?" in projected[-1]["content"]
 
@@ -462,7 +468,7 @@ async def completed_runs_leave_live_memory():
             "tool_choice": "auto",
         })
         assert "still available" in (followup.content or "")
-        assert set(m._DEBUGGING_RUNS) == {run.run_id}
+        assert not m._DEBUGGING_RUNS
 
 
 async def evidence_scan_runs_off_event_loop():
@@ -479,6 +485,8 @@ async def evidence_scan_runs_off_event_loop():
 
     m.enforce_kernel_auth = no_auth
     m.recover_pi_tool_evidence = fake_recover
+    # This test isolates worker-thread scheduling; real policy coverage is separate.
+    m._project_tool_evidence_release = lambda evidence: evidence
     request = Request({"type": "http", "method": "GET", "path": "/", "headers": [], "query_string": b""})
     result = await m.jack_tool_evidence("call-1", request)
     assert result["content"] == "ok"
@@ -538,15 +546,12 @@ async def stream_rearm_helper_restores_retryability():
             data=response("What happened?"),
         )
         state = next(iter(kernel._pending_debugging_intake_resumes.values()))
-        matched = await kernel._consume_pending_debugging_intake_resume([
-            {"role": "assistant", "content": state.user_visible_response},
-            {"role": "user", "content": "It disconnected."},
-        ])
-        assert matched is not None and state.in_flight
-        await kernel._rearm_pending_debugging_resumes_for_messages([
-            {"role": "assistant", "content": state.user_visible_response},
-            {"role": "user", "content": "It disconnected."},
-        ])
+        async with kernel._request_resume_scope():
+            matched = await kernel._consume_pending_debugging_intake_resume([
+                {"role": "assistant", "content": state.user_visible_response},
+                {"role": "user", "content": "It disconnected."},
+            ])
+            assert matched is not None and state.in_flight
         assert state.in_flight is False
 
 
@@ -702,8 +707,13 @@ async def public_run_retry_recovers_pending_pass_without_starting_new_run():
         # rerun intake, or regenerate Pass 1.
         result = await kernel.run(request_body)
 
-        assert len(m._DEBUGGING_RUNS) == 1
-        assert next(iter(m._DEBUGGING_RUNS.values())) is run
+        assert not m._DEBUGGING_RUNS
+        matched = m._debugging_completed_run_for_history([
+            {"role": "assistant", "content": run.final_report},
+            {"role": "user", "content": "Where is the report saved?"},
+        ])
+        assert matched is not None and matched.run_id == run.run_id
+        assert matched.report_path == run.report_path
 
         assert run.summaries[1] == original_pass_1
         assert 1 not in run.pending_summaries
@@ -1194,8 +1204,13 @@ async def streaming_public_retry_recovers_pending_pass_without_regeneration():
         async for chunk in kernel.stream(request_body):
             chunks.append(chunk)
 
-        assert len(m._DEBUGGING_RUNS) == 1
-        assert next(iter(m._DEBUGGING_RUNS.values())) is run
+        assert not m._DEBUGGING_RUNS
+        matched = m._debugging_completed_run_for_history([
+            {"role": "assistant", "content": run.final_report},
+            {"role": "user", "content": "Where is the report saved?"},
+        ])
+        assert matched is not None and matched.run_id == run.run_id
+        assert matched.report_path == run.report_path
 
         assert run.summaries[1] == original_pass_1
         assert 1 not in run.pending_summaries
@@ -1209,6 +1224,12 @@ async def streaming_public_retry_recovers_pending_pass_without_regeneration():
         wire = b"".join(chunks)
         assert b"Final streamed repair specification." in wire
         assert wire.endswith(b"data: [DONE]\n\n")
+        assert sum(
+            choice.get("delta", {}).get("role") == "assistant"
+            for line in wire.decode("utf-8").splitlines()
+            if line.startswith("data: ") and line != "data: [DONE]"
+            for choice in __import__("json").loads(line[6:]).get("choices", [])
+        ) == 1
 
 
 async def final_report_durability_retry_does_not_regenerate_report():
@@ -1394,8 +1415,13 @@ async def public_retry_recovers_pending_final_report_without_regeneration():
         # invoking any model stage.
         result = await kernel.run(request_body)
 
-        assert len(m._DEBUGGING_RUNS) == 1
-        assert next(iter(m._DEBUGGING_RUNS.values())) is run
+        assert not m._DEBUGGING_RUNS
+        matched = m._debugging_completed_run_for_history([
+            {"role": "assistant", "content": run.final_report},
+            {"role": "user", "content": "Where is the report saved?"},
+        ])
+        assert matched is not None and matched.run_id == run.run_id
+        assert matched.report_path == run.report_path
 
         assert run.final_report_committed is True
         assert run.final_report == original_final
@@ -1505,8 +1531,13 @@ async def streaming_retry_recovers_pending_final_report_without_regeneration():
 
         # Exact public streaming retry must recover the original transaction,
         # not create another debugging run.
-        assert len(m._DEBUGGING_RUNS) == 1
-        assert next(iter(m._DEBUGGING_RUNS.values())) is run
+        assert not m._DEBUGGING_RUNS
+        matched = m._debugging_completed_run_for_history([
+            {"role": "assistant", "content": run.final_report},
+            {"role": "user", "content": "Where is the report saved?"},
+        ])
+        assert matched is not None and matched.run_id == run.run_id
+        assert matched.report_path == run.report_path
 
         assert run.final_report_committed is True
         assert run.final_report == original_final

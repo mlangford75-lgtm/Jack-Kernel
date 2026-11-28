@@ -72,6 +72,7 @@ import copy
 import errno
 import getpass
 import hashlib
+import hmac
 import html
 import re
 from contextlib import asynccontextmanager
@@ -80,20 +81,25 @@ import contextvars
 import json
 import logging
 from jack_agentic_forensics import AgenticForensicJournal, ForensicConflict, attempt_id as _new_forensic_attempt_id
-from jack_loop_detector import (ReasoningLoopDetector, RepeatedReasoningLoop, RepeatedLoopInterrupt, PartialOutputLoopInterrupt, LOOP_THRESHOLDS)
+from jack_loop_detector import (ReasoningLoopDetector, RepeatedReasoningLoop, RepeatedLoopInterrupt, PartialOutputLoopInterrupt, LOOP_THRESHOLDS, MIN_CYCLE_WORDS)
 from jack_loop_shadow import LongCycleShadowDetector, LongCycleRepeatedReasoningLoop, source_texts_from_history
 from jack_tool_outcomes import reported_tool_outcome, SUCCESS as TOOL_SUCCESS, FAILED as TOOL_FAILED, UNKNOWN as TOOL_UNKNOWN
 from jack_tool_recovery import ToolRecoveryState, ToolRecoveryExhausted, operation_key, POLICY_REPEAT_LIMIT
 from jack_tool_lifecycle import ToolLifecycleObserver
 from jack_phase10_dynamic_authority import PendingAuthority, DynamicAuthorityUnavailable
-from jack_cache_orchestrator import CacheOrchestrator
+from jack_cache_orchestrator import CacheDecision, CacheOrchestrator
 from jack_cache_prefix_diagnostics import CacheBytePrefixProbe
 from jack_stage1_cache_stability import Stage1CacheStabilizer
-from jack_evidence_guard import TOOL_RESUME_PROVENANCE_NOTE
+from jack_evidence_guard import (
+    TOOL_RESUME_PROVENANCE_NOTE, checkpoint_retiring_failure, terminal_stream_failure,
+    public_security_failure, resolve_tool_fragment_index, native_reasoning_delta,
+)
 import os
 import shutil
 import socket
+import sqlite3
 import subprocess
+import threading
 import sys
 import time
 import uuid
@@ -297,6 +303,17 @@ class KernelConfig:
     backend_password: str = os.getenv("JACK_BACKEND_PASSWORD", "")
     backend_authorization_value: str = os.getenv("JACK_BACKEND_AUTHORIZATION_VALUE", "")
     backend_extra_headers_json: str = os.getenv("JACK_BACKEND_EXTRA_HEADERS", "{}").strip() or "{}"
+    backend_secret_header_names_json: str = os.getenv("JACK_BACKEND_SECRET_HEADER_NAMES", "[]").strip() or "[]"
+
+    @property
+    def backend_secret_header_names(self) -> List[str]:
+        try:
+            names = json.loads(self.backend_secret_header_names_json)
+        except Exception:
+            raise RuntimeError("JACK_BACKEND_SECRET_HEADER_NAMES must be a JSON array of header names") from None
+        if not isinstance(names, list) or any(not isinstance(name, str) for name in names):
+            raise RuntimeError("JACK_BACKEND_SECRET_HEADER_NAMES must be a JSON array of header names")
+        return names
 
     @property
     def backend_extra_headers(self) -> Dict[str, str]:
@@ -472,7 +489,7 @@ def _bind_runtime_path_policy() -> Any:
 def _runtime_path_policy() -> Any:
     """Return the already-bound runtime policy; never synthesize request-local authority."""
     if _RUNTIME_PATH_POLICY is None:
-        raise RuntimeError("Phase-4 runtime path policy is not bound")
+        raise RuntimeError("Restricted Paths / Workspace Lock runtime policy is not bound")
     return _RUNTIME_PATH_POLICY
 
 
@@ -761,10 +778,12 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 LOG = logging.getLogger("jack-kernel")
 
-if CFG.qwen_control_shape not in {"template_kwargs", "top_level", "hybrid", "ollama_openai"}:
+if CFG.qwen_control_shape not in {"template_kwargs", "top_level", "hybrid", "ollama_openai", "openai_standard"}:
     raise RuntimeError(
-        "JACK_QWEN_CONTROL_SHAPE must be template_kwargs, top_level, hybrid, or ollama_openai"
+        "JACK_QWEN_CONTROL_SHAPE must be template_kwargs, top_level, hybrid, ollama_openai, or openai_standard"
     )
+if CFG.qwen_control_shape == "openai_standard" and CFG.backend_profile != "custom":
+    raise RuntimeError("openai_standard control shape requires the Custom backend profile")
 if CFG.backend_auth_mode not in {
     "none", "bearer", "header", "basic", "authorization"
 }:
@@ -1267,6 +1286,18 @@ _AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE = (
     )
 )
 
+_AGENTIC_CODER_STAGE2_DIRECTIVE = _AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE.replace(
+    "The original user request and completed\n"
+    "answer have been stored separately by Jack. They are not part of this extraction\n"
+    "task and must not be reconstructed, retold, or answered.",
+    "The original user request is stored separately by Jack. The exact completed\n"
+    "Coder response is supplied in coder_frozen_response as historical evidence.\n"
+    "Use it to preserve consequential working knowledge without reconstructing,\n"
+    "retelling, or answering the original request. The Architect specification\n"
+    "is not an authoritative outcome.",
+    1,
+)
+
 # One unchanged Thorough Prime Directive for both Balanced and Thorough.
 _AGENTIC_STAGE2_BALANCED_EXHAUSTIVE_DIRECTIVE = _AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
 
@@ -1302,6 +1333,7 @@ def _agentic_memory_is_instruction_echo(memory: str) -> bool:
     for directive in (
         _AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE,
         _AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE,
+        _AGENTIC_CODER_STAGE2_DIRECTIVE,
     ):
         if candidate in " ".join(directive.split()).casefold():
             return True
@@ -1318,15 +1350,7 @@ def _stage_continuation(
             if AGENTIC_CODER_MODE:
                 # Coder memory includes the actual completed outcome; Planner
                 # output has been retired from its model-facing source.
-                return _AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE.replace(
-                    "The original user request and completed\n"
-                    "answer have been stored separately by Jack. They are not part of this extraction\n"
-                    "task and must not be reconstructed, retold, or answered.",
-                    "The original user request is stored separately by Jack. The completed\n"
-                    "Coder response is supplied as historical evidence. Use it to preserve\n"
-                    "consequential working knowledge without repeating the final answer.",
-                    1,
-                )
+                return _AGENTIC_CODER_STAGE2_DIRECTIVE
             return (_AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
                     if (AGENTIC_BALANCED_MODE or AGENTIC_THOROUGH_MODE
                         or AGENTIC_TRANSLATED_MODE) else
@@ -1577,6 +1601,15 @@ def _agentic_stage2_chronological_source(history: List[Dict[str, Any]]) -> List[
                     "executor_adapter": item.get("_jack_executor_reported_adapter"),
                     "cwd_source": "executor_transport_unverified",
                 } if item.get("_jack_executor_reported_cwd") else {}),
+            })
+        if (
+            item.get("role") == "user"
+            and item.get("_jack_internal_tool_validation_rejection") is True
+        ):
+            # A denial is host evidence, never an executed tool or new task.
+            events.append({
+                "type": "host_tool_rejection",
+                "content": _content_to_text(item.get("content")),
             })
         if item.get("_jack_tool_evidence_receipt") is True:
             events.append({
@@ -2026,6 +2059,15 @@ AGENTIC_CACHE_APPEND_EXPERIMENT = (
 AGENTIC_STAGE2_RETENTION_TEST = "isolate-retain"
 
 # Internal host bookkeeping still isolates Stage 2 and protects frozen A1.
+_EMPTY_STREAM_RECOVERY_NOTICE = (
+    "Jack protocol continuation: The prior backend generation produced "
+    "neither a final answer nor a structured executable tool call. "
+    "Continue the existing task from the completed tool results. "
+    "If a tool is needed, use its structured tool interface. "
+    "Do not repeat completed work."
+)
+
+
 def _agentic_stage2_test_history(
     messages: List[Dict[str, Any]], profile: "StageProfile"
 ) -> List[Dict[str, Any]]:
@@ -2055,9 +2097,24 @@ def _agentic_stage2_test_history(
     if frozen.get("role") != "assistant" or not _content_to_text(frozen.get("content")).strip():
         raise HTTPException(status_code=409, detail="Isolated Stage 2 missing exact frozen Stage-1 answer")
     recovery = view[frozen_index + 1:]
-    if len(recovery) % 2:
-        raise HTTPException(status_code=409, detail="Isolated Stage 2 has an invalid recovery suffix")
-    for idx in range(0, len(recovery), 2):
+    recovery_notices = []
+    protocol_seen = False
+    idx = 0
+    while idx < len(recovery):
+        item = recovery[idx]
+        if (
+            isinstance(item, dict)
+            and item.get("role") == "user"
+            and item.get("_jack_internal_protocol_recovery") is True
+            and item.get("content") == _EMPTY_STREAM_RECOVERY_NOTICE
+            and not protocol_seen
+        ):
+            protocol_seen = True
+            recovery_notices.append(dict(item))
+            idx += 1
+            continue
+        if idx + 1 >= len(recovery):
+            raise HTTPException(status_code=409, detail="Isolated Stage 2 has an invalid recovery suffix")
         checkpoint, notice = recovery[idx:idx + 2]
         if not (
             isinstance(checkpoint, dict)
@@ -2068,6 +2125,8 @@ def _agentic_stage2_test_history(
             and notice.get("_jack_internal_tool_validation_rejection") is True
         ):
             raise HTTPException(status_code=409, detail="Isolated Stage 2 has an invalid recovery suffix")
+        recovery_notices.append(dict(notice))
+        idx += 2
 
     # Model-facing Stage 2 = the authenticated U and the frozen A1 carrying all
     # native Stage-1 R1 in chronological order. Flatten the reasoning fragments
@@ -2142,12 +2201,8 @@ def _agentic_stage2_test_history(
         # Never put changing turn/attempt IDs in the model's Stage-2 prefix.
         # This is a request-view change only; canonical U/R1/A1 and ownership
         # checks above remain byte-exact for every backend and agent.
-        return [source_user, frozen_view] + [
-            dict(recovery[idx]) for idx in range(1, len(recovery), 2)
-        ]
-    return [source_user, frozen_view] + [
-        dict(recovery[idx]) for idx in range(1, len(recovery), 2)
-    ]
+        return [source_user, frozen_view] + recovery_notices
+    return [source_user, frozen_view] + recovery_notices
 
 
 # Phase-3G recovery: model-visible U/M/A forensic labels are OFF by default.
@@ -2267,8 +2322,10 @@ You have no tools in this stage. Synthesis may receive the caller's tools and is
 Output only the plan."""
 
 AGENTIC_36_STAGE2_PROMPT = (
+    _AGENTIC_CODER_STAGE2_DIRECTIVE
+    if AGENTIC_CODER_MODE else
     _AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
-    if (AGENTIC_BALANCED_MODE or AGENTIC_THOROUGH_MODE or AGENTIC_TRANSLATED_MODE or AGENTIC_CODER_MODE) else
+    if (AGENTIC_BALANCED_MODE or AGENTIC_THOROUGH_MODE or AGENTIC_TRANSLATED_MODE) else
     _AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE
     if AGENTIC_SOURCE_ONLY_WORKING_STATE else
     _AGENTIC_STAGE2_WITHHELD_A1_CONTINUATION
@@ -2376,9 +2433,47 @@ def _debugging_tool_is_direct_mutator(tool: Dict[str, Any]) -> bool:
     filtering alone. The Debugging system contract restricts those tools to
     non-mutating diagnostic use; Jack does not claim command-level sandboxing.
     """
-    name = _debugging_tool_name(tool).lower()
-    if any(marker in name for marker in _DEBUGGING_DIRECT_MUTATION_NAME_MARKERS):
-        return True
+    exact_name = _debugging_tool_name(tool)
+    # Only a startup-owned contract may override the legacy name heuristic.
+    if _RUNTIME_PATH_POLICY is not None:
+        for contract in _RUNTIME_PATH_POLICY.custom_tool_contracts:
+            if exact_name == contract.tool_name:
+                if contract.operation != "inspect":
+                    return True
+                function = tool.get("function") if isinstance(tool, dict) else None
+                schema = (function or {}).get("parameters")
+                if isinstance(schema, dict) and schema.get("type") == "object":
+                    properties = schema.get("properties")
+                    required = schema.get("required", [])
+                    if (isinstance(properties, dict) and isinstance(required, list)
+                            and all(isinstance(v, str) for v in required)
+                            and len(required) == len(set(required))
+                            and set(required) == set(contract.required_fields)
+                            and set(properties) == set(dict(contract.argument_types))
+                            and all(isinstance(properties[key], dict) and properties[key].get("type") == kind
+                                    for key, kind in contract.argument_types)):
+                        return False
+                # A registered inspection contract with a mismatched schema
+                # cannot fall through to the name heuristic.
+                return True
+    name = exact_name.lower()
+    # Names are a heuristic only; the host-owned contract above takes
+    # precedence. Recognize words rather than accidental substrings.
+    separated = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", exact_name)
+    separated = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", separated)
+    words = re.findall(r"[a-z0-9]+", separated.casefold())
+    mutation_words = set(words).intersection(_DEBUGGING_DIRECT_MUTATION_NAME_MARKERS)
+    if mutation_words:
+        read_verbs = {"get", "read", "list", "show", "inspect", "view",
+                      "check", "describe", "search", "find", "query", "diff", "log"}
+        # A read verb governing a noun (inspect_patch, check_format) is
+        # different from a compound action (read_and_write). Git log of
+        # commits is also an inspection rather than a commit operation.
+        read_only_name = bool(words and words[0] in read_verbs
+                              and not {"and", "then", "or"}.intersection(words))
+        git_history_name = words in (["git", "commit", "log"], ["git", "log", "commit"])
+        if not (read_only_name or git_history_name):
+            return True
     function = tool.get("function") if isinstance(tool, dict) else None
     description = str((function or {}).get("description") or "").lower()
     if name in _DEBUGGING_GENERIC_FILE_TOOL_NAMES:
@@ -2434,12 +2529,95 @@ class DebuggingRunState:
     final_report_committed: bool = False
     final_report: str = ""
     pending_final_report: str = ""
+    registration_order: int = field(default_factory=time.monotonic_ns)
+    active_request: Optional[object] = field(default=None, repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class CompletedDebuggingRun:
+    run_id: str
+    report_path: Path
+    registration_order: int
 
 
 _DEBUGGING_RUNS: Dict[str, DebuggingRunState] = {}
+# Completed reports are durable already. Keep only a process-local, disk-backed
+# digest-to-identity index, not the report, intake or pass cognition in RAM.
+# The temporary SQLite database is removed on connection close; it confers no
+# execution authority and does not alter the report's existing durability gate.
+_DEBUGGING_COMPLETED_INDEX: Optional[sqlite3.Connection] = None
+_DEBUGGING_COMPLETED_INDEX_LOCK = threading.RLock()
+
+
+def _debugging_completed_index() -> sqlite3.Connection:
+    global _DEBUGGING_COMPLETED_INDEX
+    if _DEBUGGING_COMPLETED_INDEX is None:
+        connection = sqlite3.connect("", check_same_thread=False)
+        try:
+            connection.execute("PRAGMA temp_store = FILE")
+            connection.execute("PRAGMA cache_size = -256")
+            connection.execute(
+                "CREATE TABLE completed_debugging ("
+                "digest TEXT PRIMARY KEY, run_id TEXT NOT NULL, "
+                "report_path TEXT NOT NULL, registration_order INTEGER NOT NULL)"
+            )
+            connection.commit()
+        except BaseException:
+            connection.close()
+            raise
+        _DEBUGGING_COMPLETED_INDEX = connection
+    return _DEBUGGING_COMPLETED_INDEX
+
+
+def _debugging_close_completed_index() -> None:
+    global _DEBUGGING_COMPLETED_INDEX
+    with _DEBUGGING_COMPLETED_INDEX_LOCK:
+        connection = _DEBUGGING_COMPLETED_INDEX
+        _DEBUGGING_COMPLETED_INDEX = None
+        if connection is not None:
+            try:
+                connection.close()
+            except sqlite3.Error:
+                LOG.warning("Code Debugging completion index close failed")
+
+
+def _debugging_claim_run(run: DebuggingRunState) -> None:
+    """Bind only the exact live run to the request already inside its semaphore."""
+    owner = _REQUEST_RESUME_OWNER.get()
+    if owner is None or owner["task"] is not asyncio.current_task():
+        return
+    prior = owner.get("debugging_run")
+    token = owner["debugging_token"]
+    if (prior is not None and prior is not run) or (
+        run.active_request is not None and run.active_request is not token
+    ):
+        raise HTTPException(status_code=409, detail="Code Debugging run is already owned by a different request.")
+    owner["debugging_run"] = run
+    run.active_request = token
 
 
 def _debugging_retire_run(run: DebuggingRunState) -> None:
+    if _DEBUGGING_RUNS.get(run.run_id) is not run:
+        return
+    if run.final_report_committed:
+        try:
+            with _DEBUGGING_COMPLETED_INDEX_LOCK:
+                connection = _debugging_completed_index()
+                with connection:
+                    connection.execute(
+                        "INSERT INTO completed_debugging VALUES (?, ?, ?, ?) "
+                        "ON CONFLICT(digest) DO UPDATE SET run_id=excluded.run_id, "
+                        "report_path=excluded.report_path, registration_order=excluded.registration_order "
+                        "WHERE excluded.registration_order >= completed_debugging.registration_order",
+                        (_sha256_text(run.final_report.strip()), run.run_id,
+                         str(run.report_path), run.registration_order),
+                    )
+        except sqlite3.Error:
+            # The report is already durable. Never convert a secondary-index
+            # failure into lost cognition or an apparently failed report.
+            # Keep the exact identity available and retry retirement on lookup.
+            LOG.warning("Code Debugging completion index unavailable; retaining completed run identity")
+            return
     if _DEBUGGING_RUNS.get(run.run_id) is run:
         _DEBUGGING_RUNS.pop(run.run_id, None)
 
@@ -2460,32 +2638,59 @@ def _debugging_user_requests_new_run(text: str) -> bool:
 
 def _debugging_completed_run_for_history(
     messages: Iterable[Dict[str, Any]],
-) -> Optional[DebuggingRunState]:
-    """Positive-match a follow-up to an exact completed final report in history."""
+) -> Optional[CompletedDebuggingRun]:
+    """Positive-match an exact completed report digest, preserving newest-run identity."""
     items = [item for item in messages if isinstance(item, dict)]
     target = active_response_target(items)
     current_user = _content_to_text((target or {}).get("content")).strip()
     if _debugging_user_requests_new_run(current_user):
         return None
 
-    completed = [
-        run for run in _DEBUGGING_RUNS.values()
-        if run.final_report_committed and str(run.final_report or "").strip()
-    ]
-    for item in reversed(items):
-        if item.get("role") != "assistant":
-            continue
-        assistant_content = _content_to_text(item.get("content")).strip()
-        if not assistant_content:
-            continue
-        for run in reversed(completed):
-            if assistant_content == run.final_report.strip():
-                return run
+    # Only index failures can leave completed heavy state in the live registry.
+    # Retry retirement, preserving a fallback if the temporary index is unavailable.
+    fallback: Dict[str, CompletedDebuggingRun] = {}
+    for run in tuple(_DEBUGGING_RUNS.values()):
+        if run.final_report_committed and run.final_report.strip():
+            _debugging_retire_run(run)
+            if _DEBUGGING_RUNS.get(run.run_id) is run:
+                digest = _sha256_text(run.final_report.strip())
+                prior = fallback.get(digest)
+                if prior is None or run.registration_order >= prior.registration_order:
+                    fallback[digest] = CompletedDebuggingRun(
+                        run.run_id, run.report_path, run.registration_order
+                    )
+    if _DEBUGGING_COMPLETED_INDEX is None and not fallback:
+        return None
+
+    with _DEBUGGING_COMPLETED_INDEX_LOCK:
+        for item in reversed(items):
+            if item.get("role") != "assistant":
+                continue
+            assistant_content = _content_to_text(item.get("content")).strip()
+            if not assistant_content:
+                continue
+            digest = _sha256_text(assistant_content)
+            matched = fallback.get(digest)
+            if _DEBUGGING_COMPLETED_INDEX is not None:
+                try:
+                    row = _DEBUGGING_COMPLETED_INDEX.execute(
+                        "SELECT run_id, report_path, registration_order "
+                        "FROM completed_debugging WHERE digest = ?", (digest,)
+                    ).fetchone()
+                except sqlite3.Error as exc:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Code Debugging completion lookup unavailable; will not restart a potentially completed audit.",
+                    ) from exc
+                if row is not None and (matched is None or row[2] >= matched.registration_order):
+                    matched = CompletedDebuggingRun(row[0], Path(row[1]), row[2])
+            if matched is not None:
+                return matched
     return None
 
 
 def _debugging_followup_history(
-    run: DebuggingRunState, messages: Iterable[Dict[str, Any]]
+    run: CompletedDebuggingRun, messages: Iterable[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
     """Keep completed-work conversation and inject exact host-owned run metadata."""
     history = [copy.deepcopy(item) for item in messages if isinstance(item, dict)]
@@ -2623,8 +2828,9 @@ def _debugging_create_run(
         summaries={},
         request_fingerprint=str(request_fingerprint or ""),
     )
-    _DEBUGGING_RUNS[run_id] = run
     _debugging_write_open_intake_report(run)
+    _debugging_claim_run(run)
+    _DEBUGGING_RUNS[run_id] = run
     LOG.info("Created Code Debugging run %s report=%s", run.run_id, run.report_path)
     return run
 
@@ -2632,7 +2838,9 @@ def _debugging_create_run(
 def _debugging_get_run(run_id: Optional[str]) -> DebuggingRunState:
     if not run_id or run_id not in _DEBUGGING_RUNS:
         raise HTTPException(status_code=500, detail="Code Debugging run state is unavailable or expired.")
-    return _DEBUGGING_RUNS[run_id]
+    run = _DEBUGGING_RUNS[run_id]
+    _debugging_claim_run(run)
+    return run
 
 
 def _debugging_append_intake_turn(run: DebuggingRunState, role: str, content: str) -> None:
@@ -2678,7 +2886,7 @@ def _debugging_render_open_intake_report(run: DebuggingRunState) -> str:
 
 def _debugging_write_open_intake_report(run: DebuggingRunState) -> None:
     run.report_path.parent.mkdir(parents=True, exist_ok=True)
-    run.report_path.write_text(_debugging_render_open_intake_report(run), encoding="utf-8")
+    _debugging_atomic_replace_report(run.report_path, _debugging_render_open_intake_report(run))
 
 
 def _debugging_pass0_summary(run: DebuggingRunState) -> str:
@@ -2733,7 +2941,7 @@ def _debugging_freeze_intake(run: DebuggingRunState) -> None:
         if str(item.get("role") or "").lower() == "user" and str(item.get("content") or "").strip()
     ]
     run.intake_frozen = True
-    run.report_path.write_text(_debugging_render_report_through(run, 0), encoding="utf-8")
+    _debugging_atomic_replace_report(run.report_path, _debugging_render_report_through(run, 0))
     _debugging_validate_report_through(run, 0)
     LOG.info("Code Debugging user-origin intake frozen as Pass 0: run=%s report=%s", run.run_id, run.report_path)
 
@@ -3222,6 +3430,7 @@ def _debugging_retry_pending_final_report(run: DebuggingRunState) -> str:
         run.run_id,
         run.report_path,
     )
+    _debugging_retire_run(run)
     return final_report
 
 
@@ -3297,12 +3506,19 @@ If and only if one genuinely material clarification is worth asking before Pass 
 
 def _debugging_pass_system_prompt(pass_number: int) -> str:
     categories = "\n".join(f"- {item}" for item in DEBUGGING_REVIEW_CATEGORIES)
+    instructions = DEBUGGING_INSTRUCTIONS_PATH.read_text(encoding="utf-8")
     return f"""You are a completely fresh Code Debugging forensic-audit instance for Pass {pass_number} of {DEBUGGING_PASS_COUNT}.
 
 Every pass searches the SAME full professional code-review space. No review category belongs to a particular pass or temperature. The cascading temperatures are the control mechanism that changes search behavior across fresh passes. Consider all of these categories when selecting this pass's single strongest credible problem:
 {categories}
 
-Use the caller's inspection tools to read {DEBUGGING_INSTRUCTIONS_PATH} completely before substantive analysis, then follow the instructions exactly. At the start of EVERY fresh pass Jack directly projects the complete user-origin Pass 0 intake as an authoritative user block. Passes 2-5 additionally receive only a compact host-derived confirmed prior-finding registry distilled from already committed outcomes. Pass 1 receives no prior model-authored audit state. The exact user-origin intake outranks any model-authored summary if a requirement, constraint, symptom, or detail was omitted or compressed downstream. If this same pass previously asked the user for diagnostic clarification, the active history may additionally contain that debugger question and the user's reply; those are same-pass evidence, not cross-pass memory. Do not read or reconstruct older pass summaries from any Debugging/Reports/Debugging_Report_*.md file; Jack owns the current run's unique durable report and reserves it for the final reporting stage. No earlier-pass native reasoning, tool calls/results, assistant narration, conversation history, Preserve-Thinking state, or full prior handoff summaries are restored to you.
+Read the authoritative host-supplied instructions below completely before substantive analysis. No executor read of Jack's installation is required.
+
+[BEGIN HOST DEBUGGING INSTRUCTIONS]
+{instructions}
+[END HOST DEBUGGING INSTRUCTIONS]
+
+At the start of EVERY fresh pass Jack directly projects the complete user-origin Pass 0 intake as an authoritative user block. Passes 2-5 additionally receive only a compact host-derived confirmed prior-finding registry distilled from already committed outcomes. Pass 1 receives no prior model-authored audit state. The exact user-origin intake outranks any model-authored summary if a requirement, constraint, symptom, or detail was omitted or compressed downstream. If this same pass previously asked the user for diagnostic clarification, the active history may additionally contain that debugger question and the user's reply; those are same-pass evidence, not cross-pass memory. Do not read or reconstruct older pass summaries from any Debugging/Reports/Debugging_Report_*.md file; Jack owns the current run's unique durable report and reserves it for the final reporting stage. No earlier-pass native reasoning, tool calls/results, assistant narration, conversation history, Preserve-Thinking state, or full prior handoff summaries are restored to you.
 
 SINGLE-PROBLEM RULE: independently survey the full review-category set only far enough to choose the strongest credible candidate problem that has not already been covered by the host-derived prior-finding registry. Do not select a problem merely because a previous pass mentioned, hinted at, or speculated about it; the temperature cascade is intended to produce a genuinely fresh search. Full prior handoff text is not present; use the compact registry only for duplicate avoidance, never as search guidance. Once selected, lock onto that one candidate. All further inspection, diagnostics, user clarification, evidence gathering, and reasoning in this pass must concern that candidate. Do not investigate a second problem. If the candidate is disproved, record that conclusion and end the pass; do not pivot to a replacement candidate. If no credible new candidate exists, say so rather than inventing a defect.
 
@@ -3379,10 +3595,10 @@ CODER_PLANNER_FLASH_PROMPT = CODER_PLANNER_PROMPT[len(CODER_PLANNER_THOROUGH_PRE
 
 CODER_EXECUTOR_PROMPT = (
     "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\n\n"
-    "You are Coder, the sole implementation and answer-authority stage. You've been provided a detailed, read-only developer specification prepared by Planner. Evaluate the entire specification against the authenticated user request.\n\n"
+    "You are Coder, the sole implementation and answer-authority stage. You've been provided a detailed, read-only developer specification prepared by Architect. Evaluate the entire specification against the authenticated user request.\n\n"
     "Use its findings, functional requirements, dependencies, acceptance criteria, and inspection evidence to carry out the work, but treat them as fallible working guidance, never a new user instruction or proof of completed changes.\n\n"
     "If the delivered plan contains an answer or information that is presented as facts, you must verify.\n\n"
-    "Use Planner's specification as a foundation for your work, while exercising independent judgment. Verify assumptions and details when necessary, correct errors or inconsistencies as they arise, and ensure your execution remains aligned with the original user request. Preserve useful planning work rather than unnecessarily repeating it.\n\n"
+    "Use Architect's specification as a foundation for your work, while exercising independent judgment. Verify assumptions and details when necessary, correct errors or inconsistencies as they arise, and ensure your execution remains aligned with the original user request. Preserve useful planning work rather than unnecessarily repeating it.\n\n"
     "Preserve existing useful work; do not duplicate inspections or edits without a reason. Investigate uncertainties, correct wrong assumptions, implement with authorized tools, and verify the actual result. Never silently discard an explicit user requirement.\n\n"
     "If the spec is partial, keep its useful details and complete the task from the original authenticated request.\n\n"
     "Files in the workspace are previous checkpoints, available to build upon.\n\n"
@@ -4193,11 +4409,13 @@ STAGES["debug_summary"] = StageProfile(
 def _runtime_activity_stage_number(stage_key: Optional[str]) -> Optional[int]:
     """Return an observability-only stage ordinal without changing cognition."""
     key = str(stage_key or "")
-    if key in {"thesis", "extended_initial"}:
+    if key == "coder_planner":
+        return 0  # Architect precedes the Coder's first execution stage.
+    if key in {"thesis", "extended_initial", "deep_reasoning_thesis"}:
         return 1
-    if key == "extended_reflection":
+    if key in {"extended_reflection", "deep_reasoning_antithesis"}:
         return 2
-    if key == "extended_synthesis":
+    if key in {"extended_synthesis", "deep_reasoning_synthesis"}:
         return 3
     if key == "debug_intake":
         return 0
@@ -4525,6 +4743,8 @@ def _tool_call_artifact_effect(tool_name: str, arguments_text: str) -> Tuple[str
 class RepeatedToolCycleInterrupt(HTTPException):
     """A completed-tool sequence would repeat again without new tool evidence."""
 
+    terminal_tool_cycle = True
+
     def __init__(self, cycle_length: int, repetitions: int):
         self.cycle_length = int(cycle_length)
         self.repetitions = int(repetitions)
@@ -4576,9 +4796,8 @@ def _agentic_exact_tool_cycle(
     """Detect repeated completed tool cycles without discarding useful work.
 
     Mutation-bearing cycles use the configured threshold (5 repetitions by default).
-    Pure file inspection cycles are eligible after two identical completed
-    inspections, immediately before the third identical call is released.
-    Polling commands and other non-mutating tools remain unaffected.
+    Read-only cycles are not terminal: repeated inspection or polling can
+    remain useful even when the returned bytes have not changed.
     A failed result, incomplete exchange, changed args, or changed evidence
     never authorizes an interrupt. Tool IDs are intentionally ignored.
     """
@@ -4660,14 +4879,11 @@ def _agentic_exact_tool_cycle(
     for cycle_length in range(1, maximum + 1):
         pattern = actions[-cycle_length:]
         mutation_cycle = any(x[2] for x in pattern)
-        # Restrict early read-only detection to the pure file-read tool.
-        # Listing/polling, searches and other observation tools may legitimately
-        # repeat while awaiting changes. The tool name, exact arguments, and
-        # returned evidence must all match; changed file bytes reset detection.
-        stable_file_inspection = all(x[0] == "read" and not x[2] for x in pattern)
-        if not (mutation_cycle or stable_file_inspection):
+        # Only a positively classified mutation-bearing cycle can authorize
+        # a terminal cycle interrupt. Repeated reads are ordinary inspection.
+        if not mutation_cycle:
             continue
-        cycle_repetitions = repeats if mutation_cycle else 3
+        cycle_repetitions = repeats
         required = cycle_repetitions * cycle_length
         if len(actions) < required:
             continue
@@ -5100,17 +5316,53 @@ def _tool_call_validation_errors(
         try:
             args = json.loads(raw_args) if isinstance(raw_args, str) else copy.deepcopy(raw_args)
         except Exception as exc:
-            errors.append(f"{name}: arguments are not valid JSON ({type(exc).__name__})")
+            errors.append(f"tool call {index} ({name}): arguments are not valid JSON ({type(exc).__name__})")
             continue
         if not isinstance(args, dict):
-            errors.append(f"{name}: arguments must be a JSON object")
+            errors.append(f"tool call {index} ({name}): arguments must be a JSON object")
             continue
         parameters = schema.get("parameters") if isinstance(schema.get("parameters"), dict) else {}
         required = parameters.get("required") if isinstance(parameters.get("required"), list) else []
         missing = [str(key) for key in required if str(key) not in args]
         if missing:
-            errors.append(f"{name}: missing required propert{'y' if len(missing)==1 else 'ies'} " + ", ".join(missing))
+            errors.append(f"tool call {index} ({name}): missing required propert{'y' if len(missing)==1 else 'ies'} " + ", ".join(missing))
     return errors
+
+
+def _original_batch_path_errors(
+    original: List[Dict[str, Any]], filtered: List[Dict[str, Any]], errors: List[str],
+) -> List[str]:
+    """Map partition-local indices back to original proposal identity."""
+    indices = {id(call): index for index, call in enumerate(original)}
+    out = []
+    for error in errors:
+        match = re.match(r"^tool call (\d+):", error)
+        if match is not None and int(match.group(1)) < len(filtered):
+            call = filtered[int(match.group(1))]
+            index = indices.get(id(call), int(match.group(1)))
+            name = _debugging_tool_name(call)
+            error = f"tool call {index} ({name}):" + error[match.end():]
+        out.append(error)
+    return out
+
+
+def _recoverable_schema_siblings(
+    calls: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """Withhold malformed calls without discarding valid parallel siblings.
+
+    Never split ambiguous identities: the entire malformed batch must then be
+    corrected before any executable release. Do not invent missing arguments.
+    Every returned call still traverses the normal path and security gates.
+    """
+    identities = [
+        call.get("id") if isinstance(call, dict) else None for call in calls
+    ]
+    if any(not isinstance(ident, str) or not ident.strip() for ident in identities):
+        return []
+    if len(set(identities)) != len(identities):
+        return []
+    return [call for call in calls if not _tool_call_validation_errors([call], tools)]
 
 
 def _phase4_partition_structured_tool_calls(
@@ -5172,44 +5424,51 @@ def _phase4_partition_structured_tool_calls(
         structured = jack_path_policy.extract_structured_tool_paths(
             function_name,
             raw_arguments,
+            path_style=active_policy.path_style,
+            custom_contracts=active_policy.custom_tool_contracts,
         )
 
         if structured.applicable:
-            candidate = (
-                jack_path_policy.rewrite_structured_tool_call_for_workspace_release(
-                    active_policy,
-                    call,
-                )
+            candidate = jack_path_policy.rewrite_structured_tool_call_for_workspace_release(
+                active_policy,
+                call,
+                executor_cwd=executor_cwd,
             )
             decision = jack_path_policy.authorize_structured_tool_call(
                 active_policy,
                 candidate,
-                defer_relative_without_executor=False,
+                executor_cwd=executor_cwd if not active_policy.workspace_enabled else None,
+                defer_relative_without_executor=not active_policy.workspace_enabled and executor_cwd is None,
             )
             contract_applied = True
         else:
+            # Request-wide shell metadata is not a tool-specific contract.
+            # Do not classify arbitrary custom tools (vision, search, etc.)
+            # as shell invocations. A cooperating adapter can bind a custom
+            # command's dialect at its individual executor-admission boundary.
+            tool_dialect = (
+                command_dialect if jack_path_policy.is_command_capability_tool_name(function_name)
+                else None
+            )
+            candidate = jack_path_policy.rewrite_literal_bash_home_call_for_workspace_release(
+                active_policy,
+                call,
+                command_dialect=tool_dialect,
+                executor_platform=executor_platform,
+            )
             decision, contract_applied = (
                 jack_path_policy.authorize_executor_tool_call(
                     active_policy,
-                    call,
+                    candidate,
                     executor_cwd=executor_cwd,
-                    command_dialect=command_dialect,
+                    command_dialect=tool_dialect,
                     executor_platform=executor_platform,
                 )
             )
-            candidate = copy.deepcopy(call)
+            candidate = copy.deepcopy(candidate)
 
-        if (
-            not contract_applied
-            and active_policy.workspace_enabled
-            and jack_path_policy.is_command_capability_tool_name(function_name)
-        ):
-            errors.append(
-                f"tool call {index}: Workspace Lock requires a deterministic "
-                "command dialect/executor contract"
-            )
-            continue
-
+        # An unavailable command contract is not a forbidden target. Do not
+        # claim coverage or block the tool merely for an unfamiliar dialect.
         if not contract_applied:
             allowed.append(candidate)
             continue
@@ -5224,9 +5483,60 @@ def _phase4_partition_structured_tool_calls(
             decision.outcome
             is jack_path_policy.PathAuthorizationOutcome.DENY_AND_CONTINUE
         ):
+            # Log only host-defined categories and booleans, never raw arguments,
+            # paths, or exception text. Model recovery uses the same safe category.
+            reason = decision.reason
+            reason_code = "OTHER_POLICY_DENIAL"
+            for prefix, code in (
+                ("Workspace Lock requires the executor's actual cwd", "EXECUTOR_CWD_MISSING"),
+                ("executor cwd is required", "EXECUTOR_CWD_MISSING"),
+                ("executor cwd is not a deterministic", "EXECUTOR_CWD_INVALID"),
+                ("Workspace Lock requires filesystem command targets", "COMMAND_TARGET_UNRESOLVED"),
+                ("Workspace Lock requires command semantics", "COMMAND_CONTRACT_AMBIGUOUS"),
+                ("represented target is outside the configured workspace", "OUTSIDE_WORKSPACE"),
+                ("workspace membership cannot be established", "WORKSPACE_MEMBERSHIP_UNRESOLVED"),
+                ("invalid represented path", "INVALID_REPRESENTED_PATH"),
+                ("represented target is an exact protected credential resource", "PROTECTED_CREDENTIAL_RESOURCE"),
+                ("structured tool target is not authorized", "STRUCTURED_TARGET_DENIED"),
+                ("default Windows path referenced", "WINDOWS_SYSTEM_CONTRACT"),
+                ("read-only system inspection lies outside", "OUTSIDE_WORKSPACE"),
+                ("sensitive Windows resource", "WINDOWS_SYSTEM_RESOURCE"),
+            ):
+                if reason.startswith(prefix):
+                    reason_code = code
+                    break
+            LOG.warning(
+                "Restricted Paths denial: reason=%s executor_context=%s "
+                "executor_cwd_present=%s canonical_target_present=%s workspace_lock=%s",
+                reason_code, executor_context is not None, bool(executor_cwd),
+                decision.canonical_target is not None, active_policy.workspace_enabled,
+            )
+            # Missing authority or an invalid invocation is not evidence of
+            # a forbidden target. Distinguish correction from a real denial
+            # for structured tools as well as shell commands.
+            if reason_code in {
+                "EXECUTOR_CWD_MISSING",
+                "EXECUTOR_CWD_INVALID",
+                "COMMAND_TARGET_UNRESOLVED",
+                "COMMAND_CONTRACT_AMBIGUOUS",
+                "WORKSPACE_MEMBERSHIP_UNRESOLVED",
+                "INVALID_REPRESENTED_PATH",
+            }:
+                errors.append(
+                    f"tool call {index}: Restricted Paths / Workspace Lock "
+                    f"could not establish path authority ({reason_code}); "
+                    "no forbidden target was established by this check. "
+                    "Correct the invocation with an explicit authorized target if needed. "
+                    "Never seek alternate access to a restricted target."
+                )
+                continue
             errors.append(
                 f"tool call {index}: host-owned Restricted Paths / Workspace Lock path policy denied "
-                "the represented filesystem target"
+                f"the represented filesystem target ({reason_code})"
+                + (
+                    ". The proposed location is outside the workspace."
+                    if reason_code == "OUTSIDE_WORKSPACE" else ""
+                )
             )
             continue
 
@@ -5334,15 +5644,12 @@ def _phase4_executor_admission_decision(
         )
 
     command_dialect = payload.get("command_dialect")
-    if (
-        command_dialect is not None
-        and str(command_dialect).strip().casefold()
-        not in {"bash", "powershell"}
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail="Unsupported executor command dialect",
-        )
+    if command_dialect is not None:
+        if not isinstance(command_dialect, str) or not re.fullmatch(
+            r"[a-z0-9][a-z0-9._+-]{0,63}", command_dialect.strip().casefold()
+        ):
+            raise HTTPException(status_code=400, detail="Invalid executor command dialect")
+        command_dialect = command_dialect.strip().casefold()
 
     if expected_call is not None:
         if not isinstance(expected_call, dict):
@@ -5404,7 +5711,7 @@ def _phase4_executor_admission_decision(
         executor_platform=executor_platform,
     )
 
-    return {
+    result = {
         "protocol_version": PHASE4_EXECUTOR_ADMISSION_PROTOCOL_VERSION,
         "runtime_id": RUNTIME_ID,
         "lane_id": LANE_ID,
@@ -5412,10 +5719,27 @@ def _phase4_executor_admission_decision(
         "outcome": decision.outcome.value,
         "contract_applied": contract_applied,
     }
+    if decision.outcome is jack_path_policy.PathAuthorizationOutcome.DENY_AND_CONTINUE:
+        # Only stable host-defined categories leave admission. Never expose
+        # represented paths, variable names, or free-form policy diagnostics.
+        code = "PATH_AUTHORITY_UNAVAILABLE"
+        for prefix, category in (
+            ("represented target is outside the configured workspace", "OUTSIDE_WORKSPACE"),
+            ("read-only system inspection lies outside", "OUTSIDE_WORKSPACE"),
+            ("represented target is an exact protected credential resource", "PROTECTED_CREDENTIAL_RESOURCE"),
+            ("invalid represented path", "INVALID_REPRESENTED_PATH"),
+            ("default Windows path referenced", "WINDOWS_SYSTEM_CONTRACT"),
+            ("sensitive Windows resource", "WINDOWS_SYSTEM_RESOURCE"),
+        ):
+            if decision.reason.startswith(prefix):
+                code = category
+                break
+        result["reason_code"] = code
+    return result
 
 
 def _immutable_path_denial(errors: Iterable[str]) -> bool:
-    """Only host-generated represented-target denials, not schema corrections."""
+    """Repeated identical positive denials remain bounded; a different authorized destination is valid."""
     items = list(errors)
     return bool(items) and all(
         "path policy denied the represented filesystem target" in item for item in items
@@ -5454,18 +5778,31 @@ def _tool_rejection_notice(
                 "needed, use an authorized read-only tool; otherwise finish the spec."
             )
     elif _immutable_path_denial(items):
-        guidance = (
-            "This is an immutable host security denial, not a correctable tool error. "
-            "Do not retry the denied target or seek alternate access. "
-            "Preserve completed evidence; continue independent authorized work "
-            "or finish with a clear denial report."
-        )
+        if any("(OUTSIDE_WORKSPACE)" in item for item in items):
+            guidance = (
+                "The proposed location was outside the workspace and was not executed. "
+                "If the requested work belongs in the workspace, correct the destination "
+                "to the intended workspace-relative filename or explicit in-workspace path "
+                "and continue. A leading slash is rooted, not a workspace-relative filename. "
+                "Do not access the denied location. If the task actually requires that location, "
+                "report the restriction. Preserve completed work."
+            )
+        else:
+            guidance = (
+                "Do not retry the denied target or seek alternate access to it. "
+                "Preserve completed work; continue independent authorized operations "
+                "or report the restriction."
+            )
     else:
         guidance = (
-            "Preserve the useful analysis that led here. If this stage has tool "
-            "authority, correct the invocation if the tool is still needed; "
-            "otherwise continue the same stage without tools."
+            "Use the advertised tool schema or an explicit authorized destination to "
+            "correct the invocation that failed. Preserve completed work and continue "
+            "the current user task. Do not repeat a successfully completed action."
         )
+        if any("path policy denied the represented filesystem target" in item for item in items):
+            guidance += " Do not access a denied target or seek alternate access to it."
+        if any("(OUTSIDE_WORKSPACE)" in item for item in items):
+            guidance += " For work intended inside the workspace, correct the destination to a workspace-relative filename."
     notice = {
         "role": "user",
         "content": (
@@ -5491,6 +5828,11 @@ _TOOL_RECOVERY_STATE: contextvars.ContextVar[Optional[ToolRecoveryState]] = (
 _TOOL_RECOVERY_PENDING: contextvars.ContextVar[Optional["PendingToolResume"]] = (
     contextvars.ContextVar("jack_tool_recovery_pending", default=None)
 )
+# Only successful admission can populate this request-local ownership slot.
+# Never infer ownership from caller-replayed message IDs or assistant prose.
+_REQUEST_RESUME_OWNER: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
+    contextvars.ContextVar("jack_request_resume_owner", default=None)
+)
 
 
 def _tool_recovery_check(
@@ -5499,7 +5841,8 @@ def _tool_recovery_check(
     usage: Dict[str, int], *, path_denial: bool = False,
 ) -> List[Dict[str, Any]]:
     """Preserve reasoning and prior tool results, rejecting only invalid actions."""
-    repaired = _tool_rejection_history(history, message, errors, STAGES[stage_key].name)
+    repaired = _tool_rejection_history(history, message, errors, STAGES[stage_key].name,
+                                       forensic_stage_key=stage_key)
     tracker = _TOOL_RECOVERY_STATE.get()
     if tracker is None:
         tracker = ToolRecoveryState()
@@ -5527,7 +5870,7 @@ def _tool_recovery_check(
     count = tracker.fail(operation, "; ".join(errors),
                          policy_denial=immutable_denial, policy_key=policy_key)
     advisory = tracker.advice()
-    if advisory:
+    if advisory and not immutable_denial:
         repaired[-1]["content"] += "\n[JACK TOOL RECOVERY GUIDANCE]\n" + advisory
     if tracker.exhausted:
         raise ToolRecoveryExhausted(
@@ -5539,9 +5882,13 @@ def _tool_recovery_check(
     return repaired
 
 
-def _tool_recovery_record_results(state: "PendingToolResume", results: List[Dict[str, Any]]) -> None:
-    """Count only explicit host-authenticated failures and successes."""
-    tracker = state.tool_recovery
+def _tool_recovery_record_results(
+    state: "PendingToolResume", results: List[Dict[str, Any]],
+    *, tracker: Optional[ToolRecoveryState] = None,
+) -> None:
+    """Track accepted tool returns separately from verified success evidence."""
+    if tracker is None:
+        tracker = state.tool_recovery
     if tracker is None:
         return
     calls_by_id: Dict[str, Dict[str, Any]] = {}
@@ -5560,10 +5907,13 @@ def _tool_recovery_record_results(state: "PendingToolResume", results: List[Dict
             tracker.fail(op, _content_to_text(item.get("content")), call_id=call_id)
         elif status == TOOL_SUCCESS:
             tracker.progress(op, call_id=call_id)
+        elif status == TOOL_UNKNOWN and call_id in state.expected_tool_call_ids and call_id in calls_by_id:
+            tracker.observed_return(call_id=call_id)
 
 
 def _tool_rejection_history(
-    history: List[Dict[str, Any]], message: Dict[str, Any], errors: List[str], stage_name: str
+    history: List[Dict[str, Any]], message: Dict[str, Any], errors: List[str], stage_name: str,
+    *, forensic_stage_key: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Preserve useful cognition while rejecting only the malformed/unauthorized action."""
     out = list(history)
@@ -5572,6 +5922,10 @@ def _tool_rejection_history(
         "content": str(message.get("content") or ""),
         "_jack_internal_tool_validation_checkpoint": True,
     }
+    # Separate forensic attribution from the live stage-key grammar: adding
+    # a live stage key would alter cognitive retention and Stage-2 projection.
+    if forensic_stage_key in STAGES:
+        checkpoint["_jack_rejection_forensic_stage"] = forensic_stage_key
     reasoning_content = message.get("reasoning_content")
     reasoning = message.get("reasoning")
     thinking = message.get("thinking")
@@ -5592,12 +5946,26 @@ def normalize_tool_calls_for_distribution(calls: Any) -> Any:
     if not isinstance(calls, list):
         return calls
     out = copy.deepcopy(calls)
+    # This seam processes newly generated backend calls only, never historical
+    # tool results. Establish an ID before schema validation and transaction ownership.
+    occupied = {call["id"] for call in out if isinstance(call, dict)
+                and isinstance(call.get("id"), str) and call["id"].strip()}
     for call in out:
         if not isinstance(call, dict):
             continue
         function = call.get("function")
         if not isinstance(function, dict):
             continue
+        ident = call.get("id")
+        if (ident is None or isinstance(ident, str) and not ident.strip()) and (
+            isinstance(function.get("name"), str) and function["name"].strip()
+            and isinstance(function.get("arguments"), (str, dict))
+        ):
+            generated = "jack-call-" + uuid.uuid4().hex
+            while generated in occupied:
+                generated = "jack-call-" + uuid.uuid4().hex
+            occupied.add(generated)
+            call["id"] = generated
         name = str(function.get("name") or "").lower()
         if not any(hint in name for hint in SHELL_TOOL_HINTS):
             continue
@@ -5890,7 +6258,28 @@ def _capture_agentic_stage1_forensic_snapshot(
             continue
         trajectory.append(_json_forensic_copy(item))
 
-    reasoning_trace = extended_stage1_reasoning_trace(history, final_message)
+    # This optional archive is not Stage-2 cognition. Include the current
+    # turn's explicitly host-attributed rejected proposals in chronology,
+    # without treating them as executed tool evidence or altering live R1.
+    reasoning_parts = []
+    rejected = []
+    for position, item in enumerate(history[target_index + 1:], target_index + 1):
+        if not isinstance(item, dict):
+            continue
+        is_rejected = (item.get("_jack_internal_tool_validation_checkpoint") is True
+                       and item.get("_jack_rejection_forensic_stage") == "extended_initial")
+        if not is_rejected and item.get("_jack_stage_key") != "extended_initial":
+            continue
+        text = _native_reasoning_text(item)
+        if text:
+            reasoning_parts.append(text)
+        if is_rejected:
+            rejected.append({"history_index": position, "stage": "extended_initial",
+                             "executed": False, "reasoning": text})
+    tail = _native_reasoning_text(final_message)
+    if tail:
+        reasoning_parts.append(tail)
+    reasoning_trace = "\n\n".join(reasoning_parts).strip()
     final_copy = _json_forensic_copy(final_message)
     for key in tuple(final_copy.keys()):
         if isinstance(key, str) and key.startswith("_jack_"):
@@ -5906,6 +6295,7 @@ def _capture_agentic_stage1_forensic_snapshot(
         "temperature": float(STAGES["extended_initial"].temperature),
         "reasoning_trace": reasoning_trace,
         "tool_trajectory": trajectory,
+        "rejected_action_checkpoints": rejected,
         "frozen_stage1_answer": _content_to_text(final_message.get("content")),
         "final_stage1_message": final_copy,
     }
@@ -6207,7 +6597,7 @@ def _coder_spec_text(raw: str, request: str) -> Tuple[str, bool]:
     safe = _coder_unverified_observations(raw)
     if safe and not _coder_planner_is_host_continuation(safe):
         return safe, False
-    LOG.warning("Coder Planner produced no usable spec; continuing from authenticated request")
+    LOG.warning("Coder Architect produced no usable spec; continuing from authenticated request")
     return request, True
 
 
@@ -6233,7 +6623,7 @@ def _coder_append_plan(history: List[Dict[str, Any]], result: Dict[str, Any]) ->
         # Never promote fake tool syntax to the Coder developer-spec surface.
         # Preserve the actual user request and the Planner's useful prose as
         # lower-trust observations. The unmodified raw output remains below.
-        LOG.warning("Coder Planner simulated a tool call in text; host recovery handoff")
+        LOG.warning("Coder Architect simulated a tool call in text; host recovery handoff")
         recovered = _coder_planner_host_handoff_result(
             history, _coder_unverified_observations(raw)
         )
@@ -6287,7 +6677,7 @@ def _coder_retire_planner_reasoning(history: List[Dict[str, Any]]) -> int:
             value = item.pop(key, None)
             if isinstance(value, str):
                 retired += len(value)
-    LOG.info("Coder Planner R1 retired after specification capture: chars=%d", retired)
+    LOG.info("Coder Architect R1 retired after specification capture: chars=%d", retired)
     return retired
 
 
@@ -6541,9 +6931,18 @@ def _ultra_project_review_request(
     genuine_users = sum(
         _jack_is_authentic_user_message(item) for item in source_view
     )
-    if sum(item.get("role") == "user" for item in source_view) != genuine_users:
+    retry_indices = [
+        i for i, item in enumerate(source_view)
+        if i > boundaries[0] and isinstance(item, dict)
+        and item.get("role") == "user"
+        and item.get("_jack_internal_protocol_recovery") is True
+        and item.get("content") == _EMPTY_STREAM_RECOVERY_NOTICE
+    ]
+    if len(retry_indices) > 1:
+        raise ForensicConflict("Ultra review has multiple protocol recovery notices")
+    if sum(item.get("role") == "user" for item in source_view) != genuine_users + len(retry_indices):
         raise ForensicConflict("Ultra review source contains an internal user-role message")
-    if sum(item.get("role") == "user" for item in stage_messages) != genuine_users:
+    if sum(item.get("role") == "user" for item in stage_messages) != genuine_users + len(retry_indices):
         raise ForensicConflict("Ultra review introduced a user-role message")
 
     def remove_exact(wire: Dict[str, Any]) -> None:
@@ -6554,11 +6953,15 @@ def _ultra_project_review_request(
 
     remove_exact(boundary_wire)
     remove_exact(user_wire)
+    for retry_index in retry_indices:
+        remove_exact(prepared_messages[retry_index])
     # Agentic's already-tested review pattern: authenticated U opens generation,
     # while the review instruction is owned by the deterministic system.
     stage_messages.append(user_wire)
     system_index = 1 if stage_messages and stage_messages[0].get("role") == "system" else 0
     stage_messages.insert(system_index, {"role": "system", "content": ULTRA_REVIEW_TRIGGER})
+    if retry_indices:
+        stage_messages.insert(system_index + 1, {"role": "system", "content": _EMPTY_STREAM_RECOVERY_NOTICE})
     if (stage_messages[-1] is not user_wire
             or any(item is boundary_wire for item in stage_messages)
             or sum(item.get("role") == "user" for item in stage_messages) != genuine_users):
@@ -7419,7 +7822,12 @@ def _agentic_project_committed_artifact_pair(
         return None
     # Identity-bearing committed capsules are validated through the durable
     # journal, not through process-local records or content-based matching.
-    if _agentic_unwrap_visible_memory(assistant_text)[0] is not None:
+    if (_agentic_unwrap_visible_memory(assistant_text)[0] is not None
+            or _FLASH_TRAILING_WORK_ID_RE.search(assistant_text)):
+        # Current two-stage and Flash artifacts carry a host-owned trailing
+        # Work ID. The durable journal already authenticates that exact
+        # identity and all artifact boundaries. A shadow scan cannot improve
+        # its authority and would compare up to 128 unrelated records.
         return None
     latest_user = next(
         (item for item in reversed(retained)
@@ -7464,7 +7872,7 @@ def _agentic_project_committed_artifact_pair(
         (r.memory.content, r.response.content, r.tool_receipt) for r in matches
     }
     if len(fingerprints) != 1:
-        LOG.warning("Agentic Phase 3C ambiguous historical artifact boundaries; retaining caller text")
+        LOG.warning("Agentic historical memory projection: ambiguous artifact boundaries; retaining caller text")
         return None
     memory, answer, receipt = next(iter(fingerprints))
     # Retrospective appears first; exact frozen A1 ends the old user turn.
@@ -7483,7 +7891,7 @@ def _agentic_project_committed_artifact_pair(
         for item, label in zip(result, ("M", "A1")):
             item["_jack_forensic_turn_id"] = forensic["turn_id"]
             item["_jack_forensic_role"] = label
-    LOG.info("Agentic Phase 3C projected supplied, validated M/A pair; no hidden ledger recall")
+    LOG.info("Agentic historical memory projection: supplied, validated M/A pair; no hidden ledger recall")
     return result
 
 
@@ -7587,7 +7995,8 @@ def _agentic_context_split_host_artifact(content: Any) -> Optional[Tuple[str, st
 
 
 def _agentic_context_measure_request(
-    messages: List[Dict[str, Any]], payload: Dict[str, Any], profile: "StageProfile"
+    messages: List[Dict[str, Any]], payload: Dict[str, Any], profile: "StageProfile",
+    *, projected_artifacts: Optional[Dict[int, str]] = None,
 ) -> Dict[str, Any]:
     """Account for final *model-facing* data, including active-turn traffic.
 
@@ -7634,7 +8043,19 @@ def _agentic_context_measure_request(
             out["tool_result_content_bytes"] += cb
         elif role == "assistant":
             host_pair = _agentic_context_split_host_artifact(content)
-            if host_pair is not None:
+            artifact = projected_artifacts.get(id(msg)) if projected_artifacts is not None else None
+            if artifact == "M":
+                out["memory_content_bytes"] += cb
+                next_assistant_is_answer = False
+            elif artifact == "A1":
+                out["frozen_answer_content_bytes"] += cb
+                next_assistant_is_answer = False
+            elif projected_artifacts is not None:
+                # Actual dispatch has a host-owned sidecar. Do not infer an
+                # authenticated M/A1 association from arbitrary model prose.
+                out["other_assistant_content_bytes"] += cb
+                next_assistant_is_answer = False
+            elif host_pair is not None:
                 memory, answer = host_pair
                 out["memory_content_bytes"] += _agentic_context_content_bytes(memory)
                 out["frozen_answer_content_bytes"] += _agentic_context_content_bytes(answer)
@@ -7685,13 +8106,19 @@ def _agentic_context_measure_request(
 
 
 def _agentic_context_report_request(
-    messages: List[Dict[str, Any]], payload: Dict[str, Any], profile: "StageProfile"
+    messages: List[Dict[str, Any]], payload: Dict[str, Any], profile: "StageProfile",
+    *, projected_artifacts: Optional[Dict[int, str]] = None,
 ) -> None:
     """Fail-open telemetry: never alter, reject, or copy backend request data."""
     if not (AGENTIC_MODE and AGENTIC_CONTEXT_ACCOUNTING_ENABLED):
         return
     try:
-        report = _agentic_context_measure_request(messages, payload, profile)
+        report = (
+            _agentic_context_measure_request(messages, payload, profile)
+            if projected_artifacts is None else
+            _agentic_context_measure_request(messages, payload, profile,
+                                            projected_artifacts=projected_artifacts)
+        )
         raw_budget = os.environ.get("JACK_AGENTIC_CONTEXT_REPORT_BUDGET_BYTES", "").strip()
         if raw_budget:
             try:
@@ -7710,9 +8137,9 @@ def _agentic_context_report_request(
             else:
                 report["budget_status"] = "invalid_budget_ignored"
         # Logging never influences dispatch. No request text or serialized body.
-        LOG.info("Agentic Phase 3F context: %s", json.dumps(report, ensure_ascii=True, sort_keys=True))
+        LOG.info("Agentic context accounting: %s", json.dumps(report, ensure_ascii=True, sort_keys=True))
     except Exception as exc:
-        LOG.warning("Agentic Phase 3F context telemetry failed open: %s", type(exc).__name__)
+        LOG.warning("Agentic context accounting telemetry failed open: %s", type(exc).__name__)
 
 
 def _compact_agentic_completed_capsules(
@@ -7850,7 +8277,7 @@ def _compact_agentic_completed_capsules(
     )
     if AGENTIC_CONTEXT_ACCOUNTING_ENABLED:
         LOG.info(
-            "Agentic Phase 3F projection: authenticated_pairs=%d safe_unprojected_messages=%d opaque_unattributable_messages=%d; retained_users=%d committed_capsules=%d",
+            "Agentic context projection: authenticated_pairs=%d safe_unprojected_messages=%d opaque_unattributable_messages=%d; retained_users=%d committed_capsules=%d",
             projected_pairs, projection_fallbacks, opaque_unattributable_messages,
             retained_user_turns, retained_agentic_commits,
         )
@@ -8291,6 +8718,8 @@ def _parse_lmstudio_v1_loaded_llms(payload: Any) -> List[Dict[str, Any]]:
                 "instance_id": instance_id,
                 "display_name": display_name,
                 "context_length": ctx,
+                "supports_vision": isinstance(model.get("capabilities"), dict)
+                and model["capabilities"].get("vision") is True,
             })
     return out
 
@@ -8322,6 +8751,7 @@ def _parse_lmstudio_v0_loaded_llms(payload: Any) -> List[Dict[str, Any]]:
             "instance_id": model_id,
             "display_name": model_id,
             "context_length": ctx,
+            "supports_vision": model_type == "vlm",
         })
     return out
 
@@ -8344,6 +8774,8 @@ class OpenAICompatibleBackend:
         # verified against the active backend before inference begins.
         self._resolved_model: Optional[str] = None
         self._detected_context_length: int = 0
+        self._detected_context_source: str = "backend_model_metadata"
+        self._supports_vision: bool = False
         self._model_metadata_checked: bool = False
         self._client = httpx.AsyncClient(timeout=cfg.backend_timeout_seconds)
         self._model_lock = asyncio.Lock()
@@ -8375,7 +8807,7 @@ class OpenAICompatibleBackend:
         if self.cfg.backend_context_length > 0:
             return "configured"
         if self._detected_context_length > 0:
-            return "backend_model_metadata"
+            return self._detected_context_source
         return "unknown"
 
     @staticmethod
@@ -8489,11 +8921,54 @@ class OpenAICompatibleBackend:
             self._detected_context_length = int(selected.get("context_length") or 0)
         except Exception:
             self._detected_context_length = 0
+        self._supports_vision = selected.get("supports_vision") is True
         self._model_metadata_checked = True
         if self._detected_context_length > 0 and not self.cfg.backend_context_length:
             LOG.info("Detected loaded LM Studio context length: %d", self._detected_context_length)
         LOG.info("Resolved currently loaded LM Studio model: %s", self._resolved_model)
         return self._resolved_model
+
+    async def refresh_loaded_model(self) -> str:
+        """Rediscover LM Studio at a Kernel-owned idle discovery boundary."""
+        if self.cfg.backend_profile != "lmstudio":
+            return await self.resolve_model()
+        async with self._model_lock:
+            previous = (self._resolved_model, self._detected_context_length)
+            try:
+                resolved = await self._resolve_lmstudio_model()
+            except Exception:
+                # A failed idle discovery must not leave stale metadata usable
+                # by the next inference. No active transaction is switched here.
+                self._resolved_model = None
+                self._detected_context_length = 0
+                self._supports_vision = False
+                self._model_metadata_checked = False
+                raise
+            if previous != (resolved, self._detected_context_length):
+                self._agentic_previous_prompt_by_stage.clear()
+                self._agentic_previous_prompt = None
+                self._cache_byte_probe = CacheBytePrefixProbe()
+                self._stage1_cache_stabilizer = Stage1CacheStabilizer()
+            return resolved
+
+    async def _ollama_loaded_context(self, model_id: str) -> int:
+        """Read optional loaded-instance metadata without loading a model."""
+        try:
+            root = _openai_base_to_server_root(self.cfg.backend_base_url)
+            response = await self._client.get(f"{root}/api/ps", headers=self._headers(), timeout=3.0)
+            response.raise_for_status()
+            payload = response.json()
+            models = payload.get("models") if isinstance(payload, dict) else None
+            if not isinstance(models, list):
+                return 0
+            matches = [item for item in models if isinstance(item, dict)
+                       and (item.get("name") == model_id or item.get("model") == model_id)]
+            if len(matches) != 1:
+                return 0
+            value = matches[0].get("context_length")
+            return value if type(value) is int and value > 0 else 0
+        except (httpx.HTTPError, ValueError):
+            return 0
 
     async def resolve_model(self) -> str:
         if self._resolved_model and (self.cfg.backend_context_length or self._model_metadata_checked):
@@ -8547,6 +9022,13 @@ class OpenAICompatibleBackend:
 
             selected_item = next((item for item in data if str(item.get("id", "")) == self._resolved_model), {})
             self._detected_context_length = self._extract_context_length(selected_item)
+            self._detected_context_source = "backend_model_metadata"
+            if (self.cfg.backend_profile == "ollama" and not self.cfg.backend_context_length
+                    and not self._detected_context_length):
+                loaded = await self._ollama_loaded_context(self._resolved_model)
+                if loaded:
+                    self._detected_context_length = loaded
+                    self._detected_context_source = "ollama_loaded_instance"
             if self._detected_context_length > 0 and not self.cfg.backend_context_length:
                 LOG.info("Detected backend context length from model metadata: %d", self._detected_context_length)
             LOG.info("Resolved backend model: %s", self._resolved_model)
@@ -8564,7 +9046,7 @@ class OpenAICompatibleBackend:
             base["presence_penalty"] = float(profile.presence_penalty)
         # Ollama's OpenAI-compatible endpoint intentionally supports a narrower
         # sampler surface. Do not send llama.cpp-only extensions that it may reject.
-        if self.cfg.backend_profile == "ollama":
+        if self.cfg.backend_profile == "ollama" or self.cfg.qwen_control_shape == "openai_standard":
             allowed = {"temperature", "top_p", "presence_penalty"}
             return {k: v for k, v in base.items() if k in allowed}
         return base
@@ -8639,7 +9121,8 @@ class OpenAICompatibleBackend:
 
 
     def _stage_messages_for_profile(
-        self, messages: List[Dict[str, Any]], profile: StageProfile
+        self, messages: List[Dict[str, Any]], profile: StageProfile,
+        *, projected_artifacts: Optional[Dict[int, str]] = None,
     ) -> List[Dict[str, Any]]:
         """Prepare a backend-safe request view with copy-on-write semantics.
 
@@ -8765,6 +9248,15 @@ class OpenAICompatibleBackend:
                 isinstance(key, str) and key.startswith("_jack_")
                 for key in message.keys()
             )
+            # Reported tool outcomes belong to Jack's canonical recovery history,
+            # not the upstream Chat Completions tool-message schema. Pi also
+            # tags replayed historical tool results, which need not have a
+            # private _jack_ field. Never mutate the caller's original message.
+            outcome_fields = ("is_error", "isError", "tool_outcome")
+            must_strip_outcome = (
+                message.get("role") == "tool"
+                and any(key in message for key in outcome_fields)
+            )
             must_strip_reasoning = bool(
                 strip_reasoning
                 and message.get("role") == "assistant"
@@ -8782,11 +9274,14 @@ class OpenAICompatibleBackend:
                 )
                 and _AGENTIC_HISTORICAL_ID_LINE_RE.search(message["content"])
             )
-            if not has_private and not must_strip_reasoning and not obsolete_id_lines and historical_memory_view is None and historical_kind != "A1":
+            if not has_private and not must_strip_outcome and not must_strip_reasoning and not obsolete_id_lines and historical_memory_view is None and historical_kind != "A1":
                 prepared.append(message)
                 continue
 
             item = dict(message)
+            if must_strip_outcome:
+                for key in outcome_fields:
+                    item.pop(key, None)
             if planner_checkpoint:
                 item["content"] = checkpoint_text
             if historical_memory_view is not None:
@@ -8917,6 +9412,13 @@ class OpenAICompatibleBackend:
                         "memory_text": item["content"],
                     })
                     continue
+            if (projected_artifacts is not None and historical_kind in {"M", "A1"}
+                    and message.get("_jack_forensic_role") == historical_kind
+                    and message.get("_jack_forensic_turn_id")
+                    and item.get("role") == "assistant"):
+                # Identity of the emitted copy, never model-visible metadata.
+                # The prepared list holds this object through request reporting.
+                projected_artifacts[id(item)] = historical_kind
             prepared.append(item)
         if historical_data_entries:
             # Before the preceding conversation: never an assistant example,
@@ -9020,6 +9522,12 @@ class OpenAICompatibleBackend:
         # terminate before producing useful output. This is independent of
         # Jack's reasoning/output safety monitors and generation limits.
 
+        # Explicit standard-wire mode is not a promise that an arbitrary
+        # provider supports local native thinking controls. Do not translate
+        # those controls into guessed provider parameters or retry on rejection.
+        if self.cfg.qwen_control_shape == "openai_standard":
+            return
+
         # Ollama's OpenAI-compatible API maps reasoning_effort onto its native
         # thinking control. xhigh maps to Ollama's current "max" level.
         if self.cfg.backend_profile == "ollama" or self.cfg.qwen_control_shape == "ollama_openai":
@@ -9110,8 +9618,6 @@ class OpenAICompatibleBackend:
                 payload["reasoning_effort"] = effort
             elif not profile.thinking:
                 payload["reasoning_effort"] = "none"
-            # Do not send a reasoning_effort field: some LM Studio models expose only
-            # an on/off thinking switch and reject graded effort values.
 
     def _apply_tool_policy(
         self, payload: Dict[str, Any], tools: Optional[List[Dict[str, Any]]], tool_choice: Any
@@ -9330,19 +9836,27 @@ class OpenAICompatibleBackend:
             LOG.info("Jack tool-stage system cache stability: %s", json.dumps(report, sort_keys=True))
         except Exception as exc:
             LOG.warning("Tool-stage cache stabilization skipped (nonblocking): %s", type(exc).__name__)
-    async def chat(
+    def _build_stage_request(
         self,
         *,
+        model: str,
         messages: List[Dict[str, Any]],
         secondary_system: str,
         profile: StageProfile,
-        tools: Optional[List[Dict[str, Any]]] = None,
-        tool_choice: Any = None,
-    ) -> Dict[str, Any]:
-        model = await self.resolve_model()
+        tools: Optional[List[Dict[str, Any]]],
+        tool_choice: Any,
+        streamed: bool,
+    ) -> tuple[Dict[str, Any], CacheDecision]:
+        """Build the shared model-facing request; transport owns dispatch and retries."""
         source_view = _agentic_stage2_test_history(messages, profile)
         reasoning_primary = AGENTIC_MODE and profile.name == "Agentic native pass 2"
-        prepared_messages = self._stage_messages_for_profile(source_view, profile)
+        projected_artifacts = {} if AGENTIC_MODE and AGENTIC_CONTEXT_ACCOUNTING_ENABLED else None
+        prepared_messages = (
+            self._stage_messages_for_profile(source_view, profile)
+            if projected_artifacts is None else
+            self._stage_messages_for_profile(source_view, profile,
+                                             projected_artifacts=projected_artifacts)
+        )
         # All Agentic profiles use the same source-only memory directive;
         # authenticated U/A1 stay in canonical history, never in Stage-2 wire.
         # No legacy summary mode or cache-append prompt substitution.
@@ -9421,7 +9935,8 @@ class OpenAICompatibleBackend:
         payload: Dict[str, Any] = {
             "model": model,
             "messages": stage_messages,
-            "stream": False,
+            "stream": streamed,
+            **({"stream_options": {"include_usage": True}} if streamed else {}),
             **sampling,
         }
         self._apply_qwen_controls(payload, profile)
@@ -9448,10 +9963,27 @@ class OpenAICompatibleBackend:
                     LOG.info("Jack cache byte-prefix diagnostic: %s", json.dumps(cache_byte_diag, sort_keys=True))
             except Exception as exc:
                 LOG.warning("Jack cache byte-prefix diagnostic unavailable (nonblocking): %s", type(exc).__name__)
-        _agentic_context_report_request(stage_messages, payload, profile)
+        _agentic_context_report_request(stage_messages, payload, profile,
+                                        projected_artifacts=projected_artifacts)
         if DEEP_REASONING_MODE:
             from jack_tas_context_accounting import emit_tas_context_report
             emit_tas_context_report(stage_messages, payload, profile.name, LOG)
+        return payload, cache_decision
+
+    async def chat(
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        secondary_system: str,
+        profile: StageProfile,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Any = None,
+    ) -> Dict[str, Any]:
+        model = await self.resolve_model()
+        payload, cache_decision = self._build_stage_request(
+            model=model, messages=messages, secondary_system=secondary_system,
+            profile=profile, tools=tools, tool_choice=tool_choice, streamed=False,
+        )
         url = f"{cache_decision.base_url}/chat/completions"
         primary_url = f"{cache_decision.primary_base_url}/chat/completions"
         current_payload = payload
@@ -9542,117 +10074,10 @@ class OpenAICompatibleBackend:
     ) -> AsyncIterator[Dict[str, Any]]:
         """Stream one backend stage as normalized OpenAI-style chunks internally."""
         model = await self.resolve_model()
-        source_view = _agentic_stage2_test_history(messages, profile)
-        reasoning_primary = AGENTIC_MODE and profile.name == "Agentic native pass 2"
-        prepared_messages = self._stage_messages_for_profile(source_view, profile)
-        # All Agentic profiles use the same source-only memory directive;
-        # authenticated U/A1 stay in canonical history, never in Stage-2 wire.
-        # No legacy summary mode or cache-append prompt substitution.
-        cache_append = False if reasoning_primary else _agentic_cache_append_enabled(profile, tool_choice)
-        stage_system = (
-            AGENTIC_36_STAGE2_PROMPT if reasoning_primary
-            else build_stage_system_prompt(
-                _agentic_caller_system_for_actual_stage(secondary_system, profile),
-                STAGES["extended_initial"] if cache_append else profile,
-                prepared_messages,
-            )
+        payload, cache_decision = self._build_stage_request(
+            model=model, messages=messages, secondary_system=secondary_system,
+            profile=profile, tools=tools, tool_choice=tool_choice, streamed=True,
         )
-        stage_messages = (
-            [{"role": "system", "content": stage_system}] if stage_system else []
-        ) + prepared_messages
-        stage_messages = _tool_stage_system_with_provenance(stage_messages, profile)
-        _agentic_attach_system_stage_control(stage_messages, messages, profile)
-        stage_messages = _coder_isolate_planner_request(stage_messages, profile, tools=tools, source_history=messages)
-        if AGENTIC_CODER_MODE and profile.name == "Agentic native pass 1":
-            _coder_project_executor_request(stage_messages, source_view)
-        if reasoning_primary:
-            # Current-turn failed/unmatched call IDs only; no raw transcript
-            # or repeated successful-call metadata in Stage 2 prefill.
-            evidence_note = (
-                "" if AGENTIC_SOURCE_ONLY_WORKING_STATE
-                else _agentic_stage2_host_tool_evidence_note(messages, failures_only=True)
-            )
-            if evidence_note:
-                stage_messages.insert(1, {"role": "system", "content": evidence_note})
-            if AGENTIC_STAGE2_WITHHOLD_A1:
-                _agentic_stage2_project_historical_evidence(
-                    stage_messages, source_view, prepared_messages, messages
-                )
-            else:
-                _agentic_stage2_put_authenticated_user_last(
-                    stage_messages, source_view, prepared_messages
-                )
-        elif (AGENTIC_TRANSLATED_MODE and profile.name == "Agentic native pass 1"
-              and _agentic_final_review_is_pending(messages)):
-            _agentic_translated_project_completed_answer(stage_messages, messages)
-        elif (AGENTIC_MODE and profile.name == "Agentic native pass 1"
-              and _agentic_final_review_is_pending(messages)):
-            _agentic_stage1_review_put_authenticated_user_last(
-                stage_messages, source_view, prepared_messages
-            )
-        elif (ULTRA_REVIEW_MODE and profile.name == "Ultra native pass"
-              and _ultra_review_pending(messages)):
-            _ultra_project_review_request(
-                stage_messages, source_view, prepared_messages
-            )
-        elif cache_append:
-            evidence_note = _agentic_stage2_host_tool_evidence_note(messages)
-            stage_messages.append({"role": "user", "content": (evidence_note + "\n\n" if evidence_note else "") + AGENTIC_36_STAGE2_PROMPT})
-            LOG.info("AGENTIC CACHE EXPERIMENT: appended Stage-2 directive; only U/R1/A1 projected; no tool schemas")
-        elif (
-            prepared_messages
-            and prepared_messages[-1].get("role") == "assistant"
-            and not (AGENTIC_CODER_MODE and profile.name == "Agentic native pass 1"
-                     and _coder_has_plan(messages) and messages[-1].get("_jack_coder_plan"))
-            and _stage_requires_user_continuation(profile)
-        ):
-            stage_messages.append(_stage_generation_trigger(profile, messages))
-
-        cache_probe_regions = ()
-        if AGENTIC_MODE:
-            try:
-                cache_probe_regions = self._cache_byte_probe.capture_regions(
-                    stage_messages, prepared_messages, stage_system
-                )
-            except Exception as exc:
-                LOG.warning("Jack cache byte-prefix region capture unavailable (nonblocking): %s", type(exc).__name__)
-            stage_messages = self._fold_model_facing_system_messages(stage_messages)
-        if profile.allow_tools:
-            self._stabilize_stage1_tool_cache_system(stage_messages, messages, profile)
-        sampling = self._sampling_for_profile(profile)
-        payload: Dict[str, Any] = {
-            "model": model,
-            "messages": stage_messages,
-            "stream": True,
-            "stream_options": {"include_usage": True},
-            **sampling,
-        }
-        self._apply_qwen_controls(payload, profile)
-        if profile.max_tokens is not None:
-            payload["max_tokens"] = int(profile.max_tokens)
-        stage_seed = self._seed_for_stage(profile, messages)
-        if stage_seed is not None:
-            payload["seed"] = stage_seed
-        if profile.allow_tools and tools:
-            self._apply_tool_policy(payload, tools, tool_choice)
-
-        cache_decision = self._cache_router.plan(profile.name, str(model), stage_messages)
-        self._cache_router.apply_hint(payload, cache_decision)
-        LOG.info("Jack cache routing: %s", self._cache_router.diagnostic(cache_decision))
-        self._agentic_cache_prefix_probe(stage_messages, payload, profile)
-        if AGENTIC_MODE:
-            try:
-                cache_byte_diag = self._cache_byte_probe.observe(
-                    stage_messages, profile.name, cache_probe_regions
-                )
-                if cache_byte_diag is not None:
-                    LOG.info("Jack cache byte-prefix diagnostic: %s", json.dumps(cache_byte_diag, sort_keys=True))
-            except Exception as exc:
-                LOG.warning("Jack cache byte-prefix diagnostic unavailable (nonblocking): %s", type(exc).__name__)
-        _agentic_context_report_request(stage_messages, payload, profile)
-        if DEEP_REASONING_MODE:
-            from jack_tas_context_accounting import emit_tas_context_report
-            emit_tas_context_report(stage_messages, payload, profile.name, LOG)
         url = f"{cache_decision.base_url}/chat/completions"
         primary_url = f"{cache_decision.primary_base_url}/chat/completions"
 
@@ -9737,17 +10162,14 @@ class OpenAICompatibleBackend:
                 if not line or not line.startswith("data:"):
                     continue
                 data_text = line[5:].strip()
-                if not data_text or data_text == "[DONE]":
+                if not data_text or data_text in {"[DONE]", "ping"}:
                     continue
                 try:
                     chunk = json.loads(data_text)
                 except json.JSONDecodeError as exc:
-                    if AGENTIC_MODE:
-                        raise HTTPException(
-                            status_code=502, detail="Malformed backend SSE chunk during Agentic stage."
-                        ) from exc
-                    LOG.warning("Ignoring malformed backend SSE chunk: %r", data_text[:500])
-                    continue
+                    raise HTTPException(
+                        status_code=502, detail="Malformed backend SSE chunk."
+                    ) from exc
                 if isinstance(chunk, dict) and chunk.get("usage"):
                     cache_usage_reported = (
                         self._agentic_log_optional_backend_cache_usage(chunk, profile)
@@ -10045,6 +10467,26 @@ class JackQwenKernel:
         self._pending_debugging_intake_resume_lock = asyncio.Lock()
         self._pending_debugging_user_resumes: Dict[str, PendingDebuggingUserResume] = {}
         self._pending_debugging_user_resume_lock = asyncio.Lock()
+        self._model_discovery_lock = asyncio.Lock()
+        self._model_discovery_active = 0
+
+    async def _resolve_discovery_model(self, backend: OpenAICompatibleBackend) -> str:
+        """Public metadata discovery cannot replace an in-use model selection."""
+        async with self._model_discovery_lock:
+            if (
+                backend is self.backend
+                and isinstance(backend, OpenAICompatibleBackend)
+                and backend.cfg.backend_profile == "lmstudio"
+                and backend._resolved_model is not None
+                and not DEEP_REASONING_MODE
+                and self._model_discovery_active == 0
+                and not self._pending_tool_resumes
+                and not self._pending_debugging_intake_resumes
+                and not self._pending_debugging_user_resumes
+                and not _DEBUGGING_RUNS
+            ):
+                return await backend.refresh_loaded_model()
+            return await backend.resolve_model()
 
     async def _activity_update(self, **kwargs: Any) -> None:
         """Best-effort observability update; telemetry never governs cognition."""
@@ -10149,6 +10591,7 @@ class JackQwenKernel:
         append: bool = True,
         same_stage_resume: bool = False,
         tool_validation_repair_depth: int = 0,
+        tool_cycle_recovery_depth: int = 0,
     ) -> Dict[str, Any]:
         force_native_resume = bool(
             same_stage_resume
@@ -10208,6 +10651,8 @@ class JackQwenKernel:
         aggregate_usage(usage, data.get("usage"))
         choice = (data.get("choices") or [{}])[0]
         msg = choice.get("message") or {}
+        if choice.get("finish_reason") in ("STOP", "end_turn"):
+            choice["finish_reason"] = "stop"
         # Nonstream entrypoints cannot interrupt mid-generation; reject an
         # over-budget result before it can commit or release tool calls.
         nonstream_budget = GenerationBudgetMonitor(
@@ -10234,6 +10679,8 @@ class JackQwenKernel:
             profile.allow_tools or SELF_ADVERSARIAL_MODE
             or (CODE_DEBUGGING_MODE and _debugging_pass_from_stage_key(stage_key) is not None)
         )
+        schema_siblings = None
+        schema_rejection_errors: List[str] = []
         if governed_stage and msg.get("tool_calls"):
             if not profile.allow_tools:
                 if AGENTIC_CODER_MODE and stage_key == "coder_planner":
@@ -10248,7 +10695,15 @@ class JackQwenKernel:
             validation_errors = _tool_call_validation_errors(msg.get("tool_calls"), effective_tools)
             if AGENTIC_CODER_MODE and stage_key == "coder_planner":
                 validation_errors += _coder_planner_tool_errors(msg["tool_calls"])
-            if validation_errors:
+            if validation_errors and not (AGENTIC_CODER_MODE and stage_key == "coder_planner"):
+                schema_siblings = _recoverable_schema_siblings(
+                    msg["tool_calls"], effective_tools,
+                )
+                if schema_siblings:
+                    schema_rejection_errors = list(validation_errors)
+                    LOG.info("%s withholding %d malformed tool call(s); validating remaining siblings",
+                             STAGES[stage_key].name, len(msg["tool_calls"]) - len(schema_siblings))
+            if validation_errors and not schema_siblings:
                 if AGENTIC_CODER_MODE and stage_key == "coder_planner":
                     _coder_planner_log_rejection(msg.get("tool_calls"), validation_errors)
                 else:
@@ -10259,9 +10714,14 @@ class JackQwenKernel:
                     LOG.warning("Planner repeated a denied operation; handing task to Coder")
                     return _coder_planner_host_handoff_result(history, str(msg.get("content") or ""))
                 repair_history = _tool_recovery_check(history, msg, validation_errors, stage_key, secondary_system, usage)
+                # The stage's caller owns this list. Keep the recovered
+                # checkpoint in that same stage-local history so downstream
+                # tool suspension and memory projection cannot lose it.
+                history[:] = repair_history
                 return await self._run_stage(
-                    repair_history, secondary_system, stage_key, usage, tools=tools, tool_choice=tool_choice,
+                    history, secondary_system, stage_key, usage, tools=tools, tool_choice=tool_choice,
                     append=append, same_stage_resume=True, tool_validation_repair_depth=tool_validation_repair_depth + 1,
+                    tool_cycle_recovery_depth=tool_cycle_recovery_depth,
                 )
 
         if (AGENTIC_CODER_MODE and stage_key == "coder_planner"
@@ -10280,30 +10740,38 @@ class JackQwenKernel:
                     tools=tools, tool_choice=tool_choice,
                     append=append, same_stage_resume=True,
                     tool_validation_repair_depth=tool_validation_repair_depth,
+                    tool_cycle_recovery_depth=tool_cycle_recovery_depth,
                 )
 
         # Withheld-call provenance is host-owned. Never trust a backend/model-supplied
         # private field with the same name.
         msg.pop("_jack_phase4_withheld_tool_call_ids", None)
+        msg.pop("_jack_phase4_deferred_tool_rejection_errors", None)
         if msg.get("tool_calls"):
             proposed_calls = list(msg.get("tool_calls") or [])
             allowed_calls, path_authorization_errors = (
                 _phase4_partition_structured_tool_calls(
-                    proposed_calls
+                    schema_siblings if schema_siblings is not None else proposed_calls
                 )
             )
+            path_authorization_errors = _original_batch_path_errors(
+                proposed_calls, schema_siblings if schema_siblings is not None else proposed_calls,
+                path_authorization_errors,
+            )
+            path_authorization_errors = schema_rejection_errors + path_authorization_errors
             if path_authorization_errors:
                 if not allowed_calls:
                     LOG.warning(
-                        "%s rejected Phase-4 filesystem action before execution",
+                        "%s rejected filesystem action under Restricted Paths / Workspace Lock before execution",
                         STAGES[stage_key].name,
                     )
                     repair_history = _tool_recovery_check(
                         history, msg, path_authorization_errors,
                         stage_key, secondary_system, usage, path_denial=True,
                     )
+                    history[:] = repair_history
                     return await self._run_stage(
-                        repair_history,
+                        history,
                         secondary_system,
                         stage_key,
                         usage,
@@ -10312,10 +10780,11 @@ class JackQwenKernel:
                         append=append,
                         same_stage_resume=True,
                         tool_validation_repair_depth=tool_validation_repair_depth + 1,
+                    tool_cycle_recovery_depth=tool_cycle_recovery_depth,
                     )
 
                 LOG.warning(
-                    "%s selectively withheld %d recoverably denied Phase-4 "
+                    "%s selectively withheld %d recoverably denied Restricted Paths / Workspace Lock "
                     "tool call(s) while preserving %d releasable sibling(s)",
                     STAGES[stage_key].name,
                     len(path_authorization_errors),
@@ -10339,17 +10808,48 @@ class JackQwenKernel:
                 )
                 msg["_jack_phase4_withheld_tool_call_ids"] = withheld_ids
 
+        if (msg.get("tool_calls") and self.cfg.loop_detector_enabled
+                and self.cfg.tool_cycle_mode == "enforce"
+                and tool_cycle_recovery_depth == 0):
+            cycle = _agentic_exact_tool_cycle(
+                history, msg["tool_calls"], repetitions=self.cfg.tool_cycle_repetitions,
+                stage_key=stage_key,
+            )
+            if cycle is not None:
+                history[:] = _tool_rejection_history(
+                    history, msg,
+                    ["Host rejected another exact repeated mutation-bearing tool/action-result cycle; "
+                     "no tool was executed. Use a different operation or finish the task."],
+                    STAGES[stage_key].name, forensic_stage_key=stage_key,
+                )
+                return await self._run_stage(
+                    history, secondary_system, stage_key, usage,
+                    tools=tools, tool_choice=tool_choice, append=append,
+                    same_stage_resume=True,
+                    tool_validation_repair_depth=tool_validation_repair_depth,
+                    tool_cycle_recovery_depth=1,
+                )
+
         if not msg.get("tool_calls"):
             if AGENTIC_TRANSLATED_MODE and stage_key == "extended_initial":
                 _agentic_translated_guard_literal_tool_call(history, msg)
             if AGENTIC_MODE and self.cfg.agentic_final_review and stage_key == "extended_initial" and not _agentic_final_review_is_pending(history):
                 _agentic_begin_final_review(history, data)
-                return await self._run_stage(
+                reviewed = await self._run_stage(
                     history, secondary_system, stage_key, usage,
                     tools=(None if AGENTIC_TRANSLATED_MODE else tools),
                     tool_choice=("none" if AGENTIC_TRANSLATED_MODE else tool_choice),
                     append=append, same_stage_resume=True,
                 )
+                if AGENTIC_TRANSLATED_MODE:
+                    # Aggregate accounting already includes both requests.
+                    # The enclosing stage's context sample must represent the
+                    # larger single request, not just the short translation.
+                    reviewed = dict(reviewed)
+                    reviewed["usage"] = _agentic_peak_stage_usage(
+                        data.get("usage"), reviewed.get("usage")
+                    )
+                return reviewed
             if SELF_ADVERSARIAL_MODE and stage_key == "extended_initial":
                 if AGENTIC_MODE and CFG.forensic_archive_mode == "stage":
                     msg["_jack_agentic_stage1_forensic_snapshot"] = _capture_agentic_stage1_forensic_snapshot(
@@ -10391,13 +10891,11 @@ class JackQwenKernel:
         """Reconstruct OpenAI streaming tool-call fragments by index."""
         if not isinstance(deltas, list):
             return
+        identities = {index: call.get("id") or None for index, call in state.items()}
         for raw in deltas:
             if not isinstance(raw, dict):
                 continue
-            try:
-                index = int(raw.get("index", 0))
-            except Exception:
-                index = 0
+            index = resolve_tool_fragment_index(identities, raw, fragment_count=len(deltas))
             call = state.setdefault(
                 index,
                 {
@@ -10633,37 +11131,28 @@ class JackQwenKernel:
                 delta = choice.get("delta") or {}
                 observed_phase = "unrecognized_chunk"
 
-                # Qwen/LM Studio may expose native reasoning under either field.
-                reasoning_content = delta.get("reasoning_content")
-                reasoning = delta.get("reasoning")
-                if reasoning_content is not None:
-                    text = str(reasoning_content)
-                    if text:
-                        budget.observe("reasoning", text)
-                        observed_stream_bytes["reasoning"] += len(text.encode("utf-8"))
-                        observed_phase = "reasoning"
+                # Select exactly one alias per chunk. Retain chronological
+                # reasoning even if a compatible backend alternates aliases.
+                field, native_text = native_reasoning_delta(delta)
+                if field is not None:
+                    text = native_text
+                    budget.observe("reasoning", text)
+                    observed_stream_bytes["reasoning"] += len(text.encode("utf-8"))
+                    observed_phase = "reasoning"
+                    if field != "reasoning" and not reasoning_content_parts:
+                        reasoning_content_parts.extend(reasoning_parts)
+                        reasoning_parts.clear()
+                    if field != "reasoning" or reasoning_content_parts:
                         reasoning_content_parts.append(text)
-                        if detector is not None and detector.feed(text):
-                            raise RepeatedReasoningLoop(detector.detected_cycle_words or 128, detector.repetitions)
-                        long_loop = observe_long_cycle(text)
-                        if long_loop is not None:
-                            raise LongCycleRepeatedReasoningLoop(*long_loop)
-                        last_public_activity = time.monotonic()
-                        yield {"kind": "reasoning", "text": text}
-                elif reasoning is not None:
-                    text = str(reasoning)
-                    if text:
-                        budget.observe("reasoning", text)
-                        observed_stream_bytes["reasoning"] += len(text.encode("utf-8"))
-                        observed_phase = "reasoning"
+                    else:
                         reasoning_parts.append(text)
-                        if detector is not None and detector.feed(text):
-                            raise RepeatedReasoningLoop(detector.detected_cycle_words or 128, detector.repetitions)
-                        long_loop = observe_long_cycle(text)
-                        if long_loop is not None:
-                            raise LongCycleRepeatedReasoningLoop(*long_loop)
-                        last_public_activity = time.monotonic()
-                        yield {"kind": "reasoning", "text": text}
+                    if detector is not None and detector.feed(text):
+                        raise RepeatedReasoningLoop(detector.detected_cycle_words or MIN_CYCLE_WORDS, detector.repetitions)
+                    long_loop = observe_long_cycle(text)
+                    if long_loop is not None:
+                        raise LongCycleRepeatedReasoningLoop(*long_loop)
+                    last_public_activity = time.monotonic()
+                    yield {"kind": "reasoning", "text": text}
 
                 content = delta.get("content")
                 if content is not None:
@@ -10678,6 +11167,10 @@ class JackQwenKernel:
 
                 tool_deltas = delta.get("tool_calls")
                 if tool_deltas:
+                    if AGENTIC_CODER_MODE and stage_key == "coder_planner":
+                        early_planner_denial = "Tool-free Architect proposed a tool; no call released"
+                        LOG.warning("Tool-free Architect proposed a streamed tool; handing off to Coder")
+                        break
                     # Function names and arguments are generated output even when
                     # Jack withholds them from Pi pending validation.
                     for tool_delta in tool_deltas:
@@ -10699,23 +11192,6 @@ class JackQwenKernel:
                         and isinstance(part.get("function"), dict) for key in ("name", "arguments")
                     )
                     observed_phase = "tool_arguments"
-                    if AGENTIC_CODER_MODE and stage_key == "coder_planner":
-                        # Do not mistake a legitimate read-only tool proposal
-                        # for role collapse. Withhold every fragment until
-                        # ordinary completed-call validation. Interrupt early
-                        # only when the reconstructed name is conclusively
-                        # outside Architect's inspection-only allowlist.
-                        for pending in tool_state.values():
-                            fn = pending.get("function") if isinstance(pending, dict) else None
-                            name = fn.get("name") if isinstance(fn, dict) else None
-                            if (isinstance(name, str) and name
-                                    and name not in _CODER_PLANNER_READ_TOOLS
-                                    and not any(allowed.startswith(name) for allowed in _CODER_PLANNER_READ_TOOLS)):
-                                early_planner_denial = "Architect proposed a forbidden tool; no call released"
-                                LOG.warning("Architect streamed a non-inspection tool name; no call released")
-                                break
-                        if early_planner_denial is not None:
-                            break
 
                 # Observational only: <=1 update/second for a stable phase.
                 # Never expose tool arguments or raw model text in telemetry.
@@ -10744,6 +11220,8 @@ class JackQwenKernel:
 
                 if choice.get("finish_reason"):
                     finish_reason = str(choice["finish_reason"])
+                    if finish_reason in ("STOP", "end_turn"):
+                        finish_reason = "stop"
         except RepeatedReasoningLoop as loop_error:
             # Stage-2 repetition is terminal for memory, NOT for frozen A1.
             # The caller handles this as an explicit A1-only degraded commit.
@@ -10815,32 +11293,6 @@ class JackQwenKernel:
             fallback = _coder_planner_host_handoff_result(history, "".join(content_parts))
             yield {"kind": "content", "text": fallback["choices"][0]["message"]["content"]}
             yield {"kind": "result", "data": fallback}
-            return
-
-        if early_planner_denial is not None:
-            partial = {"role": "assistant", "content": "".join(content_parts)}
-            if reasoning_content_parts:
-                partial["reasoning_content"] = "".join(reasoning_content_parts)
-            if (_coder_planner_rejection_count(history) >= 2
-                    or _coder_planner_repeated_inspection_pending(history)):
-                fallback = _coder_planner_host_handoff_result(history, partial["content"])
-                yield {"kind": "content", "text": fallback["choices"][0]["message"]["content"]}
-                yield {"kind": "result", "data": fallback}
-                return
-            repair = _tool_recovery_check(
-                history, partial, [early_planner_denial],
-                stage_key, secondary_system, usage,
-            )
-            async with contextlib.aclosing(self._run_stage_streamed(
-                repair, secondary_system, stage_key, usage,
-                tools=tools, tool_choice=tool_choice,
-                append=append, same_stage_resume=True,
-                tool_validation_repair_depth=tool_validation_repair_depth + 1,
-                correction_loop_detector=detector,
-                loop_retry_depth=loop_retry_depth,
-            )) as retry_packets:
-                async for packet in retry_packets:
-                    yield packet
             return
 
         message: Dict[str, Any] = {
@@ -10918,20 +11370,16 @@ class JackQwenKernel:
                 LOG.warning("Stage %s ended without an answer/tool call (finish=%s, reasoning=%s); "
                             "one same-stage streamed recovery", profile.name, finish_reason,
                             bool(reasoning_content_parts or reasoning_parts))
-                recovery_history = list(history)
-                recovery_history.append({
+                # Keep the host's continuation in the owned stage history.
+                # Incomplete reasoning-only generations are not committed
+                # as answers or executable calls.
+                history.append({
                     "role": "user",
-                    "content": (
-                        "Jack protocol continuation: The prior backend generation produced "
-                        "neither a final answer nor a structured executable tool call. "
-                        "Continue the existing task from the completed tool results. "
-                        "If a tool is needed, use its structured tool interface. "
-                        "Do not repeat completed work."
-                    ),
+                    "content": _EMPTY_STREAM_RECOVERY_NOTICE,
                     "_jack_internal_protocol_recovery": True,
                 })
                 async with contextlib.aclosing(self._run_stage_streamed(
-                    recovery_history, secondary_system, stage_key, usage,
+                    history, secondary_system, stage_key, usage,
                     tools=tools, tool_choice=tool_choice,
                     append=append, same_stage_resume=True,
                     tool_validation_repair_depth=tool_validation_repair_depth,
@@ -10982,6 +11430,8 @@ class JackQwenKernel:
             profile.allow_tools or SELF_ADVERSARIAL_MODE
             or (CODE_DEBUGGING_MODE and _debugging_pass_from_stage_key(stage_key) is not None)
         )
+        schema_siblings = None
+        schema_rejection_errors: List[str] = []
         if governed_stage and message.get("tool_calls"):
             if not profile.allow_tools:
                 if AGENTIC_CODER_MODE and stage_key == "coder_planner":
@@ -10996,7 +11446,15 @@ class JackQwenKernel:
             validation_errors = _tool_call_validation_errors(message.get("tool_calls"), effective_tools)
             if AGENTIC_CODER_MODE and stage_key == "coder_planner":
                 validation_errors += _coder_planner_tool_errors(message["tool_calls"])
-            if validation_errors:
+            if validation_errors and not (AGENTIC_CODER_MODE and stage_key == "coder_planner"):
+                schema_siblings = _recoverable_schema_siblings(
+                    message["tool_calls"], effective_tools,
+                )
+                if schema_siblings:
+                    schema_rejection_errors = list(validation_errors)
+                    LOG.info("%s withholding %d malformed tool call(s); validating remaining siblings",
+                             STAGES[stage_key].name, len(message["tool_calls"]) - len(schema_siblings))
+            if validation_errors and not schema_siblings:
                 if AGENTIC_CODER_MODE and stage_key == "coder_planner":
                     _coder_planner_log_rejection(message.get("tool_calls"), validation_errors)
                 else:
@@ -11012,8 +11470,9 @@ class JackQwenKernel:
                 repair_history = _tool_recovery_check(history, message, validation_errors, stage_key, secondary_system, usage)
                 if stage_key != "coder_planner":
                     yield {"kind": "reasoning", "text": "\n[JACK TOOL ACTION REJECTED BEFORE EXECUTION — CORRECTING IN SAME STAGE]\n"}
+                history[:] = repair_history
                 async for packet in self._run_stage_streamed(
-                    repair_history, secondary_system, stage_key, usage, tools=tools, tool_choice=tool_choice,
+                    history, secondary_system, stage_key, usage, tools=tools, tool_choice=tool_choice,
                     append=append, same_stage_resume=True, tool_validation_repair_depth=tool_validation_repair_depth + 1,
                     correction_loop_detector=detector,
                     loop_retry_depth=loop_retry_depth,
@@ -11060,9 +11519,10 @@ class JackQwenKernel:
                  "Do not repeat it; continue with a new authorized operation or finish."],
                 stage_key, secondary_system, usage,
             )
+            history[:] = repair_history
             yield {"kind": "reasoning", "text": "\n[JACK COMPLETED MUTATION NOT REPLAYED — CORRECTING SAME STAGE]\n"}
             async with contextlib.aclosing(self._run_stage_streamed(
-                repair_history, secondary_system, stage_key, usage,
+                history, secondary_system, stage_key, usage,
                 tools=tools, tool_choice=tool_choice,
                 append=append, same_stage_resume=True,
                 tool_validation_repair_depth=tool_validation_repair_depth + 1,
@@ -11091,10 +11551,11 @@ class JackQwenKernel:
                     history, message,
                     ["Host rejected another exact repeated tool/action-result cycle; "
                      "no tool was executed. Use a different operation or finish the task."],
-                    STAGES[stage_key].name,
+                    STAGES[stage_key].name, forensic_stage_key=stage_key,
                 )
+                history[:] = repair_history
                 async with contextlib.aclosing(self._run_stage_streamed(
-                    repair_history, secondary_system, stage_key, usage,
+                    history, secondary_system, stage_key, usage,
                     tools=tools, tool_choice=tool_choice,
                     append=append, same_stage_resume=True,
                     tool_validation_repair_depth=tool_validation_repair_depth,
@@ -11110,17 +11571,23 @@ class JackQwenKernel:
         # Streaming reconstruction creates host-owned message state, but clear the
         # private field explicitly so this path mirrors non-stream semantics.
         message.pop("_jack_phase4_withheld_tool_call_ids", None)
+        message.pop("_jack_phase4_deferred_tool_rejection_errors", None)
         if message.get("tool_calls"):
             proposed_calls = list(message.get("tool_calls") or [])
             allowed_calls, path_authorization_errors = (
                 _phase4_partition_structured_tool_calls(
-                    proposed_calls
+                    schema_siblings if schema_siblings is not None else proposed_calls
                 )
             )
+            path_authorization_errors = _original_batch_path_errors(
+                proposed_calls, schema_siblings if schema_siblings is not None else proposed_calls,
+                path_authorization_errors,
+            )
+            path_authorization_errors = schema_rejection_errors + path_authorization_errors
             if path_authorization_errors:
                 if not allowed_calls:
                     LOG.warning(
-                        "%s rejected streamed Phase-4 filesystem action before execution",
+                        "%s rejected streamed filesystem action under Restricted Paths / Workspace Lock before execution",
                         STAGES[stage_key].name,
                     )
                     repair_history = _tool_recovery_check(
@@ -11134,8 +11601,9 @@ class JackQwenKernel:
                             "EXECUTION; CONTINUING AUTHORIZED WORK]\n"
                         ),
                     }
+                    history[:] = repair_history
                     async for packet in self._run_stage_streamed(
-                        repair_history,
+                        history,
                         secondary_system,
                         stage_key,
                         usage,
@@ -11152,7 +11620,7 @@ class JackQwenKernel:
 
                 LOG.warning(
                     "%s selectively withheld %d streamed recoverably denied "
-                    "Phase-4 tool call(s) while preserving %d releasable sibling(s)",
+                    "Restricted Paths / Workspace Lock tool call(s) while preserving %d releasable sibling(s)",
                     STAGES[stage_key].name,
                     len(path_authorization_errors),
                     len(allowed_calls),
@@ -11258,6 +11726,12 @@ class JackQwenKernel:
                     append=append, same_stage_resume=True,
                 )) as review_packets:
                     async for packet in review_packets:
+                        if AGENTIC_TRANSLATED_MODE and packet.get("kind") == "result":
+                            reviewed = dict(packet["data"])
+                            reviewed["usage"] = _agentic_peak_stage_usage(
+                                data.get("usage"), reviewed.get("usage")
+                            )
+                            packet = {**packet, "data": reviewed}
                         yield packet
             except HTTPException as exc:
                 if AGENTIC_TRANSLATED_MODE or not recover_optional_empty_stream(exc):
@@ -11312,12 +11786,37 @@ class JackQwenKernel:
             )
         return tuple(ids)
 
+    def _debugging_retire_unreferenced_run(
+        self, run_id: Optional[str], *, discard_pending: bool = False,
+    ) -> None:
+        """Retire only an unowned run with no live checkpoint or recoverable commit."""
+        run = _DEBUGGING_RUNS.get(run_id or "")
+        if run is None or run.active_request is not None:
+            return
+        if not discard_pending and (run.pending_summaries or run.pending_final_report):
+            return
+        if (
+            any(state.run_id == run_id for state in self._pending_debugging_intake_resumes.values())
+            or any(state.debugging_run_id == run_id for state in self._pending_debugging_user_resumes.values())
+            or any(state.debugging_run_id == run_id for state in self._pending_tool_resumes.values())
+        ):
+            return
+        _debugging_retire_run(run)
+
     async def _expire_pending_tool_resumes_locked(self, now: Optional[float] = None) -> None:
         now = time.time() if now is None else now
         cutoff = now - (6 * 60 * 60)
+        debugging_ids = {
+            state.debugging_run_id for state in self._pending_tool_resumes.values()
+            if state.debugging_run_id
+        } if CODE_DEBUGGING_MODE else set()
         expired = self._pending_authority.expire(cutoff, self._pending_tool_resumes)
         if expired:
             LOG.info("Expired %d stale Jack tool-resume transaction(s)", expired)
+            # The authority owns expiry; only examine the resulting live index.
+            remaining = {state.debugging_run_id for state in self._pending_tool_resumes.values()}
+            for run_id in debugging_ids - remaining:
+                self._debugging_retire_unreferenced_run(run_id)
 
     @staticmethod
     def _tool_result_explicitly_failed(message: Dict[str, Any]) -> bool:
@@ -11429,7 +11928,9 @@ class JackQwenKernel:
             if state.created_at < cutoff and not state.in_flight
         ]
         for resume_id in stale:
-            self._pending_debugging_intake_resumes.pop(resume_id, None)
+            state = self._pending_debugging_intake_resumes.pop(resume_id, None)
+            if state is not None:
+                self._debugging_retire_unreferenced_run(state.run_id)
         if stale:
             LOG.info("Expired %d stale Code Debugging intake transaction(s)", len(stale))
 
@@ -11525,6 +12026,7 @@ class JackQwenKernel:
             if state.in_flight:
                 raise HTTPException(status_code=409, detail="Code Debugging intake transaction is already being resumed.")
             state.in_flight = True
+            self._claim_request_resume(state)
 
         run = _debugging_get_run(state.run_id)
         user_message = {
@@ -11627,7 +12129,9 @@ class JackQwenKernel:
             if state.created_at < cutoff and not state.in_flight
         ]
         for resume_id in stale:
-            self._pending_debugging_user_resumes.pop(resume_id, None)
+            state = self._pending_debugging_user_resumes.pop(resume_id, None)
+            if state is not None:
+                self._debugging_retire_unreferenced_run(state.debugging_run_id)
         if stale:
             LOG.info("Expired %d stale Code Debugging user-clarification transaction(s)", len(stale))
 
@@ -11737,6 +12241,7 @@ class JackQwenKernel:
             if state.in_flight:
                 raise HTTPException(status_code=409, detail="Code Debugging clarification transaction is already being resumed.")
             state.in_flight = True
+            self._claim_request_resume(state)
 
         user_message = {
             "role": "user",
@@ -11759,37 +12264,8 @@ class JackQwenKernel:
                 state.in_flight = False
 
     async def _rearm_pending_debugging_resumes_for_messages(self, messages: Any) -> None:
-        if not CODE_DEBUGGING_MODE or not isinstance(messages, list) or not messages:
-            return
-        last_user_index = None
-        for index in range(len(messages) - 1, -1, -1):
-            item = messages[index]
-            if isinstance(item, dict) and item.get("role") == "user":
-                last_user_index = index
-                break
-            if isinstance(item, dict) and item.get("role") == "tool":
-                return
-        if last_user_index is None:
-            return
-        prior_assistant_contents = {
-            _content_to_text(item.get("content")).strip()
-            for item in messages[:last_user_index]
-            if isinstance(item, dict) and item.get("role") == "assistant"
-        }
-        async with self._pending_debugging_intake_resume_lock:
-            candidates = [
-                state for state in self._pending_debugging_intake_resumes.values()
-                if state.in_flight and state.user_visible_response in prior_assistant_contents
-            ]
-            for state in candidates:
-                state.in_flight = False
-        async with self._pending_debugging_user_resume_lock:
-            candidates = [
-                state for state in self._pending_debugging_user_resumes.values()
-                if state.in_flight and state.user_visible_question in prior_assistant_contents
-            ]
-            for state in candidates:
-                state.in_flight = False
+        """Legacy compatibility seam; messages confer no cleanup authority."""
+        return None
 
     async def _resume_debugging_user_stage_nonstream(
         self, state: PendingDebuggingUserResume, user_message: Dict[str, Any]
@@ -12018,9 +12494,9 @@ class JackQwenKernel:
             )
         state = PendingToolResume(
             resume_id=f"jack-resume-{uuid.uuid4().hex}",
-            tool_recovery=_TOOL_RECOVERY_STATE.get(),
+            tool_recovery=copy.deepcopy(_TOOL_RECOVERY_STATE.get()),
             stage_key=stage_key,
-            history=resume_history,
+            history=copy.deepcopy(resume_history),
             secondary_system=secondary_system,
             usage=dict(usage),
             tools=tools,
@@ -12240,6 +12716,7 @@ class JackQwenKernel:
                 )
             else:
                 self._pending_authority.transition(state, in_flight=True)
+            self._claim_request_resume(state)
 
         matched_messages = list(copy.deepcopy(state.accepted_tool_results))
         executor = state.accepted_executor_context
@@ -12261,28 +12738,40 @@ class JackQwenKernel:
         state: PendingToolResume,
         tool_messages: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
-        _TOOL_RECOVERY_STATE.set(state.tool_recovery or ToolRecoveryState())
+        # Work on request-owned copies. The registered history and recovery
+        # counters remain sealed while the model or executor is active.
+        tracker = copy.deepcopy(state.tool_recovery) if state.tool_recovery is not None else ToolRecoveryState()
+        _TOOL_RECOVERY_STATE.set(tracker)
         _TOOL_RECOVERY_PENDING.set(state)
-        _tool_recovery_record_results(state, tool_messages)
-        history = list(state.history)
+        _tool_recovery_record_results(state, tool_messages, tracker=tracker)
+        history = copy.deepcopy(state.history)
         history.extend(tool_messages)
-        if state.tool_recovery is not None and state.tool_recovery.exhausted:
+        if tracker.exhausted:
             raise ToolRecoveryExhausted(
-                state=state.tool_recovery, history=history, stage_key=state.stage_key,
+                state=tracker, history=history, stage_key=state.stage_key,
                 secondary_system=state.secondary_system, usage=state.usage,
                 pending_state=state,
             )
         if state.deferred_tool_rejection_errors:
-            tracker = state.tool_recovery
             if tracker is not None:
                 for index, error in enumerate(state.deferred_tool_rejection_errors):
                     # Mixed batches may execute authorized siblings. Count the
                     # denied siblings once after their actual results return;
                     # never rerun the rejected operation under a new ID.
+                    path_denial = _immutable_path_denial([error])
+                    path_notice = "Restricted Paths / Workspace Lock" in error
+                    if not path_notice and any(
+                        item.get("tool_call_id") in state.expected_tool_call_ids
+                        and (item.get("_jack_tool_outcome") or TOOL_UNKNOWN) != TOOL_FAILED
+                        for item in tool_messages if isinstance(item, dict)
+                    ):
+                        # A valid sibling returned. Keep schema correction in the
+                        # notice but do not erase this batch's recovery progress.
+                        continue
                     tracker.fail(
-                        "phase4_withheld_action", error,
+                        "phase4_withheld_action" if path_notice else "schema_withheld_action", error,
                         call_id=f"{state.resume_id}:withheld:{index}",
-                        policy_denial=_immutable_path_denial([error]),
+                        policy_denial=path_denial,
                     )
                 if tracker.exhausted:
                     raise ToolRecoveryExhausted(
@@ -12296,8 +12785,7 @@ class JackQwenKernel:
                     STAGES[state.stage_key].name,
                 )
             )
-        tracker = state.tool_recovery
-        if tracker is not None and tracker.consecutive_failures and not state.deferred_tool_rejection_errors:
+        if tracker.consecutive_failures and not state.deferred_tool_rejection_errors:
             advisory = tracker.advice()
             if advisory:
                 history.append({
@@ -12318,27 +12806,17 @@ class JackQwenKernel:
         async with self._pending_tool_resume_lock:
             if any(value is state for value in self._pending_tool_resumes.values()):
                 try:
-                    self._pending_authority.transition(state, in_flight=False)
+                    recovery = (_TOOL_RECOVERY_STATE.get()
+                                if _TOOL_RECOVERY_PENDING.get() is state else None)
+                    self._pending_authority.transition(
+                        state, in_flight=False, recovery=recovery,
+                    )
                 except DynamicAuthorityUnavailable:
                     LOG.warning("Pending authority rearm withheld")
 
     async def _rearm_pending_tool_resume_for_messages(self, messages: Any) -> None:
-        if not isinstance(messages, list):
-            return
-        ids = {
-            str(item.get("tool_call_id") or "").strip()
-            for item in messages
-            if isinstance(item, dict) and item.get("role") == "tool" and str(item.get("tool_call_id") or "").strip()
-        }
-        if not ids:
-            return
-        async with self._pending_tool_resume_lock:
-            states = {id(self._pending_tool_resumes[call_id]): self._pending_tool_resumes[call_id] for call_id in ids if call_id in self._pending_tool_resumes}
-            for state in states.values():
-                try:
-                    self._pending_authority.transition(state, in_flight=False)
-                except DynamicAuthorityUnavailable:
-                    LOG.warning("Pending authority rearm withheld")
+        """Legacy compatibility seam; messages confer no cleanup authority."""
+        return None
 
     @staticmethod
     def _required_completed_answer_from_stage(data: Dict[str, Any], stage_name: str) -> str:
@@ -12354,7 +12832,7 @@ class JackQwenKernel:
         # Partial text from token-limit/timeout is not a completed frozen answer.
         choice = (data.get("choices") or [{}])[0] or {}
         reason = choice.get("finish_reason")
-        if reason != "stop":
+        if reason not in ("stop", "STOP", "end_turn"):
             raise HTTPException(
                 status_code=502,
                 detail=f"{stage_name} did not finish successfully: {reason}",
@@ -12576,6 +13054,7 @@ class JackQwenKernel:
         start_pass: int = 1,
     ) -> KernelResult:
         """Run fresh debugging passes with exact user authority plus host-derived prior-outcome registry state."""
+        _debugging_claim_run(run)
         debug_tools, debug_tool_choice = _debugging_report_only_tool_surface(tools, tool_choice)
         for pass_number in range(start_pass, DEBUGGING_PASS_COUNT + 1):
             if pass_number in run.pending_summaries:
@@ -12707,6 +13186,21 @@ class JackQwenKernel:
         stage_key = state.stage_key
         debugging_run = _debugging_get_run(state.debugging_run_id) if CODE_DEBUGGING_MODE else None
 
+        frozen_resume = AGENTIC_MODE and state.frozen_stage1_history is not None
+        if frozen_resume:
+            record = _agentic_forensic_turn(state.frozen_stage1_history)
+            if (record is None
+                    or record.status not in {"response_frozen", "stage2_active"}
+                    or not state.frozen_stage1_answer):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Frozen Agentic Stage-1 checkpoint has no valid retrospective owner.",
+                )
+            history = copy.deepcopy(state.frozen_stage1_history)
+            _AGENTIC_ACTIVE_TURN.set(record.turn_id)
+            if scope is not None:
+                scope["stage1_frozen"] = True
+
         debugging_pass_number: Optional[int] = None
         if CODE_DEBUGGING_MODE:
             debugging_pass_number = _debugging_pass_from_stage_key(stage_key)
@@ -12736,31 +13230,33 @@ class JackQwenKernel:
                     start_pass=debugging_pass_number + 1,
                 )
 
-        stage = await self._run_stage(
-            history,
-            state.secondary_system,
-            stage_key,
-            usage,
-            tools=state.tools,
-            tool_choice=state.tool_choice,
-            append=False,
-            same_stage_resume=True,
-        )
-        if self._tool_interrupt(stage, usage):
-            successor = await self._register_stage_tool_resume(
-                stage_key=stage_key,
-                history=history,
-                secondary_system=state.secondary_system,
-                usage=usage,
+        stage = {}
+        if not frozen_resume:
+            stage = await self._run_stage(
+                history,
+                state.secondary_system,
+                stage_key,
+                usage,
                 tools=state.tools,
                 tool_choice=state.tool_choice,
-                data=stage,
-                debugging_run_id=(debugging_run.run_id if debugging_run is not None else None),
+                append=False,
+                same_stage_resume=True,
             )
-            await self._retire_pending_tool_resume(state)
-            return successor
+            if self._tool_interrupt(stage, usage):
+                successor = await self._register_stage_tool_resume(
+                    stage_key=stage_key,
+                    history=history,
+                    secondary_system=state.secondary_system,
+                    usage=usage,
+                    tools=state.tools,
+                    tool_choice=state.tool_choice,
+                    data=stage,
+                    debugging_run_id=(debugging_run.run_id if debugging_run is not None else None),
+                )
+                await self._retire_pending_tool_resume(state)
+                return successor
 
-        if AGENTIC_CODER_MODE and stage_key == "coder_planner":
+        if not frozen_resume and AGENTIC_CODER_MODE and stage_key == "coder_planner":
             # The Planner's read-only tool episode resumes Planner cognition,
             # then captures its completed spec exactly once. Only now does
             # Coder gain the full authorized tool surface and answer authority.
@@ -12824,12 +13320,20 @@ class JackQwenKernel:
             return completed
 
         if AGENTIC_MODE:
-            if stage_key != "extended_initial":
-                raise HTTPException(status_code=500, detail="Agentic Stage 2 cannot resume tools because XML-stage tools are disabled")
+            if frozen_resume:
+                frozen_stage1_answer = state.frozen_stage1_answer
+            else:
+                if stage_key != "extended_initial":
+                    raise HTTPException(status_code=500, detail="Agentic Stage 2 cannot resume tools because XML-stage tools are disabled")
 
-            self._agentic_require_completed_stage(stage, "Agentic Stage 1")
-            first_msg = ((stage.get("choices") or [{}])[0].get("message") or {})
-            frozen_stage1_answer = append_extended_candidate_response(history, first_msg)
+                self._agentic_require_completed_stage(stage, "Agentic Stage 1")
+                first_msg = ((stage.get("choices") or [{}])[0].get("message") or {})
+                frozen_stage1_answer = append_extended_candidate_response(history, first_msg)
+                if state.accepted_tool_results is not None:
+                    async with self._pending_tool_resume_lock:
+                        self._pending_authority.freeze(state, history, frozen_stage1_answer)
+                if scope is not None:
+                    scope["stage1_frozen"] = True
             if AGENTIC_FLASH_MODE:
                 completed = self._complete_flash_stage1(history, usage, frozen_stage1_answer)
                 await self._retire_pending_tool_resume(state)
@@ -12863,7 +13367,7 @@ class JackQwenKernel:
                     stage.get("usage"), xml_stage.get("usage")
                 )
             except Exception as exc:
-                if isinstance(exc, GenerationBudgetExceeded):
+                if terminal_stream_failure(exc) and not isinstance(exc, RepeatedLoopInterrupt):
                     raise
                 detail = _diagnostic_text(exc.detail if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}")
                 completed = self._agentic_degraded_result(history, usage, frozen_stage1_answer, detail)
@@ -12944,7 +13448,7 @@ class JackQwenKernel:
             )
             return completed
         except Exception as exc:
-            if isinstance(exc, GenerationBudgetExceeded):
+            if terminal_stream_failure(exc) and not isinstance(exc, RepeatedLoopInterrupt):
                 raise
             detail = _diagnostic_text(exc.detail if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}")
             return self._agentic_degraded_result(history, usage, frozen_answer, detail)
@@ -13079,7 +13583,7 @@ class JackQwenKernel:
                 )
                 return completed
             except Exception as exc:
-                if isinstance(exc, GenerationBudgetExceeded):
+                if terminal_stream_failure(exc) and not isinstance(exc, RepeatedLoopInterrupt):
                     raise
                 detail = _diagnostic_text(exc.detail if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}")
                 return self._agentic_degraded_result(history, usage, frozen_stage1_answer, detail)
@@ -13238,21 +13742,133 @@ class JackQwenKernel:
             reasoning_content=str(reasoning) if reasoning else None,
         )
 
-    async def _agentic_phase3g_close_scope(self, scope_token: contextvars.Token) -> None:
-        """Close exactly the consuming turn, including an aliased tool checkpoint.
+    def _claim_request_resume(self, state: Any) -> None:
+        """Record the exact checkpoint acquired under its admission lock."""
+        owner = _REQUEST_RESUME_OWNER.get()
+        # Direct internal/test admissions may explicitly manage their own
+        # checkpoint. Only a live request scope has automatic cleanup rights.
+        if owner is None or owner["task"] is not asyncio.current_task():
+            return
+        if owner["kernel"] is not self or owner["state"] is not None:
+            raise RuntimeError("Request attempted to acquire more than one resume checkpoint")
+        owner["state"] = state
+        scope = _AGENTIC_DELAY_R2_SCOPE.get() if AGENTIC_MODE else None
+        if scope is not None and isinstance(state, PendingToolResume):
+            scope["pending_state"] = state
 
-        Stage-1 tool suspensions never freeze A1, so they remain resumable.
-        A terminal Stage-2 path cannot rearm a completed Stage-1 checkpoint.
+    def _note_outer_stream_failure(self, failure: Exception) -> None:
+        """Record a terminal release failure while its exact owner is suspended.
+
+        Only the task and kernel that acquired the checkpoint can alter its
+        settlement. A queued or unrelated request has no cleanup authority.
         """
+        owner = _REQUEST_RESUME_OWNER.get()
+        if (
+            owner is not None
+            and owner["kernel"] is self
+            and owner["task"] is asyncio.current_task()
+            and terminal_stream_failure(failure)
+        ):
+            owner["outer_failure"] = failure
+
+    @asynccontextmanager
+    async def _request_resume_scope(self) -> AsyncIterator[None]:
+        """Settle the acquired checkpoint before releasing the request semaphore.
+
+        Queued or rejected requests never acquire a checkpoint. Cleanup cannot
+        unlock another request by scanning its historical messages.
+        """
+        # Serialize idle model discovery with admission, but never hold this
+        # lock over inference or settlement. Concurrent requests are counted,
+        # and suspended checkpoints independently prevent model replacement.
+        async with self._model_discovery_lock:
+            self._model_discovery_active += 1
+        owner = {
+            "kernel": self, "task": asyncio.current_task(), "state": None,
+            "debugging_token": object(), "debugging_run": None,
+        }
+        token = _REQUEST_RESUME_OWNER.set(owner)
+        scope = _AGENTIC_DELAY_R2_SCOPE.get() if AGENTIC_MODE else None
+        if scope is not None:
+            scope["entered"] = True
+        failure = None
         try:
-            scope = _AGENTIC_DELAY_R2_SCOPE.get()
-            if scope is None:
-                return
+            yield
+        except BaseException as exc:
+            failure = exc
+            raise
+        finally:
+            terminal = False
+            try:
+                state = owner["state"]
+                # An outer release guard may reject a yielded chunk while
+                # the source generator is suspended. Its subsequent aclose()
+                # delivers GeneratorExit, not the original security exception.
+                failure = owner.get("outer_failure") or failure
+                terminal = isinstance(failure, (
+                    GenerationBudgetExceeded, ToolRecoveryExhausted,
+                )) or (isinstance(failure, Exception) and checkpoint_retiring_failure(failure))
+                if terminal:
+                    if isinstance(state, PendingToolResume):
+                        await self._retire_pending_tool_resume(state)
+                    elif isinstance(state, PendingDebuggingIntakeResume):
+                        await self._retire_pending_debugging_intake_resume(state)
+                    elif isinstance(state, PendingDebuggingUserResume):
+                        await self._retire_pending_debugging_user_resume(state)
+                    if AGENTIC_MODE:
+                        record = (
+                            _agentic_forensic_turn(state.frozen_stage1_history or state.history)
+                            if isinstance(state, PendingToolResume)
+                            else _AGENTIC_TURN_LIFECYCLES.get(_AGENTIC_ACTIVE_TURN.get() or "")
+                        )
+                        if record is not None and record.status not in {
+                            "complete", "memory_failed", "stage1_failed",
+                        }:
+                            reason = type(failure).__name__
+                            attempt = record.stage2_attempt_id or record.stage1_attempt_id
+                            if attempt:
+                                _agentic_forensic_journal().fail(record.turn_id, attempt, reason)
+                            record.status = "memory_failed" if record.frozen_a1_sha256 else "stage1_failed"
+                            record.failure = reason
+                elif state is not None and state.in_flight:
+                    if isinstance(state, PendingDebuggingIntakeResume):
+                        await self._rearm_pending_debugging_intake_resume(state)
+                    elif isinstance(state, PendingDebuggingUserResume):
+                        await self._rearm_pending_debugging_user_resume(state)
+                    elif isinstance(state, PendingToolResume) and scope is None:
+                        await self._rearm_pending_tool_resume(state)
+                if scope is not None:
+                    await self._agentic_phase3g_settle_scope(scope)
+            finally:
+                try:
+                    run = owner["debugging_run"]
+                    if run is not None and run.active_request is owner["debugging_token"]:
+                        run.active_request = None
+                        self._debugging_retire_unreferenced_run(
+                            run.run_id, discard_pending=terminal
+                        )
+                    elif CODE_DEBUGGING_MODE and owner["state"] is not None:
+                        state = owner["state"]
+                        run_id = (state.run_id if isinstance(state, PendingDebuggingIntakeResume)
+                                  else getattr(state, "debugging_run_id", None))
+                        self._debugging_retire_unreferenced_run(
+                            run_id, discard_pending=terminal
+                        )
+                finally:
+                    _REQUEST_RESUME_OWNER.reset(token)
+                    self._model_discovery_active -= 1
+
+    async def _agentic_phase3g_settle_scope(self, scope: Dict[str, Any]) -> None:
+        if scope.get("settled"):
+            return
+        scope["settled"] = True
+        try:
             state = scope.get("pending_state")
             if scope.get("stage1_frozen"):
                 _agentic_retire_consumed_one_hop(scope.get("bridge_messages", []))
-                if state is not None:
-                    _agentic_retire_consumed_one_hop(state.history)
+                # Do not mutate sealed pending history. The working history
+                # and retired bridge are independent of the checkpoint.
+                if state is not None and state.in_flight:
                     record = _agentic_forensic_turn(
                         state.frozen_stage1_history or state.history
                     )
@@ -13271,7 +13887,7 @@ class JackQwenKernel:
                         )
                     else:
                         await self._retire_pending_tool_resume(state)
-            elif state is not None:
+            elif state is not None and state.in_flight:
                 # Disconnect is not invalidation of accepted tool evidence.
                 # The backend stream is closed before this scope runs; re-arm
                 # only a checkpoint with authenticated, immutable tool results.
@@ -13292,10 +13908,19 @@ class JackQwenKernel:
                 else:
                     await self._retire_pending_tool_resume(state)
         finally:
-            try:
-                _agentic_forensic_close_request()
-            finally:
-                _AGENTIC_DELAY_R2_SCOPE.reset(scope_token)
+            _agentic_forensic_close_request()
+
+    async def _agentic_phase3g_close_scope(self, scope_token: contextvars.Token) -> None:
+        """Reset request context; settlement occurs under the semaphore."""
+        try:
+            scope = _AGENTIC_DELAY_R2_SCOPE.get()
+            if scope is not None and not scope.get("settled") and (
+                scope.get("entered") or scope.get("stage1_frozen")
+                or scope.get("pending_state") is not None
+            ):
+                await self._agentic_phase3g_settle_scope(scope)
+        finally:
+            _AGENTIC_DELAY_R2_SCOPE.reset(scope_token)
 
     @staticmethod
     def _tool_recovery_handoff_history(exc: ToolRecoveryExhausted) -> List[Dict[str, Any]]:
@@ -13375,7 +14000,7 @@ class JackQwenKernel:
             ):
                 for choice in (event.get("choices") or []):
                     delta = choice.get("delta") or {}
-                    reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                    _, reasoning = native_reasoning_delta(delta)
                     if isinstance(reasoning, str) and reasoning:
                         yield chunk({"reasoning_content": reasoning})
                     content = delta.get("content")
@@ -13435,7 +14060,7 @@ class JackQwenKernel:
 
     async def _run_impl(self, request_body: Dict[str, Any]) -> KernelResult:
         request_body = sanitize_agent_request(request_body)
-        async with self._semaphore:
+        async with self._semaphore, self._request_resume_scope():
             await self._activity_update(state="running")
             messages = request_body.get("messages")
             pending = None
@@ -13455,31 +14080,23 @@ class JackQwenKernel:
                 run.request_fingerprint = _debugging_request_fingerprint(request_body)
                 history = list(state.history)
                 history.append(user_message)
-                try:
-                    prepared = await self._run_debugging_intake_nonstream(
-                        run=run,
-                        history=history,
-                        secondary_system=state.secondary_system,
-                        usage=dict(state.usage),
-                        tools=state.tools,
-                        tool_choice=state.tool_choice,
-                        same_stage_resume=True,
-                        pending_resume=state,
-                    )
-                except Exception:
-                    await self._rearm_pending_debugging_intake_resume(state)
-                    raise
+                prepared = await self._run_debugging_intake_nonstream(
+                    run=run,
+                    history=history,
+                    secondary_system=state.secondary_system,
+                    usage=dict(state.usage),
+                    tools=state.tools,
+                    tool_choice=state.tool_choice,
+                    same_stage_resume=True,
+                    pending_resume=state,
+                )
             elif debugging_user_pending is not None:
                 state, user_message = debugging_user_pending
                 response_usage_baseline = normalize_usage(dict(state.usage))
                 _debugging_get_run(
                     state.debugging_run_id
                 ).request_fingerprint = _debugging_request_fingerprint(request_body)
-                try:
-                    prepared = await self._resume_debugging_user_stage_nonstream(state, user_message)
-                except Exception:
-                    await self._rearm_pending_debugging_user_resume(state)
-                    raise
+                prepared = await self._resume_debugging_user_stage_nonstream(state, user_message)
             elif pending is not None:
                 state, tool_messages = pending
                 response_usage_baseline = normalize_usage(dict(state.usage))
@@ -13487,11 +14104,7 @@ class JackQwenKernel:
                     _debugging_get_run(
                         state.debugging_run_id
                     ).request_fingerprint = _debugging_request_fingerprint(request_body)
-                try:
-                    prepared = await self._resume_tool_stage_nonstream(state, tool_messages)
-                except Exception:
-                    await self._rearm_pending_tool_resume(state)
-                    raise
+                prepared = await self._resume_tool_stage_nonstream(state, tool_messages)
             else:
                 if isinstance(messages, list) and messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "tool":
                     raise HTTPException(
@@ -13630,7 +14243,7 @@ class JackQwenKernel:
         if not has_user_message(messages):
             raise HTTPException(status_code=400, detail="At least one user message is required")
 
-        async with self._semaphore:
+        async with self._semaphore, self._request_resume_scope():
             await self._activity_update(state="running")
             debugging_intake_pending = await self._consume_pending_debugging_intake_resume(messages)
             debugging_user_pending = None if debugging_intake_pending is not None else await self._consume_pending_debugging_user_resume(messages)
@@ -13639,7 +14252,7 @@ class JackQwenKernel:
             pending_debugging_intake_state: Optional[PendingDebuggingIntakeResume] = None
             pending_debugging_user_state: Optional[PendingDebuggingUserResume] = None
             debugging_run: Optional[DebuggingRunState] = None
-            debugging_followup_run: Optional[DebuggingRunState] = None
+            debugging_followup_run: Optional[CompletedDebuggingRun] = None
             pending_debugging_durability_pass: Optional[int] = None
             pending_debugging_final_report = False
             pending_tool_messages: List[Dict[str, Any]] = []
@@ -13812,6 +14425,9 @@ class JackQwenKernel:
                             history = [
                                 {"role": "user", "content": initial_request}
                             ]
+
+            if CODE_DEBUGGING_MODE and debugging_run is not None:
+                _debugging_claim_run(debugging_run)
 
             if CODE_DEBUGGING_MODE and debugging_followup_run is not None:
                 yield event({"role": "assistant"})
@@ -14008,13 +14624,14 @@ class JackQwenKernel:
                             async for wire in active_stage:
                                 yield wire
                     except Exception as exc:
-                        if isinstance(exc, GenerationBudgetExceeded):
-                            raise
-                        if isinstance(exc, RepeatedLoopInterrupt) and not (
+                        frozen_memory_stage = (
                             AGENTIC_MODE and stage_key == "extended_reflection"
                             and agentic_frozen_stage1_answer is not None
-                        ):
-                            # Stage-1 and other-mode repeated loops remain terminal.
+                        )
+                        if terminal_stream_failure(exc) and not isinstance(exc, RepeatedLoopInterrupt):
+                            raise
+                        if isinstance(exc, (GenerationBudgetExceeded, RepeatedLoopInterrupt)) and not frozen_memory_stage:
+                            # Stage-1 and other-mode budgets and loops remain terminal.
                             raise
                         if AGENTIC_MODE and stage_key == "extended_reflection" and agentic_frozen_stage1_answer is not None:
                             # An interrupted Stage 2 never commits M. Explicitly
@@ -14070,6 +14687,9 @@ class JackQwenKernel:
 
                     if stage_key == "coder_planner":
                         _coder_append_plan(history, stage_result)
+                        if pending_state is not None and resume_stage_key == stage_key:
+                            await self._retire_pending_tool_resume(pending_state)
+                            pending_state = None
                         LOG.debug("Coder Planner specification captured and delivered to Coder")
                     if stage_key == "extended_initial":
                         first_msg = ((stage_result.get("choices") or [{}])[0].get("message") or {})
@@ -14098,7 +14718,7 @@ class JackQwenKernel:
                             history, usage, agentic_frozen_stage1_answer
                         )
                     except Exception as exc:
-                        if isinstance(exc, GenerationBudgetExceeded):
+                        if isinstance(exc, GenerationBudgetExceeded) or terminal_stream_failure(exc):
                             raise
                         detail = _diagnostic_text(exc.detail if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}")
                         completed = self._agentic_degraded_result(
@@ -14187,7 +14807,9 @@ class JackQwenKernel:
                     _agentic_finish_delayed_one_hop(history)
                     history.clear()
                 except Exception as exc:
-                    if isinstance(exc, GenerationBudgetExceeded):
+                    if isinstance(exc, GenerationBudgetExceeded) or (
+                        terminal_stream_failure(exc) and not isinstance(exc, RepeatedLoopInterrupt)
+                    ):
                         raise
                     if agentic_frozen_stage1_answer is None:
                         raise
@@ -14219,6 +14841,7 @@ class JackQwenKernel:
                 # The user's supplied message is already sufficient intake. Optional
                 # conversation may add diagnostic context, but it must never become a
                 # prerequisite for starting the forensic passes.
+                intake_role_emitted = not debugging_run.intake_frozen
                 if not debugging_run.intake_frozen:
                     intake_proceed = bool(
                         pending_debugging_intake_state is not None
@@ -14281,7 +14904,7 @@ class JackQwenKernel:
                                     yield event({"content": text})
                             elif kind == "keepalive":
                                 label = str(packet.get("event") or "backend.activity")
-                                yield f": qwen-keepalive {label}\n\n".encode("utf-8")
+                                yield f": jack-keepalive {label}\n\n".encode("utf-8")
                             elif kind == "tool_calls":
                                 raise HTTPException(status_code=502, detail="Code Debugging pre-pass intake attempted a tool call even though intake tools are disabled.")
                             elif kind == "result":
@@ -14344,7 +14967,8 @@ class JackQwenKernel:
                         raise HTTPException(status_code=500, detail="Invalid Code Debugging pending stage")
                     start_pass = resumed_pass
 
-                yield event({"role": "assistant"})
+                if not intake_role_emitted:
+                    yield event({"role": "assistant"})
                 for pass_number in range(start_pass, DEBUGGING_PASS_COUNT + 1):
                     stage_key = _debugging_stage_key(pass_number)
                     same_stage_resume = bool(resume_stage_key == stage_key)
@@ -14407,7 +15031,7 @@ class JackQwenKernel:
                             yield event({"tool_calls": packet["tool_calls"]})
                         elif kind == "keepalive":
                             label = str(packet.get("event") or "backend.activity")
-                            yield f": qwen-keepalive {label}\n\n".encode("utf-8")
+                            yield f": jack-keepalive {label}\n\n".encode("utf-8")
                         elif kind == "result":
                             stage_result = packet["data"]
 
@@ -14518,7 +15142,7 @@ class JackQwenKernel:
                         yield event({"content": packet["text"]})
                     elif kind == "keepalive":
                         label = str(packet.get("event") or "backend.activity")
-                        yield f": qwen-keepalive {label}\n\n".encode("utf-8")
+                        yield f": jack-keepalive {label}\n\n".encode("utf-8")
                     elif kind == "tool_calls":
                         raise HTTPException(status_code=502, detail="Code Debugging final report attempted a tool call")
                     elif kind == "result":
@@ -14574,7 +15198,7 @@ class JackQwenKernel:
                                     yield event({"tool_calls": packet["tool_calls"]})
                             elif kind == "keepalive":
                                 label = str(packet.get("event") or "backend.activity")
-                                yield f": qwen-keepalive {label}\n\n".encode("utf-8")
+                                yield f": jack-keepalive {label}\n\n".encode("utf-8")
                             elif kind == "result":
                                 native_result = packet["data"]
 
@@ -15138,10 +15762,22 @@ async def app_lifespan(_: FastAPI):
                 _write_runtime_manifest("stopping")
             except Exception:
                 pass
-        await ORCHESTRATION_EVENTS.close()
-        await BACKEND.close()
-        if claimed:
-            _remove_runtime_manifest()
+        try:
+            await ORCHESTRATION_EVENTS.close()
+        finally:
+            try:
+                await BACKEND.close()
+            finally:
+                try:
+                    ledger = globals().get("_JACK_AUTHORITY_LEDGER")
+                    if ledger is not None:
+                        await asyncio.to_thread(ledger.close)
+                finally:
+                    try:
+                        _debugging_close_completed_index()
+                    finally:
+                        if claimed:
+                            _remove_runtime_manifest()
 
 
 APP = FastAPI(title="Jack Kernel", version=PUBLIC_VERSION, lifespan=app_lifespan)
@@ -15151,7 +15787,10 @@ async def enforce_kernel_auth(request: Request) -> None:
     if not CFG.api_key:
         return
     auth = request.headers.get("authorization", "")
-    if auth != f"Bearer {CFG.api_key}":
+    if not hmac.compare_digest(
+        auth.encode("utf-8", "surrogatepass"),
+        f"Bearer {CFG.api_key}".encode("utf-8", "surrogatepass"),
+    ):
         raise HTTPException(status_code=401, detail="Invalid Jack Kernel API key")
 
 
@@ -15721,8 +16360,18 @@ def _agentic_begin_turn(history: List[Dict[str, Any]], *, fresh: bool) -> Option
         )
         previous.status = "stage1_active"
     _AGENTIC_ACTIVE_TURN.set(turn_id)
+    # The retention target is for retired lifecycle records, not live work.
+    # Never discard an active, suspended, or retryable frozen transaction to
+    # make room for unrelated new requests. The durable journal is not a live
+    # ownership substitute. If all owners are live, retain them until settlement.
     while len(_AGENTIC_TURN_LIFECYCLES) > _AGENTIC_SHADOW_LIMIT:
-        _AGENTIC_TURN_LIFECYCLES.pop(next(iter(_AGENTIC_TURN_LIFECYCLES)))
+        retired = next((key for key, record in _AGENTIC_TURN_LIFECYCLES.items()
+                        if key != turn_id and record.status in {
+                            "complete", "memory_failed", "stage1_failed",
+                        }), None)
+        if retired is None:
+            break
+        _AGENTIC_TURN_LIFECYCLES.pop(retired)
     return turn_id
 
 
@@ -15885,10 +16534,12 @@ def _phase4_executor_context_from_request(
         )
 
     command_dialect = values["command_dialect"].casefold() or None
-    if command_dialect not in {None, "bash", "powershell"}:
+    if command_dialect is not None and not re.fullmatch(
+        r"[a-z0-9][a-z0-9._+-]{0,63}", command_dialect
+    ):
         raise HTTPException(
             status_code=400,
-            detail="Unsupported executor transport command dialect",
+            detail="Invalid executor transport command dialect",
         )
 
     try:
@@ -15968,8 +16619,13 @@ def _runtime_identity_details() -> Dict[str, Any]:
         )
     elif AGENTIC_MODE:
         mode = "agentic"
-        flow = (["coder_planner", "extended_initial", "extended_reflection"]
-                if AGENTIC_CODER_MODE else ["extended_initial", "extended_reflection"])
+        if AGENTIC_FLASH_MODE:
+            # Flash commits frozen A1 directly; no retrospective generation.
+            flow = ["extended_initial"]
+        elif AGENTIC_CODER_MODE:
+            flow = ["coder_planner", "extended_initial", "extended_reflection"]
+        else:
+            flow = ["extended_initial", "extended_reflection"]
         authoritative_stage = "extended_initial"
         retention_policy = (
             "retain_completed_user_xml_frozen_a1_prune_historical_native_reasoning_"
@@ -16057,10 +16713,17 @@ async def root() -> Dict[str, Any]:
     }
 
 
+@APP.get("/jack/runtime-identity")
+async def authenticated_runtime_identity(request: Request) -> Dict[str, Any]:
+    """Identify the authenticated Kernel without requiring model discovery."""
+    await enforce_kernel_auth(request)
+    return await root()
+
+
 @APP.get("/health")
 async def health(request: Request) -> Dict[str, Any]:
     await enforce_kernel_auth(request)
-    model = await BACKEND.resolve_model()
+    model = await KERNEL._resolve_discovery_model(BACKEND)
     preset = BACKEND_PRESETS.get(CFG.backend_profile, BACKEND_PRESETS["custom"])
     return {
         "status": "ok",
@@ -16267,6 +16930,11 @@ async def phase4_executor_path_admission(request: Request) -> Dict[str, Any]:
     )
 
 
+def _project_tool_evidence_release(evidence: Dict[str, Any]) -> Dict[str, Any]:
+    """Fail closed until the host-owned credential/Canary release gate is installed."""
+    raise HTTPException(status_code=503, detail="Tool evidence release authority unavailable")
+
+
 @APP.get("/jack/tool-evidence/{tool_call_id}")
 async def jack_tool_evidence(tool_call_id: str, request: Request) -> Dict[str, Any]:
     """Read-only exact-key recovery of a retired Pi tool result.
@@ -16279,13 +16947,17 @@ async def jack_tool_evidence(tool_call_id: str, request: Request) -> Dict[str, A
     try:
         loop = asyncio.get_running_loop()
         evidence = await loop.run_in_executor(None, recover_pi_tool_evidence, tool_call_id, expected_sha256)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return {
-        "status": "ok",
-        "recovery_mode": "exact_tool_call_id",
-        **evidence,
-    }
+    except FileNotFoundError:
+        # Caller-controlled lookup IDs and host paths are not diagnostics.
+        raise HTTPException(status_code=404, detail="Matching Pi tool evidence not found") from None
+    try:
+        return _project_tool_evidence_release(evidence)
+    except Exception as exc:
+        failure = public_security_failure(exc)
+        if failure is None:
+            raise
+        status, code, message = failure
+        raise HTTPException(status_code=status, detail={"error": code, "message": message}) from None
 
 
 @APP.get("/v1/models")
@@ -16293,7 +16965,7 @@ async def list_models(request: Request) -> Dict[str, Any]:
     await enforce_kernel_auth(request)
     # Resolve now so configuration errors are surfaced before the first chat and
     # so the loaded backend instance's context metadata is available to clients.
-    backend_model = await BACKEND.resolve_model()
+    backend_model = await KERNEL._resolve_discovery_model(BACKEND)
     context_length = int(BACKEND.context_length or 0)
     item: Dict[str, Any] = {
         "id": CFG.virtual_model,
@@ -16302,6 +16974,7 @@ async def list_models(request: Request) -> Dict[str, Any]:
         "owned_by": "jack-kernel",
         "backend_model": backend_model,
         "context_length_source": BACKEND.context_length_source,
+        "capabilities": {"vision": getattr(BACKEND, "_supports_vision", False) is True},
     }
     if context_length > 0:
         # Different OpenAI-compatible clients use different metadata spellings.
@@ -16327,7 +17000,7 @@ async def lmstudio_compatible_models(request: Request) -> Dict[str, Any]:
     guessed/static Pi-side value.
     """
     await enforce_kernel_auth(request)
-    backend_model = await BACKEND.resolve_model()
+    backend_model = await KERNEL._resolve_discovery_model(BACKEND)
     context_length = int(BACKEND.context_length or 0)
     if context_length <= 0:
         raise HTTPException(
@@ -16369,6 +17042,7 @@ async def lmstudio_compatible_models(request: Request) -> Dict[str, Any]:
                 "format": "jack-kernel",
                 "capabilities": {
                     "trained_for_tool_use": True,
+                    "vision": getattr(BACKEND, "_supports_vision", False) is True,
                 },
                 "description": f"Jack Kernel virtual model routed to {backend_model}",
                 "variants": [],
@@ -16399,11 +17073,13 @@ async def _safe_public_stream(
     except Exception as exc:
         if AGENTIC_MODE:
             _agentic_mark_stage1_failure(type(exc).__name__)
-        LOG.exception("Jack streamed request failed; closing SSE cleanly")
-        if not isinstance(exc, (RepeatedLoopInterrupt, RepeatedToolCycleInterrupt)):
-            await KERNEL._rearm_pending_tool_resume_for_messages(body.get("messages"))
-        await KERNEL._rearm_pending_debugging_resumes_for_messages(body.get("messages"))
-        detail = _diagnostic_text(exc.detail if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}")
+        security = public_security_failure(exc)
+        if security is not None:
+            LOG.warning("Jack streamed security outcome: %s", security[1])
+            detail = ""
+        else:
+            LOG.exception("Jack streamed request failed; closing SSE cleanly")
+            detail = _diagnostic_text(exc.detail if isinstance(exc, HTTPException) else f"{type(exc).__name__}: {exc}")
         response_id = f"chatcmpl-jack-error-{uuid.uuid4().hex}"
         created = int(time.time())
 
@@ -16417,22 +17093,8 @@ async def _safe_public_stream(
             }
             return ("data: " + json.dumps(obj, ensure_ascii=False) + "\n\n").encode("utf-8")
 
-        import jack_evidence_guard
-        from jack_policy_integrity import PolicyIntegrityUnavailable
-        from jack_runtime_code_guard import RuntimeCodeIntegrityUnavailable
-        from jack_source_drift_guard import SourceAuthorityUnavailable
-        if isinstance(exc, PolicyIntegrityUnavailable):
-            failure_text = "\n\n[JACK SECURITY — STATIC POLICY INTEGRITY: AUTHORITY UNAVAILABLE]"
-        elif isinstance(exc, DynamicAuthorityUnavailable):
-            failure_text = "\n\n[JACK SECURITY — DYNAMIC AUTHORITY INTEGRITY: AUTHORITY UNAVAILABLE]"
-        elif isinstance(exc, RuntimeCodeIntegrityUnavailable):
-            failure_text = "\n\n[JACK SECURITY — RUNTIME CODE INTEGRITY: AUTHORITY UNAVAILABLE]"
-        elif isinstance(exc, SourceAuthorityUnavailable):
-            failure_text = "\n\n[JACK SECURITY — SOURCE DRIFT GUARD: AUTHORITY UNAVAILABLE]"
-        elif isinstance(exc, Phase4RestrictedPathInterrupt):
-            failure_text = "\n\n[JACK SECURITY — RESTRICTED PATHS: HARD INTERRUPT]"
-        elif isinstance(exc, jack_evidence_guard.StreamingIRQCanaryInterrupt):
-            failure_text = "\n\n[JACK SECURITY — STREAMINGIRQ: CANARY HARD INTERRUPT]"
+        if security is not None:
+            failure_text = "\n\n" + security[2]
         elif isinstance(exc, RepeatedLoopInterrupt):
             failure_text = "Jack Kernel interrupt - Repeated Loop Failure"
         elif isinstance(exc, RepeatedToolCycleInterrupt):
@@ -16450,8 +17112,6 @@ async def _safe_public_stream(
         yield event({}, "stop")
         yield b"data: [DONE]\n\n"
     finally:
-        await KERNEL._rearm_pending_tool_resume_for_messages(body.get("messages"))
-        await KERNEL._rearm_pending_debugging_resumes_for_messages(body.get("messages"))
         if AGENTIC_MODE:
             _AGENTIC_ACTIVE_TURN.set(None)
 
@@ -16540,6 +17200,13 @@ async def chat_completions(request: Request):
     except Exception as exc:
         if AGENTIC_MODE:
             _agentic_mark_stage1_failure(type(exc).__name__)
+        security = public_security_failure(exc)
+        if security is not None and not isinstance(exc, HTTPException):
+            status, code, message = security
+            if not any(cls in APP.exception_handlers for cls in type(exc).__mro__):
+                raise HTTPException(status_code=status, detail={
+                    "error": code, "security_outcome": "HARD_INTERRUPT", "message": message,
+                }) from None
         raise
     finally:
         if tas_token is not None:
@@ -16727,7 +17394,7 @@ CLI_DEFAULTS: Dict[str, Any] = {
     "config_schema_version": CONFIG_SCHEMA_VERSION,
     "backend_profile": "lmstudio",
     "backend_base_url": "http://127.0.0.1:1234/v1",
-    "backend_model": "qwen3.6-35b-a3b",
+    "backend_model": "",
     "backend_auth_mode": "none",
     "backend_api_key": "",
     "backend_header_name": "",
@@ -16736,13 +17403,14 @@ CLI_DEFAULTS: Dict[str, Any] = {
     "backend_password": "",
     "backend_authorization_value": "",
     "backend_extra_headers": {},
+    "backend_secret_header_names": [],
     "host": "127.0.0.1",
     "port": 8001,
     "port_fallback": True,
     "agent_base_url": "",
     "api_key": "",
     "virtual_model": "jack-kernel",
-    "reasoning_level": "Local Agentic (Preserve Thinking)",
+    "reasoning_level": "x-high",
     "agentic_profile": "balanced",
     "coder_planner_profile": "flash",
     "translator_language": "en",
@@ -16978,6 +17646,32 @@ def _run_transactional_editor(editor: Any, cfg: Dict[str, Any]) -> None:
     cfg.update(candidate)
 
 
+def _security_center_effective_canaries(cfg: Dict[str, Any], canary_policy: Any):
+    """Project effective automatic and custom Canaries without exposing values."""
+    from types import SimpleNamespace
+    import jack_credential_guard as credentials
+    candidate_cfg = SimpleNamespace(
+        api_key=str(cfg.get("api_key", "")),
+        backend_api_key=(str(cfg.get("backend_api_key", ""))
+                         or _profile_env_api_key(_backend_profile_key(cfg))),
+        backend_header_value=str(cfg.get("backend_header_value", "")),
+        backend_username=str(cfg.get("backend_username", "")),
+        backend_password=str(cfg.get("backend_password", "")),
+        backend_authorization_value=str(cfg.get("backend_authorization_value", "")),
+        backend_extra_headers={str(k): str(v) for k, v in
+                               (cfg.get("backend_extra_headers") or {}).items()
+                               if str(k).strip()},
+        backend_secret_header_names=cfg.get("backend_secret_header_names", []),
+    )
+    candidate = SimpleNamespace(
+        CFG=candidate_cfg, RUNTIME_ID=RUNTIME_ID, LANE_ID=LANE_ID,
+        _load_pi_control_bridge=_load_pi_control_bridge,
+    )
+    return credentials.merge_runtime_canary_policy(
+        canary_policy, credentials.build_runtime_credential_policy(candidate)
+    )
+
+
 def _security_center_policies(cfg: Dict[str, Any]):
     """Validate local startup configuration using the existing policy owners."""
     import jack_path_policy as paths
@@ -17002,6 +17696,9 @@ def _security_center_policies(cfg: Dict[str, Any]):
         canary_raw = os.getenv(evidence.STATIC_CANARY_POLICY_ENV, "").strip() or session_raw
         path_policy = paths.build_runtime_path_policy(runtime_id=RUNTIME_ID, lane_id=LANE_ID, raw_json=path_raw)
         canary_policy = evidence.build_static_runtime_canary_policy(runtime_id=RUNTIME_ID, lane_id=LANE_ID, raw_json=canary_raw)
+        if canary_policy.canaries.count:
+            # Preserve existing validation and collision semantics.
+            _security_center_effective_canaries(cfg, canary_policy)
     except Exception:
         raise RuntimeError("Invalid security policy; Kernel start refused. Correct local settings or environment.") from None
     return path_policy, canary_policy, path_raw, canary_raw
@@ -17010,11 +17707,38 @@ def _security_center_policies(cfg: Dict[str, Any]):
 def _security_center_summary(cfg: Dict[str, Any]) -> None:
     paths, canaries, _, _ = _security_center_policies(cfg)
     print(_status_value("Workspace Lock", "ON" if paths.workspace_root is not None else "OFF"))
+    print(_status_value("Filesystem protection", {
+        "standard": "STANDARD (represented targets; no workspace containment)",
+        "bounded": "BOUNDED WORKSPACE (legacy parser; not OS containment)",
+        "represented": "REPRESENTED WORKSPACE (unknown command effects not contained)",
+        "strict": "STRICT EXECUTOR CONTAINMENT",
+    }[paths.filesystem_protection.value]))
+    if paths.workspace_enabled and paths.workspace_mode == "bounded":
+        print("Legacy Workspace Lock: represented-path protection is active; parser-only denials retired.")
     print(_status_value("Restricted roots", str(len(paths.never_roots))))
+    print(_status_value("User NEVER paths", str(len(paths.user_never_roots))))
+    print(_status_value("Custom structured tool contracts", str(len(paths.custom_tool_contracts))))
+    import jack_path_policy as path_settings
+    path_source = (
+        "ADMIN ENVIRONMENT" if os.getenv(path_settings.STATIC_PATH_POLICY_ENV, "").strip()
+        else "LOCAL SETTINGS" if cfg.get("security_path_policy") is not None
+        else "FACTORY DEFAULTS"
+    )
+    print(_status_value("Path policy source", path_source))
     print(_status_value("Startup Canaries", str(canaries.canaries.count)))
     print(_status_value("StreamingIRQ sensitivity", "Adaptive (25%, minimum 16; short values exact)"
                         if canaries.sensitivity_percent is None else str(canaries.sensitivity_percent) + "% consecutive match"))
     print(_status_value("Custom Canary quarantine", f"{canaries.canaries.required_window} active / {canaries.canaries.max_window} ceiling"))
+    # A warning is informational only; it cannot weaken credential authority
+    # or prevent ordinary configuration inspection.
+    try:
+        effective_canaries = _security_center_effective_canaries(cfg, canaries)
+    except Exception:
+        print("StreamingIRQ: effective credential sensitivity could not be inspected; secured startup validates it.")
+    else:
+        if effective_canaries.canaries.short_match_count():
+            print("WARNING: Canary match threshold below 8 characters may cause ordinary-text hard interrupts. "
+                  "Review sensitivity or use longer credentials. Protection remains active.")
     print(_status_value("Core security", "REQUIRED AT SECURED STARTUP"))
 
 
@@ -17066,6 +17790,8 @@ def _edit_security_center(cfg: Dict[str, Any]) -> None:
         print("8  Forensic archive settings")
         print("9  StreamingIRQ sensitivity and quarantine ceiling")
         print("10 Set or clear an individual Canary sensitivity override")
+        print("11 Restore factory path defaults (clear optional path restrictions)")
+        print("12 View Workspace Lock protection scope")
         print("S  Save and apply settings    M  Discard and return")
         choice = _cli_input("Security > ").strip().lower()
         if choice == "s":
@@ -17078,6 +17804,16 @@ def _edit_security_center(cfg: Dict[str, Any]) -> None:
             return
         if choice == "m":
             raise _ReturnToMainMenu()
+        if choice == "11":
+            if override(paths.STATIC_PATH_POLICY_ENV):
+                continue
+            if _cli_input("Clear Workspace Lock and all user-defined NEVER paths? [y/N]: ").strip().lower() == "y":
+                apply_candidate("security_path_policy", None)
+            continue
+        if choice == "12":
+            print("Workspace Lock enforces identifiable paths, not parser completeness.")
+            print("Unclassified command effects are not contained. Strict containment requires a qualified executor.")
+            continue
         if choice in {"1", "2", "3", "4"}:
             if override(paths.STATIC_PATH_POLICY_ENV):
                 continue
@@ -17085,17 +17821,23 @@ def _edit_security_center(cfg: Dict[str, Any]) -> None:
                 "version": 1, "workspace_root": None, "never_paths": [],
             })
             if choice in {"1", "3"}:
-                root = _cli_input("Absolute Windows path (blank cancels): ").strip()
+                root = _cli_input("Absolute host path (blank cancels): ").strip()
                 if not root:
                     continue
                 if choice == "1":
                     candidate["workspace_root"] = root
+                    # Keep the operator's directory and explicit NEVER roots;
+                    # no parser-completeness mode is offered for ordinary work.
+                    candidate.update(version=2, workspace_mode="represented")
+                    print("Workspace Lock enforces identifiable paths; it is not OS containment.")
                 else:
                     candidate["never_paths"].append(root)
             elif choice == "2":
                 if _cli_input("Disable Workspace Lock? [y/N]: ").strip().lower() != "y":
                     continue
                 candidate["workspace_root"] = None
+                candidate["version"] = 1
+                candidate.pop("workspace_mode", None)
             else:
                 for index, root in enumerate(candidate["never_paths"], 1):
                     print(f"  {index}: {root!r}")
@@ -17146,6 +17888,20 @@ def _edit_security_center(cfg: Dict[str, Any]) -> None:
             settings = {"max_window": ceiling}
             if percent is not None:
                 settings["sensitivity_percent"] = percent
+            trial = dict(cfg, security_irq_settings=settings)
+            try:
+                _, candidate_policy, _, _ = _security_center_policies(trial)
+                effective = _security_center_effective_canaries(trial, candidate_policy)
+                minimum = min((item.match_chars for item in effective.canaries._patterns), default=None)
+            except Exception:
+                print("Invalid or conflicting security setting; previous setting retained.")
+                continue
+            if minimum is not None:
+                print(f"Shortest effective Canary match: {minimum} characters (values hidden).")
+                if minimum < 8:
+                    print("Warning: effective match is shorter than eight characters; false positives likely.")
+                    if _cli_input("Apply anyway? [y/N]: ").strip().lower() != "y":
+                        continue
             apply_candidate("security_irq_settings", settings)
         elif choice == "10":
             if override(evidence.STATIC_CANARY_POLICY_ENV):
@@ -17193,11 +17949,14 @@ def _edit_security_center(cfg: Dict[str, Any]) -> None:
                 sensitivity_label = "Adaptive" if item.sensitivity_percent is None else f"{item.sensitivity_percent}%"
                 print(f"  Canary {index}: {len(item.value)} characters / {sensitivity_label} / {item.match_chars} consecutive characters (value hidden)")
             print("Workspace directory:", repr(path_policy.workspace_root) if path_policy.workspace_root else "NOT CONFIGURED")
-            print("Path policy source:", "ADMIN ENVIRONMENT" if os.getenv(paths.STATIC_PATH_POLICY_ENV, "").strip() else "LOCAL SETTINGS / DEFAULTS")
+            print("Path policy source:", "ADMIN ENVIRONMENT" if os.getenv(paths.STATIC_PATH_POLICY_ENV, "").strip()
+                  else "LOCAL SETTINGS" if cfg.get("security_path_policy") is not None else "FACTORY DEFAULTS")
             print("Canary policy source:", "ADMIN ENVIRONMENT" if os.getenv(evidence.STATIC_CANARY_POLICY_ENV, "").strip() else "LAUNCHER SESSION")
-            print("Effective restricted roots (default and user-defined):")
+            print("Restricted roots (factory Windows Temp exception; explicit NEVER takes precedence):")
             for root in path_policy.never_roots:
-                print("  " + repr(root))
+                print("  " + repr(root) + (" [user NEVER]" if root in path_policy.user_never_roots else " [factory]"))
+            print("Factory policy allows ordinary user TEMP/TMP and the Windows Temp subtree.")
+            print("Workspace Lock, explicit NEVER paths and Windows permissions still apply.")
             print("Credential protection: automatic known-value isolation; values hidden.")
             print("Mandatory at secured startup: StreamingIRQ / Reasoning Airlock, Canary enforcement,")
             print("Consequence Gate, Authority Ledger, Credential Isolation & DLP, Source Drift Guard,")
@@ -17268,6 +18027,7 @@ def _clear_backend_credentials(cfg: Dict[str, Any]) -> None:
     cfg["backend_password"] = ""
     cfg["backend_authorization_value"] = ""
     cfg["backend_extra_headers"] = {}
+    cfg["backend_secret_header_names"] = []
 
 def _apply_backend_preset(cfg: Dict[str, Any], profile: str) -> None:
     key = _normalize_backend_profile(profile)
@@ -17312,6 +18072,7 @@ def _edit_generic_auth(cfg: Dict[str, Any]) -> None:
         cfg["backend_authorization_value"] = _prompt_secret("Authorization value")
 
     extra: Dict[str, str] = {}
+    secret_names: List[str] = []
     raw = _cli_input("Add an additional provider/gateway header? [y/N]: ").strip().lower()
     while raw in {"y", "yes"}:
         name = _cli_input("Header name: ").strip()
@@ -17321,8 +18082,12 @@ def _edit_generic_auth(cfg: Dict[str, Any]) -> None:
         value = _prompt_secret(f"Value for {name}")
         if value:
             extra[name] = value
+            choice = _cli_input("Protect this header value as a credential? [y/N]: ").strip().lower()
+            if choice in {"y", "yes"}:
+                secret_names.append(name)
         raw = _cli_input("Add another header? [y/N]: ").strip().lower()
     cfg["backend_extra_headers"] = extra
+    cfg["backend_secret_header_names"] = secret_names
 
 
 def _backend_headers_from_cli(cfg: Dict[str, Any]) -> Dict[str, str]:
@@ -17439,7 +18204,7 @@ def _print_header(
     print(_status_value("Reasoning level", "Coder (Qwen 3.6-4.0)" if level_profile["mode"] == "agentic" and str(cfg.get("agentic_profile", "balanced")).lower() == "coder" else level_profile["label"]))
     if level_profile["mode"] == "agentic":
         if str(cfg.get("agentic_profile", "balanced")).lower() == "coder":
-            print(_status_value("Planner profile", str(cfg.get("coder_planner_profile", "flash")).capitalize()))
+            print(_status_value("Architect profile", str(cfg.get("coder_planner_profile", "flash")).capitalize()))
         else:
             print(_status_value("Agentic profile", str(cfg.get("agentic_profile", "balanced")).capitalize()))
         if str(cfg.get("agentic_profile", "balanced")).lower() == "translated":
@@ -17506,7 +18271,7 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
         # Coder is a standalone launcher choice but deliberately retains the
         # proven Agentic-Coder runtime/Stage-2 implementation underneath.
         print()
-        print("Planner")
+        print("Architect")
         print("  1) Flash (Default)")
         print("  2) Thorough")
         print(_ansi_rgb("  3) Hybrid (Local+Cloud) (Coming Soon)", _JACK_MUTED))
@@ -17514,7 +18279,7 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
         current_planner = str(cfg.get("coder_planner_profile", "flash")).lower()
         default_planner = "1" if current_planner == "flash" else "2"
         planner_choice = _cli_input(
-            f"Select Planner profile [1-3] [{default_planner}]: "
+            f"Select Architect profile [1-3] [{default_planner}]: "
         ).strip().lower() or default_planner
         if planner_choice in {"3", "hybrid", "local+cloud", "hybrid (local+cloud)"}:
             print(_ansi_rgb("Hybrid (Local+Cloud) (Coming Soon) cannot be selected.", _JACK_MUTED))
@@ -17524,12 +18289,12 @@ def _edit_reasoning(cfg: Dict[str, Any]) -> None:
             "2": "thorough", "thorough": "thorough",
         }.get(planner_choice)
         if planner_profile is None:
-            print("Invalid Planner profile; keeping current selection.")
+            print("Invalid Architect profile; keeping current selection.")
             return
         cfg["coder_planner_profile"] = planner_profile
         cfg["agentic_profile"] = "coder"
         cfg["reasoning_level"] = "Local Agentic (Preserve Thinking)"
-        print(f"Coder (Qwen 3.6-4.0) selected; Planner: {planner_profile.capitalize()}.")
+        print(f"Coder (Qwen 3.6-4.0) selected; Architect: {planner_profile.capitalize()}.")
         return
     if selected == "Local Agentic (Preserve Thinking)":
         print()
@@ -17598,7 +18363,7 @@ def _edit_preserve_thinking(cfg: Dict[str, Any]) -> None:
 def _edit_loop_detector(cfg: Dict[str, Any]) -> None:
     _print_back_hint()
     print("Loop Detector - native reasoning and completed tool-cycle repetition")
-    print("Native reasoning: exact cycles of at least 128 words. Tool cycles: identical calls and evidence.")
+    print("Native reasoning: exact cycles of at least 64 words. Tool cycles: identical calls and evidence.")
     current_enabled = bool(cfg.get("loop_detector_enabled", True))
     enabled = _cli_input(f"Enable Loop Detector? [Y/n] [{'Y' if current_enabled else 'N'}]: ").strip().lower()
     if enabled in {"y", "yes"}:
@@ -17715,17 +18480,18 @@ def _edit_model_selection(cfg: Dict[str, Any]) -> None:
     print("  2) Ollama")
     print("  3) Jan.ai")
     print("  4) llama.cpp (raw llama-server)")
-    print("  5) Custom OpenAI-compatible")
+    print("  5) Custom OpenAI-compatible (local/native template controls)")
+    print("  6) Custom OpenAI-standard wire (no native thinking controls)")
     print()
     current_key = _backend_profile_key(cfg)
     current_label = BACKEND_PRESETS[current_key]["label"]
-    choice = _cli_input(f"Select backend [1-5] [{current_label}]: ").strip().lower()
+    choice = _cli_input(f"Select backend [1-6] [{current_label}]: ").strip().lower()
     mapping = {
         "1":"lmstudio", "lmstudio":"lmstudio", "lm studio":"lmstudio",
         "2":"ollama", "ollama":"ollama",
         "3":"jan", "jan":"jan", "jan.ai":"jan",
         "4":"llamacpp", "llamacpp":"llamacpp", "llama.cpp":"llamacpp", "llama cpp":"llamacpp",
-        "5":"custom", "custom":"custom", "vllm":"custom",
+        "5":"custom", "custom":"custom", "vllm":"custom", "6":"custom", "openai_standard":"custom",
     }
     if choice:
         selected = mapping.get(choice)
@@ -17733,6 +18499,9 @@ def _edit_model_selection(cfg: Dict[str, Any]) -> None:
             print("Invalid backend selection; keeping current backend.")
         else:
             _apply_backend_preset(cfg, selected)
+            if choice in {"6", "openai_standard"}:
+                cfg["qwen_control_shape"] = "openai_standard"
+                print("Standard wire omits native thinking controls; cognitive-mode support must be qualified.")
             print(f"Applied {BACKEND_PRESETS[selected]['label']} defaults.")
 
     key = _backend_profile_key(cfg)
@@ -17848,11 +18617,15 @@ def _edit_advanced(cfg: Dict[str, Any]) -> None:
     print()
     print("Advanced Qwen / backend runtime settings")
     shape = _cli_input(
-        "Qwen control shape [template_kwargs/top_level/hybrid/ollama_openai] "
+        "Qwen control shape [template_kwargs/top_level/hybrid/ollama_openai/openai_standard] "
         f"[{cfg['qwen_control_shape']}]: "
     ).strip().lower()
     if shape:
-        if shape in {"template_kwargs", "top_level", "hybrid", "ollama_openai"}:
+        if shape == "openai_standard" and _backend_profile_key(cfg) == "custom":
+            print("Standard wire mode omits local sampler extensions and native thinking controls; "
+                  "provider reasoning behavior and parameter support require separate qualification.")
+            cfg["qwen_control_shape"] = shape
+        elif shape in {"template_kwargs", "top_level", "hybrid", "ollama_openai"}:
             cfg["qwen_control_shape"] = shape
         else:
             print("Invalid control shape; keeping current value.")
@@ -17963,6 +18736,7 @@ def _config_to_env(cfg: Dict[str, Any]) -> Dict[str, str]:
         "JACK_BACKEND_PASSWORD": cfg.get("backend_password", ""),
         "JACK_BACKEND_AUTHORIZATION_VALUE": cfg.get("backend_authorization_value", ""),
         "JACK_BACKEND_EXTRA_HEADERS": json.dumps(cfg.get("backend_extra_headers") or {}, ensure_ascii=False),
+        "JACK_BACKEND_SECRET_HEADER_NAMES": json.dumps(cfg.get("backend_secret_header_names", []), ensure_ascii=False),
         "JACK_VIRTUAL_MODEL": cfg["virtual_model"],
         "JACK_REASONING_LEVEL": cfg["reasoning_level"],
         "JACK_AGENTIC_PROFILE": cfg.get("agentic_profile", "balanced"),
@@ -18008,7 +18782,7 @@ def _config_to_env(cfg: Dict[str, Any]) -> Dict[str, str]:
 def _server_command() -> List[str]:
     if getattr(sys, "frozen", False):
         return [sys.executable, "--serve"]
-    return [sys.executable, str(Path(__file__).resolve()), "--serve"]
+    return [sys.executable, str(Path(__file__).resolve().with_name("jack_secure_entrypoint.py")), "--serve"]
 
 
 def _start_server_from_cli(cfg: Dict[str, Any]) -> None:
@@ -18042,7 +18816,7 @@ def _start_server_from_cli(cfg: Dict[str, Any]) -> None:
         if str(cfg.get("agentic_profile", "balanced")).lower() != "coder":
             print(f"Agentic profile  : {str(cfg.get('agentic_profile', 'balanced')).capitalize()}")
         if str(cfg.get("agentic_profile", "")).lower() == "coder":
-            print(f"Planner reasoning: {str(cfg.get('coder_planner_profile', 'thorough')).capitalize()}")
+            print(f"Architect reasoning: {str(cfg.get('coder_planner_profile', 'flash')).capitalize()}")
         if str(cfg.get("agentic_profile", "balanced")).lower() == "translated":
             language = _TRANSLATOR_LANGUAGE_ALIASES.get(str(cfg.get("translated_language", "en")).lower(), "en")
             print(f"Translated target: {TRANSLATOR_LANGUAGES[language]}")
@@ -18265,11 +19039,11 @@ def run_server() -> None:
     if AGENTIC_MODE:
         LOG.info("Agentic profile: %s", CFG.agentic_profile)
         if AGENTIC_CODER_MODE:
-            LOG.info("Coder Planner profile: %s", CFG.coder_planner_profile)
+            LOG.info("Coder Architect profile: %s", CFG.coder_planner_profile)
     LOG.info("Preserve thinking: %s", "ON" if CFG.preserve_thinking else "OFF")
     LOG.info("Forensic archive: %s", CFG.forensic_archive_mode.upper())
-    LOG.info("Loop Detector: %s, threshold=%s, min-cycle=128 words",
-             "ON" if CFG.loop_detector_enabled else "OFF", CFG.loop_detector_repetitions)
+    LOG.info("Loop Detector: %s, threshold=%s, min-cycle=%s words",
+             "ON" if CFG.loop_detector_enabled else "OFF", CFG.loop_detector_repetitions, MIN_CYCLE_WORDS)
     LOG.info("Live stage streaming: ON for OpenAI stream=true requests")
     LOG.info("Generation budgets (estimated tokens): reasoning=%s output=%s",
              CFG.reasoning_budget_tokens, CFG.output_budget_tokens)
@@ -18348,15 +19122,60 @@ def _install_bundled_runtime_extensions() -> None:
         "jack_secure_entrypoint.py": root / "jack_secure_entrypoint.py",
         "jack_evidence_guard.py": Path(jack_evidence_guard.__file__).resolve(),
         "jack_path_policy.py": Path(jack_path_policy.__file__).resolve(),
+        "jack_posix_paths.py": root / "jack_posix_paths.py",
+        "jack_executor_contract.py": root / "jack_executor_contract.py",
         "jack_consequence_gate.py": Path(jack_consequence_gate.__file__).resolve(),
         "jack_authority_ledger.py": root / "jack_authority_ledger.py",
         "jack_responses_compat.py": Path(jack_responses_compat.__file__).resolve(),
     })
 
 
+def _secured_serving_ready() -> bool:
+    return (
+        globals().get("_JACK_SOURCE_RUNTIME_ENFORCEMENT_INSTALLED") is True
+        and all(globals().get(name) is not None for name in (
+            "_JACK_SOURCE_AUTHORITY",
+            "_JACK_RUNTIME_CODE_AUTHORITY",
+            "_JACK_PHASE10_PATH_AUTHORITY",
+            "_JACK_PHASE10_CANARY_AUTHORITY",
+            "_JACK_PHASE10_CREDENTIAL_AUTHORITY",
+            "_JACK_DIAGNOSTIC_PRIVACY",
+        ))
+    )
+
+
+def _delegate_secured_serving() -> None:
+    # Use a normal child process rather than execv: Windows does not provide
+    # POSIX process replacement semantics, and the caller must wait for and
+    # receive the actual serving child's exit status.
+    if getattr(sys, "frozen", False):
+        raise RuntimeError("Secured serving entrypoint is unavailable in this executable")
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve().with_name("jack_secure_entrypoint.py")),
+        *sys.argv[1:],
+    ]
+    raise SystemExit(subprocess.run(command, check=False).returncode)
+
+
 def main() -> None:
+    serving = "--serve" in sys.argv[1:]
+    isolated_test = "--unsecured-test-serve" in sys.argv[1:]
+    if isolated_test and not serving:
+        raise SystemExit("--unsecured-test-serve requires --serve")
+    if serving and not _secured_serving_ready():
+        if globals().get("_JACK_SOURCE_AUTHORITY_INSTALLED"):
+            raise RuntimeError("Secured serving authority composition is incomplete")
+        if not isolated_test:
+            _delegate_secured_serving()
+            return
+        # Explicit process-local test escape hatch; never selected by the CLI.
+        print("WARNING: UNSECURED TEST SERVER — Phases 8, 9B, 10 and 11 are not installed.",
+              file=sys.stderr, flush=True)
+    elif serving and isolated_test:
+        raise SystemExit("Unsecured test option is not accepted by secured serving")
     _install_bundled_runtime_extensions()
-    if "--serve" in sys.argv:
+    if serving:
         run_server()
     else:
         run_cli()

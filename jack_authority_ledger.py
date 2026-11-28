@@ -260,7 +260,7 @@ class AuthorityLedger:
         if not self.lane_id:
             raise ValueError("lane_id must not be empty")
         if queue_capacity < 1 or queue_capacity > MAX_PROJECTION_QUEUE_CAPACITY:
-            raise ValueError("queue_capacity is outside Phase-6 bounds")
+            raise ValueError("queue_capacity is outside Authority & Security Ledger bounds")
 
         self.ledger_instance_id = str(ledger_instance_id or uuid.uuid4())
         self.projection_root = Path(projection_root)
@@ -279,6 +279,7 @@ class AuthorityLedger:
         self._writer_start_lock = threading.Lock()
         self._writer: Optional[threading.Thread] = None
         self._closed = False
+        self._writer_stop_enqueued = False
 
         self._last_projected_sequence = 0
         self._last_projected_digest: Optional[str] = None
@@ -527,20 +528,23 @@ class AuthorityLedger:
             payload=asdict(payload),
         )
 
-    def record_canary_match(self, *, canary_id: str, tier: Any) -> AuthorityRecord:
+    def record_canary_match(self, *, canary_id: str, tier: Any,
+                            boundary: str = "model_output_release") -> AuthorityRecord:
+        if boundary not in {"model_output_release", "tool_evidence_http_release"}:
+            raise ValueError("unsupported Canary release boundary")
         safe_id = str(canary_id or "")
         tier_value = _enum_value(tier)
         if _SAFE_CANARY_ID.fullmatch(safe_id) is None:
-            raise ValueError("canary_id is not safe Phase-6 metadata")
+            raise ValueError("canary_id is not safe Authority & Security Ledger metadata")
         if tier_value not in _CANARY_TIERS:
             raise ValueError("unsupported Canary tier")
         payload = CanaryMatchPayload(canary_id=safe_id, tier=tier_value)
         return self._advance(
             event_type=LedgerEventType.CANARY_MATCH,
             producer_code="streaming_irq.canary",
-            boundary="model_output_release",
+            boundary=boundary,
             outcome="HARD_INTERRUPT",
-            containment_scope="model_output_release",
+            containment_scope=boundary,
             fact_type="CanaryMatch",
             payload=asdict(payload),
         )
@@ -557,18 +561,20 @@ class AuthorityLedger:
             payload=asdict(payload),
         )
 
-    def _ensure_writer(self) -> None:
-        if self._closed:
+    def _start_writer_locked(self) -> None:
+        if self._writer is not None and self._writer.is_alive():
             return
+        self._writer = threading.Thread(
+            target=self._writer_loop,
+            name=f"jack-phase6-ledger-{_safe_component(self.ledger_instance_id, 'instance')[:24]}",
+            daemon=True,
+        )
+        self._writer.start()
+
+    def _ensure_writer(self) -> None:
         with self._writer_start_lock:
-            if self._writer is not None and self._writer.is_alive():
-                return
-            self._writer = threading.Thread(
-                target=self._writer_loop,
-                name=f"jack-phase6-ledger-{_safe_component(self.ledger_instance_id, 'instance')[:24]}",
-                daemon=True,
-            )
-            self._writer.start()
+            if not self._closed:
+                self._start_writer_locked()
 
     def _enqueue_projection_locked(self, projection: ProjectionRequest) -> bool:
         """Queue one immutable projection while the authority transition is serialized.
@@ -649,7 +655,7 @@ class AuthorityLedger:
             self._atomic_write(target, projection.encoded)
         except Exception:
             self._mark_projection_lost(projection.sequence)
-            LOG.exception("Phase-6 authority-ledger record projection failed; Jack authority remains active")
+            LOG.exception("Authority & Security Ledger record projection failed; Jack authority remains active")
             # A record-file failure may still permit projection metadata to be
             # written. Attempt it so durable history can truthfully advertise
             # the known gap when the storage failure is partial rather than total.
@@ -693,7 +699,7 @@ class AuthorityLedger:
             with self._durability_lock:
                 self._projection_metadata_degraded = True
             LOG.exception(
-                "Phase-6 projection-head update failed; projected records remain forensic and active authority is unchanged"
+                "Authority & Security Ledger projection-head update failed; projected records remain forensic and active authority is unchanged"
             )
 
     def projection_status(self) -> ProjectionStatus:
@@ -723,17 +729,43 @@ class AuthorityLedger:
         return self._projection_queue.unfinished_tasks == 0
 
     def close(self, timeout: float = 5.0) -> None:
-        self.wait_for_projection(timeout=timeout)
-        with self._writer_start_lock:
+        """Close projection admission, drain committed records, and bound shutdown.
+
+        Projection failure remains separate from predecessor security authority.
+        A timed-out drain is explicitly reported, never advertised as success.
+        """
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        # Serialize closure with the same authority transition that enqueues
+        # immutable projection bytes. No disk I/O is performed under this lock.
+        with self._authority_lock:
             self._closed = True
+
+        with self._writer_start_lock:
+            # An enqueue may have committed just before closure, while its
+            # caller has not yet reached _ensure_writer(). Drain it here.
+            if not self._projection_queue.empty() and not self._writer_stop_enqueued:
+                self._start_writer_locked()
             writer = self._writer
-            if writer is None or not writer.is_alive():
-                return
-            try:
-                self._projection_queue.put_nowait(None)
-            except queue.Full:
-                return
-        writer.join(timeout=max(0.0, float(timeout)))
+
+        drained = self.wait_for_projection(timeout=max(0.0, deadline - time.monotonic()))
+        if writer is not None and writer.is_alive():
+            with self._writer_start_lock:
+                if writer.is_alive() and not self._writer_stop_enqueued:
+                    try:
+                        self._projection_queue.put_nowait(None)
+                    except queue.Full:
+                        # Never discard queued records to make space for a sentinel.
+                        # A subsequent close can retry the bounded drain.
+                        pass
+                    else:
+                        self._writer_stop_enqueued = True
+            writer.join(timeout=max(0.0, deadline - time.monotonic()))
+
+        if not drained or (writer is not None and writer.is_alive()):
+            LOG.warning(
+                "Authority & Security Ledger shutdown did not finish within the "
+                "projection drain budget; queued evidence may remain unprojected"
+            )
 
 
 def _safe_record(ledger: AuthorityLedger, method_name: str, /, **kwargs: Any) -> bool:
@@ -748,10 +780,10 @@ def _safe_record(ledger: AuthorityLedger, method_name: str, /, **kwargs: Any) ->
         # A ledger implementation failure freezes only further ledger advancement.
         # Existing Gate/evidence decisions remain authoritative and continue.
         try:
-            ledger.freeze_authority(f"Phase-6 ledger recording failure: {type(exc).__name__}")
+            ledger.freeze_authority(f"Authority & Security Ledger recording failure: {type(exc).__name__}")
         except Exception:
             pass
-        LOG.exception("Phase-6 ledger recording failed; ledger advancement frozen without changing predecessor authority")
+        LOG.exception("Authority & Security Ledger recording failed; ledger advancement frozen without changing predecessor authority")
         return False
 
 
@@ -809,6 +841,16 @@ def _record_canary_failsoft(ledger: AuthorityLedger, match: Any) -> None:
     _safe_record(ledger, "record_canary_match", canary_id=canary_id, tier=tier)
 
 
+def record_evidence_canary_match_failsoft(ledger: AuthorityLedger, match: Any) -> bool:
+    """Record safe Canary metadata at the caller-bound historical evidence endpoint."""
+    return _safe_record(
+        ledger, "record_canary_match",
+        canary_id=str(getattr(match, "canary_id", "") or ""),
+        tier=getattr(match, "tier", ""),
+        boundary="tool_evidence_http_release",
+    )
+
+
 def _record_reserved_block_from_filter() -> None:
     ledger = current_ledger()
     if ledger is None:
@@ -848,12 +890,12 @@ def _install_evidence_release_hooks(jk: Any, ledger: AuthorityLedger) -> None:
 
     kernel = getattr(jk, "KERNEL", None)
     if kernel is None:
-        raise RuntimeError("Jack KERNEL instance is unavailable for Phase-6 evidence integration")
+        raise RuntimeError("Jack KERNEL instance is unavailable for Authority & Security Ledger evidence integration")
 
     current_run = getattr(kernel, "run", None)
     current_stream = getattr(kernel, "stream", None)
     if not callable(current_run) or not callable(current_stream):
-        raise RuntimeError("Jack KERNEL release seams are unavailable for Phase-6 evidence integration")
+        raise RuntimeError("Jack KERNEL release seams are unavailable for Authority & Security Ledger evidence integration")
 
     if not getattr(current_run, "_jack_phase6_authority_ledger", False):
         original_run = current_run
@@ -877,12 +919,17 @@ def _install_evidence_release_hooks(jk: Any, ledger: AuthorityLedger) -> None:
         @wraps(original_stream)
         async def ledger_stream(*args: Any, **kwargs: Any):
             with live_ledger_scope(ledger):
+                source_stream = original_stream(*args, **kwargs)
                 try:
-                    async for chunk in original_stream(*args, **kwargs):
+                    async for chunk in source_stream:
                         yield chunk
                 except guard.StreamingIRQCanaryInterrupt as exc:
                     _record_canary_failsoft(ledger, exc.match)
                     raise
+                finally:
+                    close = getattr(source_stream, "aclose", None)
+                    if callable(close):
+                        await close()
 
         ledger_stream._jack_phase6_authority_ledger = True
         ledger_stream._jack_phase6_original = original_stream
@@ -894,19 +941,19 @@ def install(jk: Any) -> AuthorityLedger:
     existing = getattr(jk, "_JACK_AUTHORITY_LEDGER", None)
     if getattr(jk, "_JACK_AUTHORITY_LEDGER_INSTALLED", False):
         if not isinstance(existing, AuthorityLedger):
-            raise RuntimeError("Phase-6 installation marker exists without an AuthorityLedger")
+            raise RuntimeError("Authority & Security Ledger installation marker exists without an AuthorityLedger")
         return existing
 
     runtime_id = str(getattr(jk, "RUNTIME_ID", "") or "").strip()
     lane_id = str(getattr(jk, "LANE_ID", "") or "").strip()
     if not runtime_id:
-        raise RuntimeError("Jack runtime identity is unavailable for Phase-6 ledger")
+        raise RuntimeError("Jack runtime identity is unavailable for Authority & Security Ledger")
     if not lane_id:
-        raise RuntimeError("Jack lane identity is unavailable for Phase-6 ledger")
+        raise RuntimeError("Jack lane identity is unavailable for Authority & Security Ledger")
 
     if not getattr(jk, "_JACK_EVIDENCE_PROVENANCE_GUARD_INSTALLED", False):
         raise RuntimeError(
-            "Phase-6 ledger requires the predecessor evidence/Canary guard to be installed first"
+            "Authority & Security Ledger requires the predecessor evidence/Canary guard to be installed first"
         )
 
     ledger = AuthorityLedger(

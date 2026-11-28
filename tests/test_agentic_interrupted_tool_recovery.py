@@ -219,7 +219,8 @@ def test_real_stream_disconnect_retries_same_tool_result_without_reexecuting_too
     asyncio.run(run())
 
 
-def test_stage2_disconnect_reuses_frozen_stage1_without_regeneration(monkeypatch, tmp_path):
+@pytest.mark.parametrize("retry_streaming", [True, False])
+def test_stage2_disconnect_reuses_frozen_stage1_without_regeneration(monkeypatch, tmp_path, retry_streaming):
     async def run():
         k = load(monkeypatch, tmp_path)
         call_id = "stage2-tool-result"
@@ -254,6 +255,14 @@ def test_stage2_disconnect_reuses_frozen_stage1_without_regeneration(monkeypatch
                     self.closed += 1
 
         backend = Backend()
+
+        async def retry_chat(**kwargs):
+            backend.calls += 1
+            assert kwargs["profile"].name == "Agentic native pass 2"
+            return {"choices": [{"message": {"content": "completed, useful working memory"},
+                                 "finish_reason": "stop"}], "usage": {}}
+
+        backend.chat = retry_chat
         k.KERNEL.backend = backend
         body = {"messages": messages, "stream": True}
         stream = k.KERNEL.stream(body)
@@ -273,10 +282,43 @@ def test_stage2_disconnect_reuses_frozen_stage1_without_regeneration(monkeypatch
         assert not state.in_flight
         assert k._agentic_forensic_turn(state.frozen_stage1_history).status == "stage2_active"
 
-        chunks = [c async for c in k.KERNEL.stream(body)]
-        wire = b"".join(chunks).decode("utf-8")
+        if retry_streaming:
+            chunks = [c async for c in k.KERNEL.stream(body)]
+            wire = b"".join(chunks).decode("utf-8")
+        else:
+            result = await k.KERNEL.run(dict(body, stream=False))
+            wire = result.content
         assert backend.calls == 3, "Stage 1 must never be regenerated after A1 freezes"
         assert "EXACT A1" in wire
         assert "completed, useful working memory" in wire
         assert call_id not in k.KERNEL._pending_tool_resumes
+    asyncio.run(run())
+
+
+def test_real_resume_working_history_and_recovery_settlement(monkeypatch, tmp_path):
+    async def run():
+        k = load(monkeypatch, tmp_path)
+        call_id = "sealed-recovery"
+        pending = await install_pending(k, call_id)
+        messages = [
+            {"role": "user", "content": "Read the clock source."},
+            {"role": "tool", "tool_call_id": call_id, "content": "authenticated outcome"},
+        ]
+        original_history = copy.deepcopy(pending.history)
+        state, matched = await k.KERNEL._consume_pending_tool_resume(messages)
+        working = k.KERNEL._pending_tool_resume_history(state, matched)
+        tracker = k._TOOL_RECOVERY_STATE.get()
+        tracker.fail("edit", "rejected attempt", policy_denial=True, policy_key="same")
+        working[0]["content"] = "working projection only"
+        assert pending.history == original_history
+        k.KERNEL._pending_authority.verify(pending)
+        await k.KERNEL._rearm_pending_tool_resume(pending)
+        assert not pending.in_flight
+        assert pending.tool_recovery.consecutive_policy_denials == 1
+        k.KERNEL._pending_authority.verify(pending)
+        state, matched = await k.KERNEL._consume_pending_tool_resume(messages)
+        working = k.KERNEL._pending_tool_resume_history(state, matched)
+        assert working[0]["content"] == original_history[0]["content"]
+        assert k._TOOL_RECOVERY_STATE.get().consecutive_policy_denials == 1
+        await k.KERNEL._retire_pending_tool_resume(pending)
     asyncio.run(run())

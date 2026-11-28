@@ -17,7 +17,9 @@ const port = 18000 + (process.pid % 1000);
 const token = "v2-test-token";
 const cfgDir = path.join(tempHome, ".pi", "agent");
 fs.mkdirSync(cfgDir, { recursive: true });
-fs.writeFileSync(path.join(cfgDir, "jack-kernel.json"), JSON.stringify({ controlPort: port, controlToken: token }));
+delete process.env.JACK_PI_CONTROL_TOKEN;
+process.env.JACK_TEST_CONTROL_TOKEN = token;
+fs.writeFileSync(path.join(cfgDir, "jack-kernel.json"), JSON.stringify({ controlPort: port, controlToken: "$JACK_TEST_CONTROL_TOKEN" }));
 process.env.HOME = tempHome;
 process.env.USERPROFILE = tempHome;
 

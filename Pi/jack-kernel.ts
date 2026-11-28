@@ -19,7 +19,15 @@ const COMMAND_DIALECT_BY_TOOL = new Map([
 
 function resolveValue(value) {
   if (typeof value !== "string") return value;
-  if (value.startsWith("$")) return process.env[value.slice(1)] ?? value;
+  if (value.startsWith("$")) {
+    const resolved = process.env[value.slice(1)];
+    if (resolved === undefined || !resolved.trim()) {
+      // An explicit environment reference is configuration, not a literal
+      // bearer token or a request to silently disable authentication.
+      throw new Error("Jack provider configuration has an unresolved environment reference");
+    }
+    return resolved;
+  }
   return value;
 }
 
@@ -57,7 +65,7 @@ function loadConfig() {
   const runtimeId = String(process.env.JACK_PI_JACK_RUNTIME_ID || "").trim();
 
   return {
-    url: resolveValue(envUrl || parsed.url || DEFAULT_JACK_URL),
+    url: runtimeId ? DEFAULT_JACK_URL : resolveValue(envUrl || parsed.url || DEFAULT_JACK_URL),
     token: envToken !== undefined
       ? resolveValue(String(envToken))
       : (parsed.token ? resolveValue(parsed.token) : undefined),
@@ -124,7 +132,9 @@ async function fetchJson(url, token, timeoutMs = 5000) {
       headers: authHeaders(token),
     });
     if (!response.ok) {
-      throw new Error(`Jack Kernel HTTP status ${response.status}: ${await response.text()}`);
+      const error = new Error(`Jack Kernel HTTP status ${response.status}: ${await response.text()}`);
+      error.status = response.status;
+      throw error;
     }
     return await response.json();
   } finally {
@@ -156,7 +166,15 @@ async function postJson(url, token, payload, timeoutMs = 5000) {
 
 async function verifyRuntimeIdentity(url, token, expectedRuntimeId) {
   const root = String(url || DEFAULT_JACK_URL).replace(/\/+$/, "").replace(/\/v1$/, "");
-  const health = await fetchJson(`${root}/health`, token);
+  let health;
+  try {
+    health = await fetchJson(`${root}/jack/runtime-identity`, token);
+  } catch (error) {
+    // Only an absent endpoint permits legacy compatibility. Authentication
+    // failures and malformed identity responses must remain failures.
+    if (error?.status !== 404) throw error;
+    health = await fetchJson(`${root}/health`, token);
+  }
   const actualRuntimeId = String(health?.runtime_id || "");
   if (!actualRuntimeId) {
     throw new Error("Jack runtime did not report runtime_id");
@@ -204,13 +222,28 @@ function runtimeThinkingLevelMap(health) {
 
 async function fetchJackModels(url, token, health) {
   const root = String(url || DEFAULT_JACK_URL).replace(/\/+$/, "").replace(/\/v1$/, "");
-  const payload = await fetchJson(`${root}/api/v1/models`, token);
-  const models = Array.isArray(payload?.models) ? payload.models : [];
+  let models;
+  try {
+    const payload = await fetchJson(`${root}/api/v1/models`, token);
+    models = Array.isArray(payload?.models) ? payload.models : [];
+  } catch (error) {
+    if (![404, 503].includes(error?.status)) throw error;
+    // Ordinary OpenAI-compatible discovery is valid independently of the
+    // LM Studio-shaped metadata route. Never invent context capacity.
+    const payload = await fetchJson(`${root}/v1/models`, token);
+    models = (Array.isArray(payload?.data) ? payload.data : []).map(model => ({
+      key: model.id,
+      display_name: model.display_name || model.id,
+      max_context_length: model.context_length || model.context_window ||
+        model.contextWindow || model.max_context_length || model.max_model_len,
+      capabilities: model.capabilities,
+    }));
+  }
   return models.map((model) => {
     const loadedContext = Number(model?.loaded_instances?.[0]?.config?.context_length || 0);
     const maxContext = Number(model?.max_context_length || 0);
     const contextWindow = loadedContext > 0 ? loadedContext : maxContext;
-    if (!(contextWindow > 0)) {
+    if (!(Number.isSafeInteger(contextWindow) && contextWindow > 0)) {
       throw new Error(`Jack model ${model?.key || "unknown"} did not advertise a usable context length`);
     }
     return {
@@ -219,7 +252,7 @@ async function fetchJackModels(url, token, health) {
       reasoning: runtimeSupportsNativeThinking(health),
       thinkingLevelMap: runtimeThinkingLevelMap(health),
       compat: { supportsDeveloperRole: false, supportsReasoningEffort: false },
-      input: ["text"],
+      input: model?.capabilities?.vision === true ? ["text", "image"] : ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow,
       // Pi maxTokens is an output allowance, not a context capacity.
@@ -235,19 +268,38 @@ export default async function (pi) {
   let tasSessionId = null;
   let tasSessionCapability = null;
 
-  async function syncProvider() {
-    const { url, token, expectedRuntimeId } = resolveJackTarget();
-    activeRuntimeBinding = null;
+  let providerRefresh = null;
+  function syncProvider() {
+    if (!providerRefresh) {
+      providerRefresh = refreshProvider().finally(() => { providerRefresh = null; });
+    }
+    return providerRefresh;
+  }
+
+  async function refreshProvider() {
+    let verifiedSameBinding = false;
     try {
-      const health = await verifyRuntimeIdentity(url, token, expectedRuntimeId);
-      const models = await fetchJackModels(url, token, health);
-      if (!models.length) return;
+      const { url, token, expectedRuntimeId } = resolveJackTarget();
       const root = String(url || DEFAULT_JACK_URL).replace(/\/+$/, "").replace(/\/v1$/, "");
+      // A changed target or credential cannot inherit the old binding.
+      if (activeRuntimeBinding && (activeRuntimeBinding.root !== root ||
+          activeRuntimeBinding.token !== token ||
+          (expectedRuntimeId && activeRuntimeBinding.runtimeId !== expectedRuntimeId))) {
+        activeRuntimeBinding = null;
+      }
+      const health = await verifyRuntimeIdentity(url, token, expectedRuntimeId);
       const runtimeId = String(health?.runtime_id || "");
       const laneId = String(health?.lane_id || "");
       if (!laneId) {
         throw new Error("Jack runtime did not report lane_id");
       }
+      verifiedSameBinding = Boolean(activeRuntimeBinding &&
+        activeRuntimeBinding.runtimeId === runtimeId && activeRuntimeBinding.laneId === laneId);
+      if (!verifiedSameBinding) activeRuntimeBinding = { root, token, runtimeId, laneId };
+      // Optional model metadata must not retire independently reverified authority.
+      verifiedSameBinding = true;
+      const models = await fetchJackModels(url, token, health);
+      if (!models.length) return;
       const provider = {
         baseUrl: `${root}/v1/`,
         api: "openai-completions",
@@ -255,8 +307,8 @@ export default async function (pi) {
         models,
       };
       pi.registerProvider(PROVIDER_NAME, provider);
-      activeRuntimeBinding = { root, token, runtimeId, laneId };
     } catch (error) {
+      if (!verifiedSameBinding) activeRuntimeBinding = null;
       console.error("[jack-kernel] Context/model sync skipped:", error);
     }
   }
@@ -499,15 +551,17 @@ export default async function (pi) {
   const failedToolCalls = new Map();
   const successfulToolCalls = new Map();
   let outcomeSessionId = null;
+  let outcomeRuntimeBinding = null;
   pi.on("tool_execution_end", (event, ctx) => {
-    if (String(ctx?.model?.provider || "") !== PROVIDER_NAME) return;
+    if (!activeRuntimeBinding || String(ctx?.model?.provider || "") !== PROVIDER_NAME) return;
     const callId = String(event?.toolCallId || "");
     const sessionId = String(ctx?.sessionManager?.getSessionId?.() || "");
     if (!callId || !sessionId) return;
-    if (outcomeSessionId !== sessionId) {
+    if (outcomeSessionId !== sessionId || outcomeRuntimeBinding !== activeRuntimeBinding) {
       failedToolCalls.clear();
       successfulToolCalls.clear();
       outcomeSessionId = sessionId;
+      outcomeRuntimeBinding = activeRuntimeBinding;
     }
     if (event?.isError === true) {
       successfulToolCalls.delete(callId);
@@ -530,9 +584,10 @@ export default async function (pi) {
   });
 
   pi.on("before_provider_request", (event, ctx) => {
-    if (!activeRuntimeBinding || String(ctx?.model?.provider || "") !== PROVIDER_NAME) return;
+    if (String(ctx?.model?.provider || "") !== PROVIDER_NAME) return;
     const sessionId = String(ctx?.sessionManager?.getSessionId?.() || "");
-    if (!sessionId || sessionId !== outcomeSessionId) return;
+    if (!sessionId || sessionId !== outcomeSessionId || !activeRuntimeBinding ||
+        outcomeRuntimeBinding !== activeRuntimeBinding) return;
     const payload = event?.payload;
     if (!payload || typeof payload !== "object" || !Array.isArray(payload.messages)) return;
     let tagged = false;
@@ -554,19 +609,25 @@ export default async function (pi) {
     return undefined;
   });
 
-  pi.on("before_provider_headers", (event, ctx) => {
+  pi.on("before_provider_headers", async (event, ctx) => {
+    if (providerRefresh) await providerRefresh;
     const binding = activeRuntimeBinding;
     if (!binding || String(ctx?.model?.provider || "") !== PROVIDER_NAME) {
       return;
     }
 
-    event.headers["X-Jack-Executor-Admission-Version"] =
-      String(EXECUTOR_ADMISSION_PROTOCOL_VERSION);
-    event.headers["X-Jack-Executor-Runtime-Id"] = binding.runtimeId;
-    event.headers["X-Jack-Executor-Lane-Id"] = binding.laneId;
-    event.headers["X-Jack-Executor-Cwd"] = String(ctx?.cwd || "");
-    event.headers["X-Jack-Executor-Platform"] = process.platform;
-    event.headers["X-Jack-Executor-Adapter"] = "pi";
+    // An absent executor cwd must not be advertised as an empty or guessed
+    // path. Omit the entire optional admission metadata group in that case.
+    const cwd = typeof ctx?.cwd === "string" ? ctx.cwd : "";
+    if (cwd.trim()) {
+      event.headers["X-Jack-Executor-Admission-Version"] =
+        String(EXECUTOR_ADMISSION_PROTOCOL_VERSION);
+      event.headers["X-Jack-Executor-Runtime-Id"] = binding.runtimeId;
+      event.headers["X-Jack-Executor-Lane-Id"] = binding.laneId;
+      event.headers["X-Jack-Executor-Cwd"] = cwd;
+      event.headers["X-Jack-Executor-Platform"] = process.platform;
+      event.headers["X-Jack-Executor-Adapter"] = "pi";
+    }
 
     const currentSessionId = String(ctx?.sessionManager?.getSessionId?.() || "");
     if (currentSessionId) {
@@ -598,11 +659,12 @@ export default async function (pi) {
       return undefined;
     }
 
+    if (providerRefresh) await providerRefresh;
     const binding = activeRuntimeBinding;
     if (!binding) {
       return {
         block: true,
-        reason: "Jack Phase-4 executor admission is unavailable.",
+        reason: "Jack Restricted Paths / Workspace Lock executor admission is unavailable.",
       };
     }
 
@@ -627,7 +689,7 @@ export default async function (pi) {
       if (decision?.contract_applied !== true) {
         return {
           block: true,
-          reason: "Jack Phase-4 executor admission found no matching host-owned contract.",
+          reason: "Jack Restricted Paths / Workspace Lock executor admission found no matching host-owned contract.",
         };
       }
       if (outcome === "ALLOW") {
@@ -637,25 +699,34 @@ export default async function (pi) {
         if (typeof ctx?.abort === "function") ctx.abort();
         return {
           block: true,
-          reason: "Blocked by Jack Phase-4 restricted-path policy.",
+          reason: "Blocked by Jack Restricted Paths policy.",
           terminate: true,
         };
       }
       if (outcome === "DENY_AND_CONTINUE") {
+        const safeReasons = {
+          OUTSIDE_WORKSPACE: "Blocked by Jack Workspace Lock: the target is outside the configured workspace. Correct the destination if the task belongs inside it.",
+          PROTECTED_CREDENTIAL_RESOURCE: "Blocked by Jack credential-resource protection. Do not retry or seek alternate access.",
+          INVALID_REPRESENTED_PATH: "Jack could not authorize the invalid path. Correct the invocation using an explicit authorized path.",
+          WINDOWS_SYSTEM_CONTRACT: "Jack requires a recognized read-only or executable-launch contract for this Windows resource.",
+          WINDOWS_SYSTEM_RESOURCE: "Blocked by Jack Windows system-resource protection.",
+        };
         return {
           block: true,
-          reason: "Blocked by Jack Phase-4 Workspace Lock.",
+          reason: Object.hasOwn(safeReasons, decision?.reason_code)
+            ? safeReasons[decision.reason_code]
+            : "Jack path admission did not authorize this action. It was not executed; correct the invocation if appropriate or continue independent authorized work.",
         };
       }
       return {
         block: true,
-        reason: "Jack Phase-4 executor admission returned an unknown outcome.",
+        reason: "Jack Restricted Paths / Workspace Lock executor admission returned an unknown outcome.",
       };
     } catch (error) {
-      console.error("[jack-kernel] Phase-4 executor admission failed:", error);
+      console.error("[jack-kernel] Restricted Paths / Workspace Lock executor admission failed:", error);
       return {
         block: true,
-        reason: "Jack Phase-4 executor admission failed closed for this filesystem action.",
+        reason: "Jack Restricted Paths / Workspace Lock executor admission failed closed for this filesystem action.",
       };
     }
   });

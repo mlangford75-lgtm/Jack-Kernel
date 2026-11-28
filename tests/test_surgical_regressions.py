@@ -408,6 +408,8 @@ def test_direct_kernel_entrypoint_installs_bundled_security_and_compatibility():
         "jack_diagnostic_guard.py",
         "jack_credential_resource_guard.py",
         "jack_path_policy.py",
+        "jack_posix_paths.py",
+        "jack_executor_contract.py",
         "jack_consequence_gate.py",
         "jack_authority_ledger.py",
         "jack_phase7_ledger.py",

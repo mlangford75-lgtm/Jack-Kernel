@@ -133,3 +133,95 @@ def test_active_gate_requires_reconsideration_not_just_repeated_work_words():
     observation = monitor.feed(as_text(chapter * 4 + ["end"] * 256))
     assert observation is not None
     assert not monitor.interrupt_eligible(observation)
+
+
+def test_anchor_search_matches_original_exact_window():
+    import random
+    from jack_loop_shadow import (
+        _ANCHOR_WORDS, _ANCHOR_JITTER, _MIN_ANCHOR_HITS,
+    )
+
+    def reference(a, b):
+        width = len(a)
+        matched = 0
+        for numerator in range(1, 7):
+            offset = width * numerator // 7
+            snippet = b[offset:offset + _ANCHOR_WORDS]
+            lower = max(0, offset - _ANCHOR_JITTER)
+            upper = min(width - _ANCHOR_WORDS, offset + _ANCHOR_JITTER)
+            if any(snippet == a[i:i + _ANCHOR_WORDS]
+                   for i in range(lower, upper + 1)):
+                matched += 1
+                if matched == _MIN_ANCHOR_HITS:
+                    return True
+        return False
+
+    rng = random.Random(17)
+    for width in (2049, 2064, 4096, 8192):
+        for trial in range(100):
+            a = [rng.randrange((2, 8, 32, 10000)[trial % 4])
+                 for _ in range(width)]
+            b = a.copy() if trial % 3 else [rng.randrange(10000) for _ in a]
+            if trial % 3 == 1:
+                for _ in range(width // 30):
+                    b[rng.randrange(width)] = rng.randrange(10000)
+            if trial % 3 == 2:
+                b = b[19:] + b[:19]
+            assert LongCycleShadowDetector._anchor_match(a, b) == reference(a, b)
+
+
+def test_retired_vocabulary_does_not_change_retained_word_identity(monkeypatch):
+    from jack_loop_shadow import _MAX_GENERATED_WORDS, _SCAN_WORDS
+
+    detector = LongCycleShadowDetector()
+    # Isolate the production append/trim path from expensive candidate scans.
+    monkeypatch.setattr(detector, "_scan", lambda: None)
+    count = 3 * _MAX_GENERATED_WORDS
+    for start in range(0, count, _SCAN_WORDS):
+        assert detector.feed(as_text(
+            [f"distinct-{i}" for i in range(start, min(start + _SCAN_WORDS, count))]
+        )) is None
+    assert len(detector._symbols) <= 2 * _MAX_GENERATED_WORDS + _SCAN_WORDS + 1
+    assert "distinct-0" not in detector._symbols
+    inverse = {symbol: word for word, symbol in detector._symbols.items()}
+    assert len(inverse) == len(detector._symbols)
+    assert [inverse[symbol] for symbol in detector._words] == [
+        f"distinct-{i}" for i in range(count - len(detector._words), count)
+    ]
+    retained = detector._symbols[f"distinct-{count - 1}"]
+    detector.feed(f"distinct-0 distinct-{count - 1} distinct-0 ")
+    assert detector._words[-3:] == [count + 1, retained, count + 1]
+    assert len(set(detector._symbols.values())) == len(detector._symbols)
+
+
+def test_shadow_observation_and_source_overlap_after_vocabulary_retirement(monkeypatch):
+    from dataclasses import replace
+    from jack_loop_shadow import _MAX_GENERATED_WORDS
+
+    chapter = [f"chapter-{i}" for i in range(2304)]
+    chapter[50:65] = (
+        "Let me write the file now. Let me draft it. "
+        "Actually, let me reconsider the structure."
+    ).split()
+    # Pad back to a width divisible by the scan cadence.
+    chapter += ["chapter-end"] * (2304 - len(chapter))
+    text = as_text(chapter * 4)
+    for sources in ((), (as_text(chapter),)):
+        aged = LongCycleShadowDetector(sources)
+        fresh = LongCycleShadowDetector(sources)
+        prefix_count = 3 * _MAX_GENERATED_WORDS
+        with monkeypatch.context() as m:
+            m.setattr(aged, "_scan", lambda: None)
+            m.setattr(fresh, "_scan", lambda: None)
+            aged.feed(as_text([f"unrelated-{i}" for i in range(prefix_count)]))
+            aged.feed(text)
+            fresh.feed(text)
+        assert "unrelated-0" not in aged._symbols
+        observed = aged._scan()
+        expected = fresh._scan()
+        assert expected is not None and observed is not None
+        assert observed == replace(expected, word_index=observed.word_index)
+        aged.observation = observed
+        fresh.observation = expected
+        assert aged.interrupt_eligible(observed) == fresh.interrupt_eligible(expected)
+        assert observed.suppressed_as_source == bool(sources)

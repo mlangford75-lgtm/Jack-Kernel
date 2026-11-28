@@ -32,6 +32,7 @@ def kernel(monkeypatch, tmp_path, *, links=True):
 
 @pytest.mark.parametrize("structured", [False, True])
 def test_exact_user_and_frozen_answer_with_host_owned_id(monkeypatch, tmp_path, structured):
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "thorough")
     k = kernel(monkeypatch, tmp_path)
     raw = [{"type": "text", "text": "Create a clock SVG"}] if structured else "Create a clock SVG"
     history = [{"role": "user", "content": raw}]
@@ -63,6 +64,17 @@ def test_exact_user_and_frozen_answer_with_host_owned_id(monkeypatch, tmp_path, 
     assert label not in continuation
     assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
     assert k.AGENTIC_STAGE1_PROMPT.startswith("Reasoning effort is set to xhigh.")
+    payload, _ = k.BACKEND._build_stage_request(
+        model="test-model", messages=history, secondary_system="",
+        profile=k.STAGES["extended_reflection"], tools=None,
+        tool_choice=None, streamed=False,
+    )
+    import json
+    wire = json.dumps(payload["messages"])
+    assert "Create a clock SVG" not in wire and frozen not in wire
+    assert label not in wire and turn not in wire
+    assert "Clock face and bird were required." in wire
+    assert "tools" not in payload
     assert k._agentic_cache_append_enabled(k.STAGES["extended_reflection"])
 
 

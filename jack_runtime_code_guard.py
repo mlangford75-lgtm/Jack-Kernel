@@ -17,6 +17,11 @@ from typing import Any
 
 SCHEMA = "jack.runtime-code-identity.v1"
 
+# More distinct small immutable trees may fit in the existing byte budget.
+# This is a storage bound, not a change to executable verification cadence.
+_CODE_TRANSCRIPT_MAX_ENTRIES = 256
+_CODE_TRANSCRIPT_MAX_BYTES = 128 * 65536
+
 
 class RuntimeCodeIntegrityUnavailable(RuntimeError):
     """Cannot establish a required current executable identity."""
@@ -32,7 +37,7 @@ class _ProtectedSlotMissing(RuntimeCodeIntegrityUnavailable):
     """Confirmed absence of a previously captured executable binding."""
 
 
-def _function_shape(fn: types.FunctionType) -> bytes:
+def _function_shape(fn: types.FunctionType, code_memo: dict | None = None) -> bytes:
     """Fingerprint code and selected executable delegates without invoking them.
 
     A limited closed type grammar avoids executing arbitrary __repr__, __hash__,
@@ -42,29 +47,82 @@ def _function_shape(fn: types.FunctionType) -> bytes:
     digest = hashlib.sha256()
     visited_functions: set[int] = set()
     nodes = 0
+    # Bounded memo of *immutable code trees only*. The original framed byte
+    # transcript is replayed, not a substitute digest. Function bindings,
+    # defaults, closure cells and arbitrary objects are measured live on every
+    # call. Cache hits require exact code-object identity and preserve limits.
+    capture = None
+    capturing = False
+    capture_pure = True
+    capture_depth = 0
 
     def update_atom(tag: bytes, value: bytes = b"") -> None:
-        digest.update(len(tag).to_bytes(2, "big"))
-        digest.update(tag)
-        digest.update(len(value).to_bytes(8, "big"))
-        digest.update(value)
+        nonlocal capture
+        atom = len(tag).to_bytes(2, "big") + tag + len(value).to_bytes(8, "big") + value
+        if capture is not None:
+            if len(capture) + len(atom) <= 65536:
+                capture.extend(atom)
+                return
+            digest.update(capture)
+            capture = None
+        digest.update(atom)
+
+    def walk_code(obj: types.CodeType, depth: int) -> None:
+        update_atom(b"code-bytecode", obj.co_code)
+        update_atom(b"code-exceptions", obj.co_exceptiontable)
+        for attribute in (
+            "co_argcount", "co_posonlyargcount", "co_kwonlyargcount",
+            "co_nlocals", "co_stacksize", "co_flags",
+            "co_names", "co_varnames", "co_cellvars", "co_freevars",
+            "co_consts",
+        ):
+            update_atom(b"code-attribute", attribute.encode("ascii"))
+            walk(getattr(obj, attribute), depth + 1)
 
     def walk(obj: Any, depth: int, *, keyword_defaults: bool = False) -> None:
-        nonlocal nodes
+        nonlocal nodes, capture, capturing, capture_pure, capture_depth
         nodes += 1
         if nodes > 4096 or depth > 20:
             raise RuntimeCodeIntegrityUnavailable("executable shape exceeds measurement limits")
+        if capturing:
+            capture_depth = max(capture_depth, depth)
+            if type(obj) not in (types.CodeType, type(None), bool, int, str,
+                                 bytes, float, complex, tuple, frozenset, type(Ellipsis)):
+                capture_pure = False
         if isinstance(obj, types.CodeType):
-            update_atom(b"code-bytecode", obj.co_code)
-            update_atom(b"code-exceptions", obj.co_exceptiontable)
-            for attribute in (
-                "co_argcount", "co_posonlyargcount", "co_kwonlyargcount",
-                "co_nlocals", "co_stacksize", "co_flags",
-                "co_names", "co_varnames", "co_cellvars", "co_freevars",
-                "co_consts",
-            ):
-                update_atom(b"code-attribute", attribute.encode("ascii"))
-                walk(getattr(obj, attribute), depth + 1)
+            if code_memo is None or capturing:
+                walk_code(obj, depth)
+                return
+            saved = code_memo.get(id(obj))
+            if saved is not None and saved[0] is obj:
+                _, transcript, node_count, relative_depth = saved
+                nodes += node_count - 1
+                if nodes > 4096 or depth + relative_depth > 20:
+                    raise RuntimeCodeIntegrityUnavailable("executable shape exceeds measurement limits")
+                digest.update(transcript)
+                return
+            if len(code_memo) >= _CODE_TRANSCRIPT_MAX_ENTRIES:
+                walk_code(obj, depth)
+                return
+            start_nodes = nodes
+            capture = bytearray()
+            capturing = True
+            capture_pure = True
+            capture_depth = depth
+            try:
+                walk_code(obj, depth)
+                transcript = capture
+                if transcript is not None:
+                    digest.update(transcript)
+                    if (capture_pure and len(transcript) + sum(
+                            len(entry[1]) for entry in code_memo.values()
+                        ) <= _CODE_TRANSCRIPT_MAX_BYTES):
+                        code_memo[id(obj)] = (obj, bytes(transcript),
+                                              nodes - start_nodes + 1,
+                                              capture_depth - depth)
+            finally:
+                capture = None
+                capturing = False
         elif isinstance(obj, types.MethodType):
             update_atom(b"method-owner", str(id(obj.__self__)).encode("ascii"))
             walk(obj.__func__, depth + 1)
@@ -116,6 +174,8 @@ def _function_shape(fn: types.FunctionType) -> bytes:
             parts: list[bytes] = []
             for item in obj:
                 if type(item) not in (str, bytes, int, bool, float, type(None)):
+                    if capturing:
+                        capture_pure = False
                     update_atom(b"opaque-frozenset", str(id(obj)).encode("ascii"))
                     break
                 parts.append(repr((type(item).__name__, item)).encode("utf-8", "surrogatepass"))
@@ -150,7 +210,7 @@ def _function_shape(fn: types.FunctionType) -> bytes:
     return digest.digest()
 
 
-def _resolve(owner: Any, name: str) -> tuple[Any, Any, bytes]:
+def _resolve(owner: Any, name: str, code_memo: dict | None = None) -> tuple[Any, Any, bytes]:
     """Read the effective ordinary attribute; avoid invoking target itself."""
     try:
         value = getattr(owner, name)
@@ -167,7 +227,7 @@ def _resolve(owner: Any, name: str) -> tuple[Any, Any, bytes]:
     else:
         raise _ProtectedSlotMissing("protected executable is no longer a Python function/method")
     try:
-        shape = _function_shape(fn)
+        shape = _function_shape(fn, code_memo)
     except RuntimeCodeIntegrityUnavailable:
         raise
     except Exception as exc:
@@ -227,6 +287,24 @@ class _RouteTableIdentity:
     scope: str = "shared"
 
 
+@dataclass(frozen=True)
+class _ExceptionHandlersIdentity:
+    label: str
+    app: Any
+    mapping: Any
+    handlers: tuple
+    scope: str = "shared"
+
+
+def _exception_handler_snapshot(app: Any, code_memo: dict | None = None) -> tuple:
+    try:
+        return tuple((key, value, _function_shape(value, code_memo))
+                     for key, value in app.exception_handlers.items()
+                     if isinstance(value, types.FunctionType))
+    except Exception as exc:
+        raise RuntimeCodeIntegrityUnavailable("exception handler identity unavailable") from exc
+
+
 def _route_snapshot(app: Any) -> tuple[_RouteIdentity, ...]:
     """Record the actual registered router table, not lazy middleware state."""
     try:
@@ -258,7 +336,9 @@ class RuntimeCodeAuthority:
         self._sources: list[_SourceIdentity] = []
         self._holders: list[_HolderIdentity] = []
         self._route_tables: list[_RouteTableIdentity] = []
+        self._exception_handlers: list[_ExceptionHandlersIdentity] = []
         self._state = "INITIALIZING"
+        self._sealed_code_transcripts = types.MappingProxyType({})
         # Pin the method that performs actual measurement. Checking it before
         # dispatch prevents straightforward descriptor rebinding from making
         # every subsequent verify() report a fabricated success. This is not
@@ -355,6 +435,19 @@ class RuntimeCodeAuthority:
                 raise ValueError("duplicate route table label")
             self._route_tables.append(_RouteTableIdentity(name, app, _route_snapshot(app), scope))
 
+    def register_exception_handlers(self, *, name: str, app: Any, scope: str = "shared") -> None:
+        with self._lock:
+            if self._state != "INITIALIZING":
+                raise RuntimeError("protected exception handler manifest is sealed")
+            if any(item.label == name for item in self._exception_handlers):
+                raise ValueError("duplicate protected exception handler label")
+            snapshot = _exception_handler_snapshot(app)
+            if len(snapshot) != len(app.exception_handlers):
+                raise RuntimeCodeIntegrityUnavailable("required exception handler not measurable")
+            self._exception_handlers.append(_ExceptionHandlersIdentity(
+                name, app, app.exception_handlers, snapshot, scope,
+            ))
+
     def seal(self) -> None:
         with self._lock:
             if self._state != "INITIALIZING" or not self._slots:
@@ -369,6 +462,11 @@ class RuntimeCodeAuthority:
         mismatch_scopes: set[str] = set()
         unavailable_scopes: set[str] = set()
         measurement_error: RuntimeCodeIntegrityUnavailable | None = None
+        # Only immutable, exact-identity code transcripts from the verified
+        # startup baseline may persist. Each check owns a fresh bounded memo;
+        # unfamiliar code is measured in full, never enrolled into the baseline.
+        # All mutable executable dependencies and source bytes remain live.
+        code_memo: dict = dict(self._sealed_code_transcripts)
 
         def selected(scope: str) -> bool:
             return scopes is None or scope == "shared" or scope in scopes
@@ -382,7 +480,7 @@ class RuntimeCodeAuthority:
             if not selected(slot.scope):
                 continue
             try:
-                receiver, fn, shape = _resolve(slot.owner, slot.attribute)
+                receiver, fn, shape = _resolve(slot.owner, slot.attribute, code_memo)
             except _ProtectedSlotMissing:
                 mismatches.append(slot.name)
                 mismatch_scopes.add(slot.scope)
@@ -456,6 +554,22 @@ class RuntimeCodeAuthority:
             ):
                 mismatches.append(table.label)
                 mismatch_scopes.add(table.scope)
+        for item in self._exception_handlers:
+            if not selected(item.scope):
+                continue
+            try:
+                current = _exception_handler_snapshot(item.app, code_memo)
+                changed = (item.app.exception_handlers is not item.mapping
+                           or len(current) != len(item.app.exception_handlers)
+                           or len(current) != len(item.handlers)
+                           or any(a[0] != b[0] or a[1] is not b[1] or a[2] != b[2]
+                                  for a, b in zip(current, item.handlers)))
+            except RuntimeCodeIntegrityUnavailable as exc:
+                record_unavailable(item.scope, exc)
+                continue
+            if changed:
+                mismatches.append(item.label)
+                mismatch_scopes.add(item.scope)
         if mismatches:
             self._last_mismatches = tuple(mismatches)
             if scopes is None:
@@ -471,6 +585,12 @@ class RuntimeCodeAuthority:
             raise RuntimeCodeIntegrityUnavailable(
                 "protected executable measurement unavailable"
             ) from measurement_error
+        if self._state == "INITIALIZING" and scopes is None:
+            # Publish only after the entire original baseline is verified.
+            # Strong code references prevent identity recycling; immutable
+            # transcript records have a 256-entry cap and the original
+            # aggregate 8 MiB transcript-byte budget.
+            self._sealed_code_transcripts = types.MappingProxyType(code_memo)
         if scopes is not None:
             # Only previously uncertain measurements may recover. Confirmed
             # mismatches remain terminal; no in-place rebaseline is allowed.
@@ -509,9 +629,10 @@ class RuntimeCodeAuthority:
                 raise RuntimeCodeIntegrityCompromised(
                     "runtime executable verifier binding changed"
                 )
-            if self._state == "INVALIDATED":
+            if self._state == "INVALIDATED" or self._invalidated_scopes:
                 raise RuntimeCodeIntegrityCompromised("runtime executable authority invalidated")
             if self._state == "INITIALIZING":
                 raise RuntimeCodeIntegrityUnavailable("runtime executable authority not sealed")
             self._check_method(self)
+            self._unavailable_scopes.clear()
             self._state = "ACTIVE"

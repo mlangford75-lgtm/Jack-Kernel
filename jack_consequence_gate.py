@@ -148,7 +148,7 @@ def _enum_values(outcome_type: Any) -> Tuple[str, ...]:
 def _require_compatible_outcome_type(outcome_type: Any) -> None:
     if _enum_values(outcome_type) != _EXPECTED_OUTCOME_VALUES:
         raise RuntimeError(
-            "Jack Kernel SecurityOutcome vocabulary does not match Phase-5 contract"
+            "Jack Kernel SecurityOutcome vocabulary does not match Consequence Gate contract"
         )
 
 
@@ -186,9 +186,9 @@ def _decision_for_fact(fact: AuthorityFact, *, boundary: ConsequenceBoundary, ou
     if isinstance(fact, path_policy.RepresentedPathAuthorityFacts):
         if fact.deferred_to_executor:
             return _single(fact, allow, ContainmentScope.NONE, False)
-        if fact.never_match:
+        if fact.never_match and fact.default_windows_read is None:
             return _single(fact, hard, _path_scope(boundary, hard=True), True)
-        denied = fact.invalid or (
+        denied = fact.default_windows_read is False or fact.invalid or (
             fact.workspace_configured
             and (not fact.deterministic or fact.inside_workspace is False)
         )
@@ -228,7 +228,7 @@ def _decision_for_fact(fact: AuthorityFact, *, boundary: ConsequenceBoundary, ou
         if ok:
             return _single(fact, allow, ContainmentScope.NONE, False)
         raise UnmappedAuthorityFact(
-            "task/run/run_epoch mismatch has authoritative facts but no single Phase-5 severity may be invented until the exact existing boundary semantics are mapped"
+            "task/run/run_epoch mismatch has authoritative facts but no single Consequence Gate severity may be invented until the exact existing boundary semantics are mapped"
         )
 
     raise TypeError(f"Unsupported authority fact type: {type(fact).__name__}")
@@ -298,7 +298,7 @@ def _legacy_path_decision(decision: ConsequenceDecision, raw: path_policy.Repres
     try:
         legacy = path_policy.PathAuthorizationOutcome(decision.outcome.value)
     except ValueError as exc:
-        raise AssertionError("Phase-5 path decision cannot be represented by Phase-4 release machinery") from exc
+        raise AssertionError("Consequence Gate path decision cannot be represented by Restricted Paths / Workspace Lock release machinery") from exc
     reason = raw.reason
     if isinstance(
         decision.decisive_fact,
@@ -324,12 +324,14 @@ def _install_represented_path_gate(
         *,
         executor_cwd: Optional[str] = None,
         defer_relative_without_executor: bool = False,
+        verified_default_windows_read: bool = False,
     ) -> Any:
-        raw = path_policy.inspect_represented_path(
+        raw = path_policy.inspect_operation_path(
             policy,
             represented_path,
             executor_cwd=executor_cwd,
             defer_relative_without_executor=defer_relative_without_executor,
+            verified_default_windows_read=verified_default_windows_read,
         )
 
         # Preserve the meaning of the frozen Phase-6 path record: it continues to
@@ -348,9 +350,9 @@ def _install_represented_path_gate(
             boundary=_CURRENT_CONSEQUENCE_BOUNDARY.get(),
         )
 
-        resource_fact = credential_resource_guard.fact_for_canonical_target(
-            policy,
-            raw.canonical_target,
+        resource_fact = (
+            credential_resource_guard.fact_for_canonical_target(policy, raw.canonical_target)
+            if raw.deterministic else None
         )
         if resource_fact is None or not resource_fact.protected:
             return _legacy_path_decision(path_decision, raw)
@@ -471,9 +473,9 @@ def install(jk: Any) -> None:
                     if decision.containment_scope is not ContainmentScope.EXECUTOR_ADMISSION:
                         raise AssertionError("Executor identity denial escaped admission scope")
                     if not runtime_matches:
-                        raise jk.HTTPException(status_code=409, detail="Phase-4 executor admission runtime identity mismatch")
+                        raise jk.HTTPException(status_code=409, detail="Restricted Paths / Workspace Lock executor admission runtime identity mismatch")
                     if not lane_matches:
-                        raise jk.HTTPException(status_code=409, detail="Phase-4 executor admission lane identity mismatch")
+                        raise jk.HTTPException(status_code=409, detail="Restricted Paths / Workspace Lock executor admission lane identity mismatch")
 
             token = _CURRENT_CONSEQUENCE_BOUNDARY.set(ConsequenceBoundary.EXECUTOR_ADMISSION)
             try:

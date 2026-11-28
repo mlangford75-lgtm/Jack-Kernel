@@ -228,6 +228,8 @@ expected = {
     "jack_kernel.py",
     "jack_evidence_guard.py",
     "jack_path_policy.py",
+    "jack_posix_paths.py",
+    "jack_executor_contract.py",
     "jack_consequence_gate.py",
     "jack_authority_ledger.py",
     "jack_responses_compat.py",
@@ -267,3 +269,42 @@ kernel._JACK_AUTHORITY_LEDGER.close()
         check=False,
     )
     assert result.returncode == 0, result.stdout + "\n" + result.stderr
+
+
+def test_source_authority_interruption_closes_without_draining(tmp_path):
+    import asyncio
+
+    authority, _, target = _authority_for(tmp_path)
+    trace = []
+    failures = []
+
+    async def run(*args, **kwargs):
+        return None
+
+    async def stream(*args, **kwargs):
+        try:
+            yield b"safe-prefix"
+            target.write_bytes(b"changed-source")
+            assert authority.verify_now().state is source_guard.SourceAuthorityState.INVALIDATED
+            yield b"blocked"
+            trace.append("unwanted-commit")
+            yield b"unwanted"
+        finally:
+            trace.append("closed")
+
+    kernel = SimpleNamespace(run=run, stream=stream,
+                             _note_outer_stream_failure=failures.append)
+    source_guard._install_kernel_release_enforcement(
+        SimpleNamespace(KERNEL=kernel), authority,
+    )
+
+    async def exercise():
+        released = []
+        with pytest.raises(source_guard.SourceAuthorityUnavailable) as caught:
+            async for chunk in kernel.stream({}):
+                released.append(chunk)
+        assert released == [b"safe-prefix"]
+        assert failures == [caught.value]
+        assert trace == ["closed"]
+
+    asyncio.run(exercise())

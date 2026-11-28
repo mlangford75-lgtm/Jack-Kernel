@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 from dataclasses import dataclass, field
@@ -36,6 +37,7 @@ class CredentialClass(str, Enum):
     JACK_API = "JACK_API"
     BACKEND_BEARER = "BACKEND_BEARER"
     BACKEND_NAMED_HEADER = "BACKEND_NAMED_HEADER"
+    BACKEND_EXTRA_HEADER = "BACKEND_EXTRA_HEADER"
     BACKEND_BASIC_PASSWORD = "BACKEND_BASIC_PASSWORD"
     BACKEND_BASIC_WIRE = "BACKEND_BASIC_WIRE"
     BACKEND_AUTHORIZATION = "BACKEND_AUTHORIZATION"
@@ -116,7 +118,7 @@ class ProtectedCredentialInterrupt(RuntimeError):
         if not isinstance(match, CredentialMatch):
             raise TypeError("match must be a CredentialMatch")
         self.match = match
-        super().__init__("Phase-7 protected credential hard interrupt")
+        super().__init__("Credential Isolation and DLP protected credential hard interrupt")
 
 
 @dataclass(frozen=True, repr=False)
@@ -241,7 +243,7 @@ def _validated_secret(value: Any, *, source_kind: str) -> Optional[str]:
     if value in (None, ""):
         return None
     if not isinstance(value, str):
-        raise RuntimeError(f"Phase-7 credential source {source_kind} is not textual")
+        raise RuntimeError(f"Credential Isolation and DLP credential source {source_kind} is not textual")
     return value
 
 
@@ -268,10 +270,53 @@ def _credential_resource_paths() -> Tuple[str, ...]:
     return (str(jack_config), str(current_jack_config), str(pi_config))
 
 
+# Closed, high-confidence authentication header names. Other headers require an
+# explicit host designation; never infer secrecy from length or entropy.
+_EXTRA_AUTH_HEADER_NAMES = frozenset({
+    "authorization", "proxy-authorization", "api-key", "x-api-key",
+    "ocp-apim-subscription-key", "cf-access-client-secret", "cookie",
+})
+
+
+def _extra_header_sources(cfg: Any) -> Tuple[tuple, ...]:
+    extra = getattr(cfg, "backend_extra_headers", {})
+    declared = getattr(cfg, "backend_secret_header_names", ())
+    if not isinstance(extra, dict) or not isinstance(declared, (list, tuple)):
+        raise RuntimeError("Credential Isolation and DLP backend extra-header configuration is invalid")
+    if any(not isinstance(name, str) or not name.strip() for name in declared):
+        raise RuntimeError("Credential Isolation and DLP backend secret-header designation is invalid")
+    explicit = {name.strip().lower() for name in declared}
+    selected = explicit | _EXTRA_AUTH_HEADER_NAMES
+    present = set()
+    sources = []
+    for name, value in extra.items():
+        normalized = str(name).strip().lower()
+        if normalized not in selected:
+            continue
+        if normalized in present:
+            raise RuntimeError("Credential Isolation and DLP duplicate protected backend header name")
+        present.add(normalized)
+        # Stable, non-value-derived identity. Do not expose arbitrary names in
+        # ledger metadata or diagnostics, and never merge distinct values by class.
+        suffix = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        source_kind = "CFG.backend_extra_headers:" + suffix
+        secret = _validated_secret(value, source_kind=source_kind)
+        if secret is not None:
+            sources.append((
+                CredentialClass.BACKEND_EXTRA_HEADER,
+                source_kind,
+                secret,
+                frozenset({DEST_BACKEND_NAMED_AUTH_HEADER}),
+            ))
+    if not explicit.issubset(present):
+        raise RuntimeError("Credential Isolation and DLP designated backend secret header is missing")
+    return tuple(sources)
+
+
 def _logical_sources(jk: Any) -> Tuple[tuple, ...]:
     cfg = getattr(jk, "CFG", None)
     if cfg is None:
-        raise RuntimeError("Phase-7 credential policy requires Jack CFG")
+        raise RuntimeError("Credential Isolation and DLP credential policy requires Jack CFG")
 
     jack_api = _validated_secret(
         getattr(cfg, "api_key", ""),
@@ -310,7 +355,7 @@ def _logical_sources(jk: Any) -> Tuple[tuple, ...]:
         try:
             bridge = loader()
         except Exception:
-            raise RuntimeError("Phase-7 Pi control credential resolution failed") from None
+            raise RuntimeError("Credential Isolation and DLP Pi control credential resolution failed") from None
         if isinstance(bridge, dict):
             pi_control = _validated_secret(
                 bridge.get("token", ""),
@@ -360,7 +405,7 @@ def _logical_sources(jk: Any) -> Tuple[tuple, ...]:
             pi_control,
             frozenset({DEST_PI_CONTROL_AUTH_HEADER}),
         ),
-    )
+    ) + _extra_header_sources(cfg)
 
 
 def build_runtime_credential_policy(jk: Any) -> RuntimeCredentialPolicy:
@@ -369,16 +414,19 @@ def build_runtime_credential_policy(jk: Any) -> RuntimeCredentialPolicy:
     runtime_id = str(getattr(jk, "RUNTIME_ID", "") or "").strip()
     lane_id = str(getattr(jk, "LANE_ID", "") or "").strip()
     if not runtime_id:
-        raise RuntimeError("Phase-7 runtime identity is unavailable")
+        raise RuntimeError("Credential Isolation and DLP runtime identity is unavailable")
     if not lane_id:
-        raise RuntimeError("Phase-7 lane identity is unavailable")
+        raise RuntimeError("Credential Isolation and DLP lane identity is unavailable")
 
     by_value = {}
     order = []
     for credential_class, source_kind, value, destinations in _logical_sources(jk):
         if value is None:
             continue
-        credential_id = _CREDENTIAL_IDS[credential_class]
+        if credential_class is CredentialClass.BACKEND_EXTRA_HEADER:
+            credential_id = "credential:backend-extra:" + source_kind.rsplit(":", 1)[1]
+        else:
+            credential_id = _CREDENTIAL_IDS[credential_class]
         if value not in by_value:
             by_value[value] = {
                 "credential_id": credential_id,
@@ -445,9 +493,9 @@ def merge_runtime_canary_policy(canary_policy: Any, credential_policy: RuntimeCr
     if not isinstance(canary_policy, RuntimeCanaryPolicy):
         raise TypeError("canary_policy must be a RuntimeCanaryPolicy")
     if canary_policy.runtime_id != credential_policy.runtime_id:
-        raise RuntimeError("Phase-7 credential/Canary runtime ownership mismatch")
+        raise RuntimeError("Credential Isolation and DLP credential/Canary runtime ownership mismatch")
     if canary_policy.lane_id != credential_policy.lane_id:
-        raise RuntimeError("Phase-7 credential/Canary lane ownership mismatch")
+        raise RuntimeError("Credential Isolation and DLP credential/Canary lane ownership mismatch")
     sensitivity = canary_policy.sensitivity_percent
     existing = tuple(getattr(canary_policy.canaries, "_patterns", ()))
     existing_ids = {item.canary_id for item in existing}
@@ -456,7 +504,7 @@ def merge_runtime_canary_policy(canary_policy: Any, credential_policy: RuntimeCr
 
     for credential in credential_policy.credentials:
         if credential.credential_id in existing_ids or credential.value in existing_values:
-            raise RuntimeError("Phase-7 credential/Canary policy collision")
+            raise RuntimeError("Credential Isolation and DLP credential/Canary policy collision")
         additions.append(
             CanaryPattern(
                 canary_id=credential.credential_id,
@@ -470,7 +518,7 @@ def merge_runtime_canary_policy(canary_policy: Any, credential_policy: RuntimeCr
     credential_window = max((item.match_chars - 1 for item in additions), default=0)
     if credential_window > max(CREDENTIAL_CANARY_MAX_WINDOW, canary_policy.canaries.max_window):
         raise RuntimeError(
-            "Phase-7 credential Canary merge exceeds the bounded output-DLP ceiling"
+            "Credential Isolation and DLP credential Canary merge exceeds the bounded output-DLP ceiling"
         )
     combined = existing + tuple(additions)
     max_window = max(
@@ -590,33 +638,112 @@ def _credential_prefix_carry(policy: RuntimeCredentialPolicy, text: str) -> str:
     return best
 
 
-def _orchestration_stream_match(
-    policy: RuntimeCredentialPolicy,
-    state: dict[tuple[str, str, str, str], str],
-    source_event: Any,
-) -> Optional[CredentialMatch]:
-    if not isinstance(source_event, dict):
-        return None
+# Limit the number of simultaneously quarantined channels, not credential length.
+# Never evict a live prefix and then pretend its continuation was inspected.
+_ORCHESTRATION_CARRY_LIMIT = 256
 
+
+def _with_orchestration_delta(source_event: dict, channel: str, text: str) -> dict:
+    event = dict(source_event)
+    data = dict(event["data"])
+    event["data"] = data
+    if channel == "data.delta":
+        data["delta"] = text
+    else:
+        assistant_event = dict(data["assistantMessageEvent"])
+        assistant_event["delta"] = text
+        data["assistantMessageEvent"] = assistant_event
+    return event
+
+
+def _orchestration_delta_template(policy, source_event, channel):
+    """Retain only the routing metadata needed for a verified completion flush."""
+    event = {"type": source_event.get("type", "message"),
+             **_safe_orchestration_identity(policy, source_event)}
+    data = {}
+    event["data"] = data
+    original = source_event["data"]
+    if isinstance(original.get("type"), str):
+        data["type"] = original["type"]
+    message = original.get("message")
+    if isinstance(message, dict) and message.get("role") in ("assistant", "tool"):
+        data["message"] = {"role": message["role"]}
+    if channel == "data.delta":
+        data["delta"] = ""
+    else:
+        source = original["assistantMessageEvent"]
+        delta = {"delta": ""}
+        if isinstance(source.get("type"), str):
+            delta["type"] = source["type"]
+        if isinstance(source.get("contentIndex"), int):
+            delta["contentIndex"] = source["contentIndex"]
+        data["assistantMessageEvent"] = delta
+    return event
+
+
+def _quarantine_orchestration_snapshots(policy, source_event):
+    """Pi message updates can mirror the delta in cumulative text snapshots.
+
+    Do not publish a pending suffix via those mirrors while its delta is held.
+    The terminal message snapshot is checked separately and remains authoritative.
+    """
+    if not isinstance(source_event, dict) or not isinstance(source_event.get("data"), dict):
+        return source_event
+    def trim(node, textual=False):
+        if isinstance(node, str):
+            if not textual:
+                return node
+            carry = _credential_prefix_carry(policy, node)
+            return node[:-len(carry)] if carry else node
+        if isinstance(node, list):
+            return [trim(item, textual) for item in node]
+        if isinstance(node, dict):
+            return {
+                key: (value if key == "delta" and not textual else trim(value, textual or key in {
+                    "content", "text", "thinking", "reasoning", "reasoning_content",
+                    "partialJson", "arguments",
+                }))
+                for key, value in node.items()
+            }
+        return node
+    result = dict(source_event)
+    result["data"] = trim(source_event["data"])
+    return result
+
+
+def _orchestration_stream_project(policy, state, source_event):
+    """Return only verified deltas; a None projection means deny publication."""
+    if not isinstance(source_event, dict):
+        return source_event, False
+    projected = source_event
+    pending = dict(state)
     for channel, fragment in _orchestration_delta_fragments(source_event):
         key = _orchestration_stream_key(source_event, channel)
-        combined = state.get(key, "") + fragment
-        match = policy.find(
-            combined,
-            boundary=BOUNDARY_ORCHESTRATION_EVENT_RELEASE,
-            direction=DIRECTION_CALLER_BOUND,
-        )
-        if match is not None:
-            state.pop(key, None)
-            return match
-
+        previous = pending.get(key)
+        combined = (previous[0] if previous else "") + fragment
+        if _release_match(policy, combined, boundary=BOUNDARY_ORCHESTRATION_EVENT_RELEASE):
+            return None, True
         carry = _credential_prefix_carry(policy, combined)
         if carry:
-            state[key] = carry
+            if key not in pending and len(pending) >= _ORCHESTRATION_CARRY_LIMIT:
+                return None, True
+            pending[key] = (carry, _orchestration_delta_template(policy, source_event, channel))
         else:
-            state.pop(key, None)
+            pending.pop(key, None)
+        verified = combined[:-len(carry)] if carry else combined
+        projected = _with_orchestration_delta(projected, channel, verified)
+    state.clear()
+    state.update(pending)
+    return projected, False
 
-    return None
+
+def _orchestration_normal_message_end(source_event):
+    if not isinstance(source_event, dict):
+        return False
+    data = source_event.get("data")
+    message = data.get("message") if isinstance(data, dict) else None
+    return (isinstance(message, dict)
+            and message.get("stopReason") in {"stop", "length", "toolUse"})
 
 
 def _clear_orchestration_stream_state(
@@ -679,7 +806,7 @@ def _install_orchestration_release_guard(
     if not callable(original_proxy) or not callable(original_publish):
         return
     if not callable(json_response):
-        raise RuntimeError("Phase-7 orchestration release guard requires JSONResponse")
+        raise RuntimeError("Credential Isolation and DLP orchestration release guard requires JSONResponse")
 
     async def guarded_proxy(*args: Any, **kwargs: Any):
         response = await original_proxy(*args, **kwargs)
@@ -711,22 +838,35 @@ def _install_orchestration_release_guard(
                 stream_state,
             )
 
-        match = _orchestration_stream_match(
-            policy,
-            stream_state,
-            source_event,
+        # Check the raw event before editing any of its mirrors. A full match
+        # anywhere in the payload remains a hard release interrupt.
+        match = _release_match(
+            policy, source_event, boundary=BOUNDARY_ORCHESTRATION_EVENT_RELEASE,
         )
-        if match is None:
-            match = _release_match(
-                policy,
-                source_event,
-                boundary=BOUNDARY_ORCHESTRATION_EVENT_RELEASE,
-            )
-
-        if match is None:
-            await original_publish(self, event_type, source_event)
-            if event_type in {"message_end", "agent_end", "agent_settled"}:
+        projected, denied = (None, True) if match is not None else (
+            _orchestration_stream_project(policy, stream_state, source_event)
+        )
+        if not denied:
+            if event_type == "message_end":
+                # Only explicitly successful protocol completion can release a
+                # remaining benign prefix. EOF, cancellation and errors cannot.
+                if _orchestration_normal_message_end(source_event):
+                    identity = _orchestration_stream_key(source_event, "")[:3]
+                    for key, (carry, template) in tuple(stream_state.items()):
+                        if key[:3] != identity:
+                            continue
+                        final_delta = _with_orchestration_delta(template, key[3], carry)
+                        if _release_match(policy, final_delta,
+                                          boundary=BOUNDARY_ORCHESTRATION_EVENT_RELEASE) is None:
+                            await original_publish(self, final_delta["type"], final_delta)
+                else:
+                    projected = _quarantine_orchestration_snapshots(policy, projected)
                 _clear_orchestration_stream_state(stream_state, source_event)
+            elif event_type in {"agent_end", "agent_settled"}:
+                _clear_orchestration_stream_state(stream_state, source_event)
+            elif event_type in {"message", "tool_update"} or _orchestration_delta_fragments(source_event):
+                projected = _quarantine_orchestration_snapshots(policy, projected)
+            await original_publish(self, event_type, projected)
             return
 
         _clear_orchestration_stream_state(stream_state, source_event)
@@ -747,6 +887,19 @@ def _install_orchestration_release_guard(
     guarded_publish._jack_phase7_orchestration_credential_dlp = True
     guarded_publish._jack_phase7_original_publish = original_publish
 
+    # A broken Pi SSE connection is not a completion boundary. Dispose held
+    # fragments on disconnect and shutdown; never inject them into replay.
+    original_consume = getattr(hub_type, "_consume_stream", None)
+    if callable(original_consume):
+        async def guarded_consume(self, *args, **kwargs):
+            try:
+                return await original_consume(self, *args, **kwargs)
+            finally:
+                state = getattr(self, "_jack_phase7_orchestration_credential_carry", None)
+                if isinstance(state, dict):
+                    state.clear()
+        hub_type._consume_stream = guarded_consume
+
     jk._proxy_pi_control_request = guarded_proxy
     hub_type._publish = guarded_publish
     jk._JACK_ORCHESTRATION_CREDENTIAL_DLP_INSTALLED = True
@@ -762,7 +915,7 @@ def install(
     existing = getattr(jk, "_JACK_RUNTIME_CREDENTIAL_POLICY", None)
     if getattr(jk, "_JACK_CREDENTIAL_GUARD_INSTALLED", False):
         if not isinstance(existing, RuntimeCredentialPolicy):
-            raise RuntimeError("Phase-7 installed policy state is invalid")
+            raise RuntimeError("Credential Isolation and DLP installed policy state is invalid")
         return existing
 
     if credential_policy is None:
@@ -773,19 +926,19 @@ def install(
     runtime_id = str(getattr(jk, "RUNTIME_ID", "") or "").strip()
     lane_id = str(getattr(jk, "LANE_ID", "") or "").strip()
     if credential_policy.runtime_id != runtime_id:
-        raise RuntimeError("Phase-7 credential policy runtime ownership mismatch")
+        raise RuntimeError("Credential Isolation and DLP credential policy runtime ownership mismatch")
     if credential_policy.lane_id != lane_id:
-        raise RuntimeError("Phase-7 credential policy lane ownership mismatch")
+        raise RuntimeError("Credential Isolation and DLP credential policy lane ownership mismatch")
 
     backend = getattr(jk, "BACKEND", None)
     client = getattr(backend, "_client", None)
     if client is None:
-        raise RuntimeError("Phase-7 backend transport is unavailable")
+        raise RuntimeError("Credential Isolation and DLP backend transport is unavailable")
 
     original_post = getattr(client, "post", None)
     original_build_request = getattr(client, "build_request", None)
     if not callable(original_post) or not callable(original_build_request):
-        raise RuntimeError("Phase-7 backend transport does not expose required dispatch seams")
+        raise RuntimeError("Credential Isolation and DLP backend transport does not expose required dispatch seams")
 
     async def guarded_post(*args: Any, **kwargs: Any):
         _guard_post_call(credential_policy, args, kwargs)

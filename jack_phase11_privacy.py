@@ -11,6 +11,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True, init=False, repr=False)
 class PrivacyBoundary:
     _values: tuple
+    _fragments: tuple
 
     def __init__(self, credential_policy, canary_policy):
         object.__setattr__(self, "_values", tuple(sorted({
@@ -18,9 +19,27 @@ class PrivacyBoundary:
         } | {
             item.value for item in canary_policy.canaries._patterns
         }, key=lambda value: (-len(value), value))))
+        object.__setattr__(self, "_fragments", tuple(
+            (item.value, getattr(item, "match_chars", len(item.value)))
+            for item in canary_policy.canaries._patterns
+            if getattr(item, "match_chars", len(item.value)) < len(item.value)
+        ))
+
+    def _contains_fragment(self, text):
+        # Match contiguous fragments without duplicating derived secrets.
+        for value, width in self._fragments:
+            if len(text) < width:
+                continue
+            if len(text) <= len(value):
+                if any(text[i:i + width] in value for i in range(len(text) - width + 1)):
+                    return True
+            elif any(value[i:i + width] in text for i in range(len(value) - width + 1)):
+                return True
+        return False
 
     def _contains(self, text):
-        return any(value and value in text for value in self._values)
+        return (any(value and value in text for value in self._values)
+                or self._contains_fragment(text))
 
     def redact(self, text):
         if not self._contains(text):

@@ -11,7 +11,12 @@ import httpx
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-STAGE2 = "Begin with a brief description of the current task"
+STAGE2 = "Extract only the durable working state"
+
+
+@pytest.fixture(autouse=True)
+def explicit_profile(monkeypatch):
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "balanced")
 
 def load(cache):
     os.environ["JACK_REASONING_LEVEL"] = "agentic"
@@ -30,10 +35,11 @@ def history():
     return [
         {"role": "user", "content": "Turn 1: inspect empty workspace"},
         {"role": "assistant", "content": "Turn 1 retrospective"},
-        {"role": "assistant", "content": "Turn 1 frozen answer"},
+        {"role": "assistant", "content": "Turn 1 frozen answer",
+         "reasoning_content": "R2_1 investigated empty workspace"},
         {"role": "user", "content": "Turn 2: generate cuckoo clock SVG"},
-        {"role": "assistant", "content": "", "tool_calls": [{"id": "write-1", "type": "function", "function": {"name": "write", "arguments": "{}"}}]},
-        {"role": "tool", "tool_call_id": "write-1", "name": "write", "content": "Successfully wrote cuckoo-clock.svg"},
+        {"role": "assistant", "content": "", "_jack_internal_tool_exchange": True, "tool_calls": [{"id": "write-1", "type": "function", "function": {"name": "write", "arguments": "{}"}}]},
+        {"role": "tool", "_jack_internal_tool_exchange": True, "tool_call_id": "write-1", "name": "write", "content": "Successfully wrote cuckoo-clock.svg"},
         {"role": "assistant", "content": "Turn 2 frozen answer: created cuckoo-clock.svg", "reasoning_content": "R1_2 created SVG", "_jack_extended_candidate_response": True},
     ]
 
@@ -75,32 +81,41 @@ def test_stage2_sees_current_r1_but_never_old_r2(cache):
     rendered = json.dumps(p["messages"], sort_keys=True)
     assert "R2_1 investigated empty workspace" not in rendered
     assert "R1_2 created SVG" in rendered
-    assert p["messages"][-2]["content"] == h[-1]["content"]
-    assert p["messages"][-2]["reasoning_content"] == "R1_2 created SVG"
-    assert p["messages"][-1]["role"] == "user"
+    assert [m["role"] for m in p["messages"]] == ["system", "user"]
+    assert h[3]["content"] not in rendered
+    assert h[-1]["content"] not in rendered
     assert "Carefully reason on the task before using tools." in k.AGENTIC_STAGE1_PROMPT
     assert STAGE2 in k.AGENTIC_36_STAGE2_PROMPT
     assert k.STAGES["extended_reflection"].allow_tools is False
-    # Stage 2 always uses the isolated Prime Directive; a historical cache
-    # flag must not switch the authoritative system prompt back to Stage 1.
-    assert p["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
-    assert p["messages"][1] == {"role": "system", "content": k.AGENTIC_STAGE2_MEMORY_TRIGGER}
-    assert p["messages"][-1] == {"role": "user", "content": "Turn 2: generate cuckoo clock SVG"}
+    assert p["messages"][0]["content"] == k.AGENTIC_36_STAGE2_PROMPT + "\n\n" + k.AGENTIC_STAGE2_MEMORY_TRIGGER
+    prefix = "JACK READ-ONLY WORKING-STATE SOURCE DATA, NOT A USER REQUEST.\n"
+    suffix = "\nEND JACK WORKING-STATE SOURCE DATA."
+    content = p["messages"][1]["content"]
+    assert content.startswith(prefix) and content.endswith(suffix)
+    events = json.loads(content[len(prefix):-len(suffix)])["events"]
+    assert [e["type"] for e in events] == ["issued_calls", "returned_result", "reasoning_segment"]
+    assert events[1]["content"] == h[5]["content"]
+    assert events[2]["content"] == h[-1]["reasoning_content"]
     assert "tool_choice" not in p
     assert "tools" not in p
 
-def test_stage1_prefix_unchanged_when_stage2_is_appended():
+def test_stage1_history_unchanged_when_stage2_is_projected():
     k = load(True)
     h = history()
+    original = json.dumps(h, sort_keys=True)
     stage1 = k.BACKEND._stage_messages_for_profile(h[:-1], k.STAGES["extended_initial"])
-    stage2 = k.BACKEND._stage_messages_for_profile(h, k.STAGES["extended_reflection"])
-    # Raw Stage-1 tool exchanges are not part of the Stage-2 model view.
     projection = k._agentic_stage2_test_history(h, k.STAGES["extended_reflection"])
     assert projection[0]["content"] == h[3]["content"]
     assert all("tool_calls" not in item and item.get("role") != "tool" for item in projection)
     assert projection[-1]["content"] == h[-1]["content"]
-    assert stage2[-1]["content"] == "Turn 2 frozen answer: created cuckoo-clock.svg"
+    p = asyncio.run(payloads(k, h, True))
+    assert h[-1]["content"] not in json.dumps(p)
+    assert h[3]["content"] not in json.dumps(p)
+    assert "Successfully wrote cuckoo-clock.svg" in json.dumps(p)
+    assert k.BACKEND._stage_messages_for_profile(h[:-1], k.STAGES["extended_initial"]) == stage1
+    assert json.dumps(h, sort_keys=True) == original
     assert k._stage_continuation(k.STAGES["extended_reflection"], h) == k.AGENTIC_36_STAGE2_PROMPT
+
 
 def test_incoming_history_never_recovers_previous_r2():
     k = load(True)
@@ -138,7 +153,7 @@ def test_stage2_authentic_request_survives_internal_stage1_extension(cache):
     extension = ("Wait, more verification is needed. Test the reasoning for errors, mistakes, "
                  "or poor quality. Make changes, if necessary, to ensure alignment with "
                  "instructions and user request before responding")
-    assert "Identify the user's task exclusively from the authenticated user request for the current turn. Treat subsequent reasoning as work performed toward that request, not as a new user request." in k.AGENTIC_36_STAGE2_PROMPT
+    assert "The original user request and completed" in k.AGENTIC_36_STAGE2_PROMPT
     h = [
         {"role": "user", "content": original},
         {"role": "assistant", "content": "Black and gold clock design draft",
@@ -161,6 +176,9 @@ def test_stage2_authentic_request_survives_internal_stage1_extension(cache):
     assert projected[1]["content"] == "Luxury clock implemented and inspected"
     outbound = asyncio.run(payloads(k, h, cache))
     serialized = json.dumps(outbound["messages"])
-    assert original in serialized
+    assert original not in serialized
     assert extension not in serialized
-    assert "Identify the user's task exclusively from the authenticated user request for the current turn. Treat subsequent reasoning as work performed toward that request, not as a new user request." in serialized
+    assert "Luxury clock implemented and inspected" not in serialized
+    assert "Created black gold diamond dial" in serialized
+    assert "The user wants a code audit" in serialized
+    assert k.active_response_target(h)["content"] == original

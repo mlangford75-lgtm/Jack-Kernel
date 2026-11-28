@@ -257,7 +257,7 @@ def test_orchestration_sse_split_credential_is_stopped_before_completion_event_r
         assert len(events) == 3
         first, blocked, later = events
         assert first["type"] == "message"
-        assert first["data"]["assistantMessageEvent"]["delta"] == "safe-prefix-" + secret[:split]
+        assert first["data"]["assistantMessageEvent"]["delta"] == "safe-prefix-"
         assert blocked["type"] == "orchestration_credential_release_blocked"
         assert blocked["task_id"] == task_id
         assert blocked["run_id"] == run_id
@@ -266,11 +266,12 @@ def test_orchestration_sse_split_credential_is_stopped_before_completion_event_r
         assert later["data"]["status"] == "running"
         assert later["data"]["runOpen"] is True
 
-        # The observer can receive the earlier partial prefix, but the event that
-        # would complete the exact protected value is replaced. The full
-        # credential is therefore absent from replay and later work continues.
+        # Neither the held prefix nor the completing suffix is released.
+        # The same projected events are used by live subscribers and replay.
         replay_text = b"".join(hub._encode_sse(event) for event in events).decode("utf-8")
         assert secret not in replay_text
+        assert secret[:split] not in replay_text
+        assert secret[split:] not in replay_text
         assert secret[split:] not in json.dumps(blocked)
 
     asyncio.run(run())
@@ -328,6 +329,71 @@ def test_orchestration_unregistered_secret_like_text_remains_usable(monkeypatch,
         event = list(hub._buffer)[0]
         assert event["type"] == "message"
         assert event["data"]["delta"] == benign
+
+    asyncio.run(run())
+    close_ledger(m)
+
+
+def test_orchestration_quarantine_live_replay_mirrors_and_benign_completion(monkeypatch, tmp_path):
+    m = load_module(monkeypatch, tmp_path)
+    install_phase7(m)
+    secret = m.CFG.api_key
+    prefix = secret[:len(secret) // 2]
+
+    async def run():
+        hub = m.OrchestrationEventHub(replay_limit=16)
+        identity = {"task_id": "task-safe", "run_id": "run-safe", "run_epoch": 1}
+        def update(delta, snapshot):
+            return {"type": "message", **identity, "data": {
+                "message": {"role": "assistant", "content": [{"type": "text", "text": snapshot}]},
+                "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0,
+                    "delta": delta, "partial": {"content": [{"type": "text", "text": snapshot}]}}
+            }}
+        queue, _ = await hub.subscribe(None)
+        await hub._publish("message", update("safe " + prefix, "safe " + prefix))
+        first = await queue.get()
+        assert prefix.encode() not in first
+        assert hub._buffer[-1]["data"]["assistantMessageEvent"]["delta"] == "safe "
+        assert hub._buffer[-1]["data"]["message"]["content"][0]["text"] == "safe "
+        # Disambiguation releases the held text, preserving delta ordering.
+        await hub._publish("message", update("!", "safe " + prefix + "!"))
+        assert hub._buffer[-1]["data"]["assistantMessageEvent"]["delta"] == prefix + "!"
+        await queue.get()
+        await hub._publish("message", update(prefix, "safe " + prefix + "!" + prefix))
+        assert prefix.encode() not in (await queue.get()).split(b'"delta":', 1)[1].split(b',', 1)[0]
+        await hub._publish("message_end", {"type": "message_end", **identity,
+            "data": {"message": {"role": "assistant", "stopReason": "stop",
+                                 "content": "safe " + prefix + "!" + prefix}}})
+        assert hub._buffer[-2]["data"]["assistantMessageEvent"]["delta"] == prefix
+        assert hub._buffer[-1]["type"] == "message_end"
+        assert not hub._jack_phase7_orchestration_credential_carry
+        await hub.unsubscribe(queue)
+
+    asyncio.run(run())
+    close_ledger(m)
+
+
+def test_orchestration_quarantine_incomplete_connection_discards_prefix(monkeypatch, tmp_path):
+    m = load_module(monkeypatch, tmp_path)
+    install_phase7(m)
+    prefix = m.CFG.api_key[:len(m.CFG.api_key) // 2]
+
+    class Upstream:
+        async def aiter_lines(self):
+            event = {"type": "message", "task_id": "task-safe", "run_id": "run-safe",
+                     "run_epoch": 1, "data": {"delta": prefix}}
+            yield "event: message"
+            yield "data: " + json.dumps(event)
+            yield ""
+
+    async def run():
+        hub = m.OrchestrationEventHub(replay_limit=8)
+        queue, _ = await hub.subscribe(None)
+        await hub._consume_stream(Upstream())
+        assert not hub._jack_phase7_orchestration_credential_carry
+        assert prefix.encode() not in await queue.get()
+        _, replay = await hub.subscribe(0)
+        assert prefix.encode() not in b"".join(replay)
 
     asyncio.run(run())
     close_ledger(m)

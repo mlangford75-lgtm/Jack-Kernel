@@ -53,8 +53,9 @@ class ReasoningLoopDetector:
     candidate is independently checked by exact word comparison before an
     interrupt is authorized. No semantic similarity or hash-only decisions.
 
-    Retains only enough recent words for 128 copies of the largest supported
-    cycle. The owner may retain state through no-progress same-stage corrections.
+    Retains enough recent words for the configured number of copies of the
+    largest supported cycle, plus bounded trim slack. The owner may retain
+    state through no-progress same-stage corrections.
     """
 
     def __init__(
@@ -93,15 +94,14 @@ class ReasoningLoopDetector:
             hashlib.blake2b(word.encode("utf-8"), digest_size=8).digest(), "big"
         )
         self._prefix.append((self._prefix[-1] * _BASE + value + 1) & _MASK)
-        keep = self.max_cycle_words * max(LOOP_THRESHOLDS) + 1024
+        keep = self.max_cycle_words * self.repetitions + 1024
         if len(self._words) > keep + 4096:
-            self._words = self._words[-keep:]
-            self._prefix = [0]
-            for value_word in self._words:
-                h = int.from_bytes(
-                    hashlib.blake2b(value_word.encode("utf-8"), digest_size=8).digest(), "big"
-                )
-                self._prefix.append((self._prefix[-1] * _BASE + h + 1) & _MASK)
+            # Preserve the 16-word scan cadence and absolute rolling hash
+            # origin. Range subtraction cancels the discarded prefix; neither
+            # rehashing retained words nor changing match authority is needed.
+            discard = ((len(self._words) - keep) // 16) * 16
+            self._words = self._words[discard:]
+            self._prefix = self._prefix[discard:]
 
     def _check_suffix(self) -> bool:
         count = len(self._words)

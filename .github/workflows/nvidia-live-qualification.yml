@@ -1,7 +1,7 @@
 name: NVIDIA live Jack qualification
 on:
   push:
-    branches: [experimental/adaptive-streamingirq-default]
+    branches: [experimental/adaptive-streamingirq-default, experimental/independent-audit-remediation]
     paths: ['.github/workflows/nvidia-live-qualification.yml', 'scripts/live_nvidia_qualification.py']
   workflow_dispatch:
 permissions:

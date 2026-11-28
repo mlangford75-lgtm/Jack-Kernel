@@ -279,13 +279,13 @@ class RuntimeSourceAuthority:
 
         cid = str(component_id or "").strip()
         if _COMPONENT_ID_RE.fullmatch(cid) is None:
-            raise ValueError("invalid Phase-8 source component_id")
+            raise ValueError("invalid Source Drift Protection source component_id")
         candidate = Path(path).expanduser()
 
         with self._lock:
             if self._state is not SourceAuthorityState.INITIALIZING:
                 raise SourceComponentSetSealed(
-                    "Phase-8 protected source set is sealed; restart is required"
+                    "Source Drift Protection protected source set is sealed; restart is required"
                 )
             prior = self._pending_components.get(cid)
             if prior is not None:
@@ -361,14 +361,14 @@ class RuntimeSourceAuthority:
         try:
             if self._state is SourceAuthorityState.INVALIDATED:
                 raise SourceAuthorityInvalidated(
-                    "Phase-8 source authority is terminally invalidated"
+                    "Source Drift Protection source authority is terminally invalidated"
                 )
             if self._state is not SourceAuthorityState.ACTIVE:
                 raise SourceAuthorityUnavailable(
-                    "Phase-8 source authority is not currently verified"
+                    "Source Drift Protection source authority is not currently verified"
                 )
             if self._baseline is None:
-                raise SourceAuthorityUnavailable("Phase-8 source baseline is unavailable")
+                raise SourceAuthorityUnavailable("Source Drift Protection source baseline is unavailable")
             yield self._baseline
         finally:
             self._lock.release()
@@ -459,7 +459,7 @@ class RuntimeSourceAuthority:
         except Exception as exc:
             self._suspend_unverified()
             raise SourceAuthorityUnavailable(
-                "Phase-8 source identity could not be verified at authority boundary"
+                "Source Drift Protection source identity could not be verified at authority boundary"
             ) from exc
         with self.admit():
             pass
@@ -474,7 +474,7 @@ class RuntimeSourceAuthority:
         interval = float(interval_seconds)
         if not (0.05 <= interval <= 60.0):
             raise ValueError(
-                "Phase-8 verification interval must be between 0.05 and 60 seconds"
+                "Source Drift Protection verification interval must be between 0.05 and 60 seconds"
             )
         with self._lock:
             if self._baseline is None:
@@ -513,6 +513,8 @@ class RuntimeSourceAuthority:
 _REQUIRED_AUTHORITY_MODULES: Tuple[Tuple[str, str], ...] = (
     ("jack_evidence_guard.py", "jack_evidence_guard"),
     ("jack_path_policy.py", "jack_path_policy"),
+    ("jack_posix_paths.py", "jack_posix_paths"),
+    ("jack_executor_contract.py", "jack_executor_contract"),
     ("jack_consequence_gate.py", "jack_consequence_gate"),
     ("jack_authority_ledger.py", "jack_authority_ledger"),
     ("jack_responses_compat.py", "jack_responses_compat"),
@@ -538,7 +540,7 @@ def _loaded_module_source(module_name: str) -> Path:
     path = getattr(module, "__file__", None) if module is not None else None
     if not path:
         raise SourceBaselineCreationError(
-            f"required authority module {module_name!r} was not loaded before Phase-8 sealing"
+            f"required authority module {module_name!r} was not loaded before Source Drift Protection sealing"
         )
     return Path(path)
 
@@ -576,13 +578,13 @@ def _canonical_requested_identity(
             )
         except (OSError, RuntimeError) as exc:
             raise SourceComponentSetSealed(
-                "Phase-8 protected source identity cannot be re-established; restart is required"
+                "Source Drift Protection protected source identity cannot be re-established; restart is required"
             ) from exc
 
         prior = identity.get(component_id)
         if prior is not None and prior != canonical_path:
             raise SourceComponentSetSealed(
-                "Phase-8 protected source set is sealed; restart is required"
+                "Source Drift Protection protected source set is sealed; restart is required"
             )
         identity[component_id] = canonical_path
     return identity
@@ -594,11 +596,11 @@ def _install_kernel_release_enforcement(
 ) -> None:
     kernel = getattr(jk, "KERNEL", None)
     if kernel is None:
-        raise RuntimeError("Phase-8C requires Jack KERNEL")
+        raise RuntimeError("Source Drift Protection requires Jack KERNEL")
     current_run = getattr(kernel, "run", None)
     current_stream = getattr(kernel, "stream", None)
     if not callable(current_run) or not callable(current_stream):
-        raise RuntimeError("Phase-8C requires Kernel run/stream release seams")
+        raise RuntimeError("Source Drift Protection requires Kernel run/stream release seams")
 
     if not getattr(current_run, "_jack_phase8_source_authority", False):
         original_run = current_run
@@ -620,26 +622,24 @@ def _install_kernel_release_enforcement(
         @wraps(original_stream)
         async def source_governed_stream(*args: Any, **kwargs: Any):
             authority.verify_for_authority_boundary()
-            blocked: Optional[SourceAuthorityUnavailable] = None
+            source_stream = original_stream(*args, **kwargs)
             try:
-                async for chunk in original_stream(*args, **kwargs):
-                    if blocked is not None:
-                        # Preserve safe cognition by draining the predecessor stream,
-                        # but never reopen release within this interrupted transaction.
-                        continue
+                async for chunk in source_stream:
                     try:
                         with authority.admit():
                             pass
                     except SourceAuthorityUnavailable as exc:
-                        blocked = exc
-                        continue
+                        # Notify the suspended transaction owner before closing.
+                        # Never advance an interrupted stream toward a commit.
+                        note = getattr(kernel, "_note_outer_stream_failure", None)
+                        if callable(note):
+                            note(exc)
+                        raise
                     yield chunk
-            except Exception:
-                if blocked is not None:
-                    raise blocked
-                raise
-            if blocked is not None:
-                raise blocked
+            finally:
+                close = getattr(source_stream, "aclose", None)
+                if callable(close):
+                    await close()
 
         source_governed_stream._jack_phase8_source_authority = True
         source_governed_stream._jack_phase8_original = original_stream
@@ -671,7 +671,7 @@ def _install_executor_admission_enforcement(
 ) -> None:
     current = getattr(jk, "_phase4_executor_admission_decision", None)
     if not callable(current):
-        raise RuntimeError("Phase-8C requires Phase-4 executor admission seam")
+        raise RuntimeError("Source Drift Protection requires Restricted Paths / Workspace Lock executor admission seam")
     if getattr(current, "_jack_phase8_source_authority", False):
         return
     original = current
@@ -793,9 +793,9 @@ def activate_runtime_enforcement(
     if not isinstance(authority, RuntimeSourceAuthority):
         raise TypeError("authority must be RuntimeSourceAuthority")
     if authority is not getattr(jk, "_JACK_SOURCE_AUTHORITY", None):
-        raise RuntimeError("Phase-8C authority does not own this Jack runtime")
+        raise RuntimeError("Source Drift Protection authority does not own this Jack runtime")
     if not getattr(jk, "_JACK_SOURCE_AUTHORITY_INSTALLED", False):
-        raise RuntimeError("Phase-8C requires an installed Phase-8B baseline")
+        raise RuntimeError("Source Drift Protection requires an installed Source Drift Protection baseline")
 
     # Separate activation verification preserves the Phase-8A ordering:
     # sealed baseline -> exact pre-ready verification -> live enforcement -> ready.
@@ -836,7 +836,7 @@ def install(
     existing = getattr(jk, "_JACK_SOURCE_AUTHORITY", None)
     if getattr(jk, "_JACK_SOURCE_AUTHORITY_INSTALLED", False):
         if not isinstance(existing, RuntimeSourceAuthority):
-            raise RuntimeError("Phase-8 source-authority marker exists without valid state")
+            raise RuntimeError("Source Drift Protection source-authority marker exists without valid state")
 
         sealed_identity = {
             item.component_id: os.path.normcase(item.canonical_path)
@@ -845,7 +845,7 @@ def install(
         requested_identity = _canonical_requested_identity(requested)
         if sealed_identity != requested_identity:
             raise SourceComponentSetSealed(
-                "Phase-8 protected source set is sealed; restart is required"
+                "Source Drift Protection protected source set is sealed; restart is required"
             )
         return existing
 
@@ -856,7 +856,7 @@ def install(
     ]
     if missing:
         raise SourceBaselineCreationError(
-            "Phase-8 baseline requires all predecessor authority extensions before sealing"
+            "Source Drift Protection baseline requires all predecessor authority extensions before sealing"
         )
 
     runtime_id = str(getattr(jk, "RUNTIME_ID", "") or "").strip()

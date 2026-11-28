@@ -86,7 +86,7 @@ def test_bash_positive_never_target_is_hard():
     assert decision.outcome is policy.PathAuthorizationOutcome.HARD_INTERRUPT
 
 
-def test_bash_dynamic_command_is_denied_only_when_workspace_lock_is_active():
+def test_bash_unresolved_expression_is_not_a_workspace_violation():
     locked = policy.authorize_command_tool_call(
         build(),
         call("bash", 'cat "$(pwd)/file.txt"'),
@@ -100,7 +100,9 @@ def test_bash_dynamic_command_is_denied_only_when_workspace_lock_is_active():
         command_dialect="bash",
     )
 
-    assert locked.outcome is policy.PathAuthorizationOutcome.DENY_AND_CONTINUE
+    assert locked.outcome is policy.PathAuthorizationOutcome.ALLOW
+    assert locked.canonical_target is None
+    assert "unclassified" in locked.reason
     assert unlocked.outcome is policy.PathAuthorizationOutcome.ALLOW
 
 
@@ -294,13 +296,27 @@ def test_pathless_diagnostic_does_not_hard_only_because_unlocked_cwd_is_restrict
     assert decision.outcome is policy.PathAuthorizationOutcome.ALLOW
 
 
-def test_unsupported_command_dialect_is_rejected_by_executor_endpoint(kernel_policy):
-    forged = admission("shell", "git status", "fish")
+def test_unknown_command_dialect_is_not_a_policy_violation(kernel_policy):
+    decision = kernel._phase4_executor_admission_decision(
+        admission("shell", "git status", "fish")
+    )
+    assert decision["outcome"] == "ALLOW"
+    assert decision["contract_applied"] is False
 
+
+@pytest.mark.parametrize("dialect", [4, {}, "invalid dialect", ""])
+def test_malformed_command_dialect_metadata_is_rejected(kernel_policy, dialect):
     with pytest.raises(kernel.HTTPException) as caught:
-        kernel._phase4_executor_admission_decision(forged)
-
+        kernel._phase4_executor_admission_decision(admission("shell", "git status", dialect))
     assert caught.value.status_code == 400
+
+
+def test_unknown_dialect_does_not_remove_exact_tool_path_authority(kernel_policy):
+    decision = kernel._phase4_executor_admission_decision(
+        admission("bash", "cat ../Outside/file.txt", "fish")
+    )
+    assert decision["outcome"] == "DENY_AND_CONTINUE"
+    assert decision["contract_applied"] is True
 
 
 @pytest.mark.parametrize(
@@ -310,9 +326,7 @@ def test_unsupported_command_dialect_is_rejected_by_executor_endpoint(kernel_pol
         "echo ok & cat ../Outside/secret.txt",
         "echo ok\ncat ../Outside/secret.txt",
         "cat ~/secret.txt",
-        "cat {../Outside,foo}/secret.txt",
         "git clone https://example.invalid/repo ../Outside",
-        "git config --global user.name Jack",
         "pytest --basetemp=../Outside",
         "python -m pytest --basetemp=../Outside",
         "dotnet test --results-directory=../Outside",
@@ -388,7 +402,7 @@ def test_bash_background_operator_preserves_positive_never_detection():
     assert decision.outcome is policy.PathAuthorizationOutcome.DENY_AND_CONTINUE
 
 
-def test_bash_cwd_mutation_sequence_is_not_authorized_against_stale_cwd():
+def test_bash_cwd_mutation_sequence_is_unclassified_not_contained():
     decision = policy.authorize_command_tool_call(
         build(),
         call("bash", r"cd ..; cat ..\Outside\secret.txt"),
@@ -396,31 +410,32 @@ def test_bash_cwd_mutation_sequence_is_not_authorized_against_stale_cwd():
         command_dialect="bash",
     )
 
-    assert decision.outcome is policy.PathAuthorizationOutcome.DENY_AND_CONTINUE
+    assert decision.outcome is policy.PathAuthorizationOutcome.ALLOW
+    assert decision.canonical_target is None
+    assert "unclassified" in decision.reason
 
 
-@pytest.mark.parametrize(
-    "command",
-    (
-        r'Get-Content ("..\Out" + "side\secret.txt")',
-        r'Get-Content ([IO.Path]::Combine("..","Outside","secret.txt"))',
-        r'Get-Content ~\secret.txt',
-        r'Get-Content @args',
-        "Write-Output ok && Get-Content ..\\Outside\\secret.txt",
-    ),
-)
-def test_powershell_expression_forms_do_not_bypass_workspace_lock(command):
+@pytest.mark.parametrize("command, expected", [
+    (r'Get-Content ("..\Out" + "side\secret.txt")', "ALLOW"),
+    (r'Get-Content ([IO.Path]::Combine("..","Outside","secret.txt"))', "ALLOW"),
+    (r'Get-Content ~\secret.txt', "DENY_AND_CONTINUE"),
+    (r'Get-Content @args', "ALLOW"),
+    ("Write-Output ok && Get-Content ..\\Outside\\secret.txt", "DENY_AND_CONTINUE"),
+])
+def test_powershell_expression_coverage_distinguishes_known_targets_from_unknown_effects(command, expected):
     decision = policy.authorize_command_tool_call(
         build(),
         call("powershell", command),
         executor_cwd=r"D:\Projects\Jack",
         command_dialect="powershell",
     )
+    assert decision.outcome.value == expected
+    if expected == "ALLOW":
+        assert decision.canonical_target is None
+        assert "unclassified" in decision.reason
 
-    assert decision.outcome is policy.PathAuthorizationOutcome.DENY_AND_CONTINUE
 
-
-def test_powershell_cwd_mutation_sequence_is_not_authorized_against_stale_cwd():
+def test_powershell_cwd_mutation_sequence_is_unclassified_not_contained():
     decision = policy.authorize_command_tool_call(
         build(),
         call(
@@ -431,7 +446,9 @@ def test_powershell_cwd_mutation_sequence_is_not_authorized_against_stale_cwd():
         command_dialect="powershell",
     )
 
-    assert decision.outcome is policy.PathAuthorizationOutcome.DENY_AND_CONTINUE
+    assert decision.outcome is policy.PathAuthorizationOutcome.ALLOW
+    assert decision.canonical_target is None
+    assert "unclassified" in decision.reason
 
 
 @pytest.mark.parametrize(
@@ -466,3 +483,256 @@ def test_quoted_literal_parentheses_are_not_misclassified_as_expression_syntax()
     )
 
     assert decision.outcome is policy.PathAuthorizationOutcome.ALLOW
+
+
+@pytest.mark.parametrize(
+    "dialect, command",
+    (
+        ("bash", 'unknown-inspector "C:/Boot/BCD"'),
+        ("bash", 'unknown-inspector --output="D:/Sensitive/file.txt"'),
+        ("powershell", r'Unknown-Inspector -LiteralPath "C:\Boot\BCD"'),
+        ("powershell", r'Unknown-Inspector "D:\Sensitive\file.txt"'),
+    ),
+)
+def test_unknown_command_preserves_positive_never_targets_without_workspace_lock(dialect, command):
+    active = build(workspace=None, never=(r"D:\Sensitive",))
+    extraction = policy.extract_command_paths(dialect, {"command": command})
+    assert extraction.applicable and extraction.ambiguous
+    assert extraction.targets
+    decision = policy.authorize_command_tool_call(
+        active, call(dialect, command),
+        executor_cwd=r"D:\Ordinary", command_dialect=dialect,
+    )
+    assert decision.outcome is policy.PathAuthorizationOutcome.HARD_INTERRUPT
+
+
+@pytest.mark.parametrize("dialect", ("bash", "powershell"))
+def test_unknown_command_keeps_workspace_and_ambiguity_contract(dialect):
+    command = 'unknown-inspector "D:/Projects/Jack/file.txt" https://example.invalid/repo'
+    extraction = policy.extract_command_paths(dialect, {"command": command})
+    assert extraction.ambiguous
+    assert extraction.targets == ("D:/Projects/Jack/file.txt",)
+    for workspace, expected in (
+        (None, policy.PathAuthorizationOutcome.ALLOW),
+        (r"D:\Projects\Jack", policy.PathAuthorizationOutcome.ALLOW),
+    ):
+        decision = policy.authorize_command_tool_call(
+            build(workspace=workspace), call(dialect, command),
+            executor_cwd=r"D:\Projects\Jack", command_dialect=dialect,
+        )
+        assert decision.outcome is expected
+        if workspace is not None:
+            assert "unclassified" in decision.reason
+
+
+@pytest.mark.parametrize("dialect", ("bash", "powershell"))
+def test_unknown_command_with_no_visible_filesystem_operands_remains_usable_unlocked(dialect):
+    command = "unknown-inspector https://example.invalid/repo --verbose"
+    extraction = policy.extract_command_paths(dialect, {"command": command})
+    assert extraction.ambiguous and not extraction.targets
+    assert policy.authorize_command_tool_call(
+        build(workspace=None), call(dialect, command), command_dialect=dialect,
+    ).outcome is policy.PathAuthorizationOutcome.ALLOW
+
+@pytest.mark.parametrize("command", [
+    r'find "D:\Projects\Jack"',
+    r'find "D:\Projects\Jack" -mindepth 1 -maxdepth 1 -print',
+    "find . -maxdepth 1 -type f -print",
+    "find -maxdepth 1 -empty",
+])
+def test_read_only_find_workspace_inspection(command):
+    for workspace in (None, r"D:\Projects\Jack"):
+        decision = policy.authorize_command_tool_call(
+            build(workspace=workspace), call("bash", command),
+            executor_cwd=r"D:\Projects\Jack", command_dialect="bash",
+        )
+        assert decision.outcome is policy.PathAuthorizationOutcome.ALLOW
+
+
+@pytest.mark.parametrize("command, expected", [
+    (r'find "D:\Outside"', "DENY_AND_CONTINUE"),
+    (r'find "D:\Projects\Jack" -delete', "ALLOW"),
+    (r'find "D:\Projects\Jack" -exec echo {} +', "ALLOW"),
+    (r'find -L "D:\Projects\Jack"', "ALLOW"),
+    (r'find "D:\Projects\Jack" -fprint "D:\Projects\Jack\out.txt"', "ALLOW"),
+])
+def test_find_preserves_positive_targets_without_claiming_unclassified_effects(command, expected):
+    decision = policy.authorize_command_tool_call(
+        build(), call("bash", command),
+        executor_cwd=r"D:\Projects\Jack", command_dialect="bash",
+    )
+    assert decision.outcome.value == expected
+    if expected == "ALLOW":
+        assert "unclassified" in decision.reason
+
+
+def test_find_explicit_never_root_remains_hard_interrupt():
+    for workspace in (None, r"D:\Projects\Jack"):
+        decision = policy.authorize_command_tool_call(
+            build(workspace=workspace, never=(r"D:\Projects\Jack\Private",)),
+            call("bash", r'find "D:\Projects\Jack\Private" -maxdepth 1'),
+            executor_cwd=r"D:\Projects\Jack", command_dialect="bash",
+        )
+        assert decision.outcome is policy.PathAuthorizationOutcome.HARD_INTERRUPT
+
+
+@pytest.mark.parametrize("dialect, command", [
+    ("bash", "ls -la .\ncat clock.html"),
+    ("bash", "echo 'clock [ready] {literal}'\nls -la ."),
+    ("bash", 'ls -la "clock[1].html"'),
+    ("bash", 'cat "clock{1}.html"'),
+    ("bash", "stat clock.html"),
+    ("bash", "wc -l clock.html"),
+    ("bash", "sha256sum clock.html"),
+    ("powershell", "Write-Output 'clock [ready] {literal}'"),
+    ("powershell", 'Get-Item -LiteralPath ".\\clock[1].html"'),
+    ("powershell", 'Get-Item -LiteralPath ".\\clock.html"\nGet-Location'),
+])
+def test_literal_commands_are_not_rejected_for_harmless_syntax(dialect, command):
+    facts = policy.extract_command_paths(dialect, {"command": command})
+    assert facts.applicable and not facts.ambiguous and not facts.error
+    decision, applied = policy.authorize_executor_tool_call(
+        build(), call(dialect, command),
+        executor_cwd=r"D:\Projects\Jack", command_dialect=dialect,
+    )
+    assert applied and decision.outcome is policy.PathAuthorizationOutcome.ALLOW
+
+
+@pytest.mark.parametrize("dialect, command", [
+    ("bash", 'ls -la .\ncat "../Outside/clock[1].html"'),
+    ("bash", 'stat "../Outside/clock[1].html"'),
+    ("bash", 'wc -l "../Outside/clock[1].html"'),
+    ("bash", 'sha256sum "../Outside/clock[1].html"'),
+    ("powershell", 'Get-Item -LiteralPath "..\\Outside\\clock[1].html"'),
+])
+def test_literal_command_contract_preserves_workspace_membership(dialect, command):
+    result = policy.authorize_command_tool_call(
+        build(), call(dialect, command),
+        executor_cwd=r"D:\Projects\Jack", command_dialect=dialect,
+    )
+    assert result.outcome is policy.PathAuthorizationOutcome.DENY_AND_CONTINUE
+
+
+@pytest.mark.parametrize("dialect, command", [
+    ("bash", 'ls -la .\ncat "D:/Sensitive/clock[1].html"'),
+    ("bash", 'stat "D:/Sensitive/clock[1].html"'),
+    ("powershell", 'Get-Item -LiteralPath "D:\\Sensitive\\clock[1].html"'),
+])
+def test_literal_command_contract_preserves_explicit_never_authority(dialect, command):
+    result = policy.authorize_command_tool_call(
+        build(never=(r"D:\Sensitive",)), call(dialect, command),
+        executor_cwd=r"D:\Projects\Jack", command_dialect=dialect,
+    )
+    assert result.outcome is policy.PathAuthorizationOutcome.HARD_INTERRUPT
+
+
+@pytest.mark.parametrize("dialect, command, expected", [
+    ("bash", 'cat "clock[1].html"\ncd ..\ncat clock.html', "DENY_AND_CONTINUE"),
+    ("bash", 'cat "$(pwd)/clock.html"', "ALLOW"),
+    ("bash", "sha256sum -c checksums.txt", "ALLOW"),
+    ("bash", "cat clock*.html", "ALLOW"),
+    ("bash", "echo ready\nunknown-inspector clock.html", "ALLOW"),
+    ("powershell", 'Get-Item -Path ".\\clock[1].html"', "ALLOW"),
+    ("powershell", 'Get-Item -LiteralPath "$target"', "ALLOW"),
+])
+def test_literal_lane_does_not_confuse_unresolved_effects_with_positive_escapes(dialect, command, expected):
+    facts = policy.extract_command_paths(dialect, {"command": command})
+    assert facts.ambiguous
+    result = policy.authorize_command_tool_call(
+        build(), call(dialect, command),
+        executor_cwd=r"D:\Projects\Jack", command_dialect=dialect,
+    )
+    assert result.outcome.value == expected
+    if expected == "ALLOW":
+        assert "unclassified" in result.reason
+
+
+def test_executor_authorization_extracts_command_once(monkeypatch):
+    original = policy.extract_command_paths
+    count = 0
+    def counted(*args, **kwargs):
+        nonlocal count
+        count += 1
+        return original(*args, **kwargs)
+    monkeypatch.setattr(policy, "extract_command_paths", counted)
+    decision, applied = policy.authorize_executor_tool_call(
+        build(), call("bash", "ls -la ."),
+        executor_cwd=r"D:\Projects\Jack", command_dialect="bash",
+    )
+    assert applied and decision.outcome is policy.PathAuthorizationOutcome.ALLOW
+    assert count == 1
+
+
+def test_request_wide_shell_metadata_does_not_classify_unrelated_custom_tools(kernel_policy):
+    context = kernel.Phase4ExecutorRequestContext(
+        protocol_version=1, runtime_id=kernel.RUNTIME_ID, lane_id=kernel.LANE_ID,
+        cwd=r"D:\Projects\Jack", platform="win32", adapter="independent-test",
+        command_dialect="bash",
+    )
+    token = kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.set(context)
+    try:
+        custom = {"id": "vision", "type": "function", "function": {
+            "name": "describe_image", "arguments": json.dumps({"image_path": "clock.png"}),
+        }}
+        allowed, errors = kernel._phase4_partition_structured_tool_calls([custom])
+        assert allowed == [custom] and not errors
+    finally:
+        kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)
+
+
+@pytest.mark.parametrize("command", [
+    'rg "/v1/models" .',
+    'sed -n "/^def /p" jack_kernel.py',
+    'unknown-tool /b /s /a /all /ano',
+    'unknown-tool "%s/%s"',
+    'cmd /c dir /b /a /s',
+    'pytest -k "/v1/models" -m "unit/slow" -o "name=/v1/models" -W "ignore:/v1/models" -n 2',
+    'python -m pytest -k "/v1/models"',
+])
+def test_windows_non_path_arguments_do_not_become_workspace_violations(command):
+    result = policy.authorize_command_tool_call(
+        build(), call("bash", command), executor_cwd=r"D:\Projects\Jack",
+        executor_platform="win32", command_dialect="bash",
+    )
+    assert result.outcome is policy.PathAuthorizationOutcome.ALLOW
+
+
+@pytest.mark.parametrize("command, expected", [
+    ('unknown-tool D:/Outside/file.txt', "DENY_AND_CONTINUE"),
+    ('unknown-tool D:/Sensitive/file.txt', "HARD_INTERRUPT"),
+    ('cmd /c dir /b D:/Sensitive', "HARD_INTERRUPT"),
+    ('pytest -k "/v1/models" --basetemp D:/Sensitive', "HARD_INTERRUPT"),
+    ('python -m pytest -k "/v1/models" D:/Outside/test_x.py::test_x', "DENY_AND_CONTINUE"),
+])
+def test_windows_non_path_argument_correction_retains_positive_targets(command, expected):
+    result = policy.authorize_command_tool_call(
+        build(never=(r"D:\Sensitive",)), call("bash", command),
+        executor_cwd=r"D:\Projects\Jack", executor_platform="win32",
+        command_dialect="bash",
+    )
+    assert result.outcome.value == expected
+
+
+def test_represented_unresolved_shell_expansion_continues_independent_target_checks(monkeypatch):
+    # Exercise the release contract at the extraction/preparation seam;
+    # the actual shell is not evaluated or simulated.
+    original = policy._prepare_command_target
+
+    def prepare(active, target, **kwargs):
+        if target == "unresolved.txt":
+            raise policy.RepresentedPathAmbiguous("synthetic unresolved shell expansion")
+        return original(active, target, **kwargs)
+
+    monkeypatch.setattr(policy, "_prepare_command_target", prepare)
+    for command, expected in (
+        ("cat unresolved.txt", policy.PathAuthorizationOutcome.ALLOW),
+        ("cat unresolved.txt D:/Outside/file.txt", policy.PathAuthorizationOutcome.DENY_AND_CONTINUE),
+        ("cat unresolved.txt D:/Sensitive/file.txt", policy.PathAuthorizationOutcome.HARD_INTERRUPT),
+    ):
+        result = policy.authorize_command_tool_call(
+            build(never=(r"D:\Sensitive",)), call("bash", command),
+            executor_cwd=r"D:\Projects\Jack", command_dialect="bash",
+        )
+        assert result.outcome is expected
+        if expected is policy.PathAuthorizationOutcome.ALLOW:
+            assert "unclassified" in result.reason

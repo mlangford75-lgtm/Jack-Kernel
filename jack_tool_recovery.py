@@ -106,6 +106,16 @@ class ToolRecoveryState:
             "evidence": "host-reported tool success; inspect output for substantive verification",
         })
         self.successful_calls = self.successful_calls[-20:]
+        self._reset_failure_streak()
+
+    def observed_return(self, *, call_id: str) -> None:
+        """Reset recovery pressure for a new admitted result, not verified success."""
+        if not call_id or call_id in self.seen_tool_ids:
+            return
+        self.seen_tool_ids.add(call_id)
+        self._reset_failure_streak()
+
+    def _reset_failure_streak(self) -> None:
         self.consecutive_failures = 0
         self.same_operation_failures = 0
         self.current_operation = ""
@@ -121,8 +131,9 @@ class ToolRecoveryState:
             return (
                 "The host security policy denied this operation before execution. "
                 "Do not retry it, change its spelling, switch tools, or seek alternative "
-                "access to the same restricted target. Record the denial. Continue only "
-                "with independent authorized operations or report the outcome."
+                "access to the same restricted target. A genuinely different authorized "
+                "destination is valid if it fulfills the user's request. Preserve completed "
+                "work and continue authorized operations or report the restriction."
             )
         n = self.consecutive_failures
         if n == SOFT_ATTEMPTS:

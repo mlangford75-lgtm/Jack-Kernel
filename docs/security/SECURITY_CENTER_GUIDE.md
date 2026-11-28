@@ -19,7 +19,7 @@ local settings; an administrator override cannot be edited from the menu.
 
 | Option | Function |
 |---|---|
-| 1 | Set or change the absolute Windows Workspace Lock root |
+| 1 | Set or change the absolute host Workspace Lock root |
 | 2 | Disable Workspace Lock with explicit confirmation |
 | 3 | Add a user-defined NEVER root; repeat to add more |
 | 4 | Remove a numbered user-defined NEVER root, with confirmation |
@@ -29,6 +29,8 @@ local settings; an administrator override cannot be edited from the menu.
 | 8 | Configure existing forensic archive settings |
 | 9 | Set global StreamingIRQ sensitivity and quarantine ceiling |
 | 10 | Set or clear an individual session Canary's percentage override |
+| 11 | Restore factory path defaults |
+| 12 | Explicitly select bounded or represented workspace command coverage |
 
 Workspace Lock, user-defined restricted roots and global StreamingIRQ settings
 are persisted in local launcher settings. Session Canary values and their
@@ -125,6 +127,33 @@ NEVER match causes a hard interrupt before release of the consequential tool
 batch. Recoverable denials with independent authorized siblings preserve those
 siblings. A narrow exception for ordinary default Windows metadata is not
 permission to read protected system resources or bypass Workspace Lock.
+
+### Command coverage and universality
+
+The default is standard represented-target protection without Workspace Lock.
+Workspace Lock enforces represented filesystem targets without demanding
+complete command classification. Existing version-1 and version-2
+`"bounded"` configurations retain the configured workspace and NEVER roots;
+the obsolete parser-only denial mode now resolves to represented protection.
+Security Center reports this compatibility migration. New workspaces use
+`"workspace_mode": "represented"` without an additional coverage prompt.
+Option 12 describes the protection scope. Identified workspace escapes and
+NEVER roots remain enforced; unclassified effects are not contained.
+This is an intentional policy change after the live empty-workspace test
+exposed a false denial; it is not an OS sandbox.
+
+The platform-independent executor contract distinguishes strict containment
+from both modes. Strict requires a qualified executor with object-level
+enforcement, child-process containment, policy identity, authenticated
+receipts and settlement. No current native executor has this qualification;
+strict startup is rejected, not downgraded. Host-owned path semantics select Windows or POSIX at startup. Windows factory
+roots, explicit NEVER rules and the existing Temp exception remain unchanged.
+The POSIX adapter preserves case and literal path characters and enforces
+explicitly configured roots and exact credential resources; it does not invent
+new broad system-directory blocks. This is lexical represented-path protection,
+not actual object resolution, symlink containment or cross-host enforcement.
+Other operating systems and agents can implement qualified adapters without
+making their tools or path grammar dependencies of Kernel.
 
 The Kernel cannot independently establish every final filesystem object
 accessed by an external executor; it evaluates its owned represented-target
@@ -223,3 +252,101 @@ of agentic mode and backend choice.
 
 See [StreamingIRQ sensitivity](STREAMING_IRQ_SENSITIVITY.md) and
 [Recovery boundaries](RECOVERY_BOUNDARIES.md) for technical details.
+
+
+## Host-owned structured tool contracts (version 1)
+
+For a separately verified agent tool, the operator can set
+`JACK_STRUCTURED_TOOL_CONTRACTS_JSON` before secured startup. Example:
+```json
+{"version":1,"tools":[{"name":"inspect_file","operation":"inspect","path_fields":["filename"],"argument_types":{"filename":"string","limit":"integer"},"required_fields":["filename"]}]}
+```
+The immutable runtime policy seals this registry. The same contract applies to
+workspace rewriting, release checks and the existing executor admission API.
+Only explicitly listed, required string path fields and declared scalar argument
+types are supported. Additional fields, malformed values, duplicate names and
+attempts to override built-in contracts are rejected. The operation classification
+also informs the report-only Code Debugging filter. It does not grant the Windows
+factory read exception to custom tools. Never configure an inspect contract for
+a tool that can mutate files; the operator must verify the actual implementation.
+Model-supplied tool names, descriptions and schemas do not register contracts.
+Unregistered tools are not claimed to have structured filesystem coverage.
+This is represented-target enforcement, not executor attestation, nested path
+schema support or strict containment. Independent agents must integrate the
+existing admission API if execution-time admission is required.
+
+
+### Runtime identity and model metadata
+
+Authenticated `GET /jack/runtime-identity` identifies the Kernel and its lane
+without contacting the backend. It is not a backend health or readiness check.
+The existing `/health` and model-discovery endpoints retain their provider
+verification behavior. Pi uses the independent endpoint, falling back only
+when an older runtime returns HTTP 404. Missing context capacity still prevents
+stock Pi model registration; no capacity is fabricated. Ollama's loaded-model
+metadata is consulted only when the existing model discovery supplies no
+context value and no operator override exists. Only an exact, unambiguous
+running model match supplies its reported context. LM Studio vision metadata
+is projected to Pi only on a positive provider declaration.
+
+### POSIX executor home scope
+
+For a POSIX runtime dedicated to a known executor environment, an operator may
+set `JACK_POSIX_EXECUTOR_HOME` to its canonical absolute home directory at
+startup. Static Policy Integrity binds this value. Only the supported literal
+unquoted tilde operands with declared POSIX executor platform are resolved.
+The Kernel's own HOME is never substituted for POSIX shell environment data.
+Quoted tilde, named-user expansion and general shell-variable expressions are
+not certified as resolved by this contract. Workspace coverage continues to
+require determinable targets; Standard coverage does not introduce a blanket
+parser restriction. This is not remote-host or filesystem attestation; do not
+reuse a dedicated runtime home configuration for unrelated executors.
+
+
+### Explicit executor path environment (dedicated runtime)
+
+Local deployments keep their existing automatic native-path defaults. For a
+dedicated remote executor, the operator may set `JACK_EXECUTOR_PATH_STYLE`
+to `posix` or `windows` before Kernel startup. An optional
+`JACK_EXECUTOR_PATH_ENV_JSON` object supplies the executor's supported path
+anchors, rather than importing the Kernel machine's environment. Windows
+requires an absolute drive-qualified SystemRoot; SystemDrive, if supplied,
+must agree. POSIX tilde expansion uses the separately configured
+`JACK_POSIX_EXECUTOR_HOME`. These values are startup-owned and included in the
+existing immutable path-policy integrity material. They are not tool arguments
+or client-controlled policy settings.
+
+Use one dedicated runtime/lane for a known namespace. The operator must ensure
+the configuration corresponds to the actual executor and configured workspace
+and restricted paths. Neither these settings nor the admission protocol attest
+an arbitrary remote executor, sandbox child processes, or automatically discover
+remote credential files. Explicitly configure remote restricted resources as
+needed; retain the Kernel's own credential protections. No new mandatory
+executor, Pi dependency, or default workspace lock is introduced.
+
+
+### Workspace destination correction
+
+An explicit location outside Workspace Lock is still denied; Jack does not
+silently relocate it or execute it. A mistaken output destination is not a
+permanent denial of the user's entire task. The host reports the safe
+outside-workspace reason and allows a different, independently authorized
+destination when that fulfills the request. For a new file in the workspace,
+a relative filename or explicit in-workspace path is appropriate; a leading
+slash is rooted. The same target remains denied, and explicit NEVER,
+credential-resource and StreamingIRQ protections remain unchanged. The
+represented command contract does not contain computed shell expressions or
+effects of changes to the shell's working directory; unknown effects are not
+certified safe.
+
+
+### Tool correction and useful-work preservation
+
+A malformed invocation is a correctable execution problem, not evidence of
+a security threat. Jack provides the advertised schema error and preserves
+valid siblings with unique call identities, which must independently pass
+the existing authority gates before release. Deferred correction feedback
+follows their actual results. No missing arguments are invented, no denied
+target is retried, and no completed action should be repeated. An ambiguous
+batch identity requires correction before release. Tool-free Architect and
+positive security interrupts retain their existing authority.

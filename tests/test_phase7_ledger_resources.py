@@ -110,6 +110,22 @@ assert "exact protected credential resource" in protected_decision.reason
 assert parent_decision.outcome.value == "ALLOW"
 assert adjacent_decision.outcome.value == "ALLOW"
 
+# Unknown shell commands remain ambiguous, but a literal credential-resource
+# operand must still reach the shared Phase-5/6/7 represented-path authority.
+for dialect in ("bash", "powershell"):
+    for target, expected in ((protected, "DENY_AND_CONTINUE"), (adjacent, "ALLOW")):
+        represented = target.replace(chr(92), "/")
+        command = 'unknown-inspector "' + represented + '"'
+        with authority_ledger.live_ledger_scope(ledger):
+            decision = path_policy.authorize_command_tool_call(
+                runtime_path_policy,
+                {"function": {"name": dialect, "arguments": json.dumps({"command": command})}},
+                command_dialect=dialect,
+            )
+        assert decision.outcome.value == expected, decision.reason
+        if target == protected:
+            assert "exact protected credential resource" in decision.reason
+
 # Model-input isolation owns disposition at the client transport seam. The
 # backend intentionally translates that internal interrupt into a generic
 # HTTPException, while the Phase-7 ledger records the original transport fact.
@@ -205,5 +221,83 @@ ledger.close()
         text=True,
         timeout=45,
         check=False,
+    )
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
+
+
+def test_tool_evidence_http_release_preserves_exact_safe_evidence_and_withholds_protected_data(tmp_path):
+    """Exercise the real endpoint with installed policy and temporary Pi JSONL."""
+    code = r'''
+import json
+import os
+from pathlib import Path
+from fastapi.testclient import TestClient
+
+import jack_kernel as jk
+import jack_phase10_canary_enforcement as canary_gate
+import jack_phase10_credential_enforcement as credential_gate
+
+secret = jk.CFG.api_key
+canary = "SYNTHETIC-CANARY-FULL-VALUE-9981"
+jk._install_bundled_runtime_extensions()
+canary_gate.install(jk)
+credential_gate.install(jk)
+source = Path(os.environ["JACK_AUTHORITY_LEDGER_DIR"]).parent / "pi-session.jsonl"
+cases = {
+    "safe": "Exact safe tool evidence.",
+    "protected": "prefix " + secret + " suffix",
+    "fragment": "prefix " + canary[:12] + " suffix",
+}
+source.write_text("\n".join(json.dumps({
+    "type": "message",
+    "message": {"role": "toolResult", "toolCallId": key, "toolName": "read",
+                "content": [{"type": "text", "text": value}]}
+}) for key, value in cases.items()) + "\n", encoding="utf-8")
+jk._pi_session_roots = lambda: [source]
+
+headers = {"Authorization": "Bearer " + secret}
+client = TestClient(jk.APP)
+safe = jk.recover_pi_tool_evidence("safe")
+assert safe["result"] == cases["safe"]
+assert safe["session_file"] == str(source)
+response = client.get("/jack/tool-evidence/safe", headers=headers, params={"sha256": safe["result_sha256"]})
+assert response.status_code == 200, response.text
+released = response.json()
+assert released["result"] == safe["result"]
+assert released["result_sha256"] == safe["result_sha256"]
+assert released["host_generated"] is True
+assert "session_file" not in released
+assert str(source) not in response.text
+
+for key in ("protected", "fragment"):
+    response = client.get("/jack/tool-evidence/" + key, headers=headers)
+    assert response.status_code == 403, response.text
+    assert secret not in response.text and canary[:12] not in response.text
+    assert jk.recover_pi_tool_evidence(key)["result"] == cases[key]
+
+assert client.get("/jack/tool-evidence/safe").status_code == 401
+missing = client.get("/jack/tool-evidence/" + secret, headers=headers)
+assert missing.status_code == 404 and secret not in missing.text
+wrong = client.get("/jack/tool-evidence/safe", headers=headers, params={"sha256": "0" * 64})
+assert wrong.status_code == 404
+jk._JACK_AUTHORITY_LEDGER.close()
+'''
+    env = dict(os.environ)
+    env.update({
+        "HOME": str(tmp_path / "home"),
+        "USERPROFILE": str(tmp_path / "home"),
+        "APPDATA": str(tmp_path / "appdata"),
+        "JACK_API_KEY": "synthetic-evidence-credential-3279",
+        "JACK_BACKEND_MODEL": "test-model",
+        "JACK_BACKEND_PROFILE": "custom",
+        "JACK_REASONING_LEVEL": "off",
+        "JACK_FORENSIC_ARCHIVE_MODE": "off",
+        "JACK_CANARY_POLICY_JSON": '{"version":1,"sensitivity_percent":25,"patterns":[{"id":"custom:evidence","tier":"B","value":"SYNTHETIC-CANARY-FULL-VALUE-9981"}]}',
+        "JACK_AUTHORITY_LEDGER_DIR": str(tmp_path / "ledger"),
+    })
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env, capture_output=True, text=True, timeout=30, check=False,
     )
     assert result.returncode == 0, result.stdout + "\n" + result.stderr

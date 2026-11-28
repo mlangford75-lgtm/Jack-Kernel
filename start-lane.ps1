@@ -7,6 +7,12 @@ param(
     [ValidateSet("off", "medium", "x-high", "deep-reasoning", "deep-research", "Local Agentic (Preserve Thinking)", "agentic", "code-debugging", "code-debugging-deep")]
     [string]$Mode,
 
+    [ValidateSet("flash", "balanced", "thorough", "translated", "coder")]
+    [string]$AgenticProfile = "",
+
+    [ValidateSet("flash", "thorough")]
+    [string]$CoderPlannerProfile = "",
+
     [ValidateRange(0, 65535)]
     [int]$Port = 8001,
 
@@ -41,6 +47,10 @@ $env:JACK_RUNTIME_ID = $RuntimeId
 $env:JACK_LANE_ID = $LaneId
 $CanonicalMode = if ($Mode -eq "agentic") { "Local Agentic (Preserve Thinking)" } else { $Mode }
 $env:JACK_REASONING_LEVEL = $CanonicalMode
+$env:JACK_AGENTIC_TRANSACTION_LINKS = "1"
+$env:JACK_AGENTIC_TASK_ANCHOR = "0"
+if ($AgenticProfile) { $env:JACK_AGENTIC_PROFILE = $AgenticProfile }
+if ($CoderPlannerProfile) { $env:JACK_CODER_PLANNER_PROFILE = $CoderPlannerProfile }
 $env:JACK_HOST = "127.0.0.1"
 $env:JACK_PORT = [string]$Port
 $env:JACK_PORT_FALLBACK = if ($PortFallback) { "1" } else { "0" }
@@ -86,6 +96,8 @@ Write-Host "Starting Jack lane" -ForegroundColor Cyan
 Write-Host "  runtime_id : $RuntimeId"
 Write-Host "  lane_id    : $LaneId"
 Write-Host "  mode       : $CanonicalMode"
+if ($AgenticProfile) { Write-Host "  agentic    : $AgenticProfile" }
+if ($CoderPlannerProfile) { Write-Host "  architect  : $CoderPlannerProfile" }
 Write-Host "  preferred  : 127.0.0.1:$Port"
 Write-Host "  fallback   : $PortFallback"
 Write-Host "  backend    : $BackendBaseUrl"

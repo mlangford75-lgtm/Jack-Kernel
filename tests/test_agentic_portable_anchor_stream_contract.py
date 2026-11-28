@@ -21,30 +21,33 @@ def test_pi_style_structured_user_gets_matching_task_anchor_without_mutation(mon
     original = {"role": "user", "content": copy.deepcopy(content)}
     history = [copy.deepcopy(original)]
     turn = k._agentic_begin_turn(history, fresh=True)
-    marker = f"[JACK LINK turn={turn} | artifact=U]"
     p1 = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_initial"])
-    assert p1[0] == {"role": "system", "content": "Authenticated current work ID: " + turn}
-    assert isinstance(p1[1]["content"], list)
-    assert p1[1]["content"][:-1] == content
-    assert p1[1]["content"][-1] == {"type": "text", "text": "\n" + marker}
+    assert p1 == [original]
+    assert turn not in json.dumps(p1)
     assert history[0]["content"] == content
-    assert original["content"] == content
     answer = k.append_extended_candidate_response(history, {"content": "Frozen result", "reasoning_content": "current R1"})
     k._agentic_forensic_start_stage2(history)
-    p2 = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_reflection"])
-    # Stage 2 has its own isolated source. The original user content is
-    # unchanged, even when the opt-in historical link marker is enabled.
-    assert p2[0]["role"] == "user"
-    assert p2[0]["content"][:-1] == content
-    assert p2[-1]["content"] == answer
-    assert p2[-1]["reasoning_content"] == "current R1"
+    source = k._agentic_stage2_test_history(history, k.STAGES["extended_reflection"])
+    assert source[0]["content"] == content
+    assert source[-1]["content"] == answer
+    assert source[-1]["reasoning_content"] == "current R1"
+    payload, _ = k.BACKEND._build_stage_request(
+        model="test-model", messages=history, secondary_system="",
+        profile=k.STAGES["extended_reflection"], tools=None,
+        tool_choice=None, streamed=False,
+    )
+    wire = json.dumps(payload["messages"])
+    assert turn not in wire and answer not in wire
+    for part in content:
+        if part.get("type") in {"text", "input_text"}:
+            assert part["text"] not in wire
+        elif part.get("type") == "image_url":
+            assert part["image_url"]["url"] not in wire
+    assert "current R1" in wire
+    assert [m["role"] for m in payload["messages"]] == ["system", "user"]
     suffix = k._stage_continuation(k.STAGES["extended_reflection"], history)
-    assert marker not in suffix
-    assert suffix == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
-    # Prime Directive preservation takes priority over an arbitrary prompt-size cap.
-    assert suffix.startswith("You must always follow the Prime Directive.")
+    assert suffix == k._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
     assert "<Prime_Directive>" in suffix and "</Prime_Directive>" in suffix
-    assert "Begin with a brief description of the current task" in suffix
 
 
 def test_unprojectable_user_does_not_produce_dangling_model_reference(monkeypatch, tmp_path):
@@ -53,14 +56,13 @@ def test_unprojectable_user_does_not_produce_dangling_model_reference(monkeypatc
     history = [{"role": "user", "content": copy.deepcopy(content)}]
     k._agentic_begin_turn(history, fresh=True)
     p = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_initial"])
-    assert p[0]["role"] == "system"
-    assert p[1]["content"] == content
+    assert p == [{"role": "user", "content": content}]
     k.append_extended_candidate_response(history, {"content": "Frozen answer"})
     k._agentic_forensic_start_stage2(history)
     suffix = k._stage_continuation(k.STAGES["extended_reflection"], history)
     assert "JACK TASK SCOPE" not in suffix
     assert "JACK FORENSIC TARGET" not in suffix
-    assert suffix == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
+    assert suffix == k._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
 
 
 def test_structured_user_anchor_can_be_disabled_without_touching_content(monkeypatch, tmp_path):
@@ -69,8 +71,8 @@ def test_structured_user_anchor_can_be_disabled_without_touching_content(monkeyp
     h = [{"role": "user", "content": copy.deepcopy(content)}]
     work_id = k._agentic_begin_turn(h, fresh=True)
     prepared = k.BACKEND._stage_messages_for_profile(h, k.STAGES["extended_initial"])
-    assert prepared[0] == {"role": "system", "content": "Authenticated current work ID: " + work_id}
-    assert prepared[1]["content"] == content
+    assert prepared == [{"role": "user", "content": content}]
+    assert work_id not in json.dumps(prepared)
     assert h[0]["content"] == content
 
 

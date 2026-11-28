@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-PROFILES = ("flash", "balanced", "thorough", "exhaustive")
+PROFILES = ("flash", "balanced", "thorough", "translated")
 OLD_ID = "jack-turn-" + "a" * 32
 
 

@@ -64,7 +64,7 @@ def incident(history, *, runs=2, content="print(1)"):
     push(history, write_call(runs + 1, content), "wrote 9 bytes")
 
 
-@pytest.mark.parametrize("profile", ["flash", "balanced", "thorough", "exhaustive"])
+@pytest.mark.parametrize("profile", ["flash", "balanced", "thorough", "translated"])
 def test_exact_stable_write_run_cycle_is_detected_without_ids(monkeypatch, tmp_path, profile):
     k = load(monkeypatch, tmp_path, profile=profile)
     h = [{"role": "user", "content": "Build and verify a model"}]
@@ -108,7 +108,7 @@ def test_different_tool_results_break_cycle(monkeypatch, tmp_path):
     assert k._agentic_exact_tool_cycle(h, [run_call(3)]) is None
 
 
-def test_repeated_file_read_with_unchanged_evidence_blocks_third_call(monkeypatch, tmp_path):
+def test_repeated_file_read_with_unchanged_evidence_allows_third_call(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path)
     h = [{"role": "user", "content": "Fix the analog clock"}]
     k._agentic_begin_turn(h, fresh=True)
@@ -116,13 +116,13 @@ def test_repeated_file_read_with_unchanged_evidence_blocks_third_call(monkeypatc
         push(h, call("read", {"path": "index.html"}, f"read-{i}"), "<html>clock</html>")
     assert k._agentic_exact_tool_cycle(
         h, [call("read", {"path": "index.html"}, "read-3")]
-    ) == (1, 3)
+    ) is None
     assert k._agentic_exact_tool_cycle(
         h, [call("read", {"path": "other.html"}, "other")]
     ) is None
 
 
-def test_read_cycle_requires_two_completed_same_results(monkeypatch, tmp_path):
+def test_read_cycle_never_authorizes_terminal_interrupt(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path)
     h = [{"role": "user", "content": "Inspect changes"}]
     k._agentic_begin_turn(h, fresh=True)
@@ -137,7 +137,7 @@ def test_read_cycle_requires_two_completed_same_results(monkeypatch, tmp_path):
     push(h, call("read", {"path": "index.html"}, "three"), "version 2")
     assert k._agentic_exact_tool_cycle(
         h, [call("read", {"path": "index.html"}, "four")]
-    ) == (1, 3)
+    ) is None
 
 
 def test_read_cycle_fails_open_on_error_or_incomplete_result(monkeypatch, tmp_path):
@@ -173,7 +173,7 @@ def test_repeated_nonfile_observations_remain_allowed(monkeypatch, tmp_path):
     ) is None
 
 
-def test_stage_tool_resume_rejects_stable_read_before_checkpoint(monkeypatch, tmp_path):
+def test_stage_tool_resume_allows_stable_read_checkpoint(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path)
     h = [{"role": "user", "content": "Fix analog clock"}]
     k._agentic_begin_turn(h, fresh=True)
@@ -183,12 +183,11 @@ def test_stage_tool_resume_rejects_stable_read_before_checkpoint(monkeypatch, tm
     result = {"choices": [{"message": {"role": "assistant", "tool_calls": [candidate]},
                            "finish_reason": "tool_calls"}]}
     async def scenario():
-        with pytest.raises(k.RepeatedToolCycleInterrupt):
-            await k.KERNEL._register_stage_tool_resume(
-                stage_key="extended_initial", history=h, secondary_system="",
-                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-                tools=[], tool_choice="auto", data=result)
-        assert candidate["id"] not in k.KERNEL._pending_tool_resumes
+        await k.KERNEL._register_stage_tool_resume(
+            stage_key="extended_initial", history=h, secondary_system="",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            tools=[], tool_choice="auto", data=result)
+        assert candidate["id"] in k.KERNEL._pending_tool_resumes
     asyncio.run(scenario())
 
 

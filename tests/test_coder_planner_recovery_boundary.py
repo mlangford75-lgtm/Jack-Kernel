@@ -93,7 +93,16 @@ def test_planner_helper_leaves_literal_json_and_nontext_unchanged():
 
 
 def test_planner_recovery_isolated_without_promoting_host_message_to_user():
-    functions = _load_isolated("_coder_isolate_planner_request")
+    functions = _load_isolated("_coder_isolate_planner_request", "_coder_architect_task_source")
+    # Load the real framing constants alongside the isolated functions.
+    tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id in {
+                "_CODER_ARCHITECT_TASK_SOURCE_HEADER", "_CODER_ARCHITECT_TASK_SOURCE_FOOTER"
+            } for target in node.targets
+        ):
+            exec(compile(ast.Module(body=[node], type_ignores=[]), str(SOURCE), "exec"), functions)
     functions.update({
         "AGENTIC_CODER_MODE": True,
         "ForensicConflict": RuntimeError,
@@ -102,6 +111,7 @@ def test_planner_recovery_isolated_without_promoting_host_message_to_user():
     class Profile:
         name = "Agentic Coder Planner"
         prompt = "You are Planner."
+        allow_tools = False
     entries = [
         {"role": "system", "content": "Caller-owned system"},
         {"role": "user", "content": "Inspect a workspace"},
@@ -115,10 +125,15 @@ def test_planner_recovery_isolated_without_promoting_host_message_to_user():
         {"role": "system", "content": "Tool rejected",
          "_jack_planner_recovery_message": True},
     ]
+    original = json.loads(json.dumps(entries))
     isolated = functions["_coder_isolate_planner_request"](entries, Profile())
+    assert entries == original
     assert isolated[0] == {"role": "system", "content": "You are Planner."}
     assert isolated[1:] == [
-        {"role": "user", "content": "Inspect a workspace"},
+        {"role": "user", "content": (
+            functions["_CODER_ARCHITECT_TASK_SOURCE_HEADER"] + "Inspect a workspace"
+            + functions["_CODER_ARCHITECT_TASK_SOURCE_FOOTER"]
+        )},
         {"role": "assistant", "content": "Valid observation"},
     ]
 
@@ -163,7 +178,9 @@ def test_rejected_inspection_stops_tool_retries_but_preserves_evidence():
         "_coder_planner_mutation_rejected", "_coder_planner_tools_for_attempt"
     )
     functions.update({
-        "_coder_planner_rejection_count": lambda h: 1,
+        "_coder_planner_rejection_count": lambda h: sum(
+            bool(item.get("_jack_internal_coder_planner_rejection")) for item in h
+        ),
         "_coder_planner_repeated_inspection_pending": lambda h: False,
         "_coder_planner_tools": lambda available: available,
         "active_response_target": lambda h: {"history_index": 0},
@@ -175,7 +192,8 @@ def test_rejected_inspection_stops_tool_retries_but_preserves_evidence():
          "_jack_internal_coder_planner_rejection": True},
     ]
     assert functions["_coder_planner_tools_for_attempt"](history, offered) == []
-    # Unrejected first attempts retain read-only inspection tools.
+    # This retained helper alone can select inspection tools; the current
+    # Architect profile is independently required to be tool-free.
     assert functions["_coder_planner_tools_for_attempt"](
         [{"role": "user", "content": "Inspect"}], offered
     ) == offered

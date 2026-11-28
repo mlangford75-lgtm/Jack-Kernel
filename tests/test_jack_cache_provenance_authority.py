@@ -106,8 +106,10 @@ def test_the_shared_entrypoint_is_called_by_both_transports(monkeypatch, tmp_pat
     import inspect
     source_a = inspect.getsource(kernel.OpenAICompatibleBackend.chat)
     source_b = inspect.getsource(kernel.OpenAICompatibleBackend.chat_stream)
-    assert "_tool_stage_system_with_provenance(stage_messages, profile)" in source_a
-    assert "_tool_stage_system_with_provenance(stage_messages, profile)" in source_b
+    builder = inspect.getsource(kernel.OpenAICompatibleBackend._build_stage_request)
+    assert source_a.count("self._build_stage_request(") == 1
+    assert source_b.count("self._build_stage_request(") == 1
+    assert builder.count("_tool_stage_system_with_provenance(stage_messages, profile)") == 1
 
 
 def test_no_extra_system_role_if_caller_system_exists(monkeypatch, tmp_path):

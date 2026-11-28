@@ -19,7 +19,7 @@ spec.loader.exec_module(compat)
 CANARY = "confidential-internal-exception-canary-734a"
 
 
-def test_stream_error_hides_internal_exception_and_rearms_pending_state():
+def test_stream_error_hides_internal_exception_without_message_based_rearming():
     class Kernel:
         def __init__(self):
             self.rearmed_tool = 0
@@ -57,8 +57,8 @@ def test_stream_error_hides_internal_exception_and_rearms_pending_state():
         "message": "Jack Responses stream failed",
     }
     assert payloads[-1]["response"]["error"] == payloads[-1]["error"]
-    assert kernel.rearmed_tool == 1
-    assert kernel.rearmed_debug == 1
+    assert kernel.rearmed_tool == 0
+    assert kernel.rearmed_debug == 0
 
 
 async def _no_auth(_request):
@@ -134,3 +134,55 @@ def test_stream_phase7_canonical_diagnostic_is_preserved_without_raw_secret():
     assert "protected_credential_diagnostic_withheld" in output
     assert "diagnostic_stream_exception_release" in output
     assert CANARY not in output
+
+
+@pytest.mark.parametrize("kind,status,code,marker", [
+    ("path", 403, "jack_restricted_path_hard_interrupt", "RESTRICTED PATHS: HARD INTERRUPT"),
+    ("canary", 403, "jack_canary_hard_interrupt", "STREAMINGIRQ: CANARY HARD INTERRUPT"),
+    ("credential", 403, "jack_credential_hard_interrupt", "PROTECTED CREDENTIAL: HARD INTERRUPT"),
+    ("policy", 503, "jack_static_policy_unavailable", "STATIC POLICY INTEGRITY: AUTHORITY UNAVAILABLE"),
+])
+def test_typed_security_failure_preserves_public_disposition(kind, status, code, marker):
+    from jack_evidence_guard import CanaryMatch, CanaryTier, StreamingIRQCanaryInterrupt
+    from jack_credential_guard import CredentialMatch, CredentialClass, ProtectedCredentialInterrupt
+    from jack_policy_integrity import PolicyIntegrityUnavailable
+
+    class RestrictedPath(RuntimeError):
+        security_outcome = "HARD_INTERRUPT"
+
+    exceptions = {
+        "path": lambda: RestrictedPath(CANARY),
+        "canary": lambda: StreamingIRQCanaryInterrupt(CanaryMatch("test", CanaryTier.A)),
+        "credential": lambda: ProtectedCredentialInterrupt(CredentialMatch(
+            "test", next(iter(CredentialClass)), "model_ingress", "model_bound",
+        )),
+        "policy": lambda: PolicyIntegrityUnavailable(CANARY),
+    }
+
+    endpoint = make_endpoint(exceptions[kind]())
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(endpoint(Request()))
+    assert caught.value.status_code == status
+    assert caught.value.detail["error"] == code
+    assert caught.value.detail["security_outcome"] == "HARD_INTERRUPT"
+    assert marker in caught.value.detail["message"]
+    assert CANARY not in json.dumps(caught.value.detail)
+
+    class Kernel:
+        async def stream(self, _body):
+            if False:
+                yield b""
+            raise exceptions[kind]()
+
+    jk = SimpleNamespace(KERNEL=Kernel(), CFG=SimpleNamespace(virtual_model="jack-kernel"))
+
+    async def collect():
+        return b"".join([chunk async for chunk in compat._stream(jk, {"messages": []}, {})]).decode()
+
+    raw = asyncio.run(collect())
+    assert CANARY not in raw
+    frames = [json.loads(line[6:]) for line in raw.splitlines() if line.startswith("data: ")]
+    assert frames[-1]["type"] == "response.failed"
+    assert frames[-1]["error"]["code"] == code
+    assert marker in frames[-1]["error"]["message"]
+    assert not any(frame["type"] == "response.completed" for frame in frames)

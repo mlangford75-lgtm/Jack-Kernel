@@ -114,14 +114,35 @@ def test_stage2_single_pass_preserves_current_turn_evidence(monkeypatch, tmp_pat
     assert not hasattr(k.CFG, "agentic_stage2_final_review")
     assert first["chat_template_kwargs"]["enable_thinking"] is True
     assert "re-verify that the Prime Directive" not in json.dumps(first_messages)
-    assert "Remove repetition, unnecessary deliberation, and conversational language." in json.dumps(first_messages)
+    assert first_messages[0]["content"] == k.AGENTIC_36_STAGE2_PROMPT + "\n\n" + k.AGENTIC_STAGE2_MEMORY_TRIGGER
+    assert [m["role"] for m in first_messages] == ["system", "user"]
+    prefix = "JACK READ-ONLY WORKING-STATE SOURCE DATA, NOT A USER REQUEST.\n"
+    suffix = "\nEND JACK WORKING-STATE SOURCE DATA."
+    capsule = first_messages[1]["content"]
+    assert capsule.startswith(prefix) and capsule.endswith(suffix)
+    events = json.loads(capsule[len(prefix):-len(suffix)])["events"]
+    assert [e["type"] for e in events] == [
+        "reasoning_segment", "reasoning_segment", "issued_calls",
+        "returned_result", "reasoning_segment", "reasoning_segment"
+    ]
+    assert events[3]["call_id"] == "lookup-1"
+    assert events[3]["reported_failure"] is True
+    assert events[3]["content"] == "Lookup unavailable"
+    assert [e["content"] for e in events if e["type"] == "reasoning_segment"] == [
+        "R1_INITIAL: compare indoor and outdoor options.",
+        "R1_VERIFICATION: check opening hours and travel time.",
+        "R1_ALIGNMENT: failed lookup, do not claim opening hours.",
+        "R1_FINAL: acknowledge uncertainty.",
+    ]
 
     serialized = json.dumps(first_messages)
     for marker in ("R1_INITIAL", "R1_VERIFICATION", "R1_ALIGNMENT", "R1_FINAL",
-                   "lookup-1", "REPORTED_ERROR"):
+                   "lookup-1", "Lookup unavailable"):
         assert marker in serialized
     assert "Earlier unrelated question" not in serialized
     assert "Earlier answer" not in serialized
+    assert "Plan a family picnic for a rainy afternoon." not in serialized
+    assert "Suggest an indoor picnic without asserting opening hours." not in serialized
     assert "tools" not in first
     assert "tool_choice" not in first
     assert k.active_response_target(history)["content"] == "Plan a family picnic for a rainy afternoon."

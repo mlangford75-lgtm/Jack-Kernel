@@ -5,6 +5,8 @@
 **Status:** Experimental; DO NOT merge into `main` before prompt-authority analysis, portability and regression validation.  
 **Ownership:** Jack Kernel universal runtime work; tested primarily on Balanced with LM Studio / `qwen3.6-35b-a3b`.
 
+> **Archive notice (November 27, 2026):** This directory and its original upgrade folder are preserved as historical provenance. Do not run these historical installation scripts against the current runtime. Consult the root README and independent audit register for the active request assembly and diagnostic behavior. The historical claims below describe the original experiment, not a current deployment instruction.
+
 ## Preserve the complete experiment, not just the most recent fix
 
 This branch is intended to hold ALL of the following, with complete contents and tests, copied byte-exact from the tested Windows checkout:

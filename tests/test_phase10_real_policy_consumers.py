@@ -170,6 +170,7 @@ import dataclasses
 import json
 import jack_kernel as jk
 from jack_phase10_path_enforcement import install
+from jack_policy_integrity import PolicyIntegrityCompromised
 
 jk._install_bundled_runtime_extensions()
 original = jk._RUNTIME_PATH_POLICY
@@ -198,9 +199,18 @@ payload = {
 }
 # Removing the optional holder would bypass the legacy partition's None branch.
 jk._RUNTIME_PATH_POLICY = None
-allowed, errors = jk._phase4_partition_structured_tool_calls([outside])
-assert not allowed and errors
-assert "AUTHORITY_POLICY_INTEGRITY_COMPROMISED" in errors[0]
+try:
+    jk._debugging_report_only_tool_surface([{"function": {"name": "read"}}], None)
+except PolicyIntegrityCompromised:
+    pass
+else:
+    raise AssertionError("debugging projection accepted missing path policy")
+try:
+    jk._phase4_partition_structured_tool_calls([outside])
+except PolicyIntegrityCompromised:
+    pass
+else:
+    raise AssertionError("policy loss must terminate tool release, not request model repair")
 try:
     jk._phase4_executor_admission_decision(payload)
 except jk.HTTPException as exc:
@@ -210,8 +220,12 @@ else:
     raise AssertionError("executor admission did not reject missing policy")
 assert jk._phase4_partition_structured_tool_calls([]) == ([], [])
 jk._RUNTIME_PATH_POLICY = original
-allowed, errors = jk._phase4_partition_structured_tool_calls([safe])
-assert not allowed and errors
+try:
+    jk._phase4_partition_structured_tool_calls([safe])
+except PolicyIntegrityCompromised:
+    pass
+else:
+    raise AssertionError("restoring the policy cannot clear terminal invalidation")
 assert guard.invalidated_labels == ("path-consumer",)
 jk._JACK_AUTHORITY_LEDGER.close()
 '''
@@ -300,6 +314,55 @@ jk._JACK_AUTHORITY_LEDGER.close()
         "JACK_BACKEND_MODEL": "test-model",
         "JACK_BACKEND_PROFILE": "lmstudio",
         "JACK_BACKEND_BASE_URL": "http://127.0.0.1:9/v1",
+    })
+    result = subprocess.run(
+        [sys.executable, "-c", script], cwd=_ROOT, env=env,
+        text=True, capture_output=True, check=False, timeout=55,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_phase10_credential_resource_registry_binding_is_terminal(tmp_path):
+    script = r'''
+import json
+import jack_kernel as jk
+import jack_credential_resource_guard as resource
+from jack_phase10_path_enforcement import install
+from jack_policy_integrity import PolicyIntegrityCompromised
+
+jk._install_bundled_runtime_extensions()
+policy = jk._JACK_CREDENTIAL_RESOURCE_POLICY
+key = (jk.RUNTIME_ID, jk.LANE_ID)
+assert resource._RESOURCE_POLICIES[key] is policy
+install(jk)
+call = {"id": "candidate", "type": "function", "function": {
+    "name": "write", "arguments": json.dumps({
+        "path": r"D:\Projects\Jack\safe.txt", "content": "safe"})}}
+allowed, errors = jk._phase4_partition_structured_tool_calls([call])
+assert allowed and not errors
+resource._RESOURCE_POLICIES.pop(key)
+try:
+    jk._phase4_partition_structured_tool_calls([call])
+except PolicyIntegrityCompromised:
+    pass
+else:
+    raise AssertionError("missing credential resource binding was accepted")
+resource._RESOURCE_POLICIES[key] = policy
+try:
+    jk._phase4_partition_structured_tool_calls([call])
+except PolicyIntegrityCompromised:
+    pass
+else:
+    raise AssertionError("confirmed resource compromise was silently cleared")
+jk._JACK_AUTHORITY_LEDGER.close()
+'''
+    env = dict(os.environ)
+    env.update({
+        "JACK_AUTHORITY_LEDGER_DIR": str(tmp_path / "ledger"),
+        "JACK_FORENSIC_ARCHIVE_MODE": "off",
+        "JACK_BACKEND_MODEL": "test-model",
+        "JACK_BACKEND_PROFILE": "lmstudio",
+        "JACK_PATH_POLICY_JSON": '{"version":1,"workspace_root":"D:/Projects/Jack","never_paths":[]}',
     })
     result = subprocess.run(
         [sys.executable, "-c", script], cwd=_ROOT, env=env,

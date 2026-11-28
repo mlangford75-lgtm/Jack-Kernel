@@ -103,3 +103,24 @@ def test_explicit_tool_failures_and_duplicate_replays(monkeypatch, tmp_path):
         "_jack_tool_outcome": k.TOOL_SUCCESS, "content": "ok",
     }])
     assert tracker.consecutive_failures == 0
+
+
+def test_unknown_admitted_return_resets_recovery_without_certifying_success(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path, "agentic")
+    tracker = k.ToolRecoveryState()
+    calls = [{"id": "new-call", "function": {"name": "read", "arguments": '{"path":"file"}'}}]
+    pending = SimpleNamespace(tool_recovery=tracker, expected_tool_call_ids=("new-call",),
+                              history=[{"role": "assistant", "tool_calls": calls}])
+    tracker.fail("read", "denied", policy_denial=True, policy_key="same")
+    unknown = {"role": "tool", "tool_call_id": "new-call",
+               "_jack_tool_outcome": k.TOOL_UNKNOWN, "content": "file contents"}
+    k._tool_recovery_record_results(pending, [dict(unknown, tool_call_id="foreign")])
+    assert tracker.consecutive_failures == 1
+    k._tool_recovery_record_results(pending, [unknown])
+    assert tracker.consecutive_failures == tracker.consecutive_policy_denials == 0
+    assert tracker.policy_denial_key == ""
+    assert tracker.successful_calls == []
+    tracker.fail("read", "new failure")
+    k._tool_recovery_record_results(pending, [unknown])
+    assert tracker.consecutive_failures == 1
+    assert tracker.successful_calls == []

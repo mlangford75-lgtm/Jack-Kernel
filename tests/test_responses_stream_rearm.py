@@ -35,12 +35,13 @@ def test_responses_stream_failure_rearms_real_pending_tool_resume_and_allows_ret
     ], "_jack_internal_tool_exchange": True})
     kernel.KERNEL._pending_authority.register(state)
     kernel.KERNEL._pending_tool_resumes[call_id] = state
-    kernel.KERNEL._pending_authority.transition(state, in_flight=True)
 
     async def failing_stream(_body):
-        if False:
-            yield b""
-        raise RuntimeError("injected stream failure")
+        async with kernel.KERNEL._request_resume_scope():
+            assert (await kernel.KERNEL._consume_pending_tool_resume(messages))[0] is state
+            if False:
+                yield b""
+            raise RuntimeError("injected stream failure")
 
     monkeypatch.setattr(kernel.KERNEL, "stream", failing_stream)
 
@@ -83,3 +84,43 @@ def test_responses_stream_failure_rearms_real_pending_tool_resume_and_allows_ret
 
     asyncio.run(exercise())
     assert call_id not in kernel.KERNEL._pending_tool_resumes
+
+
+def test_public_adapters_cannot_rearm_another_requests_checkpoint(monkeypatch):
+    from types import SimpleNamespace
+
+    async def exercise():
+        call_id = "audit-m1-owner"
+        state = kernel.PendingToolResume(
+            resume_id="audit-m1-owner", stage_key="thesis",
+            history=[{"role": "user", "content": "test"}],
+            secondary_system="", usage={}, tools=None, tool_choice=None,
+            expected_tool_call_ids=(call_id,), created_at=time.time())
+        state.history.append({"role": "assistant", "content": "", "tool_calls": [
+            {"id": call_id, "type": "function", "function": {
+                "name": "read", "arguments": '{"path":"test.txt"}'}}]})
+        active = kernel.KERNEL
+        active._pending_authority.register(state)
+        active._pending_tool_resumes[call_id] = state
+        messages = [{"role": "tool", "tool_call_id": call_id, "content": "result"}]
+        # A owns the checkpoint. B has identical history but never acquires it.
+        async def failed_before_admission(_body):
+            if False:
+                yield b""
+            raise RuntimeError("request failed before admission")
+        monkeypatch.setattr(active, "stream", failed_before_admission)
+        jk = SimpleNamespace(KERNEL=active, CFG=kernel.CFG)
+        try:
+            async with active._request_resume_scope():
+                assert (await active._consume_pending_tool_resume(messages))[0] is state
+                async def duplicate():
+                    async for _ in compat._stream(jk, {"messages": messages}, {}):
+                        pass
+                    async for _ in kernel._safe_public_stream({"messages": messages}):
+                        pass
+                await asyncio.create_task(duplicate())
+                assert state.in_flight
+            assert not state.in_flight
+        finally:
+            await active._retire_pending_tool_resume(state)
+    asyncio.run(exercise())

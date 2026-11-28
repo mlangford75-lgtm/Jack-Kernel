@@ -100,3 +100,17 @@ def test_config_paths_retains_legacy_location_only_for_migration_detection(monke
     assert config_path == current / "config.json"
     assert prompt_path == current / "secondary_system_prompt.txt"
     assert not prompt_path.exists()
+
+
+def test_launchers_share_transaction_settings_and_optional_pi_sync():
+    root = Path(jk.__file__).resolve().parent
+    batch = (root / "start.bat").read_text(encoding="utf-8")
+    lane = (root / "start-lane.ps1").read_text(encoding="utf-8")
+    assert 'JACK_AGENTIC_TRANSACTION_LINKS=1' in batch
+    assert '$env:JACK_AGENTIC_TRANSACTION_LINKS = "1"' in lane
+    assert '$env:JACK_AGENTIC_TASK_ANCHOR = "0"' in lane
+    assert '$env:JACK_AGENTIC_PROFILE = $AgenticProfile' in lane
+    assert '$env:JACK_CODER_PLANNER_PROFILE = $CoderPlannerProfile' in lane
+    sync = batch.split("REM A clean clone", 1)[0].split("REM A fresh Git clone", 1)[1]
+    assert "WARNING:" in sync and "exit /b" not in sync
+    assert "jack_secure_entrypoint.py" in batch and "jack_secure_entrypoint.py" in lane

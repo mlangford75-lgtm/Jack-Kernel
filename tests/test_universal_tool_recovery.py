@@ -35,13 +35,13 @@ def call(i, name, args):
             "function": {"name": name, "arguments": json.dumps(args)}}
 
 
-def history(k, stage, compact):
+def history(k, stage, compact, repetitions=3):
     h = [{"role": "user", "content": "Build a model and verify it."}]
-    for i in range(1, 4):
+    for i in range(1, repetitions + 1):
         for j, (name, args, result) in enumerate([
             ("write", {"path": "resort_model.py", "content": "print(1)"}, "wrote bytes"),
             ("bash", {"command": "python resort_model.py"}, "(no output)")], start=1):
-            if i == 3 and j == 2:
+            if i == repetitions and j == 2:
                 break
             item = call(i * 2 + j, name, args)
             h.append({"role": "assistant", "content": "", "tool_calls": [item],
@@ -64,20 +64,26 @@ STAGES = [
 
 @pytest.mark.parametrize("mode,stage", STAGES)
 @pytest.mark.parametrize("compact", [False, True])
-def test_cycle_spans_compacted_and_native_tool_evidence(monkeypatch, tmp_path, mode, stage, compact):
+@pytest.mark.parametrize("repetitions", [3, 5])
+def test_cycle_spans_compacted_and_native_tool_evidence(monkeypatch, tmp_path, mode, stage, compact, repetitions):
+    monkeypatch.setenv("JACK_TOOL_CYCLE_REPETITIONS", str(repetitions))
     k = load(monkeypatch, tmp_path, mode)
-    h = history(k, stage, compact)
+    h = history(k, stage, compact, repetitions)
     proposed = call(90, "bash", {"command": "python resort_model.py"})
-    assert k._agentic_exact_tool_cycle(h, [proposed], stage_key=stage) == (2, 3)
-    assert k._agentic_exact_tool_cycle(h, [proposed], stage_key="different-stage") is None
+    assert k._agentic_exact_tool_cycle(h, [proposed], repetitions=repetitions, stage_key=stage) == (2, repetitions)
+    assert k._agentic_exact_tool_cycle(h, [proposed], repetitions=repetitions, stage_key="different-stage") is None
+    early = history(k, stage, compact, repetitions - 1)
+    assert k._agentic_exact_tool_cycle(early, [proposed], repetitions=repetitions, stage_key=stage) is None
     changed = call(91, "bash", {"command": "python verify_model.py"})
-    assert k._agentic_exact_tool_cycle(h, [changed], stage_key=stage) is None
+    assert k._agentic_exact_tool_cycle(h, [changed], repetitions=repetitions, stage_key=stage) is None
 
 
 @pytest.mark.parametrize("mode,stage", STAGES)
-def test_all_tool_modes_block_unrecovered_cycle_at_release(monkeypatch, tmp_path, mode, stage):
+@pytest.mark.parametrize("repetitions", [3, 5])
+def test_all_tool_modes_block_unrecovered_cycle_at_release(monkeypatch, tmp_path, mode, stage, repetitions):
+    monkeypatch.setenv("JACK_TOOL_CYCLE_REPETITIONS", str(repetitions))
     k = load(monkeypatch, tmp_path, mode)
-    h = history(k, stage, compact=(mode != "agentic"))
+    h = history(k, stage, compact=(mode != "agentic"), repetitions=repetitions)
     proposed = call(90, "bash", {"command": "python resort_model.py"})
     answer = {"choices": [{"message": {"role": "assistant", "content": "",
                                     "tool_calls": [proposed]}, "finish_reason": "tool_calls"}]}
@@ -143,9 +149,11 @@ def test_malformed_recovery_is_bounded(monkeypatch, tmp_path):
     assert len(attempts) == 2
 
 
-def test_shared_stream_guard_recovers_by_changing_action(monkeypatch, tmp_path):
+@pytest.mark.parametrize("repetitions", [3, 5])
+def test_shared_stream_guard_recovers_by_changing_action(monkeypatch, tmp_path, repetitions):
+    monkeypatch.setenv("JACK_TOOL_CYCLE_REPETITIONS", str(repetitions))
     k = load(monkeypatch, tmp_path)
-    h = history(k, "thesis", compact=True)
+    h = history(k, "thesis", compact=True, repetitions=repetitions)
     requests = []
     class Backend:
         async def chat_stream(self, **kwargs):
@@ -166,5 +174,179 @@ def test_shared_stream_guard_recovers_by_changing_action(monkeypatch, tmp_path):
         assert len(requests) == 2
         assert any(x.get("_jack_internal_tool_validation_rejection")
                    for x in requests[1]["messages"])
-        assert not any(x.get("_jack_internal_tool_validation_rejection") for x in h)
+        # The corrected active-stage checkpoint is now deliberately retained
+        # for tool resume/Stage 2, rather than being lost with a retry copy.
+        assert any(x.get("_jack_internal_tool_validation_rejection") for x in h)
+    asyncio.run(run())
+
+
+def test_default_mutation_cycle_threshold_is_five(monkeypatch, tmp_path):
+    monkeypatch.delenv("JACK_TOOL_CYCLE_REPETITIONS", raising=False)
+    monkeypatch.delenv("JACK_AGENTIC_TOOL_CYCLE_REPETITIONS", raising=False)
+    k = load(monkeypatch, tmp_path)
+    assert k.CFG.tool_cycle_repetitions == 5
+    proposed = call(90, "bash", {"command": "python resort_model.py"})
+    for compact in (False, True):
+        early = history(k, "thesis", compact, 4)
+        reached = history(k, "thesis", compact, 5)
+        assert k._agentic_exact_tool_cycle(early, [proposed], stage_key="thesis") is None
+        assert k._agentic_exact_tool_cycle(reached, [proposed], stage_key="thesis") == (2, 5)
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("draft_reported", [True, False])
+def test_audit_m11_translation_preserves_peak_stage_context(
+        monkeypatch, tmp_path, streaming, draft_reported):
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "translated")
+    monkeypatch.setenv("JACK_TRANSLATED_LANGUAGE", "en")
+    k = load(monkeypatch, tmp_path, mode="agentic")
+    draft = {"prompt_tokens": 20000, "completion_tokens": 20, "total_tokens": 20020}
+    translated = {"prompt_tokens": 400, "completion_tokens": 10, "total_tokens": 410}
+    memory = {"prompt_tokens": 1500, "completion_tokens": 10, "total_tokens": 1510}
+    samples = [draft if draft_reported else None, translated]
+    calls = []
+
+    class Backend:
+        def sample(self, kwargs):
+            index = len(calls)
+            calls.append(kwargs)
+            return ("Draft answer." if index == 0 else "Translated answer.", samples[index])
+
+        async def chat(self, **kwargs):
+            answer, usage = self.sample(kwargs)
+            return {"choices": [{"message": {"role": "assistant", "content": answer},
+                                 "finish_reason": "stop"}], "usage": usage}
+
+        async def chat_stream(self, **kwargs):
+            answer, usage = self.sample(kwargs)
+            yield {"choices": [{"delta": {"content": answer}, "finish_reason": None}]}
+            yield {"choices": [{"delta": {}, "finish_reason": "stop"}]}
+            if usage is not None:
+                yield {"choices": [], "usage": usage}
+
+    k.KERNEL.backend = Backend()
+    usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    h = [{"role": "user", "content": "Answer this task."}]
+
+    async def run():
+        if streaming:
+            packets = [packet async for packet in k.KERNEL._run_stage_streamed(
+                h, "", "extended_initial", usage, append=False)]
+            return next(packet["data"] for packet in packets if packet["kind"] == "result")
+        return await k.KERNEL._run_stage(h, "", "extended_initial", usage, append=False)
+
+    result = asyncio.run(run())
+    assert len(calls) == 2
+    assert result["choices"][0]["message"]["content"] == "Translated answer."
+    assert usage["total_tokens"] == translated["total_tokens"] + (
+        draft["total_tokens"] if draft_reported else 0)
+    assert k._agentic_peak_stage_usage(result.get("usage"), memory) == (
+        draft if draft_reported else None)
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("finish_with_tool", [False, True])
+def test_audit_m9_recovery_checkpoint_survives_stage_return(
+        monkeypatch, tmp_path, streaming, finish_with_tool):
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "balanced")
+    k = load(monkeypatch, tmp_path, mode="agentic")
+    h = [{"role": "user", "content": "Inspect the project."}]
+    tools = [{"type": "function", "function": {"name": "bash", "parameters": {
+        "type": "object", "properties": {"command": {"type": "string"}},
+        "required": ["command"]}}}]
+    bad = call(801, "not_advertised", {"command": "inspect"})
+    good = call(802, "bash", {"command": "pwd"})
+    usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    calls = []
+
+    class Backend:
+        def sample(self, kwargs):
+            calls.append([dict(m) for m in kwargs["messages"]])
+            if len(calls) == 1:
+                return ({"role": "assistant", "content": "",
+                         "reasoning_content": "Initial inspection reasoning.",
+                         "tool_calls": [bad]}, "tool_calls")
+            if finish_with_tool:
+                return ({"role": "assistant", "content": "",
+                         "reasoning_content": "Corrected inspection reasoning.",
+                         "tool_calls": [good]}, "tool_calls")
+            return ({"role": "assistant", "content": "Inspection complete.",
+                     "reasoning_content": "Corrected inspection reasoning."}, "stop")
+
+        async def chat(self, **kwargs):
+            message, finish = self.sample(kwargs)
+            return {"choices": [{"message": message, "finish_reason": finish}]}
+
+        async def chat_stream(self, **kwargs):
+            message, finish = self.sample(kwargs)
+            delta = {k: v for k, v in message.items() if k != "tool_calls"}
+            if message.get("tool_calls"):
+                delta["tool_calls"] = [dict(item, index=i)
+                                       for i, item in enumerate(message["tool_calls"])]
+            yield {"choices": [{"delta": delta, "finish_reason": None}]}
+            yield {"choices": [{"delta": {}, "finish_reason": finish}]}
+
+    k.KERNEL.backend = Backend()
+    monkeypatch.setattr(k, "_phase4_partition_structured_tool_calls",
+                        lambda calls: (calls, []))
+
+    async def run():
+        if streaming:
+            packets = [packet async for packet in k.KERNEL._run_stage_streamed(
+                h, "", "extended_initial", usage, tools=tools, tool_choice="auto",
+                append=False)]
+            result = next(packet["data"] for packet in packets if packet["kind"] == "result")
+        else:
+            result = await k.KERNEL._run_stage(
+                h, "", "extended_initial", usage, tools=tools, tool_choice="auto",
+                append=False)
+        assert len(calls) == 2
+        checkpoint = next(x for x in h if x.get("_jack_internal_tool_validation_checkpoint"))
+        notice = next(x for x in h if x.get("_jack_internal_tool_validation_rejection"))
+        assert checkpoint["reasoning_content"] == "Initial inspection reasoning."
+        assert "not_advertised" in notice["content"]
+        assert not checkpoint.get("tool_calls")
+        if finish_with_tool:
+            await k.KERNEL._register_stage_tool_resume(
+                stage_key="extended_initial", history=h, secondary_system="",
+                usage=usage, tools=tools, tool_choice="auto", data=result)
+            pending = k.KERNEL._pending_tool_resumes[good["id"]]
+            assert checkpoint in pending.history and notice in pending.history
+            assert bad["id"] not in k.KERNEL._pending_tool_resumes
+        else:
+            message = result["choices"][0]["message"]
+            h.append({**message, "_jack_extended_candidate_response": True})
+            events = k._agentic_stage2_chronological_source(h)
+            assert any(e["type"] == "reasoning_segment"
+                       and e["content"] == "Initial inspection reasoning." for e in events)
+            assert any(e["type"] == "host_tool_rejection"
+                       and "not_advertised" in e["content"] for e in events)
+
+    asyncio.run(run())
+
+
+def test_nonstream_cycle_recovers_by_changing_action(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path)
+    h = history(k, "thesis", compact=True, repetitions=5)
+    requests = []
+
+    class Backend:
+        async def chat(self, **kwargs):
+            requests.append(kwargs)
+            cmd = "python resort_model.py" if len(requests) == 1 else "python verify_model.py"
+            return {"choices": [{"message": {"role": "assistant", "content": "",
+                        "tool_calls": [call(150 + len(requests), "bash", {"command": cmd})]},
+                        "finish_reason": "tool_calls"}]}
+
+    k.KERNEL.backend = Backend()
+
+    async def run():
+        result = await k.KERNEL._run_stage(
+            h, "", "thesis", {}, tools=[{"type": "function", "function": {
+                "name": "bash", "parameters": {"type": "object",
+                    "properties": {"command": {"type": "string"}}}}}], tool_choice="auto")
+        assert "verify_model.py" in result["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]
+        assert len(requests) == 2
+        assert any(x.get("_jack_internal_tool_validation_rejection") for x in h)
+
     asyncio.run(run())

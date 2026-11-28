@@ -2,7 +2,7 @@ import fs from "fs";
 import http from "http";
 import os from "os";
 import path from "path";
-import { randomUUID } from "crypto";
+import { randomUUID, timingSafeEqual } from "crypto";
 
 const HOST = "127.0.0.1";
 const DEFAULT_CONTROL_PORT = 8013;
@@ -41,9 +41,19 @@ function loadControlConfig() {
     DEFAULT_CONTROL_PORT,
   );
   const envToken = process.env.JACK_PI_CONTROL_TOKEN;
-  const token = envToken !== undefined
+  let token = envToken !== undefined
     ? String(envToken)
     : (typeof parsed?.controlToken === "string" ? parsed.controlToken : "");
+  if (token.startsWith("$")) {
+    const resolved = process.env[token.slice(1)];
+    if (resolved === undefined || !resolved.trim()) {
+      // Never authenticate against a literal unresolved reference.
+      console.error("[pi-control] Unresolved control-token environment reference; authentication unavailable.");
+      token = "";
+    } else {
+      token = resolved;
+    }
+  }
   const fallbackDefault = parsed?.controlPortFallback === undefined
     ? true
     : Boolean(parsed.controlPortFallback);
@@ -502,7 +512,7 @@ export default async function (pi) {
     if (armedAgentStart) {
       const binding = cloneBinding(armedAgentStart);
       armedAgentStart = null;
-      if (controlledTask?.id !== binding.taskId || controlledTask?.status !== "queued") {
+      if (controlledTask?.id !== binding.taskId || !["queued", "cancelled"].includes(controlledTask.status)) {
         failCorrelation("controlled task/run binding became invalid before agent_start");
         activeRun = null;
         return;
@@ -515,7 +525,11 @@ export default async function (pi) {
       activeRun = binding;
       controlledTask.runId = binding.runId;
       controlledTask.runEpoch = 1;
-      controlledTask.status = "running";
+      if (controlledTask.status === "cancelled") {
+        ctx.abort?.();
+      } else {
+        controlledTask.status = "running";
+      }
       emitTask(binding);
       return;
     }
@@ -533,7 +547,9 @@ export default async function (pi) {
         runEpoch: nextEpoch,
       };
       controlledTask.runEpoch = nextEpoch;
-      if (controlledTask.status !== "cancelled") {
+      if (controlledTask.status === "cancelled") {
+        ctx.abort?.();
+      } else {
         controlledTask.status = "running";
       }
       emitTask(activeRun);
@@ -669,7 +685,9 @@ export default async function (pi) {
   server = http.createServer(async (req, res) => {
     try {
       const authorization = req.headers.authorization || "";
-      if (!token || authorization !== `Bearer ${token}`) {
+      const supplied = Buffer.from(authorization, "utf8");
+      const expected = Buffer.from(`Bearer ${token}`, "utf8");
+      if (!token || supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
         json(res, 401, { error: "unauthorized" });
         return;
       }

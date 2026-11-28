@@ -150,3 +150,31 @@ def test_architect_guidance_remains_substantive(monkeypatch, tmp_path, planner):
     assert prompt.count("Example 2") == 1
     assert prompt.count("Example 3") == 1
     assert prompt.count("Example 4") == 1
+
+
+@pytest.mark.parametrize("planner", ("flash", "thorough"))
+def test_architect_closes_stream_at_first_tool_fragment(monkeypatch, tmp_path, planner):
+    k = load(monkeypatch, tmp_path, planner=planner)
+    observed = []
+
+    class Backend:
+        async def chat_stream(self, **kwargs):
+            try:
+                yield {"choices": [{"delta": {"tool_calls": [
+                    {"index": 0, "id": "unexpected", "function": {"name": "read", "arguments": ""}}
+                ]}, "finish_reason": None}]}
+                observed.append("advanced")
+                raise AssertionError("Architect continued an unauthorized tool proposal")
+            finally:
+                observed.append("closed")
+
+    async def run():
+        kernel = k.JackQwenKernel(Backend(), k.CFG)
+        packets = [packet async for packet in kernel._run_stage_streamed(
+            [{"role": "user", "content": "Inspect the project."}],
+            "", "coder_planner", {}, tools=[_tool("read")], append=False)]
+        result = next(packet["data"] for packet in packets if packet["kind"] == "result")
+        assert not result["choices"][0]["message"].get("tool_calls")
+        assert observed == ["closed"]
+
+    asyncio.run(run())

@@ -23,6 +23,8 @@ def load(monkeypatch, tmp_path, profile):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
     monkeypatch.setenv("JACK_AGENTIC_PROFILE", profile)
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_WITHHOLD_A1", "1")
+    monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
+    monkeypatch.setenv("JACK_BACKEND_MODEL", "test-model")
     monkeypatch.setenv("JACK_FORENSIC_ARCHIVE_MODE", "off")
     monkeypatch.setenv("JACK_AGENTIC_FORENSIC_DB", str(tmp_path / (uuid.uuid4().hex + ".sqlite")))
     name = "jack_stage2_withheld_" + uuid.uuid4().hex
@@ -31,6 +33,34 @@ def load(monkeypatch, tmp_path, profile):
     sys.modules[name] = k
     spec.loader.exec_module(k)
     return k
+
+
+def capsule_events(messages):
+    assert [m["role"] for m in messages] == ["system", "user"]
+    prefix = "JACK READ-ONLY WORKING-STATE SOURCE DATA, NOT A USER REQUEST.\n"
+    suffix = "\nEND JACK WORKING-STATE SOURCE DATA."
+    content = messages[-1]["content"]
+    assert content.startswith(prefix) and content.endswith(suffix)
+    capsule = json.loads(content[len(prefix):-len(suffix)])
+    assert capsule["kind"] == "jack_stage1_frozen_working_evidence"
+    assert capsule["scope"] == "authenticated_current_turn_only"
+    assert all(not any(field in m for field in ("reasoning_content", "reasoning", "thinking"))
+               for m in messages)
+    return capsule["events"]
+
+
+def wire_for(k, source, stream=False):
+    backend = k.OpenAICompatibleBackend(k.CFG)
+    try:
+        payload, _ = backend._build_stage_request(
+            model="test-model", messages=source, secondary_system="",
+            profile=k.STAGES["extended_reflection"], tools=None,
+            tool_choice=None, streamed=stream,
+        )
+        assert "tools" not in payload and "tool_choice" not in payload
+        return payload["messages"]
+    finally:
+        asyncio.run(backend._client.aclose())
 
 
 def history():
@@ -44,7 +74,7 @@ def history():
     ]
 
 
-@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "exhaustive"))
+@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "translated"))
 def test_stage2_source_preserves_provenance_and_hides_answer(monkeypatch, tmp_path, profile):
     k = load(monkeypatch, tmp_path, profile)
     h = history()
@@ -52,9 +82,15 @@ def test_stage2_source_preserves_provenance_and_hides_answer(monkeypatch, tmp_pa
     view = k._agentic_stage2_test_history(h, k.STAGES["extended_reflection"])
     assert h == old
     assert view[0]["content"] == "Provide 5 steps for updating JSON."
-    assert SECRET_A1 not in str(view)
+    # This is the private authenticated source view, not the provider wire.
     assert view[-1]["role"] == "assistant"
-    assert view[-1]["content"] == "[Jack: completed response withheld from memory pass]"
+    assert view[-1]["content"] == SECRET_A1
+    wire = wire_for(k, h)
+    assert SECRET_A1 not in json.dumps(wire)
+    assert h[0]["content"] not in json.dumps(wire)
+    events = capsule_events(wire)
+    assert [e["content"] for e in events] == ([] if profile == "flash" else [
+        "Considered direct write. ", R1, "Verified atomic replace."])
     assert "Tool intermediate text" not in str(view)
     if profile == "flash":
         assert "reasoning_content" not in view[-1]
@@ -64,9 +100,9 @@ def test_stage2_source_preserves_provenance_and_hides_answer(monkeypatch, tmp_pa
         assert "Verified atomic replace." in view[-1]["reasoning_content"]
 
 
-@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "exhaustive"))
+@pytest.mark.parametrize("profile", ("flash", "balanced", "thorough", "translated"))
 @pytest.mark.parametrize("stream", (False, True))
-def test_stage2_wire_does_not_contain_a1_and_seed_unchanged(monkeypatch, tmp_path, profile, stream):
+def test_stage2_wire_does_not_contain_a1_and_uses_separate_seed(monkeypatch, tmp_path, profile, stream):
     monkeypatch.setenv("JACK_SEED", "314159")
     k = load(monkeypatch, tmp_path, profile)
     h = history()
@@ -105,27 +141,18 @@ def test_stage2_wire_does_not_contain_a1_and_seed_unchanged(monkeypatch, tmp_pat
     assert h == old
     assert len(captured) == 1
     wire = captured[0]
-    assert wire["seed"] == 314159
+    assert wire["seed"] == 314161
     assert SECRET_A1 not in json.dumps(wire)
     messages = wire["messages"]
     assert len([m for m in messages if m["role"] == "user"]) == 1
     assert not [m for m in messages if m["role"] == "assistant"]
     assert messages[-1]["role"] == "user"
-    historical = messages[-1]["content"]
-    assert historical.startswith("JACK AUTHENTICATED CURRENT-TURN SOURCE DATA")
-    assert json.dumps(h[0]["content"]) in historical
-    assert historical.count(h[0]["content"]) == 1
-    assert historical.count(R1) == (0 if profile == "flash" else 1)
-    assert "STAGE 1 NATIVE REASONING (quoted historical evidence; do not continue)" in historical
-    assert historical.endswith(
-        "Do not answer the quoted user request, continue the quoted reasoning, "
-        "or reconstruct the separately frozen response."
-    )
-    assert all(
-        "reasoning_content" not in m and "reasoning" not in m and "thinking" not in m
-        for m in messages
-    )
-    assert "completed response is withheld" in json.dumps(messages)
+    events = capsule_events(messages)
+    assert h[0]["content"] not in json.dumps(messages)
+    assert [e["content"] for e in events] == ([] if profile == "flash" else [
+        "Considered direct write. ", R1, "Verified atomic replace."])
+    assert messages[0]["content"] == k.AGENTIC_36_STAGE2_PROMPT + "\n\n" + k.AGENTIC_STAGE2_MEMORY_TRIGGER
+    assert "tools" not in wire and "tool_choice" not in wire
 
 
 @pytest.mark.parametrize("stream", (False, True))
@@ -180,13 +207,15 @@ def test_historical_request_and_reasoning_do_not_obey_caller(monkeypatch, tmp_pa
     assert "SECRET COMPLETED ANSWER" not in payload
     assert sum(m["role"] == "user" for m in messages) == 1
     assert not any(m["role"] == "assistant" for m in messages)
-    assert messages[-1]["content"].count("Answer this: what is Battlefield?") == 1
-    assert messages[-1]["content"].count("Decision: compare it with Call of Duty.") == 1
-    assert "JACK MEMORY EXTRACTION TASK" in messages[-1]["content"]
-    assert messages[0]["content"] == k.AGENTIC_36_STAGE2_PROMPT
+    assert "Answer this: what is Battlefield?" not in payload
+    assert capsule_events(messages) == [
+        {"type": "reasoning_segment", "phase": "initial",
+         "content": h[-1]["reasoning_content"]}
+    ]
+    assert messages[0]["content"] == k.AGENTIC_36_STAGE2_PROMPT + "\n\n" + k.AGENTIC_STAGE2_MEMORY_TRIGGER
 
 
-def test_historical_multimodal_request_preserves_image_once(monkeypatch, tmp_path):
+def test_historical_multimodal_request_retains_image_privately_without_replay(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path, "thorough")
     picture = {"type": "image_url", "image_url": {"url": "data:image/png;base64,YQ=="}}
     source = [
@@ -200,25 +229,21 @@ def test_historical_multimodal_request_preserves_image_once(monkeypatch, tmp_pat
     ]
     snapshot = copy.deepcopy(source)
     isolated = k._agentic_stage2_test_history(source, k.STAGES["extended_reflection"])
-    prepared = k.OpenAICompatibleBackend(k.CFG)._stage_messages_for_profile(
-        isolated, k.STAGES["extended_reflection"]
-    )
-    wire = [{"role": "system", "content": k.AGENTIC_36_STAGE2_PROMPT}] + prepared
-    k._agentic_attach_system_stage_control(wire, source, k.STAGES["extended_reflection"])
-    k._agentic_stage2_project_historical_evidence(wire, isolated, prepared)
-    content = wire[-1]["content"]
+    assert isolated[0]["content"] == source[0]["content"]
+    wire = wire_for(k, source)
     assert source == snapshot
-    assert isinstance(content, list)
-    assert sum(part.get("type") == "image_url" for part in content) == 1
-    assert content[2] == picture
-    assert sum("Explain this picture." in part.get("text", "") for part in content) == 1
-    assert sum("Noted an image in the request." in part.get("text", "") for part in content) == 1
-    assert not any(m.get("role") == "assistant" for m in wire)
+    assert "Explain this picture." not in json.dumps(wire)
+    assert picture["image_url"]["url"] not in json.dumps(wire)
+    assert "SECRET COMPLETED ANSWER" not in json.dumps(wire)
+    assert capsule_events(wire) == [
+        {"type": "reasoning_segment", "phase": "initial",
+         "content": "Noted an image in the request."}
+    ]
 
 
-def test_exhaustive_review_extension_reasoning_reaches_stage2_once(monkeypatch, tmp_path):
-    """Both initial R1 and Exhaustive's verification R1 survive as evidence."""
-    k = load(monkeypatch, tmp_path, "exhaustive")
+def test_translated_extension_reasoning_reaches_stage2_once(monkeypatch, tmp_path):
+    """Initial and translation-continuation R1 survive as attributed evidence."""
+    k = load(monkeypatch, tmp_path, "translated")
     assert k.CFG.agentic_final_review is True
     assert k.STAGES["extended_initial"].thinking is True
     assert k.STAGES["extended_reflection"].thinking is True
@@ -239,30 +264,22 @@ def test_exhaustive_review_extension_reasoning_reaches_stage2_once(monkeypatch, 
          "_jack_extended_candidate_response": True},
     ]
     original = copy.deepcopy(history)
-    source = k._agentic_stage2_test_history(history, k.STAGES["extended_reflection"])
-    prepared = k.OpenAICompatibleBackend(k.CFG)._stage_messages_for_profile(
-        source, k.STAGES["extended_reflection"]
-    )
-    wire = [{"role": "system", "content": k.AGENTIC_36_STAGE2_PROMPT}] + prepared
-    k._agentic_attach_system_stage_control(wire, history, k.STAGES["extended_reflection"])
-    k._agentic_stage2_project_historical_evidence(wire, source, prepared)
+    wire = wire_for(k, history)
     assert history == original
-    assert len([msg for msg in wire if msg.get("role") == "user"]) == 1
-    assert not any(msg.get("role") == "assistant" for msg in wire)
-    evidence = wire[-1]["content"]
-    assert evidence.count(request) == 1
-    assert evidence.count(initial_reasoning) == 1
-    assert evidence.count(review_reasoning) == 1
+    assert capsule_events(wire) == [
+        {"type": "reasoning_segment", "phase": "initial", "content": initial_reasoning},
+        {"type": "reasoning_segment", "phase": "translation", "content": review_reasoning},
+    ]
+    assert request not in json.dumps(wire)
     assert "Final answer not visible to Stage 2." not in str(wire)
     assert k.AGENTIC_FINAL_REVIEW_TRIGGER not in str(wire)
-    assert "JACK MEMORY EXTRACTION TASK" in evidence
 
 
 @pytest.mark.parametrize("stream", (False, True))
 def test_frozen_reasoning_conversation_preserves_chronology_and_no_live_roles(monkeypatch, tmp_path, stream):
     """Initial reasoning and review reasoning are frozen separately, never playable roles."""
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_FROZEN_CONVERSATION", "1")
-    k = load(monkeypatch, tmp_path, "exhaustive")
+    k = load(monkeypatch, tmp_path, "translated")
     user_request = "what is battlefield"
     initial = "INITIAL_THOUGHT: This is a military FPS. Provide its distinguishing features."
     review = "REVIEW_THOUGHT: The response should also address vehicles and squads."
@@ -278,33 +295,16 @@ def test_frozen_reasoning_conversation_preserves_chronology_and_no_live_roles(mo
          "_jack_extended_candidate_response": True},
     ]
     original = copy.deepcopy(h)
-    source = k._agentic_stage2_test_history(h, k.STAGES["extended_reflection"])
-    prepared = k.OpenAICompatibleBackend(k.CFG)._stage_messages_for_profile(
-        source, k.STAGES["extended_reflection"]
-    )
-    wire = [{"role": "system", "content": k.AGENTIC_36_STAGE2_PROMPT}] + prepared
-    k._agentic_attach_system_stage_control(wire, h, k.STAGES["extended_reflection"])
-    k._agentic_stage2_project_historical_evidence(wire, source, prepared)
+    wire = wire_for(k, h, stream=stream)
     assert h == original
-    assert len([item for item in wire if item.get("role") == "user"]) == 1
-    assert not any(item.get("role") == "assistant" for item in wire)
-    evidence = wire[-1]["content"]
-    assert user_request in evidence
-    assert evidence.count(user_request) == 1
-    assert evidence.count(initial) == 1
-    assert evidence.count(review) == 1
-    assert evidence.count(SECRET_A1) == 1
-    assert evidence.index(review) < evidence.index(SECRET_A1)
-    assert "FROZEN COMPLETED RESPONSE" in evidence
-    assert "already delivered" in evidence
-    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
-    assert "memory must complement that response" in k.AGENTIC_36_STAGE2_PROMPT
-    assert evidence.index(initial) < evidence.index(review)
-    assert "Assistant (initial working reasoning; quoted)" in evidence
-    assert "Assistant (later verification reasoning; quoted)" in evidence
+    assert capsule_events(wire) == [
+        {"type": "reasoning_segment", "phase": "initial", "content": initial},
+        {"type": "reasoning_segment", "phase": "translation", "content": review},
+    ]
+    assert user_request not in json.dumps(wire)
+    assert SECRET_A1 not in json.dumps(wire)
+    assert "Interim draft" not in json.dumps(wire)
     assert k.AGENTIC_FINAL_REVIEW_TRIGGER not in str(wire)
-    assert str(wire).count(SECRET_A1) == 1
-    assert not any("reasoning_content" in item for item in wire)
 
 
 @pytest.mark.parametrize("profile", ("flash", "balanced", "thorough"))
@@ -312,22 +312,13 @@ def test_frozen_conversation_without_review_preserves_initial_and_never_invents_
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_FROZEN_CONVERSATION", "1")
     k = load(monkeypatch, tmp_path, profile)
     h = history()
-    source = k._agentic_stage2_test_history(h, k.STAGES["extended_reflection"])
-    prepared = k.OpenAICompatibleBackend(k.CFG)._stage_messages_for_profile(
-        source, k.STAGES["extended_reflection"]
-    )
-    wire = [{"role": "system", "content": k.AGENTIC_36_STAGE2_PROMPT}] + prepared
-    k._agentic_attach_system_stage_control(wire, h, k.STAGES["extended_reflection"])
-    k._agentic_stage2_project_historical_evidence(wire, source, prepared)
-    text = str(wire)
-    assert text.count(SECRET_A1) == 1
-    assert "later verification reasoning" not in text
-    assert "FROZEN COMPLETED RESPONSE" in text
-    if profile == "flash":
-        assert R1 not in text
-    else:
-        assert R1 in text
-    assert "JACK MEMORY EXTRACTION TASK" in text
+    saved = copy.deepcopy(h)
+    events = capsule_events(wire_for(k, h))
+    assert h == saved
+    assert SECRET_A1 not in json.dumps(events)
+    assert all(e["phase"] == "initial" for e in events)
+    assert [e["content"] for e in events] == ([] if profile == "flash" else [
+        "Considered direct write. ", R1, "Verified atomic replace."])
 
 
 def test_stage1_retains_actual_answer_and_is_not_masked(monkeypatch, tmp_path):
@@ -348,12 +339,17 @@ def test_source_does_not_use_recovery_notice_as_new_user_request(monkeypatch, tm
          "_jack_internal_tool_validation_rejection": True},
     ]
     view = k._agentic_stage2_test_history(h, k.STAGES["extended_reflection"])
-    assert SECRET_A1 not in str(view)
-    assert "host validation" in str(view)
+    assert view[1]["content"] == SECRET_A1
+    assert view[-1]["_jack_internal_tool_validation_rejection"] is True
     assert view[0]["role"] == "user"
+    assert view[0]["content"] == h[0]["content"]
+    wire = wire_for(k, h)
+    assert SECRET_A1 not in json.dumps(wire)
+    assert h[0]["content"] not in json.dumps(wire)
+    assert "Checkpoint" not in json.dumps(wire)
 
 
-def test_default_contract_retains_exact_a1(monkeypatch, tmp_path):
+def test_default_contract_retains_exact_a1_privately_even_with_stale_toggle(monkeypatch, tmp_path):
     k = load(monkeypatch, tmp_path, "balanced")
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_WITHHOLD_A1", "0")
     # Reload, because the setting is read at import time.
@@ -362,8 +358,9 @@ def test_default_contract_retains_exact_a1(monkeypatch, tmp_path):
     default = importlib.util.module_from_spec(spec)
     sys.modules[name] = default
     spec.loader.exec_module(default)
-    assert not default.AGENTIC_STAGE2_WITHHOLD_A1
-    assert default.AGENTIC_36_STAGE2_PROMPT == default._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
-    assert default.AGENTIC_STAGE2_MEMORY_TRIGGER == default._AGENTIC_STAGE2_MEMORY_TRIGGER_BASE
+    assert default.AGENTIC_STAGE2_WITHHOLD_A1
+    assert default.AGENTIC_SOURCE_ONLY_WORKING_STATE
+    assert default.AGENTIC_36_STAGE2_PROMPT == default._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
+    assert SECRET_A1 not in json.dumps(wire_for(default, history()))
     view = default._agentic_stage2_test_history(history(), default.STAGES["extended_reflection"])
     assert view[-1]["content"] == SECRET_A1

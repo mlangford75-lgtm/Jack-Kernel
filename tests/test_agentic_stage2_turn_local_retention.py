@@ -340,11 +340,12 @@ def test_stage2_rejects_unowned_suffix_after_frozen_answer(monkeypatch, tmp_path
         k._agentic_stage2_test_history(unowned, k.STAGES["extended_reflection"])
     assert exc.value.status_code == 409
 
-def test_nov4_qwen36_reference_is_the_new_install_default(monkeypatch, tmp_path):
+def test_new_install_defaults_follow_lmstudio_autodetect_and_xhigh(monkeypatch, tmp_path):
     k = load_kernel(monkeypatch, tmp_path, "isolate-retain")
     assert k.CLI_DEFAULTS["backend_profile"] == "lmstudio"
-    assert k.CLI_DEFAULTS["backend_model"] == "qwen3.6-35b-a3b"
-    assert k.CLI_DEFAULTS["reasoning_level"] == "Local Agentic (Preserve Thinking)"
+    assert k.CLI_DEFAULTS["backend_model"] == ""
+    assert k.CLI_DEFAULTS["reasoning_level"] == "x-high"
+    assert k.CLI_DEFAULTS["coder_planner_profile"] == "flash"
     assert k.CLI_DEFAULTS["preserve_thinking"] is True
     assert k.STAGES["extended_initial"].temperature == 0.70
     assert k.STAGES["extended_reflection"].temperature == 0.50

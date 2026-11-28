@@ -29,6 +29,7 @@ jobs:
           python-version: "3.14.6"
 
       - name: Set up Node 24.16.0
+        id: setup_node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 24.16.0
@@ -59,19 +60,19 @@ jobs:
         run: |
           python -c "from pathlib import Path; import hashlib; b=Path('Pi/pi-control-bridge.ts').read_bytes(); lf=b.replace(b'\r\n',b'\n'); crlf=lf.replace(b'\n',b'\r\n'); print('PI_BRIDGE_LF_SHA256='+hashlib.sha256(lf).hexdigest()); print('PI_BRIDGE_CRLF_SHA256='+hashlib.sha256(crlf).hexdigest())"
 
-      - name: Run Phase-5 targeted tests
+      - name: Run Consequence Gate targeted tests
         shell: pwsh
         run: python -m pytest -q tests/test_phase5_consequence_gate.py tests/test_phase5_path_gate_integration.py tests/test_phase5_runtime_integration.py tests/test_phase5_secure_entrypoint.py
 
-      - name: Run Phase-6 targeted tests
+      - name: Run Authority Ledger targeted tests
         shell: pwsh
         run: python -m pytest -q tests/test_phase6_authority_ledger.py tests/test_phase6_consequence_ledger_integration.py tests/test_phase6_security_event_ledger.py tests/test_phase6_runtime_installation.py
 
-      - name: Run Phase-7 credential isolation and DLP tests
+      - name: Run Credential Isolation and DLP tests
         shell: pwsh
         run: python -m pytest -q tests/test_phase7_credential_policy.py tests/test_phase7_live_integration.py tests/test_phase7_output_dlp.py tests/test_phase7_orchestration_dlp.py tests/test_phase7_diagnostic_dlp.py tests/test_phase7_diagnostic_headers.py tests/test_phase7_diagnostic_outer_release.py tests/test_phase7_ledger_resources.py tests/test_phase7_ledger_hooks.py
 
-      - name: Run Phase-8 source authority and preservation tests
+      - name: Run Source Drift Protection and preservation tests
         shell: pwsh
         run: python -m pytest -q tests/test_phase8_source_baseline.py tests/test_phase8_runtime_enforcement.py tests/test_phase8_ledger_observation.py tests/test_phase8_adversarial_preservation.py
 
@@ -79,17 +80,22 @@ jobs:
         shell: pwsh
         run: python -m pytest -q tests/test_ultra_native_appended_review.py
 
-      - name: Verify delegated Planner task and cache-stable prompt boundary
+      - name: Verify delegated Architect task and cache-stable prompt boundary
         shell: pwsh
         run: python -m pytest -q tests/test_coder_planner_delegation.py
 
-      - name: Verify Planner history isolation and failed-inspection handoff
+      - name: Verify Architect history isolation and failed-inspection handoff
         shell: pwsh
         run: python -m pytest -q tests/test_coder_planner_history_isolation.py tests/test_coder_planner_failed_inspection_handoff.py
 
       - name: Verify Coder specification and tool-resume contract
         shell: pwsh
         run: python -m pytest -q tests/test_agentic_coder_planner_executor.py
+
+      - name: Measure alternating-stage diagnostic region reuse (Audit 2)
+        if: ${{ !cancelled() && steps.install_test_environment.outcome == 'success' && steps.compile_runtime.outcome == 'success' }}
+        shell: pwsh
+        run: python tests/benchmark_audit2_cache_regions.py
 
       - name: Run Python regression suite
         # Collect all regression failures in one run even if a targeted
@@ -98,17 +104,27 @@ jobs:
         shell: pwsh
         run: python -m pytest -q
 
-      - name: Fresh-clone Windows bootstrap and isolated subprocess regression
+      - name: Fresh-clone Windows bootstrap and targeted isolated subprocess regression
+        # Collect independent bootstrap evidence even when the full suite fails.
+        # Earlier failures still fail the job; no continue-on-error.
+        id: isolated_bootstrap
+        if: ${{ !cancelled() && steps.install_test_environment.outcome == 'success' && steps.compile_runtime.outcome == 'success' }}
         shell: pwsh
         run: |
           cmd /c setup.bat
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmd /c run-tests.bat tests/test_phase7_ledger_hooks.py tests/test_phase7_ledger_resources.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Full isolated subprocess regression
+        if: ${{ !cancelled() && steps.isolated_bootstrap.outcome == 'success' }}
+        shell: pwsh
+        run: |
           cmd /c run-tests.bat
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Run Pi control bridge harnesses
+        if: ${{ !cancelled() && steps.setup_node.outcome == 'success' && steps.compile_runtime.outcome == 'success' }}
         shell: pwsh
         run: |
           node tests/pi_control_bridge_v2_harness.mjs

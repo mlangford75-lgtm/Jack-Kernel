@@ -1,0 +1,257 @@
+from __future__ import annotations
+
+import json
+from dataclasses import replace
+
+import pytest
+
+import jack_path_policy as path
+from jack_executor_contract import (
+    ExecutorCapability, ExecutorPolicyBinding, ExecutorQualification,
+    FilesystemProtection, STRICT_CAPABILITIES, require_strict_qualification,
+)
+
+
+def policy(mode=None, workspace=r"D:\Projects\Jack"):
+    payload = {"version": 1, "workspace_root": workspace,
+               "never_paths": [r"D:\Sensitive"]}
+    if mode is not None:
+        payload.update(version=2, workspace_mode=mode)
+    return path.build_runtime_path_policy(
+        runtime_id="runtime", lane_id="lane", raw_json=json.dumps(payload),
+        host_environment={"SystemRoot": r"C:\Windows", "SystemDrive": "C:"},
+    )
+
+
+def authorize(active, command):
+    call = {"function": {"name": "bash", "arguments": {"command": command}}}
+    return path.authorize_executor_tool_call(
+        active, call, executor_cwd=r"D:\Projects\Jack",
+        command_dialect="bash", executor_platform="win32",
+    )[0].outcome
+
+
+@pytest.mark.parametrize("command", [
+    "unknown-developer-tool",
+    "python -c 'print(42)'",
+    "echo ready\nunknown-developer-tool",
+    "git clone https://example.invalid/project project",
+    "cat clock*.html",
+])
+def test_ordinary_and_legacy_workspace_do_not_require_parser_completeness(command):
+    assert authorize(policy("represented"), command) is path.PathAuthorizationOutcome.ALLOW
+    assert authorize(policy(), command) is path.PathAuthorizationOutcome.ALLOW
+    assert authorize(policy("bounded"), command) is path.PathAuthorizationOutcome.ALLOW
+    assert authorize(policy(workspace=None), command) is path.PathAuthorizationOutcome.ALLOW
+
+
+@pytest.mark.parametrize("command, expected", [
+    ("unknown-developer-tool D:/Other/file.txt", path.PathAuthorizationOutcome.DENY_AND_CONTINUE),
+    ("unknown-developer-tool D:/Sensitive/file.txt", path.PathAuthorizationOutcome.HARD_INTERRUPT),
+    ("cat ../Other/file.txt", path.PathAuthorizationOutcome.DENY_AND_CONTINUE),
+    ("rm C:/Boot/BCD", path.PathAuthorizationOutcome.HARD_INTERRUPT),
+])
+def test_represented_mode_keeps_positive_path_authority(command, expected):
+    for active in (policy(), policy("bounded"), policy("represented")):
+        assert authorize(active, command) is expected
+
+
+def test_modes_are_explicit_and_strict_is_not_emulated():
+    assert policy(workspace=None).filesystem_protection is FilesystemProtection.STANDARD
+    assert policy().filesystem_protection is FilesystemProtection.REPRESENTED
+    assert policy("bounded").filesystem_protection is FilesystemProtection.REPRESENTED
+    assert policy("represented").filesystem_protection is FilesystemProtection.REPRESENTED
+    with pytest.raises(RuntimeError, match="no qualified adapter"):
+        policy("strict")
+    with pytest.raises(RuntimeError, match="requires a workspace"):
+        policy("represented", workspace=None)
+    with pytest.raises(RuntimeError, match="unsupported workspace"):
+        policy("invented")
+
+
+def test_strict_negotiation_is_exact_and_platform_independent():
+    binding = ExecutorPolicyBinding("rt", "lane", "policy-identity", FilesystemProtection.STRICT)
+    record = ExecutorQualification("trusted-adapter", binding, STRICT_CAPABILITIES)
+    require_strict_qualification(binding, record)
+    for bad in (
+        None, replace(record, binding=replace(binding, lane_id="other")),
+        replace(record, binding=replace(binding, policy_identity="stale")),
+        replace(record, capabilities=STRICT_CAPABILITIES - {ExecutorCapability.CHILD_PROCESS_CONTAINMENT}),
+        replace(record, executor_id=""),
+    ):
+        with pytest.raises(RuntimeError):
+            require_strict_qualification(binding, bad)
+
+
+def test_policy_integrity_material_distinguishes_modes():
+    from jack_policy_integrity import _canonical_material
+    assert _canonical_material("path", policy(), b"x" * 32) != _canonical_material(
+        "path", policy("represented"), b"x" * 32,
+    )
+
+
+def custom_policy(entries):
+    return path.build_runtime_path_policy(
+        runtime_id="runtime", lane_id="lane", raw_json=json.dumps({
+            "version": 2, "workspace_mode": "represented",
+            "workspace_root": "/work", "never_paths": ["/work/Private"],
+        }), path_style="posix", host_environment={},
+        tool_contracts_json=json.dumps({"version": 1, "tools": entries}),
+    )
+
+
+def custom_contract(name="inspect_format", operation="inspect"):
+    return {"name": name, "operation": operation,
+            "path_fields": ["filename"], "argument_types": {"filename": "string", "limit": "integer"},
+            "required_fields": ["filename"]}
+
+
+def test_custom_host_contract_applies_to_rewrite_and_admission():
+    active = custom_policy([custom_contract()])
+    for value, expected in (
+        ("clock.html", path.PathAuthorizationOutcome.ALLOW),
+        ("../other", path.PathAuthorizationOutcome.DENY_AND_CONTINUE),
+        ("Private/file", path.PathAuthorizationOutcome.HARD_INTERRUPT),
+    ):
+        call = {"function": {"name": "inspect_format", "arguments": {"filename": value, "limit": 5}}}
+        rewritten = path.rewrite_structured_tool_call_for_workspace_release(active, call)
+        assert json.loads(rewritten["function"]["arguments"])["filename"].startswith("/")
+        for candidate in (call, rewritten):
+            decision, applied = path.authorize_executor_tool_call(active, candidate, executor_cwd="/work")
+            assert applied and decision.outcome is expected
+
+
+@pytest.mark.parametrize("arguments", [{}, {"filename": 4}, {"filename": "ok", "limit": True},
+                                       {"filename": "ok", "alternate": "/work/Private"}])
+def test_custom_contract_rejects_malformed_or_unknown_argument_fields(arguments):
+    active = custom_policy([custom_contract()])
+    decision, applied = path.authorize_executor_tool_call(active,
+        {"function": {"name": "inspect_format", "arguments": arguments}}, executor_cwd="/work")
+    assert applied and decision.outcome is path.PathAuthorizationOutcome.DENY_AND_CONTINUE
+
+
+def test_unregistered_tool_does_not_claim_path_coverage():
+    active = custom_policy([])
+    decision, applied = path.authorize_executor_tool_call(active,
+        {"function": {"name": "inspect_format", "arguments": {"filename": "/work/Private"}}})
+    assert not applied
+
+
+@pytest.mark.parametrize("entries", [
+    [custom_contract("read")], [custom_contract("bash")],
+    [custom_contract(), custom_contract("INSPECT_FORMAT")],
+    [dict(custom_contract(), operation="self_declared")],
+    [dict(custom_contract(), required_fields=[])],
+    [dict(custom_contract(), argument_types={"filename": "object"})],
+])
+def test_custom_contract_registry_rejects_ambiguous_or_unsupported_schema(entries):
+    with pytest.raises(RuntimeError, match="Invalid host-owned structured tool contract registry"):
+        custom_policy(entries)
+
+
+def test_custom_contract_is_sealed_and_drives_debugging_classification(monkeypatch):
+    import jack_kernel as kernel
+    from jack_policy_integrity import _canonical_material
+    active = custom_policy([custom_contract(), custom_contract("perform_operation", "mutate")])
+    monkeypatch.setattr(kernel, "_RUNTIME_PATH_POLICY", active)
+    assert _canonical_material("path", active, b"x" * 32) != _canonical_material("path", custom_policy([]), b"x" * 32)
+    assert kernel._debugging_tool_is_direct_mutator({"function": {"name": "inspect_format"}})
+    declaration = {"function": {"name": "inspect_format", "parameters": {
+        "type": "object", "properties": {"filename": {"type": "string"}, "limit": {"type": "integer"}},
+        "required": ["filename"],
+    }}}
+    assert not kernel._debugging_tool_is_direct_mutator(declaration)
+    declaration["function"]["parameters"]["properties"]["limit"]["type"] = "string"
+    assert kernel._debugging_tool_is_direct_mutator(declaration)
+    assert kernel._debugging_tool_is_direct_mutator({"function": {"name": "perform_operation"}})
+    assert kernel._debugging_tool_is_direct_mutator({"function": {"name": "unregistered_format"}})
+
+
+def test_independent_http_executor_client_uses_kernel_owned_admission(monkeypatch):
+    """Exercise the actual admission route without Pi or a model backend.
+
+    Synthetic pending calls isolate protocol qualification from model behavior;
+    this does not attest a remote machine or claim physical containment.
+    """
+    import asyncio
+    import httpx
+    import jack_kernel as kernel
+
+    active = replace(custom_policy([custom_contract()]),
+                     runtime_id=kernel.RUNTIME_ID, lane_id=kernel.LANE_ID)
+    monkeypatch.setattr(kernel, "_RUNTIME_PATH_POLICY", active)
+    monkeypatch.setattr(kernel, "CFG", replace(kernel.CFG, api_key="synthetic-independent-client-key"))
+    pending = {}
+    for ident, filename in (("allowed", "clock.html"), ("outside", "../other"),
+                            ("restricted", "Private/file")):
+        pending[ident] = {"id": ident, "type": "function", "function": {
+            "name": "inspect_format", "arguments": json.dumps({"filename": filename, "limit": 5}),
+        }}
+
+    async def snapshot(ident):
+        if ident not in pending:
+            raise kernel.HTTPException(status_code=409, detail="No pending call")
+        return pending[ident]
+
+    monkeypatch.setattr(kernel.KERNEL, "_phase4_pending_tool_call_snapshot", snapshot)
+
+    def body(ident):
+        return {
+            "protocol_version": 1, "runtime_id": kernel.RUNTIME_ID,
+            "lane_id": kernel.LANE_ID, "tool_call_id": ident,
+            "tool_name": "inspect_format",
+            "arguments": json.loads(pending[ident]["function"]["arguments"]),
+            "executor_cwd": "/work", "executor_platform": "linux",
+        }
+
+    async def check():
+        headers = {"Authorization": "Bearer synthetic-independent-client-key"}
+        route = "/jack/security/path-admission"
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=kernel.APP),
+                                     base_url="http://test.invalid") as client:
+            assert (await client.post(route, json=body("allowed"))).status_code == 401
+            for ident, expected in (("allowed", "ALLOW"), ("outside", "DENY_AND_CONTINUE"),
+                                    ("restricted", "HARD_INTERRUPT")):
+                response = await client.post(route, json=body(ident), headers=headers)
+                assert response.status_code == 200, response.text
+                result = response.json()
+                assert result["contract_applied"] is True
+                assert result["outcome"] == expected
+                assert result["tool_call_id"] == ident
+            changed = body("allowed")
+            changed["arguments"]["filename"] = "Private/file"
+            assert (await client.post(route, json=changed, headers=headers)).status_code == 409
+            changed = body("allowed")
+            changed["lane_id"] = "unowned-lane"
+            assert (await client.post(route, json=changed, headers=headers)).status_code == 409
+            changed = body("allowed")
+            changed["workspace_root"] = "/"
+            assert (await client.post(route, json=changed, headers=headers)).status_code == 400
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("mode", [None, "bounded", "represented"])
+def test_live_workspace_listing_with_unclassified_shell_syntax_does_not_block(mode):
+    active = policy(mode)
+    for command in ('ls -a "$(pwd)"', "ls -a | wc -l", "ls -a --color=never", 'ls -a "D:/Projects/Jack"'):
+        assert authorize(active, command) is path.PathAuthorizationOutcome.ALLOW
+    assert authorize(active, 'ls -a "D:/Other"') is path.PathAuthorizationOutcome.DENY_AND_CONTINUE
+    assert authorize(active, 'ls -a "D:/Sensitive"') is path.PathAuthorizationOutcome.HARD_INTERRUPT
+
+
+def test_unclassified_generic_executor_dialect_does_not_block_release(monkeypatch):
+    import jack_kernel as kernel
+    active = replace(policy(), runtime_id=kernel.RUNTIME_ID, lane_id=kernel.LANE_ID)
+    monkeypatch.setattr(kernel, "_RUNTIME_PATH_POLICY", active)
+    token = kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.set(None)
+    try:
+        call = {"id": "ordinary-shell", "type": "function", "function": {
+            "name": "shell", "arguments": json.dumps({"command": "git status"}),
+        }}
+        allowed, errors = kernel._phase4_partition_structured_tool_calls([call])
+        assert allowed == [call] and not errors
+        decision, applied = path.authorize_executor_tool_call(active, call)
+        assert not applied and decision.outcome is path.PathAuthorizationOutcome.ALLOW
+    finally:
+        kernel._PHASE4_EXECUTOR_REQUEST_CONTEXT.reset(token)

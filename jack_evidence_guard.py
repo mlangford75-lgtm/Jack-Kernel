@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 from dataclasses import dataclass, field
 from enum import Enum
@@ -79,6 +80,130 @@ class StreamingIRQHardInterrupt(RuntimeError):
 
 class StreamingIRQProtocolError(RuntimeError):
     """Ordinary stream-protocol failure at the guarded release boundary."""
+
+
+def terminal_stream_failure(exc: Exception) -> bool:
+    """Return whether stream quarantine and recovery must stop at this boundary."""
+    from jack_credential_guard import ProtectedCredentialInterrupt
+    from jack_loop_detector import PartialOutputLoopInterrupt, RepeatedLoopInterrupt
+    from jack_phase10_dynamic_authority import DynamicAuthorityUnavailable
+    from jack_policy_integrity import PolicyIntegrityUnavailable
+    from jack_runtime_code_guard import RuntimeCodeIntegrityUnavailable
+    from jack_source_drift_guard import SourceAuthorityUnavailable
+
+    detail = getattr(exc, "detail", None)
+    return (
+        isinstance(exc, (
+            StreamingIRQHardInterrupt, StreamingIRQProtocolError,
+            ProtectedCredentialInterrupt, PartialOutputLoopInterrupt, RepeatedLoopInterrupt,
+            DynamicAuthorityUnavailable, PolicyIntegrityUnavailable,
+            RuntimeCodeIntegrityUnavailable, SourceAuthorityUnavailable,
+        ))
+        or getattr(exc, "security_outcome", None) == "HARD_INTERRUPT"
+        or getattr(exc, "terminal_tool_cycle", False)
+        or (isinstance(detail, dict) and detail.get("security_outcome") == "HARD_INTERRUPT")
+    )
+
+
+def resolve_tool_fragment_index(identities: Dict[int, Optional[str]], call: Dict[str, Any],
+                                *, fragment_count: int = 1) -> int:
+    """Bind a streamed fragment to a unique choice-local tool slot.
+
+    Explicit indices and nonempty call IDs are authoritative protocol facts.
+    A single anonymous stream can use slot zero. Never guess between parallel
+    calls, or silently overwrite contradictory index/ID associations.
+    """
+    raw_index = call.get("index")
+    raw_id = call.get("id")
+    if raw_id is not None and not isinstance(raw_id, str):
+        raise StreamingIRQProtocolError("Invalid streamed tool-call identity")
+    call_id = raw_id if isinstance(raw_id, str) and raw_id.strip() else None
+    known = next((i for i, ident in identities.items()
+                  if call_id is not None and ident == call_id), None)
+    if raw_index is not None:
+        if isinstance(raw_index, bool) or not (
+            isinstance(raw_index, int) or
+            (isinstance(raw_index, str) and raw_index.isascii() and raw_index.isdecimal())
+        ):
+            raise StreamingIRQProtocolError("Invalid streamed tool-call index")
+        try:
+            index = int(raw_index)
+        except (ValueError, OverflowError):
+            raise StreamingIRQProtocolError("Invalid streamed tool-call index") from None
+        if index < 0 or (known is not None and known != index):
+            raise StreamingIRQProtocolError("Conflicting streamed tool-call identity")
+    elif known is not None:
+        index = known
+    elif call_id is not None:
+        if any(ident is None for ident in identities.values()):
+            raise StreamingIRQProtocolError("Ambiguous streamed tool-call identity")
+        index = max(identities, default=-1) + 1
+    elif fragment_count == 1 and len(identities) <= 1:
+        index = next(iter(identities), 0)
+    else:
+        raise StreamingIRQProtocolError("Ambiguous anonymous tool-call fragment")
+    previous = identities.get(index)
+    if previous is not None and call_id is not None and previous != call_id:
+        raise StreamingIRQProtocolError("Conflicting streamed tool-call identity")
+    identities[index] = previous or call_id
+    return index
+
+
+def native_reasoning_delta(delta: Dict[str, Any]) -> Tuple[Optional[str], Any]:
+    """Select one native reasoning alias, preserving existing Qwen precedence."""
+    for field in ("reasoning_content", "reasoning", "thinking"):
+        value = delta.get(field)
+        if isinstance(value, str) and value:
+            return field, value
+    return None, None
+
+
+def checkpoint_retiring_failure(exc: Exception) -> bool:
+    """Distinguish temporary measurement uncertainty from terminal authority loss.
+
+    Immediate stream release still uses terminal_stream_failure. A retained
+    checkpoint remains subject to the full existing admission checks.
+    """
+    from jack_policy_integrity import PolicyIntegrityUnavailable, PolicyIntegrityCompromised
+    from jack_runtime_code_guard import RuntimeCodeIntegrityUnavailable, RuntimeCodeIntegrityCompromised
+    from jack_source_drift_guard import SourceAuthorityUnavailable, SourceAuthorityInvalidated
+
+    if isinstance(exc, (PolicyIntegrityCompromised, RuntimeCodeIntegrityCompromised,
+                        SourceAuthorityInvalidated)):
+        return True
+    if isinstance(exc, (PolicyIntegrityUnavailable, RuntimeCodeIntegrityUnavailable,
+                        SourceAuthorityUnavailable)):
+        return False
+    return terminal_stream_failure(exc)
+
+
+def public_security_failure(exc: Exception) -> Optional[Tuple[int, str, str]]:
+    """Map host-owned security failures to fixed, non-disclosing public outcomes.
+
+    The HTTP and SSE adapters share this classification, not exception text.
+    Existing authority-specific HTTP handlers remain authoritative where installed.
+    """
+    from jack_credential_guard import ProtectedCredentialInterrupt
+    from jack_phase10_dynamic_authority import DynamicAuthorityUnavailable
+    from jack_policy_integrity import PolicyIntegrityUnavailable
+    from jack_runtime_code_guard import RuntimeCodeIntegrityUnavailable
+    from jack_source_drift_guard import SourceAuthorityUnavailable
+
+    if isinstance(exc, PolicyIntegrityUnavailable):
+        return 503, "jack_static_policy_unavailable", "[JACK SECURITY — STATIC POLICY INTEGRITY: AUTHORITY UNAVAILABLE]"
+    if isinstance(exc, DynamicAuthorityUnavailable):
+        return 503, "jack_dynamic_authority_unavailable", "[JACK SECURITY — DYNAMIC AUTHORITY INTEGRITY: AUTHORITY UNAVAILABLE]"
+    if isinstance(exc, RuntimeCodeIntegrityUnavailable):
+        return 503, "jack_runtime_code_unavailable", "[JACK SECURITY — RUNTIME CODE INTEGRITY: AUTHORITY UNAVAILABLE]"
+    if isinstance(exc, SourceAuthorityUnavailable):
+        return 503, "jack_source_authority_unavailable", "[JACK SECURITY — SOURCE DRIFT GUARD: AUTHORITY UNAVAILABLE]"
+    if isinstance(exc, StreamingIRQCanaryInterrupt):
+        return 403, "jack_canary_hard_interrupt", "[JACK SECURITY — STREAMINGIRQ: CANARY HARD INTERRUPT]"
+    if isinstance(exc, ProtectedCredentialInterrupt):
+        return 403, "jack_credential_hard_interrupt", "[JACK SECURITY — PROTECTED CREDENTIAL: HARD INTERRUPT]"
+    if getattr(exc, "security_outcome", None) == "HARD_INTERRUPT":
+        return 403, "jack_restricted_path_hard_interrupt", "[JACK SECURITY — RESTRICTED PATHS: HARD INTERRUPT]"
+    return None
 
 
 class CanaryTier(str, Enum):
@@ -244,6 +369,10 @@ class DeterministicCanarySet:
     @property
     def count(self) -> int:
         return len(self._patterns)
+
+    def short_match_count(self, minimum: int = 8) -> int:
+        """Return only aggregate sensitivity metadata; never disclose values."""
+        return sum(pattern.match_chars < minimum for pattern in self._patterns)
 
     def _find_with_position(
         self,
@@ -1038,6 +1167,10 @@ async def _guarded_stream(
         StreamingCanaryDetector,
     ] = {}
 
+    tool_identities: Dict[int, Dict[int, Optional[str]]] = {}
+    # A tool proposal is consequential, unlike a text prefix. With active
+    # Canaries, keep its original fragments until a normal tool-call finish.
+    pending_tool_frames: Dict[int, list] = {}
     last_template: Optional[Dict[str, Any]] = None
     done_seen = False
 
@@ -1060,6 +1193,8 @@ async def _guarded_stream(
             )
 
             if text.strip() == "data: [DONE]":
+                if pending_tool_frames:
+                    raise StreamingIRQProtocolError("Unfinished guarded tool proposal")
                 flushed = _flush_event(
                     last_template,
                     filters,
@@ -1103,7 +1238,6 @@ async def _guarded_stream(
 
             field_entries = []
             detections = []
-            tool_argument_entries = []
             tool_detections = []
 
             # ------------------------------------------------
@@ -1227,17 +1361,10 @@ async def _guarded_stream(
                         if not isinstance(call, dict):
                             continue
 
-                        raw_tool_index = call.get(
-                            "index",
-                            0,
+                        tool_index = resolve_tool_fragment_index(
+                            tool_identities.setdefault(choice_index, {}), call,
+                            fragment_count=len(tool_calls),
                         )
-
-                        try:
-                            tool_index = int(
-                                raw_tool_index
-                            )
-                        except (TypeError, ValueError):
-                            tool_index = 0
 
                         function = call.get("function")
 
@@ -1268,22 +1395,7 @@ async def _guarded_stream(
                             )
                         )
 
-                        (
-                            raw_released,
-                            detection,
-                        ) = detector.feed_guarded(
-                            arguments
-                        )
-
-                        tool_argument_entries.append(
-                            (
-                                choice_index,
-                                tool_index,
-                                call,
-                                arguments,
-                                raw_released,
-                            )
-                        )
+                        _, detection = detector.feed_guarded(arguments)
 
                         if detection is not None:
                             tool_detections.append(
@@ -1326,20 +1438,6 @@ async def _guarded_stream(
                     ) in detections
                 }
 
-                detected_tool_keys = {
-                    (
-                        choice_index,
-                        tool_index,
-                    )
-                    for (
-                        _ordinal,
-                        _tool_order,
-                        choice_index,
-                        tool_index,
-                        _detection,
-                    ) in tool_detections
-                }
-
                 raw_safe: Dict[
                     Tuple[int, str],
                     str,
@@ -1378,71 +1476,11 @@ async def _guarded_stream(
                         + detector.flush_safe()
                     )
 
-                safe_tool_calls: Dict[
-                    int,
-                    list,
-                ] = {}
-
-                if tool_detections:
-                    for (
-                        choice_index,
-                        _tool_index,
-                        call,
-                        _original_arguments,
-                        raw_released,
-                    ) in tool_argument_entries:
-                        safe_call = dict(call)
-                        safe_function = safe_call.get(
-                            "function"
-                        )
-
-                        if isinstance(
-                            safe_function,
-                            dict,
-                        ):
-                            safe_function = dict(
-                                safe_function
-                            )
-                            safe_function[
-                                "arguments"
-                            ] = raw_released
-                            safe_call[
-                                "function"
-                            ] = safe_function
-
-                        safe_tool_calls.setdefault(
-                            choice_index,
-                            [],
-                        ).append(safe_call)
-
-                for key, detector in (
-                    tool_canary_detectors.items()
-                ):
-                    if key in detected_tool_keys:
-                        detector.flush()
-                        continue
-
-                    tail = detector.flush_safe()
-
-                    if not tail:
-                        continue
-
-                    (
-                        choice_index,
-                        tool_index,
-                    ) = key
-
-                    safe_tool_calls.setdefault(
-                        choice_index,
-                        [],
-                    ).append(
-                        {
-                            "index": tool_index,
-                            "function": {
-                                "arguments": tail,
-                            },
-                        }
-                    )
+                # A terminal Canary invalidates every unfinished tool proposal
+                # in this response. Never flush a truncated executable delta.
+                pending_tool_frames.clear()
+                for detector in tool_canary_detectors.values():
+                    detector.flush()
 
                 by_choice: Dict[
                     int,
@@ -1525,18 +1563,6 @@ async def _guarded_stream(
                             choice_index,
                             {},
                         )[field] = released
-
-                for (
-                    choice_index,
-                    calls,
-                ) in sorted(
-                    safe_tool_calls.items()
-                ):
-                    if calls:
-                        by_choice.setdefault(
-                            choice_index,
-                            {},
-                        )["tool_calls"] = calls
 
                 if by_choice:
                     safe_choices = [
@@ -1629,22 +1655,23 @@ async def _guarded_stream(
 
                 delta[field] = released
 
-            for (
-                _choice_index,
-                _tool_index,
-                call,
-                original_arguments,
-                raw_released,
-            ) in tool_argument_entries:
-                function = call.get("function")
-
-                if not isinstance(function, dict):
-                    continue
-
-                if raw_released != original_arguments:
+            if canary_enabled:
+                for ordinal, choice in enumerate(choices):
+                    if not isinstance(choice, dict):
+                        continue
+                    delta = choice.get("delta")
+                    if not isinstance(delta, dict):
+                        continue
+                    calls = delta.get("tool_calls")
+                    if not isinstance(calls, list) or not calls:
+                        continue
+                    try:
+                        choice_index = int(choice.get("index", ordinal))
+                    except (TypeError, ValueError):
+                        choice_index = ordinal
+                    pending_tool_frames.setdefault(choice_index, []).append(calls)
+                    del delta["tool_calls"]
                     changed = True
-
-                function["arguments"] = raw_released
 
             # ------------------------------------------------
             # NORMAL FINISH
@@ -1738,35 +1765,23 @@ async def _guarded_stream(
                         )
                         changed = True
 
-                for (
-                    tool_choice_index,
-                    tool_index,
-                ), detector in sorted(
-                    tool_canary_detectors.items()
-                ):
-                    if tool_choice_index != choice_index:
-                        continue
-
-                    tail = detector.flush_safe()
-
-                    if not tail:
-                        continue
-
-                    tool_calls = delta.get("tool_calls")
-
-                    if not isinstance(tool_calls, list):
-                        tool_calls = []
-                        delta["tool_calls"] = tool_calls
-
-                    tool_calls.append(
-                        {
-                            "index": tool_index,
-                            "function": {
-                                "arguments": tail,
-                            },
-                        }
-                    )
-                    changed = True
+                if canary_enabled:
+                    frames = pending_tool_frames.pop(choice_index, [])
+                    for key, detector in tool_canary_detectors.items():
+                        if key[0] == choice_index:
+                            detector.flush()
+                    if choice.get("finish_reason") == "tool_calls":
+                        # Preserve the original fragment ordering and indices.
+                        # All fragments in this choice have now been inspected.
+                        for calls in frames:
+                            yield _encode_sse_object({
+                                **last_template,
+                                "choices": [{
+                                    "index": choice_index,
+                                    "delta": {"tool_calls": calls},
+                                    "finish_reason": None,
+                                }],
+                            })
 
             yield (
                 _encode_sse_object(obj)
@@ -1774,12 +1789,13 @@ async def _guarded_stream(
                 else chunk
             )
 
-    except StreamingIRQHardInterrupt:
-        # A confirmed hard security interruption must not release
-        # any remaining affected quarantine state.
-        raise
-
-    except Exception:
+    except Exception as exc:
+        pending_tool_frames.clear()
+        # Abnormal termination cannot certify an incomplete Canary prefix.
+        for detector in (*canary_detectors.values(), *tool_canary_detectors.values()):
+            detector.flush()
+        if not isinstance(exc, StreamingIRQProtocolError) and terminal_stream_failure(exc):
+            raise
         # Ordinary transport/stage failure is not itself a
         # security violation. Preserve deterministically safe
         # unreleased work before Jack's existing outer failure
@@ -1798,6 +1814,15 @@ async def _guarded_stream(
         raise
 
     if not done_seen:
+        # A terminal choice already finalized its own fields. Any remaining
+        # Canary carry at EOF belongs to an incomplete choice.
+        incomplete = bool(pending_tool_frames) or any(
+            d.held_length for d in (*canary_detectors.values(), *tool_canary_detectors.values())
+        )
+        pending_tool_frames.clear()
+        if incomplete:
+            for detector in (*canary_detectors.values(), *tool_canary_detectors.values()):
+                detector.flush()
         flushed = _flush_event(
             last_template,
             filters,
@@ -1808,6 +1833,8 @@ async def _guarded_stream(
 
         if flushed is not None:
             yield flushed
+        if incomplete:
+            raise StreamingIRQProtocolError("Incomplete guarded model stream")
 
 
 def _normalized_evidence_origin(value: Any) -> str:
@@ -1947,6 +1974,72 @@ def _install_recovery_provenance(jk: Any) -> None:
     jk.recover_pi_tool_evidence = guarded
 
 
+def _find_canary_in_evidence_value(canaries: DeterministicCanarySet, value: Any) -> Optional[CanaryMatch]:
+    """Scan decoded evidence keys as well as values, not JSON escape sequences."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            match = _find_canary_in_evidence_value(canaries, key)
+            if match is not None:
+                return match
+            match = _find_canary_in_evidence_value(canaries, item)
+            if match is not None:
+                return match
+        return None
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            match = _find_canary_in_evidence_value(canaries, item)
+            if match is not None:
+                return match
+        return None
+    return canaries.find(value) if isinstance(value, str) else None
+
+
+def _install_tool_evidence_release(jk: Any, canary_policy: RuntimeCanaryPolicy, credential_policy: Any) -> None:
+    """Protect the caller-bound endpoint without modifying host-owned evidence."""
+    if not callable(getattr(jk, "_project_tool_evidence_release", None)):
+        return
+    if credential_policy is None:
+        raise RuntimeError("Tool evidence release credential authority unavailable")
+    from jack_credential_guard import ProtectedCredentialInterrupt
+    from jack_diagnostic_guard import _policy_match
+
+    def guarded_evidence(evidence: Dict[str, Any]) -> Dict[str, Any]:
+        if (canary_policy.runtime_id != jk.RUNTIME_ID or canary_policy.lane_id != jk.LANE_ID
+                or credential_policy.runtime_id != jk.RUNTIME_ID
+                or credential_policy.lane_id != jk.LANE_ID):
+            from jack_policy_integrity import PolicyIntegrityUnavailable
+            raise PolicyIntegrityUnavailable("Tool evidence release policy ownership mismatch")
+        # The underlying recovery helper and hash remain exact. Do not expose
+        # host session storage locations through the public response.
+        projected = {
+            **{key: value for key, value in evidence.items() if key != "session_file"},
+            "status": "ok",
+            "recovery_mode": "exact_tool_call_id",
+        }
+        match = _policy_match(credential_policy, projected,
+                              boundary="tool_evidence_http_release", direction="caller_bound")
+        if match is not None:
+            ledger = getattr(jk, "_JACK_AUTHORITY_LEDGER", None)
+            if ledger is not None:
+                from jack_phase7_ledger import record_credential_match_failsoft
+                record_credential_match_failsoft(
+                    ledger, boundary="tool_evidence_http_release", direction="caller_bound",
+                    credential_id=match.credential_id, credential_class=match.credential_class,
+                    producer_code="phase7.tool_evidence_http",
+                )
+            raise ProtectedCredentialInterrupt(match)
+        canary_match = _find_canary_in_evidence_value(canary_policy.canaries, projected)
+        if canary_match is not None:
+            ledger = getattr(jk, "_JACK_AUTHORITY_LEDGER", None)
+            if ledger is not None:
+                from jack_authority_ledger import record_evidence_canary_match_failsoft
+                record_evidence_canary_match_failsoft(ledger, canary_match)
+            raise StreamingIRQCanaryInterrupt(canary_match)
+        return projected
+
+    jk._project_tool_evidence_release = guarded_evidence
+
+
 def install(
     jk: Any,
     *,
@@ -2023,6 +2116,14 @@ def install(
             credential_policy,
         )
 
+    if canary_policy.canaries.short_match_count():
+        import logging
+        logging.getLogger("jack-kernel").warning(
+            "StreamingIRQ: one or more effective Canary match thresholds are shorter than "
+            "8 characters; ordinary text may trigger hard interrupts. Review Security Center "
+            "sensitivity or use longer credentials. Protection remains active."
+        )
+
     jk._JACK_EVIDENCE_PROVENANCE_GUARD_INSTALLED = True
 
     kernel = jk.KERNEL
@@ -2066,20 +2167,25 @@ def install(
         *args: Any,
         **kwargs: Any,
     ):
-        async def bound_stream(body: Dict[str, Any]):
-            async for chunk in original_stream(
-                body,
-                *args,
-                **kwargs,
-            ):
-                yield chunk
-
-        async for chunk in _guarded_stream(
-            bound_stream,
+        source = original_stream(request_body, *args, **kwargs)
+        guarded = _guarded_stream(
+            lambda _body: source,
             request_body,
             canaries=canary_policy.canaries,
-        ):
-            yield chunk
+        )
+        # Keep a strong reference to the original generator. Report a terminal
+        # release failure before closing it, while request ownership is live.
+        try:
+            async with contextlib.aclosing(guarded):
+                async for chunk in guarded:
+                    yield chunk
+        except Exception as exc:
+            note = getattr(kernel, "_note_outer_stream_failure", None)
+            if callable(note):
+                note(exc)
+            raise
+        finally:
+            await source.aclose()
 
     kernel.run = guarded_run
     kernel.stream = guarded_stream
@@ -2087,3 +2193,4 @@ def install(
     _install_tool_result_origin(jk)
     _install_receipt_provenance(jk)
     _install_recovery_provenance(jk)
+    _install_tool_evidence_release(jk, canary_policy, credential_policy)

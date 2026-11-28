@@ -149,6 +149,7 @@ def test_cancelled_resumed_checkpoint_is_retired(monkeypatch, tmp_path):
         ]})
         kernel._pending_authority.register(state)
         kernel._pending_tool_resumes["tool-interrupted"] = state
+        kernel._pending_authority.transition(state, in_flight=True)
         scope = {"stage1_frozen": False, "bridge_messages": [], "pending_state": state}
         token = k._AGENTIC_DELAY_R2_SCOPE.set(scope)
         await kernel._agentic_phase3g_close_scope(token)
@@ -300,3 +301,101 @@ def test_same_stage_correction_keeps_native_loop_state(monkeypatch, tmp_path):
     assert backend.calls == 5
     assert "Loop Detected" in " ".join(p.get("text", "") for p in packets)
     assert packets[-1]["kind"] == "result"
+
+
+def test_outer_release_failure_retires_only_owned_checkpoint(monkeypatch, tmp_path):
+    k = load(monkeypatch, tmp_path, mode="off")
+
+    async def go():
+        import time
+        kernel = k.KERNEL
+
+        def pending(call_id):
+            state = k.PendingToolResume(
+                resume_id=call_id, stage_key="thesis",
+                history=[{"role": "user", "content": "inspect"}, {
+                    "role": "assistant", "content": "", "tool_calls": [{
+                        "id": call_id, "type": "function",
+                        "function": {"name": "read", "arguments": "{}"},
+                    }],
+                }],
+                secondary_system="", usage={}, tools=None, tool_choice=None,
+                expected_tool_call_ids=(call_id,), created_at=time.time(),
+            )
+            kernel._pending_authority.register(state)
+            kernel._pending_tool_resumes[call_id] = state
+            return state
+
+        owned, unrelated = pending("owned"), pending("unrelated")
+        kernel._pending_authority.transition(owned, in_flight=True)
+        kernel._pending_authority.transition(unrelated, in_flight=True)
+
+        async def source():
+            async with kernel._semaphore, kernel._request_resume_scope():
+                kernel._claim_request_resume(owned)
+                yield b"safe"
+
+        stream = source()
+        assert await anext(stream) == b"safe"
+
+        # ContextVar inheritance is not ownership. A child/queued task must
+        # not be allowed to mark a different task's suspended checkpoint.
+        async def other_task():
+            kernel._note_outer_stream_failure(k.Phase4RestrictedPathInterrupt())
+        await asyncio.create_task(other_task())
+        assert k._REQUEST_RESUME_OWNER.get().get("outer_failure") is None
+
+        kernel._note_outer_stream_failure(k.Phase4RestrictedPathInterrupt())
+        await stream.aclose()
+        assert "owned" not in kernel._pending_tool_resumes
+        assert kernel._pending_tool_resumes["unrelated"] is unrelated
+        assert unrelated.in_flight is True
+
+    asyncio.run(go())
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("kind", ["reasoning", "output"])
+def test_agentic_stage2_budget_preserves_frozen_answer(monkeypatch, tmp_path, stream, kind):
+    k = load(monkeypatch, tmp_path, mode="Local Agentic (Preserve Thinking)", enabled=False)
+    cfg = replace(k.CFG, reasoning_budget_tokens=64, output_budget_tokens=64)
+
+    class BudgetBackend:
+        calls = 0
+        closed = 0
+
+        def message(self):
+            self.calls += 1
+            if self.calls == 1:
+                return {"reasoning_content": "healthy reasoning", "content": "exact frozen A1"}
+            return {"reasoning_content" if kind == "reasoning" else "content": "x" * 256}
+
+        async def chat(self, **kwargs):
+            return {"choices": [{"message": {"role": "assistant", **self.message()},
+                                 "finish_reason": "stop"}], "usage": {}}
+
+        async def chat_stream(self, **kwargs):
+            try:
+                yield {"choices": [{"delta": self.message(), "finish_reason": None}]}
+                yield {"choices": [{"delta": {}, "finish_reason": "stop"}]}
+            finally:
+                self.closed += 1
+
+    backend = BudgetBackend()
+    kernel = k.JackQwenKernel(backend, cfg)
+    request = {"messages": [{"role": "user", "content": "Build a clock"}], "stream": stream}
+
+    async def exercise():
+        if stream:
+            wire = b"".join([chunk async for chunk in kernel.stream(request)]).decode()
+            assert "exact frozen A1" in wire
+            assert "MEMORY NOT PRODUCED" in wire
+            assert "data: [DONE]" in wire
+            assert backend.closed == 2
+        else:
+            result = await kernel.run(request)
+            assert result.content == "exact frozen A1"
+            assert "MEMORY NOT PRODUCED" in result.reasoning_content
+        assert backend.calls == 2
+
+    asyncio.run(exercise())

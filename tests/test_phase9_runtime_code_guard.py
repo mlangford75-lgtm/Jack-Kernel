@@ -334,3 +334,235 @@ def test_scoped_temporary_measurement_suspends_only_affected_authority():
     owner.blocked = False
     guard.verify_for("executor")
     assert guard.state == "ACTIVE"
+
+
+def test_full_verify_cannot_clear_confirmed_scoped_invalidation():
+    original = lambda: "safe"
+    owner = SimpleNamespace(run=original)
+    guard = RuntimeCodeAuthority()
+    guard.register(name="model", owner=owner, attribute="run", scope="model")
+    guard.seal()
+    owner.run = lambda: "tampered"
+    with pytest.raises(RuntimeCodeIntegrityCompromised):
+        guard.verify_for("model")
+    owner.run = original
+    with pytest.raises(RuntimeCodeIntegrityCompromised):
+        guard.verify()
+    guard.verify_for("observation")
+    assert guard.state == "INVALIDATED"
+
+
+def test_exception_handler_registry_is_sealed_and_terminal():
+    from fastapi import FastAPI, HTTPException
+    from fastapi.testclient import TestClient
+    app = FastAPI()
+
+    @app.exception_handler(HTTPException)
+    async def safe(request, exc):
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=exc.status_code, content={"detail": "safe"})
+
+    guard = RuntimeCodeAuthority()
+    guard.register(name="handler", owner=SimpleNamespace(fn=safe), attribute="fn")
+    guard.register_exception_handlers(name="handlers", app=app)
+    guard.seal()
+    with TestClient(app):
+        guard.verify_for("observation")
+    app.exception_handlers[HTTPException] = lambda *_: None
+    with pytest.raises(RuntimeCodeIntegrityCompromised):
+        guard.verify_for("model")
+    app.exception_handlers[HTTPException] = safe
+    with pytest.raises(RuntimeCodeIntegrityCompromised):
+        guard.verify_for("observation")
+
+
+def test_p1_immutable_code_memo_replays_exact_fingerprint_and_live_defaults():
+    from jack_runtime_code_guard import _function_shape
+
+    def make(value):
+        def nested():
+            return ("literal", 123, frozenset({1, 2}))
+        def fn(*, flag=False):
+            return nested(), value, flag
+        return fn
+
+    first, second = make(1), make(2)
+    memo = {}
+    for fn in (first, second, first, second):
+        assert _function_shape(fn, memo) == _function_shape(fn)
+    assert id(first.__code__) in memo
+    assert first.__code__ is second.__code__
+    old = _function_shape(first, memo)
+    first.__kwdefaults__["flag"] = True
+    assert _function_shape(first, memo) == _function_shape(first) != old
+    # The function identity is not part of the cached code subtree.
+    assert _function_shape(first, memo) != _function_shape(second, memo)
+
+
+def test_p1_code_with_mutable_executable_constant_is_never_memoized():
+    from jack_runtime_code_guard import _function_shape
+
+    def delegate():
+        return "first"
+    def changed():
+        return "second"
+    def fn():
+        return None
+
+    fn.__code__ = fn.__code__.replace(co_consts=(None, delegate))
+    memo = {}
+    old = _function_shape(fn, memo)
+    assert id(fn.__code__) not in memo
+    delegate.__code__ = changed.__code__
+    assert _function_shape(fn, memo) == _function_shape(fn) != old
+
+
+def test_p1_warm_code_memo_preserves_depth_and_node_limits():
+    from jack_runtime_code_guard import _function_shape
+
+    def delegate():
+        return 1
+    def fn():
+        return None
+
+    memo = {}
+    _function_shape(delegate, memo)
+    deep = delegate
+    for _ in range(19):
+        deep = (deep,)
+    fn.__defaults__ = (deep,)
+    for cache in (None, memo):
+        with pytest.raises(RuntimeCodeIntegrityUnavailable, match="measurement limits"):
+            _function_shape(fn, cache)
+    fn.__defaults__ = (tuple(delegate for _ in range(1000)),)
+    for cache in (None, memo):
+        with pytest.raises(RuntimeCodeIntegrityUnavailable, match="measurement limits"):
+            _function_shape(fn, cache)
+
+
+def test_p1_sealed_code_memo_never_masks_code_replacement():
+    def run():
+        return "safe"
+
+    first = SimpleNamespace(go=run)
+    second = SimpleNamespace(go=run)
+    guard = RuntimeCodeAuthority()
+    guard.register(name="one", owner=first, attribute="go")
+    guard.register(name="two", owner=second, attribute="go")
+    guard.seal()
+    guard.verify_for("model")
+    run.__code__ = run.__code__.replace(co_consts=(None, "changed"))
+    with pytest.raises(RuntimeCodeIntegrityCompromised):
+        guard.verify_for("model")
+
+
+@pytest.mark.parametrize("mutation", ["default", "closure", "mutable_constant"])
+def test_p1_sealed_transcripts_do_not_cache_live_dependencies(mutation):
+    def delegate():
+        return "safe"
+
+    def replacement():
+        return "changed"
+
+    if mutation == "default":
+        def run(*, callback=delegate):
+            return callback()
+    elif mutation == "closure":
+        def run():
+            return delegate()
+    else:
+        def run():
+            return None
+        run.__code__ = run.__code__.replace(co_consts=(None, delegate))
+
+    guard = _guard(SimpleNamespace(go=run))
+    baseline = guard._sealed_code_transcripts
+    assert len(baseline) <= 256
+    assert sum(len(entry[1]) for entry in baseline.values()) <= 128 * 65536
+    if mutation == "mutable_constant":
+        # A sole slot containing mutable executable constants may yield no
+        # eligible startup transcripts at all. The live traversal is required.
+        assert id(run.__code__) not in baseline
+    else:
+        assert baseline
+        assert id(run.__code__) in baseline
+    for _ in range(3):
+        guard.verify_for("model")
+        assert guard._sealed_code_transcripts is baseline
+    if mutation == "default":
+        run.__kwdefaults__["callback"] = replacement
+    elif mutation == "closure":
+        run.__closure__[0].cell_contents = replacement
+    else:
+        delegate.__code__ = replacement.__code__
+    with pytest.raises(RuntimeCodeIntegrityCompromised):
+        guard.verify_for("model")
+    assert guard.state == "INVALIDATED"
+
+
+def test_p1_unfamiliar_equivalent_code_does_not_enroll_in_sealed_memo():
+    def run():
+        return "safe"
+
+    guard = _guard(SimpleNamespace(go=run))
+    baseline = guard._sealed_code_transcripts
+    original = run.__code__
+    assert id(original) in baseline
+    run.__code__ = original.replace()
+    assert run.__code__ is not original
+    guard.verify_for("model")
+    assert guard._sealed_code_transcripts is baseline
+    assert id(run.__code__) not in baseline
+    with pytest.raises(TypeError):
+        baseline[id(run.__code__)] = None
+
+
+def test_p1_sealed_memo_covers_more_small_trees_with_original_byte_budget():
+    from jack_runtime_code_guard import _function_shape
+
+    def template():
+        return None
+
+    guard = RuntimeCodeAuthority()
+    functions = [
+        types.FunctionType(template.__code__.replace(co_consts=(None, i)),
+                           template.__globals__)
+        for i in range(257)
+    ]
+    for i, fn in enumerate(functions):
+        guard.register(name=f"slot-{i}", owner=SimpleNamespace(go=fn), attribute="go")
+    guard.seal()
+    sealed = guard._sealed_code_transcripts
+    assert len(sealed) == 256
+    assert sum(len(entry[1]) for entry in sealed.values()) <= 128 * 65536
+    assert id(functions[128].__code__) in sealed
+    assert id(functions[256].__code__) not in sealed
+    for fn in functions:
+        assert _function_shape(fn, dict(sealed)) == _function_shape(fn)
+    guard.verify_for("model")
+    assert guard._sealed_code_transcripts is sealed
+    assert id(functions[256].__code__) not in sealed
+    functions[128].__code__ = functions[128].__code__.replace(co_consts=(None, "changed"))
+    with pytest.raises(RuntimeCodeIntegrityCompromised):
+        guard.verify_for("model")
+
+
+def test_p1_aggregate_transcript_byte_budget_even_with_large_constants():
+    from jack_runtime_code_guard import _function_shape
+
+    def template():
+        return None
+
+    # Each eligible transcript is smaller than the original 64 KiB entry limit
+    # but collectively they would exceed the original 8 MiB storage bound.
+    functions = [
+        types.FunctionType(template.__code__.replace(co_consts=(None, str(i) + "x" * 60000)),
+                           template.__globals__)
+        for i in range(160)
+    ]
+    memo = {}
+    for fn in functions:
+        assert _function_shape(fn, memo) == _function_shape(fn)
+    assert 128 < len(memo) < len(functions)
+    assert sum(len(entry[1]) for entry in memo.values()) <= 128 * 65536
+    assert id(functions[-1].__code__) not in memo

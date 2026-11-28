@@ -4,13 +4,20 @@ import json
 import ntpath
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Mapping, Optional, Tuple
+
+from jack_executor_contract import FilesystemProtection, effective_protection
+import jack_posix_paths
 
 
 STATIC_PATH_POLICY_ENV = "JACK_PATH_POLICY_JSON"
 STATIC_PATH_POLICY_VERSION = 1
+STATIC_TOOL_CONTRACT_ENV = "JACK_STRUCTURED_TOOL_CONTRACTS_JSON"
+POSIX_EXECUTOR_HOME_ENV = "JACK_POSIX_EXECUTOR_HOME"
+EXECUTOR_PATH_STYLE_ENV = "JACK_EXECUTOR_PATH_STYLE"
+EXECUTOR_PATH_ENVIRONMENT_ENV = "JACK_EXECUTOR_PATH_ENV_JSON"
 
 # Phase 4 intentionally snapshots only environment values that are ordinary
 # Windows path anchors. It does not ingest arbitrary process environment into
@@ -98,6 +105,10 @@ class RepresentedPathAuthorityFacts:
     invalid: bool
     deferred_to_executor: bool
     reason: str
+    # None: ordinary NEVER policy. True/False: positively identified default
+    # Windows read operation is eligible/restricted. Keep the raw NEVER match
+    # separately for the authority ledger.
+    default_windows_read: Optional[bool] = None
 
 
 @dataclass(frozen=True)
@@ -107,6 +118,9 @@ class StructuredToolPathContract:
     tool_name: str
     path_fields: Tuple[str, ...]
     default_to_executor_cwd: bool = False
+    operation: str = "legacy"
+    argument_types: Tuple[Tuple[str, str], ...] = ()
+    required_fields: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -148,11 +162,13 @@ _POWERSHELL_PATHLESS = frozenset({
     "get-service", "gsv",
     "get-ciminstance",
     "get-date",
+    "get-location", "gl", "pwd",
     "write-output", "echo",
     "write-host",
 })
 _POWERSHELL_PATH_COMMANDS = frozenset({
     "get-childitem", "gci", "dir", "ls",
+    "get-item", "gi",
     "get-content", "gc", "cat", "type",
     "set-content", "sc",
     "add-content", "ac",
@@ -190,6 +206,51 @@ PI_STRUCTURED_PATH_CONTRACTS = (
 )
 
 
+def _parse_custom_tool_contracts(raw: str) -> Tuple[StructuredToolPathContract, ...]:
+    """Load operator-owned versioned contracts, never model declarations."""
+    if not isinstance(raw, str):
+        raise RuntimeError("structured tool contracts must be startup JSON")
+    if not raw.strip():
+        return ()
+    try:
+        payload = json.loads(raw)
+        if (type(payload) is not dict or set(payload) != {"version", "tools"}
+                or type(payload["version"]) is not int or payload["version"] != 1
+                or type(payload["tools"]) is not list or len(payload["tools"]) > 64):
+            raise ValueError
+        reserved = ({c.tool_name for c in PI_STRUCTURED_PATH_CONTRACTS}
+                    | _BASH_EXACT_TOOL_NAMES | _POWERSHELL_EXACT_TOOL_NAMES
+                    | _GENERIC_COMMAND_TOOL_NAMES)
+        entries = []
+        for item in payload["tools"]:
+            if type(item) is not dict or set(item) != {
+                "name", "operation", "path_fields", "argument_types", "required_fields",
+            }:
+                raise ValueError
+            name, operation = item["name"], item["operation"]
+            fields, schema, required = item["path_fields"], item["argument_types"], item["required_fields"]
+            if (type(name) is not str or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name)
+                    or name.casefold() in reserved or operation not in ("inspect", "mutate")
+                    or type(schema) is not dict or not 1 <= len(schema) <= 64
+                    or any(type(key) is not str or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", key)
+                           or value not in ("string", "integer", "number", "boolean")
+                           for key, value in schema.items())
+                    or type(fields) is not list or not fields
+                    or type(required) is not list
+                    or any(type(key) is not str for key in fields + required)
+                    or len(set(fields)) != len(fields) or len(set(required)) != len(required)
+                    or not set(fields).issubset(required) or not set(required).issubset(schema)
+                    or any(schema[key] != "string" for key in fields)):
+                raise ValueError
+            reserved.add(name.casefold())
+            entries.append(StructuredToolPathContract(
+                name, tuple(fields), False, operation, tuple(sorted(schema.items())), tuple(sorted(required)),
+            ))
+        return tuple(entries)
+    except (ValueError, TypeError, KeyError, RecursionError):
+        raise RuntimeError("Invalid host-owned structured tool contract registry") from None
+
+
 @dataclass(frozen=True)
 class RuntimePathPolicy:
     """Immutable host-owned Phase-4 path-policy snapshot for one runtime/lane."""
@@ -202,6 +263,13 @@ class RuntimePathPolicy:
         repr=False,
         compare=True,
     )
+    # Preserve explicit intent even when the same root also ships by default.
+    user_never_roots: Tuple[str, ...] = ()
+    # Preserve the legacy serialized spelling; ordinary locks enforce represented paths.
+    workspace_mode: str = "bounded"
+    path_style: str = "windows"
+    custom_tool_contracts: Tuple[StructuredToolPathContract, ...] = ()
+    posix_executor_home: Optional[str] = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.runtime_id, str) or not self.runtime_id:
@@ -209,17 +277,42 @@ class RuntimePathPolicy:
         if not isinstance(self.lane_id, str) or not self.lane_id:
             raise ValueError("lane_id must not be empty")
 
+        if type(self.custom_tool_contracts) is not tuple or any(
+            type(item) is not StructuredToolPathContract for item in self.custom_tool_contracts
+        ):
+            raise TypeError("custom tool contracts must be an immutable tuple")
+        if self.path_style not in {"windows", "posix"}:
+            raise ValueError("unsupported host path style")
+        if self.posix_executor_home is not None:
+            if self.path_style != "posix":
+                raise ValueError("POSIX executor home requires POSIX path policy")
+            jack_posix_paths.require_absolute(self.posix_executor_home)
+            if any(c in self.posix_executor_home for c in "\r\n\x00"):
+                raise ValueError("POSIX executor home contains unsupported control characters")
+        protection = effective_protection(self.workspace_root is not None, self.workspace_mode)
+        if protection is FilesystemProtection.STRICT:
+            # The native runtime has no qualified containment integration.
+            # Never silently treat an unqualified executor as strict.
+            raise ValueError("strict executor containment is unavailable in the native runtime")
         if self.workspace_root is not None:
-            _require_canonical_absolute(self.workspace_root, "workspace_root")
+            self.require_absolute(self.workspace_root, "workspace_root")
 
         if not isinstance(self.never_roots, tuple):
             raise TypeError("never_roots must be a tuple")
 
         for root in self.never_roots:
-            _require_canonical_absolute(root, "never root")
+            self.require_absolute(root, "never root")
 
         if len(self.never_roots) != len(set(self.never_roots)):
             raise ValueError("never_roots must not contain duplicates")
+
+        if not isinstance(self.user_never_roots, tuple):
+            raise TypeError("user_never_roots must be a tuple")
+        for root in self.user_never_roots:
+            self.require_absolute(root, "user NEVER root")
+        if (len(self.user_never_roots) != len(set(self.user_never_roots))
+                or not set(self.user_never_roots).issubset(self.never_roots)):
+            raise ValueError("user NEVER roots must be unique members of never_roots")
 
         if not isinstance(self._path_environment, tuple):
             raise TypeError("_path_environment must be a tuple")
@@ -236,6 +329,35 @@ class RuntimePathPolicy:
     @property
     def workspace_enabled(self) -> bool:
         return self.workspace_root is not None
+
+    @property
+    def filesystem_protection(self) -> FilesystemProtection:
+        return effective_protection(self.workspace_enabled, self.workspace_mode)
+
+    @property
+    def requires_bounded_command_contract(self) -> bool:
+        return self.filesystem_protection is FilesystemProtection.BOUNDED
+
+    def require_absolute(self, value: str, label: str) -> None:
+        if self.path_style == "posix":
+            jack_posix_paths.require_absolute(value)
+        else:
+            _require_canonical_absolute(value, label)
+
+    def normalize(self, value: Any, *, base_root: Optional[str] = None) -> str:
+        return _normalize_policy_path(self.path_style, value, base_root=base_root,
+                                      environment=self.path_environment())
+
+    def contains(self, target: str, root: str) -> bool:
+        if self.path_style == "posix":
+            return jack_posix_paths.contains(target, root)
+        return path_is_within_or_equal(target, root)
+
+    def object_path(self, canonical: str) -> str:
+        if self.path_style == "posix":
+            self.require_absolute(canonical, "canonical")
+            return canonical
+        return _policy_object_windows_path(canonical)
 
     def path_environment(self) -> Mapping[str, str]:
         # Return a new ordinary mapping so callers cannot mutate the authority
@@ -492,6 +614,19 @@ def normalize_represented_windows_path(
     return canonical
 
 
+def _normalize_policy_path(style: str, value: Any, *, base_root=None, environment=None) -> str:
+    if style == "windows":
+        return normalize_represented_windows_path(value, base_root=base_root, environment=environment)
+    try:
+        return jack_posix_paths.normalize(value, base_root=base_root)
+    except jack_posix_paths.PosixCwdRequired as exc:
+        raise RepresentedPathNeedsExecutorCwd(str(exc)) from None
+    except jack_posix_paths.UnresolvedPosixPath as exc:
+        raise RepresentedPathAmbiguous(str(exc)) from None
+    except jack_posix_paths.InvalidPosixPath as exc:
+        raise RepresentedPathInvalid(str(exc)) from None
+
+
 def path_is_within_or_equal(target: str, root: str) -> bool:
     """Component-aware Windows path containment; never a string-prefix check."""
 
@@ -548,12 +683,56 @@ def _default_windows_never_roots(
     return tuple(normalized)
 
 
+def _canonical_windows_root(environment: Mapping[str, str]) -> Optional[str]:
+    system_root = environment.get("systemroot") or environment.get("windir")
+    if not system_root:
+        return None
+    try:
+        return normalize_represented_windows_path(system_root, environment=environment)
+    except RepresentedPathError:
+        return None
+
+
+def _explicit_never_match(policy: RuntimePathPolicy, target: str) -> bool:
+    # Retain non-default restrictions from direct/legacy policy construction
+    # as well as explicit startup restrictions that duplicate factory roots.
+    defaults = (frozenset(_default_windows_never_roots(policy.path_environment()))
+                if policy.path_style == "windows" else frozenset())
+    return any(
+        policy.contains(target, root)
+        for root in policy.never_roots
+        if root in policy.user_never_roots or root not in defaults
+    )
+
+
+def _effective_never_match(policy: RuntimePathPolicy, target: str) -> bool:
+    """Factory Windows Temp exception; user NEVER rules always take precedence.
+
+    This is represented-path policy, not a permission grant or filesystem
+    object attestation. No exception for SystemTemp or other Windows subtrees.
+    """
+    matches = tuple(root for root in policy.never_roots
+                    if policy.contains(target, root))
+    if not matches:
+        return False
+    if policy.path_style == "posix":
+        return True
+    system = _canonical_windows_root(policy.path_environment())
+    if system is None or matches != (system,) or _explicit_never_match(policy, target):
+        return True
+    temp = ntpath.normcase(ntpath.normpath(ntpath.join(system, "Temp")))
+    return not path_is_within_or_equal(target, temp)
+
+
 def build_runtime_path_policy(
     *,
     runtime_id: str,
     lane_id: str,
     raw_json: str,
     host_environment: Optional[Mapping[str, Any]] = None,
+    path_style: Optional[str] = None,
+    tool_contracts_json: Optional[str] = None,
+    posix_executor_home: Optional[str] = None,
 ) -> RuntimePathPolicy:
     """Build one immutable host-owned Phase-4 startup policy snapshot.
 
@@ -564,8 +743,50 @@ def build_runtime_path_policy(
     if not isinstance(raw_json, str):
         raise TypeError("raw_json must be a string")
 
+    # Explicit operator-owned executor namespace for a dedicated runtime.
+    # Do not import Kernel-host path anchors into a remote environment.
+    # Explicit programmatic callers retain their existing contract.
+    if path_style is None and host_environment is None:
+        configured_style = os.getenv(EXECUTOR_PATH_STYLE_ENV, "").strip().lower()
+        configured_environment = os.getenv(EXECUTOR_PATH_ENVIRONMENT_ENV, "").strip()
+        if configured_environment and not configured_style:
+            raise RuntimeError("Executor path environment requires an explicit executor path style")
+        if configured_style:
+            if configured_style not in {"windows", "posix"}:
+                raise RuntimeError("Unsupported configured executor path style")
+            path_style = configured_style
+            try:
+                anchors = json.loads(configured_environment) if configured_environment else {}
+                if type(anchors) is not dict or any(
+                    type(key) is not str or type(value) is not str
+                    or key.casefold() not in {name.casefold() for name in PATH_ENVIRONMENT_KEYS}
+                    or any(c in value for c in "\r\n\x00")
+                    for key, value in anchors.items()
+                ):
+                    raise ValueError
+                if len({key.casefold() for key in anchors}) != len(anchors):
+                    raise ValueError
+            except (ValueError, TypeError):
+                raise RuntimeError("Invalid configured executor path environment") from None
+            host_environment = anchors
+            if configured_style == "windows":
+                remote_environment = _normalized_environment(anchors)
+                root = _canonical_windows_root(remote_environment)
+                if not root or not re.fullmatch(r"[a-z]:\\.+", root):
+                    raise RuntimeError("Configured Windows executor requires an absolute SystemRoot")
+                drive = ntpath.splitdrive(root)[0]
+                supplied_drive = remote_environment.get("systemdrive")
+                if supplied_drive and supplied_drive.casefold() != drive.casefold():
+                    raise RuntimeError("Configured Windows executor SystemDrive contradicts SystemRoot")
+                if not supplied_drive:
+                    host_environment = dict(anchors, SystemDrive=drive)
+
     environment = _normalized_environment(host_environment)
     snapshot = tuple(sorted(environment.items()))
+    # Startup-owned selection, never selected by a model or tool request.
+    style = path_style or ("windows" if os.name == "nt" or environment.get("systemroot") or environment.get("windir") else "posix")
+    if style not in {"windows", "posix"}:
+        raise RuntimeError("unsupported host path style")
 
     if raw_json.strip():
         try:
@@ -580,27 +801,33 @@ def build_runtime_path_policy(
                 f"{STATIC_PATH_POLICY_ENV} must be a JSON object"
             )
 
-        if set(payload) != {"version", "workspace_root", "never_paths"}:
+        version = payload.get("version")
+        if type(version) is not int or version not in {STATIC_PATH_POLICY_VERSION, 2}:
+            raise RuntimeError(f"{STATIC_PATH_POLICY_ENV} version must be 1 or 2")
+        fields = {"version", "workspace_root", "never_paths"}
+        if version == 2:
+            fields.add("workspace_mode")
+        if set(payload) != fields:
             raise RuntimeError(
                 f"{STATIC_PATH_POLICY_ENV} has unsupported top-level fields"
             )
 
-        version = payload.get("version")
-        if (
-            isinstance(version, bool)
-            or not isinstance(version, int)
-            or version != STATIC_PATH_POLICY_VERSION
-        ):
-            raise RuntimeError(
-                f"{STATIC_PATH_POLICY_ENV} version must be "
-                f"{STATIC_PATH_POLICY_VERSION}"
-            )
-
         raw_workspace = payload.get("workspace_root")
         raw_never = payload.get("never_paths")
+        workspace_mode = payload.get("workspace_mode", "bounded")
     else:
         raw_workspace = None
         raw_never = []
+        workspace_mode = "bounded"
+
+    if type(workspace_mode) is not str:
+        raise RuntimeError("workspace_mode must be a string")
+    try:
+        protection = effective_protection(raw_workspace is not None, workspace_mode)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from None
+    if protection is FilesystemProtection.STRICT:
+        raise RuntimeError("strict executor containment is unavailable; no qualified adapter is installed")
 
     if raw_workspace is not None and not isinstance(raw_workspace, str):
         raise RuntimeError(
@@ -616,26 +843,21 @@ def build_runtime_path_policy(
 
     try:
         workspace_root = (
-            normalize_represented_windows_path(
-                raw_workspace,
-                environment=environment,
-            )
+            _normalize_policy_path(style, raw_workspace, environment=environment)
             if raw_workspace is not None
             else None
         )
     except RepresentedPathError as exc:
         raise RuntimeError(
-            f"{STATIC_PATH_POLICY_ENV} workspace_root is not a deterministic absolute Windows path: {exc}"
+            f"{STATIC_PATH_POLICY_ENV} workspace_root is not a deterministic absolute host path: {exc}"
         ) from None
 
-    never_roots = list(_default_windows_never_roots(environment))
+    never_roots = list(_default_windows_never_roots(environment)) if style == "windows" else []
+    user_never_roots = []
 
     for raw_root in raw_never:
         try:
-            canonical = normalize_represented_windows_path(
-                raw_root,
-                environment=environment,
-            )
+            canonical = _normalize_policy_path(style, raw_root, environment=environment)
         except RepresentedPathError as exc:
             raise RuntimeError(
                 f"{STATIC_PATH_POLICY_ENV} contains an invalid NEVER path: {exc}"
@@ -643,25 +865,43 @@ def build_runtime_path_policy(
 
         if canonical not in never_roots:
             never_roots.append(canonical)
+        if canonical not in user_never_roots:
+            user_never_roots.append(canonical)
 
-    if workspace_root is not None:
-        for never_root in never_roots:
-            if path_is_within_or_equal(workspace_root, never_root):
-                raise RuntimeError(
-                    f"{STATIC_PATH_POLICY_ENV} workspace_root cannot be inside a NEVER root"
-                )
-
-    return RuntimePathPolicy(
+    configured_home = (os.getenv(POSIX_EXECUTOR_HOME_ENV, "") if posix_executor_home is None else posix_executor_home)
+    if configured_home:
+        try:
+            if style != "posix":
+                raise ValueError
+            jack_posix_paths.require_absolute(configured_home)
+            if any(c in configured_home for c in "\r\n\x00"):
+                raise ValueError
+        except (ValueError, TypeError):
+            raise RuntimeError("Invalid configured POSIX executor home") from None
+    policy = RuntimePathPolicy(
         runtime_id=runtime_id,
         lane_id=lane_id,
         workspace_root=workspace_root,
         never_roots=tuple(never_roots),
         _path_environment=snapshot,
+        user_never_roots=tuple(user_never_roots),
+        workspace_mode=workspace_mode,
+        path_style=style,
+        posix_executor_home=configured_home or None,
+        custom_tool_contracts=_parse_custom_tool_contracts(
+            os.getenv(STATIC_TOOL_CONTRACT_ENV, "") if tool_contracts_json is None else tool_contracts_json
+        ),
     )
+    if workspace_root is not None and _effective_never_match(policy, workspace_root):
+        raise RuntimeError(
+            f"{STATIC_PATH_POLICY_ENV} workspace_root cannot be inside a NEVER root"
+        )
+    return policy
 
 
 def _structured_tool_path_contract(
     tool_name: Any,
+    custom_contracts: Tuple[StructuredToolPathContract, ...] = (),
 ) -> Optional[StructuredToolPathContract]:
     if not isinstance(tool_name, str):
         return None
@@ -671,17 +911,22 @@ def _structured_tool_path_contract(
     for contract in PI_STRUCTURED_PATH_CONTRACTS:
         if normalized == contract.tool_name:
             return contract
-
+    for contract in custom_contracts:
+        if tool_name == contract.tool_name:
+            return contract
     return None
 
 
 def extract_structured_tool_paths(
     tool_name: Any,
     arguments: Any,
+    *,
+    path_style: str = "windows",
+    custom_contracts: Tuple[StructuredToolPathContract, ...] = (),
 ) -> StructuredToolPathExtraction:
     """Extract represented targets only under exact host-owned tool contracts."""
 
-    contract = _structured_tool_path_contract(tool_name)
+    contract = _structured_tool_path_contract(tool_name, custom_contracts)
 
     if contract is None:
         return StructuredToolPathExtraction(
@@ -710,6 +955,16 @@ def extract_structured_tool_paths(
             error="structured filesystem tool arguments must be an object",
         )
 
+    if contract.argument_types:
+        schema = dict(contract.argument_types)
+        types = {"string": (str,), "integer": (int,), "number": (int, float), "boolean": (bool,)}
+        if (not set(contract.required_fields).issubset(parsed)
+                or not set(parsed).issubset(schema)
+                or any(type(value) not in types[schema[key]] for key, value in parsed.items())):
+            return StructuredToolPathExtraction(
+                applicable=True, error="structured filesystem arguments violate host-owned contract schema",
+            )
+
     targets = []
 
     for field_name in contract.path_fields:
@@ -718,13 +973,13 @@ def extract_structured_tool_paths(
 
         value = parsed.get(field_name)
 
-        if not isinstance(value, str) or not value.strip():
+        if not isinstance(value, str) or not (value if path_style == "posix" else value.strip()):
             return StructuredToolPathExtraction(
                 applicable=True,
                 error="structured filesystem path field must be a non-empty string",
             )
 
-        target = value.strip()
+        target = value if path_style == "posix" else value.strip()
 
         if target not in targets:
             targets.append(target)
@@ -762,12 +1017,18 @@ def _command_dialect_for_tool(
 ) -> Optional[str]:
     name = str(tool_name or "").strip().casefold()
     dialect = str(explicit_dialect or "").strip().casefold()
+    # Explicit POSIX-shell declarations use only the shared bounded lexical
+    # subset, not a claim that every zsh/sh feature behaves like Bash.
+    if dialect in {"sh", "zsh"}:
+        dialect = "bash"
 
+    # An exact host-owned tool identity cannot lose its existing path
+    # coverage because a transport advertises a different shell dialect.
     if name in _BASH_EXACT_TOOL_NAMES:
-        return "bash" if dialect in {"", "bash"} else None
+        return "bash"
 
     if name in _POWERSHELL_EXACT_TOOL_NAMES:
-        return "powershell" if dialect in {"", "powershell"} else None
+        return "powershell"
 
     if name in _GENERIC_COMMAND_TOOL_NAMES:
         return dialect if dialect in {"bash", "powershell"} else None
@@ -853,7 +1114,7 @@ def _expand_shell_home(
         return ntpath.join(home, suffix) if suffix else home
     if text.startswith("~"):
         raise RepresentedPathAmbiguous(
-            "named-user home expansion is outside the bounded Phase-4 contract"
+            "named-user home expansion is outside the bounded Restricted Paths / Workspace Lock contract"
         )
     return text
 
@@ -919,6 +1180,14 @@ def _prepare_command_target(
     executor_platform: Optional[str],
 ) -> str:
     environment = policy.path_environment()
+    if policy.path_style == "posix":
+        prepared = str(target or "")
+        if prepared.startswith("~"):
+            # Shell-dependent home expansion must not be treated as a literal.
+            raise RepresentedPathAmbiguous("shell home expansion is executor-dependent")
+        if dialect == "bash" and _ENV_BASH_RE.search(prepared):
+            raise RepresentedPathAmbiguous("shell environment is executor-dependent")
+        return prepared
     prepared = _strip_token_quotes(str(target or "").strip())
     if dialect == "powershell":
         prepared = _normalize_powershell_filesystem_target(prepared)
@@ -1108,6 +1377,45 @@ def _looks_path_like_cli_value(value: str) -> bool:
     )
 
 
+def _unknown_command_path_operands(
+    args: list[str], *, path_style: str = "windows",
+) -> Tuple[str, ...]:
+    """Retain visible path operands without claiming unknown command semantics.
+
+    An ambiguous command is still ambiguous. Positive, represented filesystem
+    paths must nevertheless reach the same policy gate as recognized commands.
+    URI operands and arbitrary option expressions are not filesystem facts.
+    """
+    targets = []
+    for arg in args:
+        value = _strip_token_quotes(arg)
+        if not value:
+            continue
+        # Common literal option=value / name=value operands (for example,
+        # --output=path). Do not interpret arbitrary expressions as paths.
+        if "=" in value:
+            name, candidate = value.split("=", 1)
+            if re.fullmatch(r"(?:--?)?[A-Za-z][A-Za-z0-9_-]*", name):
+                value = _strip_token_quotes(candidate)
+        if value.startswith("-") or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", value):
+            continue
+        if path_style == "posix":
+            # Retain existing POSIX path coverage; a slash-rooted path is
+            # native syntax there rather than a Windows compatibility guess.
+            represented = _looks_path_like_cli_value(value)
+        else:
+            represented = bool(
+                re.match(r"^[A-Za-z]:[\\/]", value)
+                or re.match(r"^(?:\\\\|//)[^\\/]+[\\/][^\\/]+", value)
+                or re.match(r"^/(?:mnt|cygdrive)/[A-Za-z](?:/|$)", value)
+                or re.match(r"^\.\.[\\/]", value)
+                or re.match(r"^(?:%[A-Za-z_][A-Za-z0-9_()]*%|\$(?:env:[A-Za-z_][A-Za-z0-9_()]*|\{env:[A-Za-z_][A-Za-z0-9_()]*\}|\{[A-Za-z_][A-Za-z0-9_()]*\}|[A-Za-z_][A-Za-z0-9_()]*))[\\/]", value, re.IGNORECASE)
+            )
+        if represented:
+            targets.append(value)
+    return tuple(targets)
+
+
 def _path_operand_tokens(tokens: list[str]) -> Tuple[Tuple[str, ...], bool]:
     targets = []
     ambiguous = False
@@ -1149,7 +1457,48 @@ def _split_command_segments(tokens: list[str]) -> list[list[str]]:
     return segments
 
 
-def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, bool]:
+def _pytest_path_operands(args: list[str]) -> Tuple[str, ...]:
+    """Separate known pytest expression values from actual test/output paths."""
+    targets = []
+    value_options = {"-k", "-m", "-o", "-W", "-n", "--override-ini",
+                     "--numprocesses", "--dist", "--tb", "--color", "--capture",
+                     "--maxfail", "--verbosity", "--import-mode"}
+    path_options = {"--basetemp", "--rootdir", "--confcutdir", "--junitxml",
+                    "--junit-xml", "-c", "--log-file", "--ignore", "--ignore-glob"}
+    index = 0
+    end_options = False
+    while index < len(args):
+        item = args[index]
+        index += 1
+        if not end_options and item == "--":
+            end_options = True
+            continue
+        if not end_options and item.startswith("-"):
+            option, equal, value = item.partition("=")
+            if option in value_options:
+                if not equal and index < len(args):
+                    index += 1
+                continue
+            if option in path_options:
+                if not equal and index < len(args):
+                    value = args[index]
+                    index += 1
+                if value:
+                    targets.append(value)
+                continue
+            if any(item.startswith(flag) and len(item) > len(flag)
+                   for flag in ("-k", "-m", "-o", "-W", "-n")):
+                continue
+            if equal and _looks_path_like_cli_value(value):
+                targets.append(value)
+            continue
+        if item:
+            # A pytest node id contains a real path before its test selector.
+            targets.append(item.split("::", 1)[0])
+    return tuple(target for target in targets if target)
+
+
+def _bash_segment_targets(tokens: list[str], *, path_style: str = "windows") -> Tuple[Tuple[str, ...], bool, bool]:
     """Return targets, uses_cwd, ambiguous for one simple Bash segment."""
 
     if not tokens:
@@ -1193,7 +1542,7 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
             return tuple(targets), False, ambiguous
 
         found, wrapped_cwd, wrapped_ambiguous = _bash_segment_targets(
-            wrapped
+            wrapped, path_style=path_style
         )
         targets.extend(found)
         return (
@@ -1210,7 +1559,7 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
             return tuple(targets), False, ambiguous
         if not wrapped:
             return tuple(targets), False, True
-        found, wrapped_cwd, wrapped_ambiguous = _bash_segment_targets(wrapped)
+        found, wrapped_cwd, wrapped_ambiguous = _bash_segment_targets(wrapped, path_style=path_style)
         targets.extend(found)
         return tuple(targets), wrapped_cwd, ambiguous or wrapped_ambiguous
 
@@ -1233,7 +1582,7 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
             wrapped.pop(0)
         if not wrapped:
             return tuple(targets), False, True
-        found, wrapped_cwd, wrapped_ambiguous = _bash_segment_targets(wrapped)
+        found, wrapped_cwd, wrapped_ambiguous = _bash_segment_targets(wrapped, path_style=path_style)
         targets.extend(found)
         return tuple(targets), wrapped_cwd, ambiguous or wrapped_ambiguous
 
@@ -1247,11 +1596,14 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
             nested_ambiguous = ambiguous
             nested_cwd = False
             for nested_segment in _split_command_segments(nested_tokens):
-                nested_targets, segment_cwd, segment_ambiguous = _bash_segment_targets(nested_segment)
+                nested_targets, segment_cwd, segment_ambiguous = _bash_segment_targets(nested_segment, path_style=path_style)
                 targets.extend(nested_targets)
                 nested_cwd = nested_cwd or segment_cwd
                 nested_ambiguous = nested_ambiguous or segment_ambiguous
             return tuple(targets), nested_cwd, nested_ambiguous
+        targets.extend(_unknown_command_path_operands(args, path_style=path_style))
+        if not args[0].startswith("-") and args[0] not in targets:
+            targets.append(args[0])
         return tuple(targets), False, True
 
     if command in {"pwd", "echo", "printf", "true", "false", "printenv", "uname", "whoami", "date", "where", "where.exe", "which"}:
@@ -1262,7 +1614,7 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
     # command's represented paths; never blanket-whitelist a shell process.
     if command in {"powershell", "powershell.exe", "pwsh", "pwsh.exe"}:
         nested_targets, nested_cwd, nested_ambiguous = _powershell_segment_targets(
-            [_strip_token_quotes(filtered[0]), *args]
+            [_strip_token_quotes(filtered[0]), *args], path_style=path_style
         )
         targets.extend(nested_targets)
         return tuple(targets), nested_cwd, ambiguous or nested_ambiguous
@@ -1283,22 +1635,64 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
                    "md": "mkdir", "copy": "cp", "move": "mv",
                    "type": "cat", "dir": "ls"}
         if nested_name in aliases:
+            # DIR slash switches are command options, not MSYS drive roots.
+            # Retain all actual operands, including drive-qualified paths.
+            if nested_name == "dir":
+                nested_tokens = [nested_tokens[0], *(
+                    token for token in nested_tokens[1:]
+                    if not re.fullmatch(r"/(?:[bsplwqxncd4]|a(?::?[-adhrsilo]+)?|o(?::?[-ngsed]+)?|t(?::?[acw])?)",
+                                        _strip_token_quotes(token), re.IGNORECASE)
+                )]
             nested_tokens[0] = aliases[nested_name]
         elif nested_name not in {"where", "where.exe", "echo", "ver"}:
             # Unknown Windows shell builtins and batch execution remain
             # ambiguous; do not promise that their effects were inspected.
             # An unsupported CMD subcommand is never assumed safe. Retain
             # visibly represented path operands for host policy admission.
-            targets.extend(
-                token for token in nested_tokens[1:]
-                if _looks_path_like_cli_value(token)
-            )
+            targets.extend(_unknown_command_path_operands(nested_tokens[1:], path_style=path_style))
             return tuple(targets), False, True
         if nested_name == "ver":
             return tuple(targets), False, ambiguous
-        nested_targets, nested_cwd, nested_ambiguous = _bash_segment_targets(nested_tokens)
+        nested_targets, nested_cwd, nested_ambiguous = _bash_segment_targets(nested_tokens, path_style=path_style)
         targets.extend(nested_targets)
         return tuple(targets), nested_cwd, ambiguous or nested_ambiguous
+
+    if command == "find":
+        # Common directory inspection: one literal starting path (or cwd)
+        # and a small, read-only set of predicates. Do not classify find's
+        # executable, destructive, file-writing or symlink-following forms.
+        # Preserve explicit operands for the ordinary ambiguous-command gate.
+        remaining = list(args)
+        root = None
+        if remaining and not remaining[0].startswith("-"):
+            root = remaining.pop(0)
+        valid = root is None or (
+            bool(root) and not any(char in root for char in "*?[]()!")
+        )
+        index = 0
+        while valid and index < len(remaining):
+            item = remaining[index]
+            if item in {"-print", "-print0", "-empty", "-quit"}:
+                index += 1
+            elif item in {"-maxdepth", "-mindepth", "-type"}:
+                if index + 1 >= len(remaining):
+                    valid = False
+                    break
+                value = remaining[index + 1]
+                valid = (
+                    value in {"b", "c", "d", "f", "l", "p", "s"}
+                    if item == "-type"
+                    else re.fullmatch(r"[0-9]+", value) is not None
+                )
+                index += 2
+            else:
+                valid = False
+        if valid:
+            if root is not None:
+                targets.append(root)
+            return tuple(targets), root is None, ambiguous
+        targets.extend(_unknown_command_path_operands(args, path_style=path_style))
+        return tuple(targets), False, True
 
     if command in _BASH_PATH_COMMANDS:
         operands = [item for item in args if item and not item.startswith("-")]
@@ -1387,6 +1781,10 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
             "format-patch",
         }:
             ambiguous = True
+            if subcommand == "clone":
+                # Preserve explicit path operands even though clone's other
+                # effects are not contained by a lexical command contract.
+                targets.extend(_unknown_command_path_operands(args[index + 1:], path_style=path_style))
 
         for item in args:
             lowered = item.casefold()
@@ -1401,18 +1799,8 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
         return tuple(targets), uses_cwd, ambiguous
 
     if command in {"pytest", "py.test"}:
-        uses_cwd = True
-        targets.extend(
-            item for item in args
-            if item and not item.startswith("-") and "::" not in item
-        )
-        for item in args:
-            if "=" not in item or not item.startswith("-"):
-                continue
-            value = item.split("=", 1)[1]
-            if _looks_path_like_cli_value(value):
-                targets.append(value)
-        return tuple(targets), uses_cwd, ambiguous
+        targets.extend(_pytest_path_operands(args))
+        return tuple(targets), True, ambiguous
 
     if command in {"python", "python3", "py"}:
         if not args:
@@ -1422,7 +1810,10 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
             if len(args) < 2:
                 return tuple(targets), False, True
             module_name = args[1].casefold()
-            if module_name in {"pytest", "unittest"}:
+            if module_name == "pytest":
+                targets.extend(_pytest_path_operands(args[2:]))
+                return tuple(targets), True, ambiguous
+            if module_name == "unittest":
                 uses_cwd = True
                 targets.extend(
                     item for item in args[2:]
@@ -1435,9 +1826,13 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
                     if _looks_path_like_cli_value(value):
                         targets.append(value)
                 return tuple(targets), uses_cwd, ambiguous
+            targets.extend(_unknown_command_path_operands(args[2:], path_style=path_style))
             return tuple(targets), False, True
 
         if args[0] in {"-c"}:
+            # Only represented arguments after the program text, not arbitrary
+            # source code, are part of this lexical contract.
+            targets.extend(_unknown_command_path_operands(args[2:], path_style=path_style))
             return tuple(targets), False, True
 
         if not args[0].startswith("-"):
@@ -1464,10 +1859,11 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
                     targets.append(item)
             return tuple(targets), uses_cwd, ambiguous
 
+    targets.extend(_unknown_command_path_operands(args, path_style=path_style))
     return tuple(targets), False, True
 
 
-def _powershell_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, bool]:
+def _powershell_segment_targets(tokens: list[str], *, path_style: str = "windows") -> Tuple[Tuple[str, ...], bool, bool]:
     """Return targets, uses_cwd, ambiguous for one simple PowerShell segment."""
 
     if not tokens:
@@ -1520,7 +1916,7 @@ def _powershell_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], boo
                 nested_ambiguous = ambiguous
                 nested_cwd = False
                 for nested_segment in _split_command_segments(nested_tokens):
-                    nested_targets, segment_cwd, segment_ambiguous = _powershell_segment_targets(nested_segment)
+                    nested_targets, segment_cwd, segment_ambiguous = _powershell_segment_targets(nested_segment, path_style=path_style)
                     targets.extend(nested_targets)
                     nested_cwd = nested_cwd or segment_cwd
                     nested_ambiguous = nested_ambiguous or segment_ambiguous
@@ -1569,9 +1965,171 @@ def _powershell_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], boo
 
     # Common cross-shell developer commands use the same bounded rules.
     if command in {"git", "pytest", "py.test", "python", "python3", "py", "dotnet"}:
-        return _bash_segment_targets(filtered)
+        return _bash_segment_targets(filtered, path_style=path_style)
 
+    targets.extend(_unknown_command_path_operands(args, path_style=path_style))
     return tuple(targets), False, True
+
+
+def _literal_shell_words(command: str, dialect: str) -> Optional[list[Tuple[str, str]]]:
+    """Recognize only plain argv words, retaining their original quote syntax.
+
+    This is a positive literal contract, not a substitute shell grammar.
+    Concatenated quoting, shell expressions, control operators, comments,
+    escapes with dialect-dependent meaning, and redirections use the existing
+    conservative extraction path instead.
+    """
+    words = []
+    index = 0
+    while index < len(command):
+        if command[index] in " \t":
+            index += 1
+            continue
+        start = index
+        quote = command[index]
+        if quote in {"'", '"'}:
+            end = command.find(quote, index + 1)
+            if end < 0:
+                return None
+            value = command[index + 1:end]
+            if "\r" in value or "\n" in value or "\x00" in value:
+                return None
+            if quote == '"':
+                if "$" in value or "\x60" in value:
+                    return None
+                if dialect == "bash" and (value.endswith("\\") or "\\\\" in value):
+                    return None
+            index = end + 1
+            if index < len(command) and command[index] not in " \t":
+                return None
+        else:
+            while index < len(command) and command[index] not in " \t":
+                index += 1
+            value = command[start:index]
+            if any(c in value for c in "'\"\r\n\x00#;&|<>$*?[]{}()\x60"):
+                return None
+            if dialect == "bash" and "\\" in value:
+                return None
+            if dialect == "powershell" and any(c in value for c in "@,+"):
+                return None
+        words.append((command[start:index], value))
+    return words or None
+
+
+def _literal_command_statement(
+    command: str,
+    dialect: str,
+) -> Optional[CommandPathExtraction]:
+    words = _literal_shell_words(command, dialect)
+    if not words or words[0][0] != words[0][1]:
+        return None
+    name = words[0][1]
+    if dialect == "powershell":
+        name = name.casefold()
+    operands = words[1:]
+    args = [value for _, value in operands]
+
+    def result(targets=(), uses_cwd=False):
+        return CommandPathExtraction(
+            applicable=True, dialect=dialect, targets=tuple(targets),
+            uses_executor_cwd=uses_cwd,
+        )
+
+    # Quoted output is data, not a shell expression. Do not transfer that
+    # interpretation to file operands or to another executable.
+    output_commands = (
+        {"echo", "printf", "pwd"} if dialect == "bash"
+        else {"write-output", "write-host", "echo", "get-location", "gl", "pwd"}
+    )
+    if name in output_commands:
+        if name == "printf" and any(arg == "-v" or arg.startswith("-v") for arg in args):
+            return None
+        return result()
+
+    # Windows filenames can contain literal brackets and braces. They are
+    # only literal for Bash when quoted, and for PowerShell when -LiteralPath
+    # is used. Do not interpret environment/tilde syntax as literal paths.
+    def literal_path(value):
+        return bool(value) and not any(c in value for c in "$%~*?\"'<>|\r\n\x00")
+
+    if dialect == "powershell":
+        if (
+            name in {"get-item", "gi", "get-content", "gc", "cat", "type",
+                     "get-childitem", "gci", "dir", "ls", "test-path", "resolve-path",
+                     "get-filehash"}
+            and len(args) == 2 and args[0].casefold() == "-literalpath"
+            and literal_path(args[1])
+        ):
+            return result((args[1],))
+        return None
+
+    if name in {"ls", "cat", "head", "tail"}:
+        # Retain the existing simple-command operand contract. The scanner
+        # above proves that these are literal words, not control operators.
+        if any(value in _COMMAND_CONTROL or value in _REDIRECT_OPS for value in args):
+            return None
+        found, uses_cwd, ambiguous = _bash_segment_targets([name, *args])
+        if ambiguous or not all(literal_path(value) for value in found):
+            return None
+        # Do not reinterpret a quoted option as a filesystem operand or
+        # a Windows path containing an invalid character as an allowed target.
+        return result(found, uses_cwd)
+
+    # Common ordinary inspection tools have a useful literal-path contract.
+    # In particular, checksum verification (-c) may read paths from a manifest,
+    # so it is deliberately not part of the direct checksum contract.
+    read_flags = {
+        "stat": {"-t", "--terse", "--"},
+        "wc": {"--", "--bytes", "--chars", "--lines", "--words", "--max-line-length"},
+        "sha256sum": {"--", "-b", "-t", "-z", "--binary", "--text", "--zero", "--tag"},
+        "md5sum": {"--", "-b", "-t", "-z", "--binary", "--text", "--zero", "--tag"},
+    }
+    if name in read_flags:
+        targets = []
+        end_options = False
+        for arg in args:
+            if not end_options and arg == "--":
+                end_options = True
+            elif not end_options and arg.startswith("-"):
+                if arg not in read_flags[name] and not (
+                    name == "wc" and re.fullmatch(r"-[cmlwL]+", arg)
+                ):
+                    return None
+            elif literal_path(arg):
+                targets.append(arg)
+            else:
+                return None
+        if targets:
+            return result(targets)
+    return None
+
+
+def _literal_command_extraction(
+    command: str,
+    dialect: str,
+) -> Optional[CommandPathExtraction]:
+    """Classify independent literal statements without flattening newlines.
+
+    No cwd-changing command, script interpreter, dynamic expression, or
+    nested shell can enter this path. Every target still reaches authorization.
+    """
+    normalized = command.replace("\r\n", "\n")
+    if "\r" in normalized:
+        return None
+    targets = []
+    uses_cwd = False
+    for statement in normalized.split("\n"):
+        if not statement.strip():
+            continue
+        facts = _literal_command_statement(statement, dialect)
+        if facts is None:
+            return None
+        targets.extend(facts.targets)
+        uses_cwd = uses_cwd or facts.uses_executor_cwd
+    return CommandPathExtraction(
+        applicable=True, dialect=dialect, targets=tuple(dict.fromkeys(targets)),
+        uses_executor_cwd=uses_cwd,
+    )
 
 
 def extract_command_paths(
@@ -1580,6 +2138,7 @@ def extract_command_paths(
     *,
     command_dialect: Any = None,
     environment: Optional[Mapping[str, str]] = None,
+    path_style: str = "windows",
 ) -> CommandPathExtraction:
     """Extract represented path facts from a bounded command-language contract."""
 
@@ -1604,6 +2163,10 @@ def extract_command_paths(
             dialect=dialect,
             error="command text must not be empty",
         )
+
+    literal = _literal_command_extraction(command, dialect)
+    if literal is not None:
+        return literal
 
     dynamic_ambiguous = (
         _has_unresolved_dynamic_shell_syntax(
@@ -1630,7 +2193,7 @@ def extract_command_paths(
             applicable=True,
             dialect=dialect,
             ambiguous=True,
-            error="command could not be tokenized under the bounded Phase-4 contract",
+            error="command could not be tokenized under the bounded Restricted Paths / Workspace Lock contract",
         )
 
     if any(
@@ -1646,9 +2209,9 @@ def extract_command_paths(
 
     for segment_index, segment in enumerate(segments):
         if dialect == "bash":
-            found, segment_cwd, segment_ambiguous = _bash_segment_targets(segment)
+            found, segment_cwd, segment_ambiguous = _bash_segment_targets(segment, path_style=path_style)
         else:
-            found, segment_cwd, segment_ambiguous = _powershell_segment_targets(segment)
+            found, segment_cwd, segment_ambiguous = _powershell_segment_targets(segment, path_style=path_style)
 
         targets.extend(found)
         uses_cwd = uses_cwd or segment_cwd
@@ -1670,7 +2233,7 @@ def extract_command_paths(
         ):
             ambiguous = True
             continue
-        key = target.casefold()
+        key = target
         if key in seen:
             continue
         seen.add(key)
@@ -1683,7 +2246,7 @@ def extract_command_paths(
         uses_executor_cwd=uses_cwd,
         ambiguous=ambiguous,
         error=(
-            "command semantics exceed the bounded Phase-4 contract"
+            "command semantics exceed the bounded Restricted Paths / Workspace Lock contract"
             if ambiguous
             else None
         ),
@@ -1724,7 +2287,7 @@ def _safe_default_read_command(
     if not isinstance(function, dict):
         return False
     command, error = _command_text_from_arguments(function.get("arguments"))
-    if error or not command:
+    if error or not command or "\n" in command or "\r" in command:
         return False
     dialect = extraction.dialect or ""
     tokens = _shell_tokens(command, dialect)
@@ -1756,6 +2319,7 @@ def _safe_default_windows_read(
     *,
     executor_cwd: Optional[str] = None,
     defer_relative_without_executor: bool = False,
+    facts: Optional[RepresentedPathAuthorityFacts] = None,
 ) -> Optional[PathAuthorizationDecision]:
     """Narrow host-authoritative read exemption for the *default* Windows tree.
 
@@ -1764,11 +2328,14 @@ def _safe_default_windows_read(
     Non-Windows, dynamic, or unresolved paths do not receive this exemption.
     A None result means: apply the original path policy unchanged.
     """
-    facts = inspect_represented_path(
-        policy, represented_target,
-        executor_cwd=executor_cwd,
-        defer_relative_without_executor=defer_relative_without_executor,
-    )
+    if policy.path_style != "windows":
+        return None
+    if facts is None:
+        facts = inspect_represented_path(
+            policy, represented_target,
+            executor_cwd=executor_cwd,
+            defer_relative_without_executor=defer_relative_without_executor,
+        )
     target = facts.canonical_target
     if not facts.never_match or not facts.deterministic or not target:
         return None
@@ -1780,13 +2347,13 @@ def _safe_default_windows_read(
         canonical_system = normalize_represented_windows_path(system_root, environment=environment)
     except RepresentedPathError:
         return None
-    if not path_is_within_or_equal(target, canonical_system):
+    owner = _policy_object_windows_path(target)
+    if not path_is_within_or_equal(owner, canonical_system):
         return None
 
     # User-defined NEVER paths always outrank the default read-only exception,
     # including an explicit user NEVER root nested within C:\Windows.
-    default_roots = frozenset(_default_windows_never_roots(environment))
-    if any(path_is_within_or_equal(target, root) for root in policy.never_roots if root not in default_roots):
+    if _explicit_never_match(policy, owner):
         return None
 
     # Workspace Lock remains non-negotiable even for non-mutating inspection.
@@ -1809,7 +2376,7 @@ def _safe_default_windows_read(
     )
     if any(
         path_is_within_or_equal(
-            target, ntpath.normcase(ntpath.normpath(ntpath.join(canonical_system, suffix)))
+            owner, ntpath.normcase(ntpath.normpath(ntpath.join(canonical_system, suffix)))
         )
         for suffix in sensitive
     ):
@@ -1907,10 +2474,9 @@ def _default_windows_never_only(
     policy: RuntimePathPolicy, canonical_target: Optional[str]
 ) -> bool:
     """Distinguish immutable default system roots from explicit user NEVERs."""
-    if not canonical_target:
+    if not canonical_target or policy.path_style != "windows":
         return False
     environment = policy.path_environment()
-    defaults = frozenset(_default_windows_never_roots(environment))
     system_root = environment.get("systemroot") or environment.get("windir")
     if not system_root:
         return False
@@ -1920,14 +2486,12 @@ def _default_windows_never_only(
         )
     except RepresentedPathError:
         return False
+    canonical_target = _policy_object_windows_path(canonical_target)
     # The operation-aware soft denial applies ONLY to the ordinary Windows
     # installation tree, not Boot, Recovery, or System Volume Information.
     return (
         path_is_within_or_equal(canonical_target, canonical_system)
-        and not any(
-            path_is_within_or_equal(canonical_target, root)
-            for root in policy.never_roots if root not in defaults
-        )
+        and not _explicit_never_match(policy, canonical_target)
     )
 
 
@@ -1954,11 +2518,19 @@ def authorize_command_tool_call(
             "no command capability was identified",
         )
 
+    # POSIX home expansion is limited to explicitly configured executor
+    # metadata and literal unquoted operands. Never substitute Kernel HOME.
+    if policy.path_style == "posix":
+        candidate = rewrite_literal_bash_home_call_for_workspace_release(
+            policy, call, command_dialect=command_dialect, executor_platform=executor_platform,
+        )
+        function = candidate["function"]
     extraction = extract_command_paths(
         function.get("name"),
         function.get("arguments"),
         command_dialect=command_dialect,
-        environment=policy.path_environment(),
+        environment=policy.path_environment() if policy.path_style == "windows" else {},
+        path_style=policy.path_style,
     )
 
     if not extraction.applicable:
@@ -1982,13 +2554,12 @@ def authorize_command_tool_call(
             canonical_cwd = cwd_decision.canonical_target
     elif executor_cwd is not None:
         try:
-            canonical_cwd = normalize_represented_windows_path(
-                executor_cwd,
-                environment=policy.path_environment(),
-            )
+            canonical_cwd = policy.normalize(executor_cwd)
         except RepresentedPathError:
             canonical_cwd = None
 
+    verified_read = _safe_default_read_command(call, extraction) if policy.path_style == "windows" else False
+    unresolved_shell_operand = False
     for target in extraction.targets:
         try:
             prepared_target = _prepare_command_target(
@@ -2000,6 +2571,17 @@ def authorize_command_tool_call(
         except NonFilesystemPowerShellTarget:
             continue
         except RepresentedPathAmbiguous:
+            # _prepare_command_target only raises this for unresolved shell
+            # expansions. In represented protection this is not a canonical
+            # path violation; continue checking every independently identified
+            # target. Other path/authority failures retain their own rules.
+            # Literal POSIX home operands have an explicit executor-owned
+            # home contract. Its absence is a missing required fact, not
+            # generic parser uncertainty; never substitute Kernel HOME.
+            requires_posix_home = policy.path_style == "posix" and str(target).startswith("~")
+            if policy.filesystem_protection is FilesystemProtection.REPRESENTED and not requires_posix_home:
+                unresolved_shell_operand = True
+                continue
             if policy.workspace_enabled:
                 return PathAuthorizationDecision(
                     PathAuthorizationOutcome.DENY_AND_CONTINUE,
@@ -2010,16 +2592,11 @@ def authorize_command_tool_call(
         # Only a single verified read-only command may inspect the default
         # Windows tree. Multi-segment or unclassified commands retain legacy
         # NEVER enforcement, including a hard interrupt for known system paths.
-        read_exception = (
-            _safe_default_windows_read(
-                policy, prepared_target, executor_cwd=canonical_cwd
-            )
-            if _safe_default_read_command(call, extraction) else None
-        )
-        decision = read_exception or authorize_represented_path(
+        decision = authorize_represented_path(
             policy,
             prepared_target,
             executor_cwd=canonical_cwd,
+            verified_default_windows_read=verified_read,
         )
         if (
             decision.outcome is PathAuthorizationOutcome.HARD_INTERRUPT
@@ -2040,11 +2617,20 @@ def authorize_command_tool_call(
         if decision.outcome is not PathAuthorizationOutcome.ALLOW:
             return decision
 
-    if extraction.ambiguous or extraction.error:
-        if policy.workspace_enabled:
+    if extraction.ambiguous or extraction.error or unresolved_shell_operand:
+        if policy.filesystem_protection is FilesystemProtection.REPRESENTED:
+            # Parser uncertainty is not a positive policy violation. The
+            # represented targets above still have full policy authority.
+            # Invalid command envelopes are not a request to execute.
+            command, error = _command_text_from_arguments(function.get("arguments"))
+            if error or not command:
+                return PathAuthorizationDecision(
+                    PathAuthorizationOutcome.DENY_AND_CONTINUE,
+                    "invalid command invocation under represented workspace protection",
+                )
             return PathAuthorizationDecision(
-                PathAuthorizationOutcome.DENY_AND_CONTINUE,
-                "Workspace Lock requires command semantics to fit the bounded host-owned contract",
+                PathAuthorizationOutcome.ALLOW,
+                "represented workspace protection: unclassified command effects are not contained",
             )
         return PathAuthorizationDecision(
             PathAuthorizationOutcome.ALLOW,
@@ -2053,7 +2639,7 @@ def authorize_command_tool_call(
 
     return PathAuthorizationDecision(
         PathAuthorizationOutcome.ALLOW,
-        "command represented targets are authorized by Phase-4 path policy",
+        "command represented targets are authorized by Restricted Paths / Workspace Lock",
     )
 
 
@@ -2070,6 +2656,8 @@ def authorize_executor_tool_call(
     structured = extract_structured_tool_paths(
         ((call.get("function") or {}).get("name") if isinstance(call, dict) else None),
         ((call.get("function") or {}).get("arguments") if isinstance(call, dict) else None),
+        path_style=policy.path_style,
+        custom_contracts=policy.custom_tool_contracts,
     )
     if structured.applicable:
         return (
@@ -2082,13 +2670,10 @@ def authorize_executor_tool_call(
             True,
         )
 
-    command = extract_command_paths(
-        ((call.get("function") or {}).get("name") if isinstance(call, dict) else None),
-        ((call.get("function") or {}).get("arguments") if isinstance(call, dict) else None),
-        command_dialect=command_dialect,
-        environment=policy.path_environment(),
-    )
-    if command.applicable:
+    function = call.get("function") if isinstance(call, dict) else None
+    if isinstance(function, dict) and _command_dialect_for_tool(
+        function.get("name"), command_dialect,
+    ) is not None:
         return (
             authorize_command_tool_call(
                 policy,
@@ -2103,22 +2688,108 @@ def authorize_executor_tool_call(
     return (
         PathAuthorizationDecision(
             PathAuthorizationOutcome.ALLOW,
-            "no host-owned Phase-4 executor contract applies",
+            "no host-owned Restricted Paths / Workspace Lock executor contract applies",
         ),
         False,
     )
 
 
+def rewrite_literal_bash_home_call_for_workspace_release(
+    policy: RuntimePathPolicy,
+    call: Any,
+    *,
+    command_dialect: Any = None,
+    executor_platform: Optional[str] = None,
+) -> Any:
+    """Bind simple unquoted Bash home operands to the same path we authorize.
+
+    Never infer a value for a shell expression, named-user tilde, quoted
+    literal tilde, or a command containing shell control/dynamic syntax.
+    The normalized argv is both what the gate checks and what Pi receives.
+    No workspace/NEVER decision is bypassed by this representation rewrite.
+    """
+    import shlex
+
+    platform = str(executor_platform or "").casefold()
+    if policy.path_style == "windows":
+        if not policy.workspace_enabled or platform not in {"win32", "windows"}:
+            return call
+    elif not policy.posix_executor_home or platform not in {
+        "linux", "darwin", "freebsd", "openbsd", "netbsd", "aix", "sunos",
+    }:
+        return call
+    if not isinstance(call, dict) or not isinstance(call.get("function"), dict):
+        return call
+    function = call["function"]
+    if _command_dialect_for_tool(function.get("name"), command_dialect) != "bash":
+        return call
+    arguments = function.get("arguments")
+    command, error = _command_text_from_arguments(arguments)
+    if error or not command or "~" not in command:
+        return call
+    # Only literal argv; do not transform scripts, pipelines, assignments,
+    # comments, expansions, or shell control operators.
+    if any(c in command for c in "\r\n#;&|<>") or _has_unresolved_dynamic_shell_syntax(command, "bash"):
+        return call
+    words = _literal_shell_words(command, "bash")
+    if not words or words[0][0] != words[0][1]:
+        return call
+    if words[0][1] not in _BASH_PATH_COMMANDS | {"find"}:
+        return call
+    if policy.path_style == "windows":
+        env = policy.path_environment()
+        home = _bash_environment_value("HOME", env)
+        if not home:
+            return call
+        try:
+            home = normalize_represented_windows_path(home, environment=env)
+        except RepresentedPathError:
+            return call
+        if not re.match(r"^[A-Za-z]:\\", home):
+            return call
+        home = home.replace("\\", "/")
+    else:
+        home = policy.posix_executor_home
+        if not home or home != home.strip() or any(c in home for c in "$%~*?\"'<>|\\[]{}"):
+            return call
+
+    # Keep the original shell spelling of every other word. Re-quoting
+    # unrelated argv would change the command that the model requested.
+    rewritten = [raw for raw, _ in words]
+    changed = False
+    for index, (raw, value) in enumerate(words[1:], 1):
+        if raw != value or raw.startswith("-"):
+            continue
+        if raw == "~" or raw.startswith("~/"):
+            rewritten[index] = shlex.quote(home.rstrip("/") + raw[1:] if raw != "~" else home)
+            changed = True
+    if not changed:
+        return call
+
+    candidate = json.loads(json.dumps(call))
+    candidate_function = candidate["function"]
+    parsed = json.loads(arguments) if isinstance(arguments, str) else dict(arguments)
+    for key in _COMMAND_TEXT_KEYS:
+        if isinstance(parsed.get(key), str) and parsed[key].strip():
+            parsed[key] = " ".join(rewritten)
+            break
+    candidate_function["arguments"] = (
+        json.dumps(parsed) if isinstance(arguments, str) else parsed
+    )
+    return candidate
+
+
 def rewrite_structured_tool_call_for_workspace_release(
     policy: RuntimePathPolicy,
     call: Any,
+    *,
+    executor_cwd: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Canonicalize structured targets before release under Workspace Lock.
 
-    This closes the executor-cwd interpretation gap for exact structured tools:
-    relative paths become absolute workspace-root-relative paths before any
-    caller/executor can observe the executable call. Optional path tools that
-    omitted `path` receive the locked workspace root explicitly.
+    Preserve a cooperating executor's established cwd inside the workspace.
+    Otherwise retain the configured workspace-root default. Explicit paths
+    still pass the normal authority checks after canonicalization.
     """
 
     if not isinstance(call, dict):
@@ -2129,7 +2800,7 @@ def rewrite_structured_tool_call_for_workspace_release(
     if not isinstance(function, dict):
         return rewritten
 
-    contract = _structured_tool_path_contract(function.get("name"))
+    contract = _structured_tool_path_contract(function.get("name"), policy.custom_tool_contracts)
     if contract is None or not policy.workspace_enabled:
         return rewritten
 
@@ -2147,27 +2818,36 @@ def rewrite_structured_tool_call_for_workspace_release(
     if not isinstance(arguments, dict):
         return rewritten
 
-    environment = policy.path_environment()
+    base_root = policy.workspace_root
+    if executor_cwd is not None:
+        try:
+            canonical_cwd = policy.normalize(executor_cwd)
+            if policy.contains(policy.object_path(canonical_cwd), policy.workspace_root):
+                base_root = canonical_cwd
+        except RepresentedPathError:
+            # Unavailable executor facts do not replace the configured default.
+            pass
+
     saw_path = False
 
     for field_name in contract.path_fields:
         if field_name not in arguments:
             continue
 
-        value = arguments.get(field_name)
-        if not isinstance(value, str) or not value.strip():
-            continue
-
-        canonical = normalize_represented_windows_path(
-            value,
-            base_root=policy.workspace_root,
-            environment=environment,
-        )
-        arguments[field_name] = canonical
         saw_path = True
+        value = arguments.get(field_name)
+        if not isinstance(value, str) or not (value if policy.path_style == "posix" else value.strip()):
+            continue
+        try:
+            canonical = policy.normalize(value, base_root=base_root)
+        except RepresentedPathError:
+            # Preserve the original for authoritative path evaluation. Never
+            # replace an unresolved explicit target with a default directory.
+            continue
+        arguments[field_name] = canonical
 
     if not saw_path and contract.default_to_executor_cwd:
-        arguments[contract.path_fields[0]] = policy.workspace_root
+        arguments[contract.path_fields[0]] = base_root
 
     function["arguments"] = json.dumps(
         arguments,
@@ -2211,6 +2891,8 @@ def authorize_structured_tool_call(
     extraction = extract_structured_tool_paths(
         function.get("name"),
         function.get("arguments"),
+        path_style=policy.path_style,
+        custom_contracts=policy.custom_tool_contracts,
     )
 
     if not extraction.applicable:
@@ -2238,32 +2920,22 @@ def authorize_structured_tool_call(
             )
 
         tool_name = str(function.get("name") or "").strip().casefold()
-        read_exception = (
-            _safe_default_windows_read(policy, executor_cwd)
-            if tool_name in _SAFE_DEFAULT_READ_STRUCTURED else None
-        )
-        cwd_decision = read_exception or authorize_represented_path(
+        cwd_decision = authorize_represented_path(
             policy,
             executor_cwd,
+            verified_default_windows_read=tool_name in _SAFE_DEFAULT_READ_STRUCTURED,
         )
         if cwd_decision.outcome is not PathAuthorizationOutcome.ALLOW:
             return cwd_decision
 
     for represented_target in extraction.targets:
         tool_name = str(function.get("name") or "").strip().casefold()
-        read_exception = (
-            _safe_default_windows_read(
-                policy, represented_target,
-                executor_cwd=executor_cwd,
-                defer_relative_without_executor=defer_relative_without_executor,
-            )
-            if tool_name in _SAFE_DEFAULT_READ_STRUCTURED else None
-        )
-        decision = read_exception or authorize_represented_path(
+        decision = authorize_represented_path(
             policy,
             represented_target,
             executor_cwd=executor_cwd,
             defer_relative_without_executor=defer_relative_without_executor,
+            verified_default_windows_read=tool_name in _SAFE_DEFAULT_READ_STRUCTURED,
         )
 
         if decision.outcome is PathAuthorizationOutcome.HARD_INTERRUPT:
@@ -2274,11 +2946,9 @@ def authorize_structured_tool_call(
             )
 
         if decision.outcome is PathAuthorizationOutcome.DENY_AND_CONTINUE:
-            return PathAuthorizationDecision(
-                PathAuthorizationOutcome.DENY_AND_CONTINUE,
-                "structured tool target is not authorized by Workspace Lock",
-                decision.canonical_target,
-            )
+            # Preserve the authoritative reason. The release boundary publishes
+            # only a safe category, not raw paths or exception details.
+            return decision
 
         if (
             decision.canonical_target is None
@@ -2304,15 +2974,11 @@ def inspect_represented_path(
     if not isinstance(policy, RuntimePathPolicy):
         raise TypeError("policy must be a RuntimePathPolicy")
 
-    environment = policy.path_environment()
     canonical_cwd = None
 
     if executor_cwd is not None:
         try:
-            canonical_cwd = normalize_represented_windows_path(
-                executor_cwd,
-                environment=environment,
-            )
+            canonical_cwd = policy.normalize(executor_cwd)
         except RepresentedPathError as exc:
             return RepresentedPathAuthorityFacts(
                 canonical_target=None,
@@ -2323,17 +2989,13 @@ def inspect_represented_path(
                 invalid=True,
                 deferred_to_executor=False,
                 reason=(
-                    "executor cwd is not a deterministic absolute Windows path: "
+                    "executor cwd is not a deterministic absolute host path: "
                     f"{exc}"
                 ),
             )
 
     try:
-        canonical = normalize_represented_windows_path(
-            represented_path,
-            base_root=canonical_cwd,
-            environment=environment,
-        )
+        canonical = policy.normalize(represented_path, base_root=canonical_cwd)
     except RepresentedPathNeedsExecutorCwd as exc:
         if defer_relative_without_executor:
             return RepresentedPathAuthorityFacts(
@@ -2388,7 +3050,7 @@ def inspect_represented_path(
         )
 
     try:
-        comparison_target = _policy_object_windows_path(canonical)
+        comparison_target = policy.object_path(canonical)
     except RepresentedPathAmbiguous as exc:
         return RepresentedPathAuthorityFacts(
             canonical_target=canonical,
@@ -2405,14 +3067,11 @@ def inspect_represented_path(
             ),
         )
 
-    never_match = any(
-        path_is_within_or_equal(comparison_target, never_root)
-        for never_root in policy.never_roots
-    )
+    never_match = _effective_never_match(policy, comparison_target)
     inside_workspace = (
         None
         if policy.workspace_root is None
-        else path_is_within_or_equal(comparison_target, policy.workspace_root)
+        else policy.contains(comparison_target, policy.workspace_root)
     )
 
     if never_match:
@@ -2420,7 +3079,7 @@ def inspect_represented_path(
     elif inside_workspace is False:
         reason = "represented target is outside the configured workspace"
     else:
-        reason = "represented target is authorized by Phase-4 path policy"
+        reason = "represented target is authorized by Restricted Paths / Workspace Lock"
 
     return RepresentedPathAuthorityFacts(
         canonical_target=canonical,
@@ -2434,27 +3093,61 @@ def inspect_represented_path(
     )
 
 
+def inspect_operation_path(
+    policy: RuntimePathPolicy,
+    represented_path: Any,
+    *,
+    executor_cwd: Optional[str] = None,
+    defer_relative_without_executor: bool = False,
+    verified_default_windows_read: bool = False,
+) -> RepresentedPathAuthorityFacts:
+    """Derive operation-aware facts before any consequence is selected.
+
+    The read-only flag is supplied only by Jack-owned tool/command contracts;
+    no caller field participates in this decision.
+    """
+    facts = inspect_represented_path(
+        policy, represented_path, executor_cwd=executor_cwd,
+        defer_relative_without_executor=defer_relative_without_executor,
+    )
+    if verified_default_windows_read:
+        exception = _safe_default_windows_read(
+            policy, represented_path, executor_cwd=executor_cwd,
+            defer_relative_without_executor=defer_relative_without_executor,
+            facts=facts,
+        )
+        if exception is not None:
+            facts = replace(
+                facts,
+                default_windows_read=exception.outcome is PathAuthorizationOutcome.ALLOW,
+                reason=exception.reason,
+            )
+    return facts
+
+
 def authorize_represented_path(
     policy: RuntimePathPolicy,
     represented_path: Any,
     *,
     executor_cwd: Optional[str] = None,
     defer_relative_without_executor: bool = False,
+    verified_default_windows_read: bool = False,
 ) -> PathAuthorizationDecision:
     """Legacy Phase-4 mapping from the shared raw represented-path facts."""
 
-    facts = inspect_represented_path(
+    facts = inspect_operation_path(
         policy,
         represented_path,
         executor_cwd=executor_cwd,
         defer_relative_without_executor=defer_relative_without_executor,
+        verified_default_windows_read=verified_default_windows_read,
     )
 
     if facts.deferred_to_executor:
         outcome = PathAuthorizationOutcome.ALLOW
-    elif facts.never_match:
+    elif facts.never_match and facts.default_windows_read is None:
         outcome = PathAuthorizationOutcome.HARD_INTERRUPT
-    elif facts.invalid:
+    elif facts.default_windows_read is False or facts.invalid:
         outcome = PathAuthorizationOutcome.DENY_AND_CONTINUE
     elif facts.workspace_configured and (
         not facts.deterministic or facts.inside_workspace is False

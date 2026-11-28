@@ -4,6 +4,7 @@ The forensic journal still enforces U / A1 ownership; labels/hashes stay
 host-side by default and Stage 2 receives the historical short continuation.
 """
 import importlib.util
+import json
 from pathlib import Path
 import sys
 import uuid
@@ -15,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def load_default(monkeypatch, tmp_path, *, labels=None):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "balanced")
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
     monkeypatch.setenv("JACK_BACKEND_MODEL", "test-model")
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT", "1")
@@ -40,9 +42,8 @@ def test_phase3g_retrospective_restored_and_cached_prefix_preserved(monkeypatch,
     history = [{"role": "user", "content": request}]
     turn = k._agentic_begin_turn(history, fresh=True)
     first = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_initial"])
-    assert first[0] == {"role": "system", "content": "Authenticated current work ID: " + turn}
-    assert first[1]["role"] == "user"
-    assert first[1]["content"] == request
+    assert first == [{"role": "user", "content": request}]
+    assert turn not in json.dumps(first)
     a1 = k.append_extended_candidate_response(
         history, {"content": "Created a cuckoo clock", "reasoning_content": "Decided on clock face, bird, and pendulum"}
     )
@@ -51,15 +52,23 @@ def test_phase3g_retrospective_restored_and_cached_prefix_preserved(monkeypatch,
     # Stage 2 has its own isolated projection; it need not share the Stage-1
     # prefix, but must keep the exact same authenticated request and A1.
     stage2_source = k._agentic_stage2_test_history(history, k.STAGES["extended_reflection"])
-    assert stage2_source[0]["role"] == "system"
-    assert turn in stage2_source[0]["content"]
-    assert stage2_source[1]["content"] == request
+    assert stage2_source[0]["role"] == "user"
+    assert stage2_source[0]["content"] == request
     assert second[0]["content"] == request
     assert second[-1]["content"] == a1
     assert second[-1]["reasoning_content"] == "Decided on clock face, bird, and pendulum"
-    assert k._stage_continuation(k.STAGES["extended_reflection"], history) == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
-    assert "[JACK LINK" not in str(second)
-    assert "[JACK TASK SCOPE" not in k._stage_continuation(k.STAGES["extended_reflection"], history)
+    payload, _ = k.BACKEND._build_stage_request(
+        model="test-model", messages=history, secondary_system="",
+        profile=k.STAGES["extended_reflection"], tools=None,
+        tool_choice=None, streamed=False,
+    )
+    wire = json.dumps(payload["messages"])
+    assert "Create a cuckoo clock SVG" not in wire and a1 not in wire
+    assert turn not in wire and "Decided on clock face, bird, and pendulum" in wire
+    assert [m["role"] for m in payload["messages"]] == ["system", "user"]
+    assert k._stage_continuation(k.STAGES["extended_reflection"], history) == k._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
+    assert "[JACK LINK" not in wire
+    assert "[JACK TASK SCOPE" not in wire
     assert k._agentic_cache_append_enabled(k.STAGES["extended_reflection"])
     assert k._agentic_forensic_journal().get(turn)["status"] == "stage2_active"
 
@@ -70,24 +79,25 @@ def test_opt_in_forensic_projection_keeps_regression_comparison_available(monkey
     history = [{"role": "user", "content": [{"type": "text", "text": "Make the bird blue"}]}]
     turn = k._agentic_begin_turn(history, fresh=True)
     first = k.BACKEND._stage_messages_for_profile(history, k.STAGES["extended_initial"])
-    assert f"[JACK LINK turn={turn} | artifact=U]" in str(first)
+    assert first == [{"role": "user", "content": history[0]["content"]}]
+    assert turn not in json.dumps(first)
     k.append_extended_candidate_response(history, {"content": "Bird is now blue"})
     k._agentic_forensic_start_stage2(history)
     continuation = k._stage_continuation(k.STAGES["extended_reflection"], history)
     assert "JACK TASK SCOPE" not in continuation
-    assert continuation == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
+    assert continuation == k._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
     projected = k._agentic_stage2_test_history(history, k.STAGES["extended_reflection"])
-    assert projected[0]["role"] == "system"
-    assert turn in projected[0]["content"]
-    assert projected[1]["role"] == "user"
+    assert projected[0]["role"] == "user"
+    assert projected[0]["content"] == history[0]["content"]
+    assert projected[1]["content"] == history[-1]["content"]
 
 
 def test_frozen_prompts_and_delayed_techniques_not_changed(monkeypatch, tmp_path):
     k = load_default(monkeypatch, tmp_path)
-    assert k.AGENTIC_STAGE1_PROMPT.startswith("Reasoning effort is set to xhigh.")
+    assert k.AGENTIC_STAGE1_PROMPT.startswith("Please think carefully through the task")
     assert "Carefully reason on the task before using tools." in k.AGENTIC_STAGE1_PROMPT
-    assert "Do not imitate the style, format, or structure of previous turns" in k.AGENTIC_STAGE1_PROMPT
-    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
+    assert "Do not imitate the formatting of previous responses" in k.AGENTIC_STAGE1_PROMPT
+    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
     assert k._agentic_cache_append_enabled(k.STAGES["extended_reflection"])
     assert k.STAGES["extended_reflection"].allow_tools is False
 

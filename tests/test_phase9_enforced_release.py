@@ -114,6 +114,7 @@ def test_asgi_nonstream_after_headers_never_releases_unverified_body():
 def test_asgi_stream_preserves_prefix_and_withholds_future_chunks():
     authority, owner = _authority()
     events = []
+    failures = []
 
     async def backend(scope, receive, send):
         await send({
@@ -127,10 +128,14 @@ def test_asgi_stream_preserves_prefix_and_withholds_future_chunks():
         await send({"type": "http.response.body", "body": b"data: [DONE]\n\n", "more_body": False})
 
     async def execute():
-        await Phase9BASGIGuard(backend, authority=authority)(
+        await Phase9BASGIGuard(
+            backend, authority=authority, note_stream_failure=failures.append,
+        )(
             {"type": "http"}, None, _async_send(events)
         )
     asyncio.run(execute())
+    assert len(failures) == 1
+    assert isinstance(failures[0], RuntimeCodeIntegrityCompromised)
     bodies = [event["body"] for event in events if event["type"] == "http.response.body"]
     assert bodies == [b"data: safe\n\n", b""]
     assert b"unsafe" not in b"".join(bodies)
@@ -202,6 +207,8 @@ def _integrated_host(tmp_path: Path):
         APP=app, KERNEL=SimpleNamespace(run=run, stream=stream),
         _phase4_partition_structured_tool_calls=release,
         _phase4_executor_admission_decision=admit,
+        _debugging_report_only_tool_surface=lambda tools, choice: (tools, choice),
+        _debugging_tool_is_direct_mutator=lambda _tool: False,
         _proxy_pi_control_request=pi,
         _JACK_SOURCE_AUTHORITY=source,
         _JACK_SOURCE_RUNTIME_ENFORCEMENT_INSTALLED=True,
@@ -211,6 +218,8 @@ def _integrated_host(tmp_path: Path):
         _phase4_executor_context_from_request=lambda _request: None,
         _safe_public_stream=lambda _body: None,
         completion_envelope=lambda value: value,
+        recover_pi_tool_evidence=lambda call_id, _sha=None: {"result": call_id},
+        _project_tool_evidence_release=lambda evidence: evidence,
     )
     calls = {"run": 0, "executor": 0, "control": 0}
 
@@ -226,6 +235,10 @@ def _integrated_host(tmp_path: Path):
     @app.post("/v1/responses")
     async def responses():
         return await host.KERNEL.run({})
+
+    @app.get("/jack/tool-evidence/{tool_call_id}")
+    async def evidence(tool_call_id: str):
+        return host._project_tool_evidence_release(host.recover_pi_tool_evidence(tool_call_id))
 
     @app.post("/jack/security/path-admission")
     async def executor():
@@ -533,3 +546,94 @@ def test_mandatory_phase9_install_seals_new_guard_and_enforcement_source(tmp_pat
     assert expected.issubset(observed)
     authority.verify_for("model")
     authority.verify_for("observation")
+
+
+def test_tool_evidence_route_and_release_authority_are_pinned(tmp_path):
+    host, _ = _integrated_host(tmp_path)
+    install(host)
+    with TestClient(host.APP) as client:
+        assert client.get("/jack/tool-evidence/call-1").json() == {"result": "call-1"}
+        host._project_tool_evidence_release = lambda evidence: {"result": "untrusted"}
+        blocked = client.get("/jack/tool-evidence/call-1")
+        assert blocked.status_code == 503
+        assert "untrusted" not in blocked.text
+        assert client.get("/").status_code == 200
+
+    host, _ = _integrated_host(tmp_path)
+    install(host)
+    route = next(r for r in host.APP.routes if r.path == "/jack/tool-evidence/{tool_call_id}")
+    async def bypass(tool_call_id: str):
+        return {"result": "untrusted"}
+    route.dependant.call = bypass
+    with TestClient(host.APP) as client:
+        blocked = client.get("/jack/tool-evidence/call-1")
+        assert blocked.status_code == 503
+        assert "untrusted" not in blocked.text
+
+
+@pytest.mark.parametrize("path", [
+    "/jack/orchestration/status", "/jack/orchestration/events",
+    "/health", "/v1/models", "/api/v1/models",
+])
+def test_authority_bearing_get_routes_are_pinned(tmp_path, path):
+    host, _calls = _integrated_host(tmp_path)
+
+    @host.APP.get(path)
+    async def read():
+        return {"verified": True}
+
+    guard = install(host)
+    route = next(r for r in host.APP.routes if getattr(r, "path", None) == path)
+    with TestClient(host.APP) as client:
+        assert client.get(path).status_code == 200, guard.mismatched_slots
+        route.dependant.call = lambda: {"unverified": True}
+        assert client.get(path).status_code == 503
+        assert client.get("/").status_code == 200
+
+
+def test_source_status_and_passive_lifecycle_do_not_depend_on_model_execution(tmp_path):
+    import jack_phase9b_enforcement as phase9
+    host, calls = _integrated_host(tmp_path)
+
+    @host.APP.get("/jack/source-authority")
+    async def source_status():
+        return {"observed": True}
+
+    @host.APP.post("/jack/tool-lifecycle/observe")
+    async def lifecycle():
+        return {"accepted": True}
+
+    guard = install(host)
+    assert phase9._http_authority_scopes({
+        "method": "GET", "path": "/jack/source-authority",
+    }) == ("observation",)
+    assert phase9._http_authority_scopes({
+        "method": "POST", "path": "/jack/tool-lifecycle/observe",
+    }) == ("observation", "authority")
+    host.sanitize_agent_request = lambda body: {"unsafe": True}
+    with TestClient(host.APP) as client:
+        assert client.post("/v1/chat/completions").status_code == 503
+        assert client.get("/jack/source-authority").status_code == 200
+        assert client.post("/jack/tool-lifecycle/observe").status_code == 200
+        host.enforce_kernel_auth = lambda _request: None
+        assert client.get("/jack/source-authority").status_code == 503
+        assert client.post("/jack/tool-lifecycle/observe").status_code == 503
+    assert calls["run"] == 0
+
+
+@pytest.mark.parametrize("path,method", [
+    ("/jack/source-authority", "GET"),
+    ("/jack/tool-lifecycle/observe", "POST"),
+])
+def test_diagnostic_route_binding_remains_sealed(tmp_path, path, method):
+    host, _calls = _integrated_host(tmp_path)
+
+    async def original():
+        return {"verified": True}
+
+    host.APP.add_api_route(path, original, methods=[method])
+    guard = install(host)
+    route = next(r for r in host.APP.routes if getattr(r, "path", None) == path)
+    route.endpoint = lambda: {"untrusted": True}
+    with TestClient(host.APP) as client:
+        assert client.request(method, path).status_code == 503

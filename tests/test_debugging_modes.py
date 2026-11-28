@@ -197,3 +197,19 @@ Add an empty-input guard.
 
 if __name__ == "__main__":
     main()
+
+
+def test_debugging_read_names_and_host_instruction_projection():
+    k = load("code-debugging")
+    for name in ("get_information", "dispatch_status", "get_credit_usage",
+                 "read_copyright", "git_commit_log", "show_commit", "inspect_patch",
+                 "check_format", "getInformation"):
+        assert not k._debugging_tool_is_direct_mutator({"function": {"name": name}})
+    for name in ("write_file", "deleteFile", "apply_patch", "git_commit", "read_and_write"):
+        assert k._debugging_tool_is_direct_mutator({"function": {"name": name}})
+    prompt = k._debugging_pass_system_prompt(1)
+    assert k.DEBUGGING_INSTRUCTIONS_PATH.read_text(encoding="utf-8") in prompt
+    assert "Use the caller's inspection tools to read" not in prompt
+    assert k._runtime_activity_stage_number("coder_planner") == 0
+    assert [k._runtime_activity_stage_number("deep_reasoning_" + stage)
+            for stage in ("thesis", "antithesis", "synthesis")] == [1, 2, 3]

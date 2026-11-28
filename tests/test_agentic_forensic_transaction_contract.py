@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def load_kernel(monkeypatch, tmp_path):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "balanced")
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
     monkeypatch.setenv("JACK_BACKEND_MODEL", "test-model")
     monkeypatch.setenv("JACK_AGENTIC_STAGE2_CACHE_EXPERIMENT", "1")
@@ -53,7 +54,7 @@ def test_transaction_commit_and_restart_recovery(monkeypatch, tmp_path):
     suffix = k._stage_continuation(k.STAGES["extended_reflection"], history)
     assert f"turn={turn}" not in suffix
     assert "frozen_A1=" not in suffix
-    assert suffix == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
+    assert suffix == k._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
     assert original_request not in suffix
     assert answer not in suffix
 
@@ -67,11 +68,19 @@ def test_transaction_commit_and_restart_recovery(monkeypatch, tmp_path):
     isolated = k._agentic_stage2_test_history(history, k.STAGES["extended_reflection"])
     # The authenticated Work ID and memory attempt are now explicit source
     # metadata, preceding the unchanged request and frozen response.
-    assert len(isolated) == 3
-    assert isolated[0]["role"] == "system"
-    assert turn in isolated[0]["content"]
-    assert record.stage2_attempt_id in isolated[0]["content"]
-    assert isolated[1]["content"] == original["content"]
+    assert len(isolated) == 2
+    assert isolated[0]["role"] == "user"
+    assert isolated[0]["content"] == original["content"]
+    assert isolated[0]["_jack_agentic_turn_id"] == turn
+    payload, _ = k.BACKEND._build_stage_request(
+        model="test-model", messages=history, secondary_system="",
+        profile=k.STAGES["extended_reflection"], tools=None,
+        tool_choice=None, streamed=False,
+    )
+    wire = json.dumps(payload["messages"])
+    assert turn not in wire and record.stage2_attempt_id not in wire
+    assert answer not in wire and original_request not in wire
+    assert "current R1" in wire
     assert isolated[-1]["content"] == answer
     assert isolated[-1]["reasoning_content"] == "current R1"
 
@@ -109,8 +118,9 @@ def test_transaction_commit_and_restart_recovery(monkeypatch, tmp_path):
     model = k.BACKEND._stage_messages_for_profile(
         projected, k.STAGES["extended_initial"]
     )
-    assert f"[JACK LINK turn={turn} | artifact=M]" in model[1]["content"]
-    assert f"[JACK LINK turn={turn} | artifact=A1]" in model[2]["content"]
+    assert turn not in json.dumps(model)
+    assert "Retrospective for THIS clock" in model[1]["content"]
+    assert model[2]["content"] == answer
     assert model[3]["content"] == "What happened?"
     assert not any("_jack_forensic_turn_id" in m for m in model)
 
@@ -195,7 +205,41 @@ def test_journal_rejects_ambiguous_identical_requests(monkeypatch, tmp_path):
 def test_metadata_does_not_modify_frozen_prompts_or_context_pruning(monkeypatch, tmp_path):
     k = load_kernel(monkeypatch, tmp_path)
     assert "Carefully reason on the task before using tools." in k.AGENTIC_STAGE1_PROMPT
-    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_TURN_RETENTION_CONTINUATION
+    assert k.AGENTIC_36_STAGE2_PROMPT == k._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
     assert k.AGENTIC_CACHE_APPEND_EXPERIMENT  # explicitly enabled by fixture
     assert k.STAGES["extended_reflection"].allow_tools is False
     assert k._stage_continuation(k.STAGES["extended_reflection"]) == k.AGENTIC_36_STAGE2_PROMPT
+
+
+def test_identity_bearing_history_bypasses_shadow_scan_without_changing_projection(monkeypatch, tmp_path):
+    k = load_kernel(monkeypatch, tmp_path)
+    original = {"role": "user", "content": "Create a clock."}
+    history = [dict(original)]
+    turn = k._agentic_begin_turn(history, fresh=True)
+    answer = k.append_extended_candidate_response(history, {
+        "content": "Exact clock A1", "reasoning_content": "clock evidence",
+    })
+    k._agentic_forensic_start_stage2(history)
+    completed = asyncio.run(k.KERNEL._complete_commit(
+        history, "", {}, answer, "Verified clock memory",
+    ))
+    visible = k._format_agentic_completed_response(
+        completed.frozen_xml, completed.frozen_answer, turn_id=turn,
+    )
+    expected = k._agentic_forensic_project_visible([dict(original)], visible)
+    assert expected is not None
+    assert expected[-1]["content"] == answer
+
+    class NoShadowTraversal(dict):
+        def values(self):
+            raise AssertionError("Identity-bearing history must not scan shadow records")
+
+    monkeypatch.setattr(k, "_AGENTIC_SHADOW_LEDGER", NoShadowTraversal(k._AGENTIC_SHADOW_LEDGER))
+    assert k._agentic_project_committed_artifact_pair([dict(original)], visible) is None
+    caller = [dict(original), {"role": "assistant", "content": visible},
+              {"role": "user", "content": "Continue."}]
+    projected = k.compact_incoming_history(caller)
+    assert projected[1:3] == expected
+    tampered = visible.replace("Exact clock A1", "Changed clock A1")
+    assert k._agentic_project_committed_artifact_pair([dict(original)], tampered) is None
+    assert k._agentic_forensic_project_visible([dict(original)], tampered) is None

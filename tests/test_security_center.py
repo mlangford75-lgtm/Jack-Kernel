@@ -19,6 +19,83 @@ def test_default_and_persisted_workspace(cfg):
     loaded = jk._load_cli_config()
     assert json.loads(jk._config_to_env(loaded)["JACK_PATH_POLICY_JSON"]) == cfg["security_path_policy"]
 
+
+@pytest.fixture
+def factory_windows(cfg, monkeypatch):
+    for name, value in {
+        "SystemRoot": r"C:\Windows", "WINDIR": r"C:\Windows",
+        "SystemDrive": "C:", "USERPROFILE": r"C:\Users\Operator",
+        "TEMP": r"C:\Users\Operator\AppData\Local\Temp", "TMP": r"D:\Scratch",
+    }.items():
+        monkeypatch.setenv(name, value)
+    return cfg
+
+
+@pytest.mark.parametrize("target", [
+    r"%TEMP%\jack-build\test.txt", r"$env:TMP\test.txt",
+    r"C:\Temp\test.txt", r"C:\Windows\Temp\test.txt",
+    r"%SystemRoot%\Temp\jack-build\test.txt", r"C:\Windows\Temp",
+    r"C:\Users\Operator\Documents\project\test.txt",
+    r"C:\Program Files\Example\test.txt", r"C:\ProgramData\Example\test.txt",
+])
+def test_factory_policy_keeps_ordinary_work_and_temp_open(factory_windows, target):
+    import jack_path_policy as paths
+    policy = jk._security_center_policies(factory_windows)[0]
+    assert policy.workspace_root is None
+    assert policy.user_never_roots == ()
+    call = {"type": "function", "function": {"name": "write",
+            "arguments": json.dumps({"path": target, "content": "synthetic"})}}
+    decision = paths.authorize_structured_tool_call(policy, call)
+    assert decision.outcome is paths.PathAuthorizationOutcome.ALLOW
+    facts = paths.inspect_represented_path(policy, target)
+    assert facts.deterministic and facts.canonical_target is not None
+    assert not facts.never_match and not facts.invalid
+
+
+@pytest.mark.parametrize("target", [
+    r"C:\Windows\SystemTemp\test.txt", r"C:\Windows\TempOther\test.txt",
+    r"C:\Windows\Temp\..\System32\test.txt", r"C:\Windows\SysWOW64\test.txt",
+    r"C:\Windows\WinSxS\test.txt", r"C:\Windows", r"C:\Boot\BCD",
+    r"C:\Recovery\test.txt", r"C:\System Volume Information\test.txt",
+])
+def test_factory_os_protection_unchanged(factory_windows, target):
+    import jack_path_policy as paths
+    policy = jk._security_center_policies(factory_windows)[0]
+    assert paths.authorize_represented_path(policy, target).outcome is paths.PathAuthorizationOutcome.HARD_INTERRUPT
+
+
+@pytest.mark.parametrize("restriction", [r"%SystemRoot%", r"%SystemRoot%\Temp", r"%SystemRoot%\Temp\jack-build"])
+def test_explicit_never_overrides_factory_temp_exception(factory_windows, restriction):
+    import jack_path_policy as paths
+    factory_windows["security_path_policy"] = {
+        "version": 1, "workspace_root": None, "never_paths": [restriction],
+    }
+    policy = jk._security_center_policies(factory_windows)[0]
+    assert len(policy.user_never_roots) == 1
+    target = r"C:\Windows\Temp\jack-build\test.txt"
+    for read_only in (False, True):
+        assert paths.authorize_represented_path(
+            policy, target, verified_default_windows_read=read_only,
+        ).outcome is paths.PathAuthorizationOutcome.HARD_INTERRUPT
+    factory_windows["security_path_policy"]["never_paths"] = []
+    restored = jk._security_center_policies(factory_windows)[0]
+    assert paths.authorize_represented_path(restored, target).outcome is paths.PathAuthorizationOutcome.ALLOW
+
+
+def test_temp_respects_explicit_workspace_lock(factory_windows):
+    import jack_path_policy as paths
+    factory_windows["security_path_policy"] = {
+        "version": 1, "workspace_root": r"D:\Projects\Jack", "never_paths": [],
+    }
+    policy = jk._security_center_policies(factory_windows)[0]
+    assert paths.authorize_represented_path(policy, r"C:\Windows\Temp\a.txt").outcome is paths.PathAuthorizationOutcome.DENY_AND_CONTINUE
+    factory_windows["security_path_policy"]["workspace_root"] = r"C:\Windows\Temp\Jack"
+    policy = jk._security_center_policies(factory_windows)[0]
+    assert paths.authorize_represented_path(policy, r"C:\Windows\Temp\Jack\a.txt").outcome is paths.PathAuthorizationOutcome.ALLOW
+    assert paths.authorize_represented_path(policy, r"C:\Windows\Temp\Other\a.txt").outcome is paths.PathAuthorizationOutcome.DENY_AND_CONTINUE
+
+
+
 def test_admin_environment_precedence(cfg, monkeypatch):
     cfg["security_path_policy"] = {"version": 1, "workspace_root": "D:/Jack/saved", "never_paths": []}
     raw = json.dumps({"version": 1, "workspace_root": "D:/Jack/admin", "never_paths": []})
@@ -146,3 +223,133 @@ def test_adaptive_and_individual_override_round_trip(cfg, monkeypatch):
     monkeypatch.setattr(jk, "_cli_input", lambda *a, **k: next(inputs))
     jk._run_transactional_editor(jk._edit_security_center, cfg)
     assert jk._security_center_policies(cfg)[1].canaries._patterns[0].match_chars == 16
+
+
+@pytest.mark.parametrize("source", ["kernel", "backend", "alias", "extra", "pi", "basic_wire"])
+def test_v5_security_center_rejects_credential_collision_before_child(cfg, monkeypatch, capsys, source):
+    import base64
+
+    secret = "synthetic-collision-test-value"
+    monkeypatch.setattr(jk, "_load_pi_control_bridge", lambda: {"token": ""})
+    if source == "kernel":
+        cfg["api_key"] = secret
+    elif source == "backend":
+        cfg["backend_api_key"] = secret
+    elif source == "alias":
+        cfg["backend_profile"] = "lmstudio"
+        cfg["backend_api_key"] = ""
+        monkeypatch.setenv("JACK_LMSTUDIO_API_KEY", secret)
+    elif source == "extra":
+        cfg["backend_extra_headers"] = {"X-Custom-Secret": secret}
+        cfg["backend_secret_header_names"] = ["X-Custom-Secret"]
+    elif source == "pi":
+        monkeypatch.setattr(jk, "_load_pi_control_bridge", lambda: {"token": secret})
+    else:
+        cfg["backend_username"] = "user"
+        cfg["backend_password"] = "synthetic-test-password"
+        secret = "Basic " + base64.b64encode(
+            b"user:synthetic-test-password").decode("ascii")
+    # A conflicting custom value must be rejected even with a different
+    # sensitivity. The existing credential authority is not reconfigured.
+    inputs = iter(["5", secret, "s"])
+    monkeypatch.setattr(jk, "_cli_input", lambda *a, **k: next(inputs))
+    jk._run_transactional_editor(jk._edit_security_center, cfg)
+    assert jk._security_center_policies(cfg)[1].canaries.count == 0
+    output = capsys.readouterr().out
+    assert "Invalid or conflicting security setting" in output
+    assert secret not in output
+    # Environment override is checked too, without exposing the value.
+    raw = json.dumps({"version": 1, "patterns": [
+        {"id": "session:test", "tier": "B", "value": secret,
+         "sensitivity_percent": 10}], "max_window": 4096})
+    monkeypatch.setenv("JACK_CANARY_POLICY_JSON", raw)
+    with pytest.raises(RuntimeError, match="Invalid security policy") as caught:
+        jk._config_to_env(cfg)
+    assert secret not in str(caught.value)
+
+def test_restore_factory_path_defaults_preserves_other_settings(factory_windows, monkeypatch, capsys):
+    factory_windows["security_path_policy"] = {
+        "version": 1, "workspace_root": r"D:\Projects\Jack",
+        "never_paths": [r"D:\Projects\Private"],
+    }
+    factory_windows["security_irq_settings"] = {"max_window": 4096, "sensitivity_percent": 25}
+    jk._security_center_summary(factory_windows)
+    assert "LOCAL SETTINGS" in capsys.readouterr().out
+    inputs = iter(["11", "y", "s"])
+    monkeypatch.setattr(jk, "_cli_input", lambda *a, **kw: next(inputs))
+    jk._edit_security_center(factory_windows)
+    assert factory_windows["security_path_policy"] is None
+    assert factory_windows["security_irq_settings"]["sensitivity_percent"] == 25
+    loaded = jk._load_cli_config()
+    active = jk._security_center_policies(loaded)[0]
+    assert active.workspace_root is None and active.user_never_roots == ()
+    jk._security_center_summary(loaded)
+    assert "FACTORY DEFAULTS" in capsys.readouterr().out
+
+
+def test_factory_path_reset_does_not_override_admin_policy(factory_windows, monkeypatch):
+    raw = json.dumps({"version": 1, "workspace_root": "D:/Admin", "never_paths": []})
+    monkeypatch.setenv("JACK_PATH_POLICY_JSON", raw)
+    inputs = iter(["11", "s"])
+    monkeypatch.setattr(jk, "_cli_input", lambda *a, **kw: next(inputs))
+    jk._edit_security_center(factory_windows)
+    assert jk._security_center_policies(factory_windows)[0].workspace_root == r"d:\admin"
+
+
+def test_short_effective_canary_warning_does_not_disclose_or_change_policy(cfg, capsys, monkeypatch):
+    import jack_evidence_guard as evidence
+    monkeypatch.setattr(jk, "_load_pi_control_bridge", lambda: {})
+    secret = "zQ7m"
+    cfg["api_key"] = secret
+    _, custom, _, _ = jk._security_center_policies(cfg)
+    effective = jk._security_center_effective_canaries(cfg, custom)
+    assert effective.canaries.short_match_count() >= 1
+    assert evidence._find_canary_in_evidence_value(effective.canaries, secret) is not None
+    jk._security_center_summary(cfg)
+    output = capsys.readouterr().out
+    assert "threshold below 8 characters" in output
+    assert secret not in output
+
+
+def test_new_workspace_needs_no_parser_mode_selection(factory_windows, monkeypatch):
+    inputs = iter(["1", r"D:\Projects\Jack", "s"])
+    monkeypatch.setattr(jk, "_cli_input", lambda *a, **kw: next(inputs))
+    jk._edit_security_center(factory_windows)
+    assert jk._security_center_policies(factory_windows)[0].filesystem_protection.value == "represented"
+
+
+def test_existing_workspace_migrates_without_disabling_lock(factory_windows, monkeypatch):
+    factory_windows["security_path_policy"] = {
+        "version": 1, "workspace_root": r"D:\Old", "never_paths": [],
+    }
+    assert jk._security_center_policies(factory_windows)[0].filesystem_protection.value == "represented"
+    inputs = iter(["1", r"D:\New", "s"])
+    monkeypatch.setattr(jk, "_cli_input", lambda *a, **kw: next(inputs))
+    jk._edit_security_center(factory_windows)
+    active = jk._security_center_policies(factory_windows)[0]
+    assert active.filesystem_protection.value == "represented"
+    assert active.workspace_enabled
+    assert active.workspace_root == active.normalize(r"D:\New")
+
+
+def test_discard_after_workspace_coverage_selection(factory_windows, monkeypatch):
+    before = copy.deepcopy(factory_windows)
+    inputs = iter(["1", r"D:\Projects\Jack", "m"])
+    monkeypatch.setattr(jk, "_cli_input", lambda *a, **kw: next(inputs))
+    with pytest.raises(jk._ReturnToMainMenu):
+        jk._run_transactional_editor(jk._edit_security_center, factory_windows)
+    assert factory_windows == before
+
+
+def test_global_irq_short_effective_match_requires_confirmation(cfg, monkeypatch, capsys):
+    monkeypatch.setattr(jk, "_load_pi_control_bridge", lambda: {})
+    cfg["api_key"] = "synthetic-credential"
+    inputs = iter(["9", "maximum", "", "y", "n", "s"])
+    monkeypatch.setattr(jk, "_cli_input", lambda *a, **k: next(inputs))
+    before = cfg.get("security_irq_settings")
+    jk._run_transactional_editor(jk._edit_security_center, cfg)
+    assert cfg.get("security_irq_settings") == before
+    out = capsys.readouterr().out
+    assert "Shortest effective Canary match:" in out
+    assert "false positives likely" in out
+    assert cfg["api_key"] not in out

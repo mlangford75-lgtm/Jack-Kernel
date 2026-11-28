@@ -146,7 +146,7 @@ def test_all_profiles_receive_only_frozen_reasoning_and_complete_tool_evidence(
         k._AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
         if profile in {"balanced", "thorough", "translated"} else k._AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE
     )
-    assert ("No task description" in k.AGENTIC_36_STAGE2_PROMPT) is (profile != "flash")
+    assert "No task description" in k.AGENTIC_36_STAGE2_PROMPT
     assert (
         k._AGENTIC_STAGE2_EXHAUSTIVE_PRESERVATION in k.AGENTIC_36_STAGE2_PROMPT
     ) is (profile in {"balanced", "thorough", "translated"})

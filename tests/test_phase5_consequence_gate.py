@@ -131,3 +131,46 @@ def test_different_nonhard_scopes_are_not_broadened():
 def test_empty_gate_does_not_silently_allow():
     with pytest.raises(ValueError):
         gate.evaluate_consequence((), outcome_type=kernel.SecurityOutcome)
+
+
+@pytest.mark.parametrize("tool_name", ["read", "bash"])
+@pytest.mark.parametrize("workspace,never,target,expected", [
+    (None, [], r"C:\Windows\System32\drivers\etc\hosts", "ALLOW"),
+    (r"D:\Work", [], r"C:\Windows\System32\drivers\etc\hosts", "DENY_AND_CONTINUE"),
+    (None, [], r"C:\Windows\System32\config\SAM", "DENY_AND_CONTINUE"),
+    (None, [r"C:\Windows\private.txt"], r"C:\Windows\private.txt:$DATA", "HARD_INTERRUPT"),
+])
+def test_audit_m4_default_windows_read_passes_live_consequence_and_ledger(
+        monkeypatch, tmp_path, tool_name, workspace, never, target, expected):
+    import json
+    import jack_authority_ledger as authority
+
+    policy = path_policy.build_runtime_path_policy(
+        runtime_id="audit-m4", lane_id="test",
+        raw_json=json.dumps({"version": 1, "workspace_root": workspace, "never_paths": never}),
+        host_environment={"SystemRoot": r"C:\Windows", "WINDIR": r"C:\Windows",
+                          "SystemDrive": "C:", "USERPROFILE": r"C:\Users\Test"},
+    )
+    ledger = authority.AuthorityLedger(runtime_id="audit-m4", lane_id="test",
+                                      projection_root=tmp_path, queue_capacity=64)
+    original = path_policy.authorize_represented_path
+    monkeypatch.setattr(path_policy, "authorize_represented_path",
+                        getattr(original, "_jack_phase5_legacy_authorizer", original))
+    gate._install_represented_path_gate(gate._bound_evaluator(kernel.SecurityOutcome), ledger=ledger)
+    # Bash expands $DATA inside double quotes; use the exact protected
+    # filename for this operation-aware gate test. Literal ADS normalization
+    # remains covered by the structured case and Phase-4 identity tests.
+    command_target = target.removesuffix(":$DATA")
+    args = {"path": target} if tool_name == "read" else {"command": 'cat "' + command_target + '"'}
+    call = {"function": {"name": tool_name, "arguments": json.dumps(args)}}
+    try:
+        with authority.live_ledger_scope(ledger):
+            if tool_name == "read":
+                decision = path_policy.authorize_structured_tool_call(policy, call)
+            else:
+                decision = path_policy.authorize_command_tool_call(
+                    policy, call, command_dialect="bash", executor_platform="windows")
+        assert decision.outcome.value == expected
+        assert ledger.active_head.sequence >= 1
+    finally:
+        ledger.close()

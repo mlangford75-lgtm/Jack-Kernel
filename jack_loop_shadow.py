@@ -108,10 +108,22 @@ class LongCycleShadowDetector:
             snippet = b[offset:offset + _ANCHOR_WORDS]
             lower = max(0, offset - _ANCHOR_JITTER)
             upper = min(width - _ANCHOR_WORDS, offset + _ANCHOR_JITTER)
-            if any(snippet == a[i:i + _ANCHOR_WORDS] for i in range(lower, upper + 1)):
-                matched += 1
-                if matched == _MIN_ANCHOR_HITS:
-                    return True
+            # Search for the exact first word in C before allocating a slice.
+            # Every possible matching eight-word anchor starts with this word;
+            # retain the original inclusive jitter window and exact comparison.
+            if not snippet:
+                continue
+            while lower <= upper:
+                try:
+                    i = a.index(snippet[0], lower, upper + 1)
+                except ValueError:
+                    break
+                if snippet == a[i:i + _ANCHOR_WORDS]:
+                    matched += 1
+                    if matched == _MIN_ANCHOR_HITS:
+                        return True
+                    break
+                lower = i + 1
         return False
 
     @staticmethod
@@ -252,7 +264,8 @@ class LongCycleShadowDetector:
         for match in _COMPLETED_WORD.finditer(combined):
             word = match.group().strip()
             if word not in self._symbols:
-                self._symbols[word] = len(self._symbols) + 1
+                # Position-derived identities are never reused after pruning.
+                self._symbols[word] = self._word_count + 1
             self._words.append(self._symbols[word])
             self._word_count += 1
             last = match.end()
@@ -264,6 +277,13 @@ class LongCycleShadowDetector:
                     return observation
             if len(self._words) > _MAX_GENERATED_WORDS + _SCAN_WORDS:
                 self._words = self._words[-_MAX_GENERATED_WORDS:]
+                # Keep the exact active vocabulary; retire only symbols no
+                # retained word can reference. Amortize the full-window walk
+                # rather than rebuilding on every 129-word trim.
+                if len(self._symbols) > 2 * _MAX_GENERATED_WORDS:
+                    live = set(self._words)
+                    self._symbols = {word: symbol for word, symbol in self._symbols.items()
+                                     if symbol in live}
         self._tail = combined[last:]
         if len(self._tail) > 131072:
             self._tail = ""  # Avoid unbounded unbroken bytes; conservative miss.

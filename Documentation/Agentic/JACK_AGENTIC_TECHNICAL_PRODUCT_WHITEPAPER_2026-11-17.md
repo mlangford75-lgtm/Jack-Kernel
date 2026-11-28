@@ -4,6 +4,8 @@
 
 **Jonathan Michael Langford | Jack Kernel project**
 
+> **November 27, 2026 — experimental audit reconciliation:** This November 17 edition records its original implementation and validation state. For subsequent candidate behavior, including the tool-free Coder Architect, frozen-A1 preservation after retrospective budget exhaustion, and current Responses caller-instruction scope, see the [independent audit remediation register](../Independent_Audit_Remediation_Register.md). This note does not retroactively change the original evidence or claim a merged release.
+
 **Reason when it is useful. Preserve consequential knowledge. Keep execution evidence authentic. Never trade instruction authority for a cache hit.**
 
 This edition is a **fully developed current paper**, not a brief addendum. It maintains the architecture, distinctions, historical results, release reservations and product reasoning carried forward from the November 12 paper, while directly integrating the new Flash, Balanced, Thorough and Translated modes, Stage 2 source isolation and common cache/provenance path. The complete prior paper, including its November 6 original, is preserved page-for-page after the archival divider.

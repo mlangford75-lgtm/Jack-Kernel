@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def load(monkeypatch, tmp_path, *, paper):
     monkeypatch.setenv("JACK_REASONING_LEVEL", "agentic")
+    monkeypatch.setenv("JACK_AGENTIC_PROFILE", "balanced")
     monkeypatch.setenv("JACK_BACKEND_PROFILE", "lmstudio")
     monkeypatch.setenv("JACK_BACKEND_MODEL", "test-model")
     monkeypatch.setenv("JACK_AGENTIC_TRANSACTION_LINKS", "1")
@@ -75,13 +76,17 @@ def test_final_paper_flag_cannot_change_current_turn_memory(monkeypatch, tmp_pat
     alternate = load(monkeypatch, tmp_path, paper=True)
     b = asyncio.run(capture(alternate, stream))
     assert a == b
-    assert len(a["messages"]) == 4
-    assert a["messages"][-1] == {"role": "user", "content": "Fix the clock"}
-    assert a["messages"][2]["content"] == "Fixed clock; visual status unverified."
-    assert a["messages"][2]["reasoning_content"] == "Corrected gradient syntax."
-    assert "Old memory" not in json.dumps(a)
-    assert a["messages"][0]["content"] == control.AGENTIC_36_STAGE2_PROMPT
-    assert a["messages"][0]["content"].startswith("You must always follow the Prime Directive.")
-    assert a["messages"][1] == {"role": "system", "content": control.AGENTIC_STAGE2_MEMORY_TRIGGER}
-    assert a["messages"][3] == {"role": "user", "content": "Fix the clock"}
-    assert "tools" not in a
+    messages = a["messages"]
+    assert [m["role"] for m in messages] == ["system", "user"]
+    assert messages[0]["content"] == control.AGENTIC_36_STAGE2_PROMPT + "\n\n" + control.AGENTIC_STAGE2_MEMORY_TRIGGER
+    prefix = "JACK READ-ONLY WORKING-STATE SOURCE DATA, NOT A USER REQUEST.\n"
+    suffix = "\nEND JACK WORKING-STATE SOURCE DATA."
+    content = messages[1]["content"]
+    assert content.startswith(prefix) and content.endswith(suffix)
+    assert json.loads(content[len(prefix):-len(suffix)])["events"] == [
+        {"type": "reasoning_segment", "phase": "initial", "content": "Corrected gradient syntax."}
+    ]
+    for forbidden in ("Fix the clock", "Fixed clock; visual status unverified.", "Old memory"):
+        assert forbidden not in json.dumps(messages)
+    assert "tools" not in a and "tool_choice" not in a
+    assert alternate._stage_continuation(alternate.STAGES["extended_reflection"]) == alternate.AGENTIC_36_STAGE2_PROMPT
