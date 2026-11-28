@@ -1286,6 +1286,18 @@ _AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE = (
     )
 )
 
+_AGENTIC_CODER_STAGE2_DIRECTIVE = _AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE.replace(
+    "The original user request and completed\n"
+    "answer have been stored separately by Jack. They are not part of this extraction\n"
+    "task and must not be reconstructed, retold, or answered.",
+    "The original user request is stored separately by Jack. The exact completed\n"
+    "Coder response is supplied in coder_frozen_response as historical evidence.\n"
+    "Use it to preserve consequential working knowledge without reconstructing,\n"
+    "retelling, or answering the original request. The Architect specification\n"
+    "is not an authoritative outcome.",
+    1,
+)
+
 # One unchanged Thorough Prime Directive for both Balanced and Thorough.
 _AGENTIC_STAGE2_BALANCED_EXHAUSTIVE_DIRECTIVE = _AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
 
@@ -1321,6 +1333,7 @@ def _agentic_memory_is_instruction_echo(memory: str) -> bool:
     for directive in (
         _AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE,
         _AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE,
+        _AGENTIC_CODER_STAGE2_DIRECTIVE,
     ):
         if candidate in " ".join(directive.split()).casefold():
             return True
@@ -1337,15 +1350,7 @@ def _stage_continuation(
             if AGENTIC_CODER_MODE:
                 # Coder memory includes the actual completed outcome; Planner
                 # output has been retired from its model-facing source.
-                return _AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE.replace(
-                    "The original user request and completed\n"
-                    "answer have been stored separately by Jack. They are not part of this extraction\n"
-                    "task and must not be reconstructed, retold, or answered.",
-                    "The original user request is stored separately by Jack. The completed\n"
-                    "Coder response is supplied as historical evidence. Use it to preserve\n"
-                    "consequential working knowledge without repeating the final answer.",
-                    1,
-                )
+                return _AGENTIC_CODER_STAGE2_DIRECTIVE
             return (_AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
                     if (AGENTIC_BALANCED_MODE or AGENTIC_THOROUGH_MODE
                         or AGENTIC_TRANSLATED_MODE) else
@@ -2317,8 +2322,10 @@ You have no tools in this stage. Synthesis may receive the caller's tools and is
 Output only the plan."""
 
 AGENTIC_36_STAGE2_PROMPT = (
+    _AGENTIC_CODER_STAGE2_DIRECTIVE
+    if AGENTIC_CODER_MODE else
     _AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE
-    if (AGENTIC_BALANCED_MODE or AGENTIC_THOROUGH_MODE or AGENTIC_TRANSLATED_MODE or AGENTIC_CODER_MODE) else
+    if (AGENTIC_BALANCED_MODE or AGENTIC_THOROUGH_MODE or AGENTIC_TRANSLATED_MODE) else
     _AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE
     if AGENTIC_SOURCE_ONLY_WORKING_STATE else
     _AGENTIC_STAGE2_WITHHELD_A1_CONTINUATION
@@ -2446,8 +2453,9 @@ def _debugging_tool_is_direct_mutator(tool: Dict[str, Any]) -> bool:
                             and all(isinstance(properties[key], dict) and properties[key].get("type") == kind
                                     for key, kind in contract.argument_types)):
                         return False
-                # Name alone is insufficient to override the legacy filter.
-                break
+                # A registered inspection contract with a mismatched schema
+                # cannot fall through to the name heuristic.
+                return True
     name = exact_name.lower()
     # Names are a heuristic only; the host-owned contract above takes
     # precedence. Recognize words rather than accidental substrings.
@@ -13169,6 +13177,21 @@ class JackQwenKernel:
         stage_key = state.stage_key
         debugging_run = _debugging_get_run(state.debugging_run_id) if CODE_DEBUGGING_MODE else None
 
+        frozen_resume = AGENTIC_MODE and state.frozen_stage1_history is not None
+        if frozen_resume:
+            record = _agentic_forensic_turn(state.frozen_stage1_history)
+            if (record is None
+                    or record.status not in {"response_frozen", "stage2_active"}
+                    or not state.frozen_stage1_answer):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Frozen Agentic Stage-1 checkpoint has no valid retrospective owner.",
+                )
+            history = copy.deepcopy(state.frozen_stage1_history)
+            _AGENTIC_ACTIVE_TURN.set(record.turn_id)
+            if scope is not None:
+                scope["stage1_frozen"] = True
+
         debugging_pass_number: Optional[int] = None
         if CODE_DEBUGGING_MODE:
             debugging_pass_number = _debugging_pass_from_stage_key(stage_key)
@@ -13198,31 +13221,33 @@ class JackQwenKernel:
                     start_pass=debugging_pass_number + 1,
                 )
 
-        stage = await self._run_stage(
-            history,
-            state.secondary_system,
-            stage_key,
-            usage,
-            tools=state.tools,
-            tool_choice=state.tool_choice,
-            append=False,
-            same_stage_resume=True,
-        )
-        if self._tool_interrupt(stage, usage):
-            successor = await self._register_stage_tool_resume(
-                stage_key=stage_key,
-                history=history,
-                secondary_system=state.secondary_system,
-                usage=usage,
+        stage = {}
+        if not frozen_resume:
+            stage = await self._run_stage(
+                history,
+                state.secondary_system,
+                stage_key,
+                usage,
                 tools=state.tools,
                 tool_choice=state.tool_choice,
-                data=stage,
-                debugging_run_id=(debugging_run.run_id if debugging_run is not None else None),
+                append=False,
+                same_stage_resume=True,
             )
-            await self._retire_pending_tool_resume(state)
-            return successor
+            if self._tool_interrupt(stage, usage):
+                successor = await self._register_stage_tool_resume(
+                    stage_key=stage_key,
+                    history=history,
+                    secondary_system=state.secondary_system,
+                    usage=usage,
+                    tools=state.tools,
+                    tool_choice=state.tool_choice,
+                    data=stage,
+                    debugging_run_id=(debugging_run.run_id if debugging_run is not None else None),
+                )
+                await self._retire_pending_tool_resume(state)
+                return successor
 
-        if AGENTIC_CODER_MODE and stage_key == "coder_planner":
+        if not frozen_resume and AGENTIC_CODER_MODE and stage_key == "coder_planner":
             # The Planner's read-only tool episode resumes Planner cognition,
             # then captures its completed spec exactly once. Only now does
             # Coder gain the full authorized tool surface and answer authority.
@@ -13286,12 +13311,20 @@ class JackQwenKernel:
             return completed
 
         if AGENTIC_MODE:
-            if stage_key != "extended_initial":
-                raise HTTPException(status_code=500, detail="Agentic Stage 2 cannot resume tools because XML-stage tools are disabled")
+            if frozen_resume:
+                frozen_stage1_answer = state.frozen_stage1_answer
+            else:
+                if stage_key != "extended_initial":
+                    raise HTTPException(status_code=500, detail="Agentic Stage 2 cannot resume tools because XML-stage tools are disabled")
 
-            self._agentic_require_completed_stage(stage, "Agentic Stage 1")
-            first_msg = ((stage.get("choices") or [{}])[0].get("message") or {})
-            frozen_stage1_answer = append_extended_candidate_response(history, first_msg)
+                self._agentic_require_completed_stage(stage, "Agentic Stage 1")
+                first_msg = ((stage.get("choices") or [{}])[0].get("message") or {})
+                frozen_stage1_answer = append_extended_candidate_response(history, first_msg)
+                if state.accepted_tool_results is not None:
+                    async with self._pending_tool_resume_lock:
+                        self._pending_authority.freeze(state, history, frozen_stage1_answer)
+                if scope is not None:
+                    scope["stage1_frozen"] = True
             if AGENTIC_FLASH_MODE:
                 completed = self._complete_flash_stage1(history, usage, frozen_stage1_answer)
                 await self._retire_pending_tool_resume(state)

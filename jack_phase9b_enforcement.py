@@ -491,6 +491,8 @@ def install(jk: Any) -> RuntimeCodeAuthority:
             ("pending-recovery-material", dynamic, "_recovery_material", "authority"),
             ("tool-recovery-fail", recovery.ToolRecoveryState, "fail", "model"),
             ("tool-recovery-progress", recovery.ToolRecoveryState, "progress", "model"),
+            ("tool-recovery-observed-return", recovery.ToolRecoveryState, "observed_return", "model"),
+            ("tool-recovery-reset-streak", recovery.ToolRecoveryState, "_reset_failure_streak", "model"),
             ("tool-outcome", jk, "reported_tool_outcome", "model"),
             ("pending-register", dynamic.PendingAuthority, "register", "authority"),
             ("pending-transition", dynamic.PendingAuthority, "transition", "authority"),

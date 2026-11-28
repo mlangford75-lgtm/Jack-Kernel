@@ -219,7 +219,8 @@ def test_real_stream_disconnect_retries_same_tool_result_without_reexecuting_too
     asyncio.run(run())
 
 
-def test_stage2_disconnect_reuses_frozen_stage1_without_regeneration(monkeypatch, tmp_path):
+@pytest.mark.parametrize("retry_streaming", [True, False])
+def test_stage2_disconnect_reuses_frozen_stage1_without_regeneration(monkeypatch, tmp_path, retry_streaming):
     async def run():
         k = load(monkeypatch, tmp_path)
         call_id = "stage2-tool-result"
@@ -254,6 +255,14 @@ def test_stage2_disconnect_reuses_frozen_stage1_without_regeneration(monkeypatch
                     self.closed += 1
 
         backend = Backend()
+
+        async def retry_chat(**kwargs):
+            backend.calls += 1
+            assert kwargs["profile"].name == "Agentic native pass 2"
+            return {"choices": [{"message": {"content": "completed, useful working memory"},
+                                 "finish_reason": "stop"}], "usage": {}}
+
+        backend.chat = retry_chat
         k.KERNEL.backend = backend
         body = {"messages": messages, "stream": True}
         stream = k.KERNEL.stream(body)
@@ -273,8 +282,12 @@ def test_stage2_disconnect_reuses_frozen_stage1_without_regeneration(monkeypatch
         assert not state.in_flight
         assert k._agentic_forensic_turn(state.frozen_stage1_history).status == "stage2_active"
 
-        chunks = [c async for c in k.KERNEL.stream(body)]
-        wire = b"".join(chunks).decode("utf-8")
+        if retry_streaming:
+            chunks = [c async for c in k.KERNEL.stream(body)]
+            wire = b"".join(chunks).decode("utf-8")
+        else:
+            result = await k.KERNEL.run(dict(body, stream=False))
+            wire = result.content
         assert backend.calls == 3, "Stage 1 must never be regenerated after A1 freezes"
         assert "EXACT A1" in wire
         assert "completed, useful working memory" in wire
