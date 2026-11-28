@@ -5377,10 +5377,18 @@ def _phase4_partition_structured_tool_calls(
             )
             contract_applied = True
         else:
+            # Request-wide shell metadata is not a tool-specific contract.
+            # Do not classify arbitrary custom tools (vision, search, etc.)
+            # as shell invocations. A cooperating adapter can bind a custom
+            # command's dialect at its individual executor-admission boundary.
+            tool_dialect = (
+                command_dialect if jack_path_policy.is_command_capability_tool_name(function_name)
+                else None
+            )
             candidate = jack_path_policy.rewrite_literal_bash_home_call_for_workspace_release(
                 active_policy,
                 call,
-                command_dialect=command_dialect,
+                command_dialect=tool_dialect,
                 executor_platform=executor_platform,
             )
             decision, contract_applied = (
@@ -5388,7 +5396,7 @@ def _phase4_partition_structured_tool_calls(
                     active_policy,
                     candidate,
                     executor_cwd=executor_cwd,
-                    command_dialect=command_dialect,
+                    command_dialect=tool_dialect,
                     executor_platform=executor_platform,
                 )
             )
@@ -5565,15 +5573,12 @@ def _phase4_executor_admission_decision(
         )
 
     command_dialect = payload.get("command_dialect")
-    if (
-        command_dialect is not None
-        and str(command_dialect).strip().casefold()
-        not in {"bash", "sh", "zsh", "powershell"}
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail="Unsupported executor command dialect",
-        )
+    if command_dialect is not None:
+        if not isinstance(command_dialect, str) or not re.fullmatch(
+            r"[a-z0-9][a-z0-9._+-]{0,63}", command_dialect.strip().casefold()
+        ):
+            raise HTTPException(status_code=400, detail="Invalid executor command dialect")
+        command_dialect = command_dialect.strip().casefold()
 
     if expected_call is not None:
         if not isinstance(expected_call, dict):
@@ -16338,10 +16343,12 @@ def _phase4_executor_context_from_request(
         )
 
     command_dialect = values["command_dialect"].casefold() or None
-    if command_dialect not in {None, "bash", "sh", "zsh", "powershell"}:
+    if command_dialect is not None and not re.fullmatch(
+        r"[a-z0-9][a-z0-9._+-]{0,63}", command_dialect
+    ):
         raise HTTPException(
             status_code=400,
-            detail="Unsupported executor transport command dialect",
+            detail="Invalid executor transport command dialect",
         )
 
     try:

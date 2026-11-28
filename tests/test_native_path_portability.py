@@ -204,8 +204,13 @@ def test_posix_shell_does_not_resolve_kernel_home_environment():
         posix_executor_home="",
     )
     call = {"function": {"name": "bash", "arguments": {"command": "cat $HOME/clock.html"}}}
-    assert paths.authorize_command_tool_call(active, call, executor_cwd="/kernel-home",
-        executor_platform="linux").outcome is paths.PathAuthorizationOutcome.DENY_AND_CONTINUE
+    decision = paths.authorize_command_tool_call(active, call, executor_cwd="/kernel-home",
+        executor_platform="linux")
+    assert decision.outcome is paths.PathAuthorizationOutcome.ALLOW
+    assert decision.canonical_target is None
+    assert "unclassified" in decision.reason
+    facts = paths.extract_command_paths("bash", call["function"]["arguments"], environment={})
+    assert facts.ambiguous and not facts.targets
 
 
 def test_explicit_remote_posix_startup_ignores_kernel_windows_environment(monkeypatch):

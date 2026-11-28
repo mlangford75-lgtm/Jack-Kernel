@@ -1022,11 +1022,13 @@ def _command_dialect_for_tool(
     if dialect in {"sh", "zsh"}:
         dialect = "bash"
 
+    # An exact host-owned tool identity cannot lose its existing path
+    # coverage because a transport advertises a different shell dialect.
     if name in _BASH_EXACT_TOOL_NAMES:
-        return "bash" if dialect in {"", "bash"} else None
+        return "bash"
 
     if name in _POWERSHELL_EXACT_TOOL_NAMES:
-        return "powershell" if dialect in {"", "powershell"} else None
+        return "powershell"
 
     if name in _GENERIC_COMMAND_TOOL_NAMES:
         return dialect if dialect in {"bash", "powershell"} else None
@@ -1719,6 +1721,10 @@ def _bash_segment_targets(tokens: list[str]) -> Tuple[Tuple[str, ...], bool, boo
             "format-patch",
         }:
             ambiguous = True
+            if subcommand == "clone":
+                # Preserve explicit path operands even though clone's other
+                # effects are not contained by a lexical command contract.
+                targets.extend(_unknown_command_path_operands(args[index + 1:]))
 
         for item in args:
             lowered = item.casefold()
