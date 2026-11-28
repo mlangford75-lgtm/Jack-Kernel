@@ -162,3 +162,67 @@ def test_custom_contract_is_sealed_and_drives_debugging_classification(monkeypat
     assert kernel._debugging_tool_is_direct_mutator(declaration)
     assert kernel._debugging_tool_is_direct_mutator({"function": {"name": "perform_operation"}})
     assert kernel._debugging_tool_is_direct_mutator({"function": {"name": "unregistered_format"}})
+
+
+def test_independent_http_executor_client_uses_kernel_owned_admission(monkeypatch):
+    """Exercise the actual admission route without Pi or a model backend.
+
+    Synthetic pending calls isolate protocol qualification from model behavior;
+    this does not attest a remote machine or claim physical containment.
+    """
+    import asyncio
+    import httpx
+    import jack_kernel as kernel
+
+    active = replace(custom_policy([custom_contract()]),
+                     runtime_id=kernel.RUNTIME_ID, lane_id=kernel.LANE_ID)
+    monkeypatch.setattr(kernel, "_RUNTIME_PATH_POLICY", active)
+    monkeypatch.setattr(kernel, "CFG", replace(kernel.CFG, api_key="synthetic-independent-client-key"))
+    pending = {}
+    for ident, filename in (("allowed", "clock.html"), ("outside", "../other"),
+                            ("restricted", "Private/file")):
+        pending[ident] = {"id": ident, "type": "function", "function": {
+            "name": "inspect_format", "arguments": json.dumps({"filename": filename, "limit": 5}),
+        }}
+
+    async def snapshot(ident):
+        if ident not in pending:
+            raise kernel.HTTPException(status_code=409, detail="No pending call")
+        return pending[ident]
+
+    monkeypatch.setattr(kernel.KERNEL, "_phase4_pending_tool_call_snapshot", snapshot)
+
+    def body(ident):
+        return {
+            "protocol_version": 1, "runtime_id": kernel.RUNTIME_ID,
+            "lane_id": kernel.LANE_ID, "tool_call_id": ident,
+            "tool_name": "inspect_format",
+            "arguments": json.loads(pending[ident]["function"]["arguments"]),
+            "executor_cwd": "/work", "executor_platform": "linux",
+        }
+
+    async def check():
+        headers = {"Authorization": "Bearer synthetic-independent-client-key"}
+        route = "/jack/security/path-admission"
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=kernel.APP),
+                                     base_url="http://test.invalid") as client:
+            assert (await client.post(route, json=body("allowed"))).status_code == 401
+            for ident, expected in (("allowed", "ALLOW"), ("outside", "DENY_AND_CONTINUE"),
+                                    ("restricted", "HARD_INTERRUPT")):
+                response = await client.post(route, json=body(ident), headers=headers)
+                assert response.status_code == 200, response.text
+                result = response.json()
+                assert result["contract_applied"] is True
+                assert result["outcome"] == expected
+                assert result["tool_call_id"] == ident
+            changed = body("allowed")
+            changed["arguments"]["filename"] = "Private/file"
+            assert (await client.post(route, json=changed, headers=headers)).status_code == 409
+            changed = body("allowed")
+            changed["lane_id"] = "unowned-lane"
+            assert (await client.post(route, json=changed, headers=headers)).status_code == 409
+            changed = body("allowed")
+            changed["workspace_root"] = "/"
+            assert (await client.post(route, json=changed, headers=headers)).status_code == 400
+
+    asyncio.run(check())

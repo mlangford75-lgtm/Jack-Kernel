@@ -298,3 +298,25 @@ not certified as resolved by this contract. Workspace coverage continues to
 require determinable targets; Standard coverage does not introduce a blanket
 parser restriction. This is not remote-host or filesystem attestation; do not
 reuse a dedicated runtime home configuration for unrelated executors.
+
+
+### Explicit executor path environment (dedicated runtime)
+
+Local deployments keep their existing automatic native-path defaults. For a
+dedicated remote executor, the operator may set `JACK_EXECUTOR_PATH_STYLE`
+to `posix` or `windows` before Kernel startup. An optional
+`JACK_EXECUTOR_PATH_ENV_JSON` object supplies the executor's supported path
+anchors, rather than importing the Kernel machine's environment. Windows
+requires an absolute drive-qualified SystemRoot; SystemDrive, if supplied,
+must agree. POSIX tilde expansion uses the separately configured
+`JACK_POSIX_EXECUTOR_HOME`. These values are startup-owned and included in the
+existing immutable path-policy integrity material. They are not tool arguments
+or client-controlled policy settings.
+
+Use one dedicated runtime/lane for a known namespace. The operator must ensure
+the configuration corresponds to the actual executor and configured workspace
+and restricted paths. Neither these settings nor the admission protocol attest
+an arbitrary remote executor, sandbox child processes, or automatically discover
+remote credential files. Explicitly configure remote restricted resources as
+needed; retain the Kernel's own credential protections. No new mandatory
+executor, Pi dependency, or default workspace lock is introduced.

@@ -326,3 +326,99 @@ against the governing inventory. Fresh-clone live acceptance remains mandatory.
   controlled historical comparisons retain their original methodology.
 - W5-03/04: do not change specification placement or consolidate non-equivalent
   diagnostic mechanisms before obtaining measured evidence.
+
+
+## Audit 2 consolidated pre-live acceptance ledger — 2026-11-28
+
+The November 27 Audit 2 Specifications govern. This record supplements the
+original audit register; it does not supersede the protected architecture.
+All commits below are on experimental PR #179. The current runtime revision
+under qualification is 9aea434; subsequent documentation/test additions must
+be distinguished from that revision. No merge or full-suite green claim.
+
+| Specification / audit reference | Classification, implementation and evidence | Disposition / outstanding risk |
+|---|---|---|
+| W1-01 NEW-1/B-4 | Deterministic defect; 5c56fd5 handles unresolved resource identity; malformed ADS sibling test in test_phase5_path_gate_integration.py. | Implemented; combined security and regression evidence; live mixed-batch acceptance open. |
+| W1-02 NEW-4c | Deterministic defect; 5c56fd5 routes unresolved rewrites through existing authority; unresolved rewrite ledger fixture. | Implemented; live mixed-batch acceptance open. |
+| W1-03 B-2 | Recovery contradiction; 5c56fd5 changes Stage-2 and Ultra recovery projection; targeted recovery and full regression suites. | Implemented; live empty-generation recovery open; exact adverse-case evidence still required. |
+| W2-01 B-1 | Security resilience; 5c56fd5 separates checkpoint-retiring failures from temporary unavailability; test_audit2_checkpoint_classification.py. | Implemented; live authenticated recovery and confirmed compromise separation open. |
+| W2-02 NEW-3/B-6 | Security defect; 5c56fd5 and 4e2471a discard unverified carry, preserve cleared prefix; test_streaming_irq_integration.py. | Implemented; synthetic stream failure controls; live disconnect/Canary acceptance open. |
+| W2-03 NEW-4a | Ledger parity; 4e2471a records evidence Canary matches through Authority Ledger. | Implemented; targeted security qualification passed; inspect live event attribution. |
+| W2-04 NEW-4b | Nested textual ancestry; 5c56fd5 propagates protected ancestry through nested data. | Implemented; combined security qualification; live snapshot/quarantine evidence open. |
+| W2-05 B-5 | Compatibility/resilience; 4e2471a short-match warnings; test_security_center.py. | Implemented without altering credential sensitivity. Verify live warning and normal work. |
+| W3-01 B-12 | Protocol compatibility; 89d00b1 shared native reasoning alias handling; test_audit2_wire_compatibility.py. | Implemented; live representative providers and Qwen parity open. |
+| W3-02 B-13 | Deterministic identity; 89d00b1 shared index/ID resolver; parallel, reordered and ambiguous-fragment fixtures. | Implemented; live parallel-tool qualification open. |
+| W3-03 B-14 | Protocol compatibility; 89d00b1 host-owned IDs for fresh completed calls only; missing-ID fixture. | Implemented; live receipt/resume qualification open. |
+| W3-04 B-15.1 | Protocol compatibility; 89d00b1 normalizes successful completion aliases; incomplete completion fixtures. | Implemented; live backend qualification open. |
+| W3-05 B-15.2/.3 | Provider compatibility; 89d00b1 preserves Qwen controls and standard wire option. | Existing control contracts preserved; provider-specific live payload comparison open. |
+| W3-06 B-15.4 | Protocol compatibility; 89d00b1 recognizes supported keepalive representations. | Implemented; live provider behavior open. |
+| W4-01 B-3 | Coverage clarification; 5b0230d, 82c7faf. | Implemented; standard/represented/bounded positive and negative live workloads open. |
+| W4-02 B-7/NEW-4d | 5b0230d and c7395e5 sealed custom tool contracts and Debugging classification; native/portable contract tests. Independent HTTP client route fixture added in pre-live ledger batch. | Synthetic qualification, not physical executor attestation; actual independent client execution open. |
+| W4-03 | Environment compatibility; 37ffe7a and 9aea434 explicit executor home, style and anchors. | 9aea434 native matrix passed; dedicated remote live test open; no arbitrary remote attestation. |
+| W4-04 B-16 | 89d00b1, 9626c1c, 37ffe7a: distinct paths, literal spaces, native home semantics. | Native Windows/Linux/macOS qualification 46118204478 passed. Actual OS object containment not claimed. |
+| W4-05 B-8 | 82c7faf identity independent of discovery; 70628f6 fixes immutable test fixture. | Regression comparison at 0473279 resolved the identity test; real providers open. |
+| W4-06 B-9/V-4 | Decision-dependent caller instruction hierarchy. | Existing hierarchy unchanged; no authority elevation or redesign approved. Explicit decision/adversarial tests required before changes. |
+| W4-07 B-10 | 5b0230d and c7395e5 host-owned inspection schema. | Implemented; existing runtime restrictions retained; live inspection open. |
+| W4-08 B-11/NEW-4g | 9626c1c and 82c7faf Pi binding and positive vision metadata. | Pi qualification 46118204470 passed; live refresh and multimodal evidence open. |
+| W4-09 NEW-4e/B-16 | 37ffe7a source launch guidance; frozen execution not claimed. | Native matrix is not full secured launch. Fresh local and representative remote startup open. |
+| W5-01 NEW-2/P-3 | 89d00b1 per-stage reuse, 4eba8dd benchmark. | Reported warm Windows diagnostic latency 48.26 to 0.34 ms (64 KiB), 96.53 to 0.73 ms (128 KiB); unchanged diagnostic reports and retained digest memory. Diagnostic-only, not inference. |
+| W5-02 P-1 | bb72f73 instrumented benchmark; 844ae9f workflow 46116157365. | Measured 32.28 single and 32.20 aggregate concurrent frames/s, 2,010 executable checks, 28,140 executable file measurements, 404,814,194 digest bytes. No proven equivalent authority-boundary reuse yet; preserve verification timing. |
+| W5-03 P-2 | Performance hypothesis, live backend prefix/prefill measurement required. | Do not reposition Architect spec without demonstrated equivalence. Open during live testing. |
+| W5-04 | Overlap hypothesis; inspect CacheBytePrefixProbe, Stage1CacheStabilizer and Agentic cache diagnostics. | No equivalence or safe speedup established; keep distinct evidence mechanisms, further profiling open. |
+| W6-01 | Naming cleanup including 2a35c0f workflow display/step labels. | Internal module/test/workflow paths and compatibility identifiers still require verified migration; not complete. |
+| W6-02 | bb72f73 established Architect/Coder terminology; 844ae9f and 0473279 updated assertions. | Behavioral assertions retained; historical keys retained. |
+| W6-03 | bb72f73 Loop Detector display derives threshold from implementation. | Implemented; verify live configuration/display. |
+| W6-04 | Current Kernel SSE uses jack-keepalive. | Existing framing preserved. |
+| W6-05 NEW-4f | bb72f73 optional rejection archive attribution; test_rejection_archive_attribution_does_not_change_live_reasoning. | Included in completed 0473279 regression with no listed failure; live archive/privacy check open. |
+| W6-06 CL-1/CL-3/V-6 | Dead-code candidate inventory; no new removal authorized without dynamic/import/mode/security reference proof. | Open; retain supported functionality rather than risk speculative deletion. |
+| W6-07 | Documentation and historical whitepaper reconciliation; original evidence preserved, current scope documented. | Updated guidance and ledger; full repository naming/whitepaper reconciliation remains open. |
+
+### Exact regression checkpoint
+
+844ae9f: ordinary and isolated suites each 2,060 passed / 54 failed.
+0473279: both suites 2,062 passed / 52 failed / 2 warnings (CI 46117246633).
+Exact failed-node comparison removed the runtime identity and context projection
+test identities and added none. The 52 inherited failures remain visible; not
+an unconditional acceptance or proof of every historical behavior. Fresh-clone
+bootstrap and Pi harnesses passed. At inspection 9aea434 native, Pi, combined
+security and Architect workflows passed; full regression and executable identity
+qualification were still running. Recheck the exact live-test checkout before
+making any release recommendation.
+
+### Live-test entry and acceptance procedure
+
+Live testing is evidence collection, not release approval. Use an isolated
+fresh clone of PR #179 and record its exact SHA; verify that the checkout is not
+Main. Record OS, Python, Node, Pi/client version, backend/model and selected
+reasoning mode, effective Security Center settings and sanitized logs. Account
+for persisted configuration outside the clone. Use a disposable workspace and
+synthetic credentials only. Keep the known local configuration for the first
+run; the optional remote startup settings are not required for local work.
+
+1. Factory settings: workspace lock off, custom NEVER empty. Verify the empty
+   disposable workspace, create clock.html, read it, modify it, verify the
+   final contents, list nested directories, and test paths containing spaces
+   and ordinary temporary files. Repeat with represented workspace coverage.
+2. Repeat the same useful workload in Coder Flash and Thorough, and a multi-turn
+   Agentic session; verify tool-free Architect, uninterrupted Coder execution,
+   receipt identity, reasoning retirement, and no unnecessary refusal loops.
+3. Use synthetic restricted targets and mixed batches. Verify recoverable
+   denial preserves authorized siblings, positive NEVER interrupts correctly,
+   no duplicate execution, no forged success and no unverified Canary carry
+   on abort. Do not modify real protected OS files.
+4. Test Pi and a cooperating independent client. For a dedicated remote
+   executor verify its configured namespace, home and cwd; exercise case,
+   relative paths, and ordinary temporary work without assuming containment.
+5. Measure actual Qwen multi-turn prefix reuse, backend cache hits/prefill
+   where available, and latency; repeat with an available non-Qwen model.
+   Record actual requests and receipts with sensitive data removed.
+6. Record pass, reproducible defect, stochastic model deviation, or unavailable
+   evidence separately. Any deterministic rejection of ordinary valid work,
+   authority failure, lost completed work, or unqualified new regression
+   blocks release. Maintain existing settings and exact tested commits.
+   No merge until maintainer authorization and Section 16 evidence.
+
+The caller-authority decision and speculative optimizations must not be
+silently treated as implemented. The candidate can enter controlled live
+testing while those investigations remain open; release requires their
+explicit disposition under the governing specification.
