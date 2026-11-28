@@ -31,6 +31,10 @@ def helpers(*names):
             "current turn's native reasoning and tool evidence. Retain all relevant facts, "
             "assumptions, discoveries, decisions, explanations, causal relationships."
         ),
+        "_AGENTIC_CODER_STAGE2_DIRECTIVE": (
+            "The exact completed Coder response is supplied in coder_frozen_response as historical evidence. "
+            "Use it to preserve consequential working knowledge without reconstructing the original request."
+        ),
         "_AGENTIC_SOURCE_ONLY_WORKING_STATE_TRIGGER": (
             "Jack internal memory extraction, not a new user request. "
             "Distill durable working state from the frozen source only. "
@@ -157,6 +161,7 @@ def test_profile_directive_echoes_are_rejected_without_rejecting_working_state()
     for directive_key in (
         "_AGENTIC_SOURCE_ONLY_WORKING_STATE_DIRECTIVE",
         "_AGENTIC_STAGE2_THOROUGH_EXHAUSTIVE_DIRECTIVE",
+        "_AGENTIC_CODER_STAGE2_DIRECTIVE",
     ):
         span = ns[directive_key][:120]
         assert ns["_agentic_memory_is_instruction_echo"](span)
